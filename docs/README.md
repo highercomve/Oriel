@@ -17,7 +17,7 @@ Commands in these guides run from your app directory unless a guide explicitly s
 - [Apps and examples](examples.md)
 - [WebView and native rendering](renderers.md)
 - [Android](android.md) and [iOS](ios.md)
-- [App-owned Android extensions](android-extensions.md)
+- [Platform hooks](platform-hooks.md): react to or take over the platform's app, window and web view events (`oriel.hooks` in Zig, Kotlin, Objective-C/Swift), and [Android platform hooks](android-extensions.md)
 - [App extensions](extensions.md): your own Kotlin, Objective-C/Swift or Zig code, called by name
 
 ## Framework development

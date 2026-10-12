@@ -2,6 +2,43 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- **Platform hooks in Zig: `oriel.hooks`** (Linux, macOS, Windows). The app's
+  Zig code sees each window and web view Oriel creates, with its native
+  handle (GtkWindow* / WebKitWebView*, NSWindow* / WKWebView*, HWND /
+  ICoreWebView2* and its controller): `oriel.hooks.subscribe(.{
+  .window_created, .webview_created, .webview_destroyed, .window_destroyed })`,
+  up to 16 subscriptions, on the main thread. `webview_created` runs after
+  Oriel installs its bridge, before the first navigation. `oriel.hooks.available`
+  is false on Android and iOS, which hook natively. The showcase logs its
+  windows and turns on a WebKitGTK setting through the handle. New page:
+  [Platform hooks](docs/platform-hooks.md).
+
+### Changed
+
+- **`.android.hooks`** is the name of Android's Kotlin/Java hook classes
+  (formerly `.android.extensions`), and `OrielAndroidHooks` /
+  `OrielAndroidHooksContext` are Kotlin typealiases of `OrielAndroidExtension`
+  / `OrielAndroidExtensionContext`. The Android page is now
+  [Android platform hooks](docs/android-extensions.md) (same URL). The
+  showcase registers a hook class with `.android.hooks`.
+
+### Deprecated
+
+- `.android.extensions`: still registered, after the `.android.hooks`
+  classes; a class named in both is registered once.
+
+### Fixed
+
+- Docs: the site's "Intercept file selection" still told apps to build their
+  own camera capture route; since 0.10 `oriel.camera` handles
+  `<input type="file" accept="image/*" capture>` (Oriel's capture provider,
+  the photo picker, HEIC/AVIF to JPEG), and a custom content provider is only
+  for apps that need their own capture flow.
+
 ## [0.10.0] — 2026-10-12
 
 Oriel 0.10.0 adds what porting GhostPantry to iOS showed was missing, so

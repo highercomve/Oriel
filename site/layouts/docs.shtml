@@ -16,7 +16,8 @@
 				<a href="$site.page('docs/signing').link()">Code signing</a>
 				<a href="$site.page('docs/permissions').link()">Permissions</a>
 				<a href="$site.page('docs/mobile').link()">Android and iOS</a>
-				<a href="$site.page('docs/android-extensions').link()">Android extensions</a>
+				<a href="$site.page('docs/platform-hooks').link()">Platform hooks</a>
+				<a href="$site.page('docs/android-extensions').link()">Android platform hooks</a>
 				<a href="$site.page('docs/extensions').link()">App extensions</a>
 				<a href="$site.page('docs/native-renderer').link()">Native UI <span class="tag-exp">experimental</span></a>
 				<a href="$site.page('docs/changelog').link()">Changelog</a>
