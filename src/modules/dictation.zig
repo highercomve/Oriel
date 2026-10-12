@@ -67,19 +67,18 @@ const log = std.log.scoped(.dictation);
 
 /// whisper.cpp's multilingual models, smallest first. q8_0: ggml repacks
 /// it for ARM's dotprod/i8mm matmul kernels and it keeps whisper's
-/// accuracy. `legacy`: files earlier Oriel versions downloaded, listed so
-/// apps can offer to delete them.
-pub const Model = struct { name: []const u8, file: []const u8, mb: u32, legacy: bool = false };
+/// accuracy.
+pub const Model = struct { name: []const u8, file: []const u8, mb: u32 };
 pub const models = [_]Model{
     .{ .name = "tiny", .file = "ggml-tiny-q8_0.bin", .mb = 42 },
     .{ .name = "base", .file = "ggml-base-q8_0.bin", .mb = 78 },
     .{ .name = "small", .file = "ggml-small-q8_0.bin", .mb = 252 },
-    .{ .name = "tiny-q5_1", .file = "ggml-tiny-q5_1.bin", .mb = 31, .legacy = true },
-    .{ .name = "base-q5_1", .file = "ggml-base-q5_1.bin", .mb = 57, .legacy = true },
-    .{ .name = "small-q5_1", .file = "ggml-small-q5_1.bin", .mb = 181, .legacy = true },
-    .{ .name = "tiny-f16", .file = "ggml-tiny.bin", .mb = 75, .legacy = true },
-    .{ .name = "base-f16", .file = "ggml-base.bin", .mb = 142, .legacy = true },
-    .{ .name = "small-f16", .file = "ggml-small.bin", .mb = 466, .legacy = true },
+};
+/// What Oriel 0.9 downloaded before q8_0 (q5_1 and f16): nothing uses them,
+/// so `init` deletes them from the models directory.
+const stale_files = [_][]const u8{
+    "ggml-tiny-q5_1.bin", "ggml-base-q5_1.bin", "ggml-small-q5_1.bin",
+    "ggml-tiny.bin",      "ggml-base.bin",      "ggml-small.bin",
 };
 const url_base = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
@@ -99,17 +98,11 @@ pub const Options = struct {
     backend: Backend = .auto,
     /// Live text from the next smaller model on the device (whisper).
     draft: bool = true,
-    /// Whisper: an `audio_capture` source id (`sources()`), e.g. the
+    /// Whisper: an `audio_capture` source id (`audio_capture.listSources`), e.g. the
     /// system's output for captions of what the computer plays; null: the
     /// default microphone.
     source: ?[]const u8 = null,
 };
-
-/// Where whisper can listen (`Options.source`): microphones, and on the
-/// desktop the system's output (loopback). Allocated with `a`.
-pub fn sources(a: std.mem.Allocator) ![]audio_capture.Source {
-    return audio_capture.listSources(a);
-}
 
 pub const Events = struct {
     @"dictation:download": struct { model: []const u8, done_mb: u32, total_mb: u32 },
@@ -189,6 +182,8 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     ever_init.store(true, .release);
     whisper.silenceLogs();
     subscribeLifecycle();
+    for (stale_files) |f| model_download.remove(io, models_dir, f) catch |err|
+        log.warn("cannot delete the old model {s}: {s}", .{ f, @errorName(err) });
 }
 
 /// Load the GPU backend once (a Vulkan instance and a self-test: not at
@@ -203,28 +198,26 @@ fn ensureGpu() void {
     log.info("whisper backend: {s}{s}{s}", .{ backend_name, if (gpu_name != null) " on " else "", gpu_name orelse "" });
 }
 
-pub fn find(name: []const u8) !*const Model {
+/// The `models` entry named `name`, or null.
+pub fn findModel(name: []const u8) ?*const Model {
     for (&models) |*m| if (std.mem.eql(u8, m.name, name)) return m;
-    return error.UnknownModel;
+    return null;
 }
 
 fn modelPath(a: std.mem.Allocator, m: *const Model) ![:0]u8 {
     return std.fs.path.joinZ(a, &.{ models_dir, m.file });
 }
 
-pub fn present(m: *const Model) bool {
+/// Whether `m`'s file is in the models directory, complete.
+pub fn modelPresent(m: *const Model) bool {
     return model_download.present(io, models_dir, m.file);
 }
 
 /// "auto": the largest model on the device.
 fn resolveModel(name: []const u8) !*const Model {
-    if (!std.mem.eql(u8, name, "auto")) {
-        const m = try find(name);
-        if (m.legacy) return error.UnknownModel;
-        return m;
-    }
+    if (!std.mem.eql(u8, name, "auto")) return findModel(name) orelse error.UnknownModel;
     var best: ?*const Model = null;
-    for (&models) |*m| if (!m.legacy and present(m)) {
+    for (&models) |*m| if (modelPresent(m)) {
         best = m;
     };
     return best orelse error.NoModel;
@@ -238,7 +231,6 @@ pub const ModelStatus = struct {
     file: []const u8,
     mb: u32,
     present: bool,
-    legacy: bool,
     /// What `compare` found faster on this device ("gpu"/"cpu"), if run.
     faster: ?[]const u8,
 };
@@ -268,8 +260,7 @@ pub fn status() Status {
         .name = m.name,
         .file = m.file,
         .mb = m.mb,
-        .present = present(m),
-        .legacy = m.legacy,
+        .present = modelPresent(m),
         .faster = if (preference(m)) |g| (if (g) "gpu" else "cpu") else null,
     };
     return .{
@@ -290,7 +281,7 @@ pub fn status() Status {
 /// file, renamed when complete), emitting "dictation:download". Blocks:
 /// call it from a worker (an async command).
 pub fn download(name: []const u8) !void {
-    const m = try find(name);
+    const m = findModel(name) orelse return error.UnknownModel;
     {
         mutex.lockUncancelable(io);
         defer mutex.unlock(io);
@@ -315,7 +306,7 @@ pub fn download(name: []const u8) !void {
 /// Remove a model from the device (unloading it first), and a download
 /// of it that stopped half way.
 pub fn delete(name: []const u8) !void {
-    const m = try find(name);
+    const m = findModel(name) orelse return error.UnknownModel;
     mutex.lockUncancelable(io);
     defer mutex.unlock(io);
     if (downloading == m) return error.Downloading;
@@ -402,7 +393,7 @@ fn draftFor(m: *const Model) ?*const Model {
     var best: ?*const Model = null;
     for (&models) |*d| {
         if (d == m) break; // `models` goes from small to large
-        if (!d.legacy and present(d)) best = d;
+        if (modelPresent(d)) best = d;
     }
     return best;
 }

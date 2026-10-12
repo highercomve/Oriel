@@ -280,7 +280,7 @@ pub const Commands = struct {
 
     /// Microphones, and on the desktop what the computer plays (captions).
     pub fn dictation_sources(gpa: std.mem.Allocator) ![]oriel.audio_capture.Source {
-        return dictation.sources(gpa);
+        return oriel.audio_capture.listSources(gpa);
     }
 
     pub fn dictation_stop(gpa: std.mem.Allocator) !dictation.Result {
@@ -485,7 +485,8 @@ fn headlessChat(gpa: std.mem.Allocator, message: []const u8) !u8 {
 }
 
 fn headlessDownload(model: []const u8) !u8 {
-    if (!chat.present(try chat.find(model))) try chat.download(model);
+    const m = chat.findModel(model) orelse return error.UnknownModel;
+    if (!chat.modelPresent(m)) try chat.download(model);
     std.debug.print("{s}: present\n", .{model});
     return 0;
 }

@@ -135,8 +135,6 @@ input:focus { border-color: var(--accent); }
 .switch input:disabled + i { opacity: .4; }
 
 /* Transcripts */
-.legacy { margin: -4px 0 16px; }
-.legacy .have-row { margin: 6px 0; }
 .transcript.live p .partial { color: var(--muted); }
 .transcript.live .caret { display: inline-block; width: 2px; height: 1.1em; margin-left: 2px; vertical-align: -.15em;
   background: var(--accent); animation: blink 1s steps(1) infinite; }

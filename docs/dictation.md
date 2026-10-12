@@ -255,7 +255,7 @@ channel count, rates from 4 kHz), mixed down to mono and resampled to
 ### Captions of what the computer plays
 
 ```zig
-const sources = try oriel.dictation.sources(gpa);
+const sources = try oriel.audio_capture.listSources(gpa);
 defer oriel.audio_capture.freeSources(gpa, sources);
 for (sources) |s| if (s.monitor) {
     _ = try oriel.dictation.start(.{ .engine = .whisper, .source = s.name });
@@ -324,7 +324,7 @@ const text = try ctx.transcribe(gpa, &buf, .{ .audio_ctx = oriel.whisper.audioCt
 
 | Function | Thread | Meaning |
 |---|---|---|
-| `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where the models live (created when needed); `dir` must outlive the app. Silences whisper's logging, subscribes to `oriel.lifecycle`. |
+| `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where the models live (created when needed); `dir` must outlive the app. Silences whisper's logging, subscribes to `oriel.lifecycle`, deletes the q5_1 and f16 files Oriel 0.9 downloaded. |
 | `start(opts: Options) !Started` | worker | Start listening; blocks while models load. |
 | `stop(a) !Result` | worker | Stop, finalize the last phrase, return the session's text (allocated with `a`). |
 | `transcribeFile(a, path, opts) !Transcript` | worker | Transcribe a WAV file with whisper (up to 1 GiB; see `wav`). |
@@ -332,10 +332,9 @@ const text = try ctx.transcribe(gpa, &buf, .{ .audio_ctx = oriel.whisper.audioCt
 | `compare(a, opts) !Comparison` | worker | Up to 8 s of the last whisper recording, from shortly before the speech, on the GPU (after a warm-up) and then the CPU; emits `dictation:compare` per run; remembers the winner. |
 | `status() Status` | worker | Models, engines, backend, what is loaded. Loads the GPU backend the first time. |
 | `download(name) !void` | worker | Fetch a whisper model from `huggingface.co/ggerganov/whisper.cpp`, emitting `dictation:download`. |
-| `delete(name) !void` | worker | Remove a model (unloading it), and a half-finished download. Legacy files too. |
-| `sources(a) ![]audio_capture.Source` | worker | Where whisper can listen (`audio_capture.listSources`); free with `audio_capture.freeSources`. |
-| `find(name) !*const Model` | any | A catalog entry; `error.UnknownModel`. |
-| `present(m) bool` | any after `init` | The model's file is complete. |
+| `delete(name) !void` | worker | Remove a model (unloading it), and a half-finished download. |
+| `findModel(name) ?*const Model` | any | A catalog entry, or null. |
+| `modelPresent(m) bool` | any after `init` | The model's file is complete. |
 | `unloadIdle() void` | any (main included) | Free the models now unless listening or busy; returns at once. |
 | `deinit() void` | after commands finished | Join the threads, free models and buffers. `oriel.main` calls it; safe twice or without `init`. |
 
@@ -343,7 +342,7 @@ const text = try ctx.transcribe(gpa, &buf, .{ .audio_ctx = oriel.whisper.audioCt
 |---|---|
 | `available: bool` | `true` with `.whisper` and `.audio_capture`. |
 | `unload_on: oriel.lifecycle.UnloadOn` | When the models are freed by themselves; default critical memory pressure. |
-| `models: [9]Model` | The catalog (below). |
+| `models: [3]Model` | The catalog (below). |
 | `wav` | The WAV decoder: `decode(gpa, data, rate) Error![]f32` (mono at `rate`), `resample(gpa, in, from, to) Error![]f32`; `Error = { NotWav, BadWav, UnsupportedWav, OutOfMemory }`. |
 
 ### Models
@@ -355,18 +354,16 @@ const text = try ctx.transcribe(gpa, &buf, .{ .audio_ctx = oriel.whisper.audioCt
 | `small` | `ggml-small-q8_0.bin` | 252 MB |
 
 Multilingual (about 99 languages), q8_0: ggml repacks it for ARM's dotprod
-and i8mm kernels, and it keeps whisper's accuracy. `legacy` entries
-(`tiny-q5_1`, `base-q5_1`, `small-q5_1`, `tiny-f16`, `base-f16`,
-`small-f16`) are files earlier Oriel versions downloaded: listed in
-`status` so an app can offer to `delete` them; `start` refuses them
-(`error.UnknownModel`) and `"auto"` skips them.
+and i8mm kernels, and it keeps whisper's accuracy. Where whisper can listen
+(`Options.source`) is `oriel.audio_capture.listSources`
+([below](#audio-capture)).
 
 ### Types
 
 ```zig
 pub const Engine = enum { auto, whisper, system };
 pub const Backend = enum { auto, cpu, gpu };
-pub const Model = struct { name: []const u8, file: []const u8, mb: u32, legacy: bool = false };
+pub const Model = struct { name: []const u8, file: []const u8, mb: u32 };
 ```
 
 `Options`:
@@ -404,7 +401,7 @@ wait after stop).
 | `system`, `system_on_device: bool` | A platform recognizer is installed; it runs on the device. |
 | `auto_engine: Engine` | What `.auto` picks now. |
 | `models_dir` | |
-| `models: [9]ModelStatus` | `{ name, file, mb, present, legacy, faster: ?[]const u8 }`. |
+| `models: [3]ModelStatus` | `{ name, file, mb, present, faster: ?[]const u8 }`. |
 | `loaded`, `downloading: ?[]const u8` | |
 | `recording: bool` | Listening (either engine). |
 
@@ -429,7 +426,7 @@ wait after stop).
 | `NotInitialized` | `init` wasn't called (or `deinit` ran). |
 | `EngineUnavailable` | `.system` on a platform without a recognizer, or none installed. |
 | `AlreadyRecording` | A session is running. |
-| `UnknownModel`, `NoModel`, `ModelNotFound`, `CpuUnsupported` | Not in the catalog (or legacy); nothing downloaded; unreadable file; CPU lacks `ggml_arm`'s extensions. |
+| `UnknownModel`, `NoModel`, `ModelNotFound`, `CpuUnsupported` | Not in the catalog; nothing downloaded; unreadable file; CPU lacks `ggml_arm`'s extensions. |
 | `Recording` | `delete`, `compare`, `transcribe*` while listening. |
 | `NothingRecorded` | `compare` with under 0.5 s recorded; empty samples. |
 | `NameTooLong` | `source` over 511 bytes. |
@@ -469,6 +466,15 @@ pub const available: bool;
 | macOS | CoreAudio + AudioQueue | device UIDs; "System audio (all apps)" (macOS 14.2+, process tap: macOS asks once for System Audio Recording); loopback devices as monitors | A denied microphone records silence, so `open` returns `error.MicrophonePermissionDenied`; the first `open` shows the prompt. `microphonePermission()` reports it. |
 | Android | AAudio | `"default"`, `"device:<id>"` | Resampled when the device can't open at the rate. Other apps' audio isn't a source. |
 | iOS | AVAudioSession + AudioQueue | `"default"`, then the session's inputs by port UID | `open` sets the session to play-and-record (mixing, speaker and Bluetooth allowed). `error.MicrophonePermissionDenied`, `microphonePermission()`. |
+
+### Migrating from 0.11
+
+- `dictation.sources(a)` is gone: call `oriel.audio_capture.listSources(a)`.
+- `find(name) !*const Model` and `present(m)` are
+  `findModel(name) ?*const Model` and `modelPresent(m)`, as in `oriel.chat`
+  and `oriel.tts`.
+- The six `legacy` catalog entries (`tiny-q5_1` ... `small-f16`) and
+  `Model.legacy` / `ModelStatus.legacy` are gone: `init` deletes those files.
 
 ## Troubleshooting
 

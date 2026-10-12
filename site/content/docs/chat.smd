@@ -189,8 +189,16 @@ whole UTF-8 characters (invalid bytes are replaced).
 **Cancel.** `cancel()` sets a flag the token loop checks, and llama.cpp's
 abort callback checks it during long prompt evaluations. During the reply,
 `generate` returns what it has with `stop = "cancelled"`; during the prompt,
-it returns `error.Cancelled`. Each `generate` clears the flag when it
-starts, so `cancel()` only stops a reply in progress.
+it returns `error.Cancelled`. The flag is cleared when a reply ends, so a
+`cancel()` while none runs stops the next `generate` to start: a Stop
+pressed before the request reached a worker still counts.
+
+**Locking.** A reply holds its own lock from start to end (replies run one
+at a time; another `generate` waits), apart from the lock on the module's
+state, which it takes only to load the model. So `status`, `download`,
+`delete` and `compare` don't wait for a reply; `status().generating` is
+`true` while one runs, and `delete` of the model answering fails with
+`error.Generating`.
 
 **CPU or GPU.** `.backend = .auto` uses what `compare()` measured for this
 model on this device (saved in `chat-backends.txt` in the models
@@ -291,14 +299,15 @@ the desktop, and a follow-up that reuses the KV cache: `src/main.zig`'s
 |---|---|---|
 | `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where the models live (created when needed); `dir` must outlive the app. Silences llama.cpp's logging and subscribes to `oriel.lifecycle`. |
 | `generate(a, messages: []const Message, opts: Options) !Result` | worker | The reply, streamed as `chat:token` and returned whole (strings allocated with `a`). Loads the model the first time. |
-| `cancel() void` | any | Stop the reply in progress. |
-| `status() Status` | worker | The catalog with what's on the device, the backend, the loaded model. Loads the GPU backend the first time; waits while a reply runs. |
+| `cancel() void` | any | Stop the reply in progress, or the next one to start when none runs. |
+| `status() Status` | worker | The catalog with what's on the device, the backend, the loaded model. Loads the GPU backend the first time. |
 | `download(name) !void` | worker | Fetch a catalog model from Hugging Face, emitting `chat:download`. |
-| `delete(name) !void` | worker (waits for a running reply) | Remove a model (unloading it first) and a half-finished download of it. |
+| `delete(name) !void` | worker | Remove a model (unloading it first) and a half-finished download of it; `error.Generating` while it answers. |
 | `compare(opts: Options) !Comparison` | worker | GPU against CPU on this device (see How it works); remembers the winner. |
-| `find(name) !*const Model` | any | A catalog entry; `error.UnknownModel`. |
-| `present(m: *const Model) bool` | any after `init` | The model's file is complete in the models directory. |
+| `findModel(name) ?*const Model` | any | A catalog entry, or null. |
+| `modelPresent(m: *const Model) bool` | any after `init` | The model's file is complete in the models directory. |
 | `unloadIdle() void` | any (main included) | Free the model now unless a reply is running or the module is busy (returns at once). |
+| `deinit() void` | after commands finished | Free the loaded model. `App.run` calls it; safe twice or without `init`. |
 
 | Variable | Meaning |
 |---|---|
@@ -376,7 +385,7 @@ static):
 | `models_dir: []const u8` | |
 | `models: [device_models.len]ModelStatus` | `{ name, label, mb, present, faster: ?[]const u8 }`, `faster` being `"gpu"`/`"cpu"` once `compare` ran. |
 | `loaded`, `downloading: ?[]const u8` | The model in memory; the model downloading. |
-| `generating: bool` | A reply is running. `status` waits for a running reply (one mutex), so in practice it reads `false`. |
+| `generating: bool` | A reply is running. |
 
 `Comparison`: `{ model, gpu: ?Run, cpu: Run, faster: []const u8 }`, with
 `Run = { tokens_per_s: f32, prompt_ms: u64, tokens: u32 }`; `gpu` is null
@@ -410,6 +419,14 @@ the page (`oriel.chat.Events` has the payload types).
 | `AlreadyDownloading` | `download` | One download at a time. |
 | `Downloading`, `Generating` | `delete` | The model is downloading or answering. |
 | `BadHttpStatus`, `Truncated`, `DownloadTooLarge`, `TooManyHttpRedirects`, `InsecureModelUrl`, ... | `download` | See [Model downloads]($link.page('docs/local-ai').ref('how-it-works')). |
+
+## [Migrating from 0.11]($heading.id('migrating'))
+
+- `find(name) !*const Model` and `present(m)` are
+  `findModel(name) ?*const Model` and `modelPresent(m)`, as in `oriel.tts`
+  and `oriel.dictation`.
+- `cancel()` with no reply running now stops the next `generate` instead of
+  doing nothing.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 
