@@ -18,6 +18,7 @@ const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
 const swift_build = @import("build/swift.zig");
 const macos_build = @import("build/macos.zig");
+const ios_entitlements = @import("build/ios_entitlements.zig");
 const android_manifest = @import("build/android_manifest.zig");
 const espeak_data = @import("build/espeak_data.zig");
 const module_table = @import("src/core/module_table.zig");
@@ -427,7 +428,7 @@ pub fn build(b: *std.Build) void {
 
     // Apple platform hooks: their selectors and declaration rules, and the
     // macOS SDK lookup (pure; the dispatcher itself needs a Mac or iOS).
-    for ([_][]const u8{ "src/platform/apple/hooks_spec.zig", "build/macos.zig" }) |path| {
+    for ([_][]const u8{ "src/platform/apple/hooks_spec.zig", "build/macos.zig", "build/ios_entitlements.zig" }) |path| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = b.graph.host }),
             .use_llvm = true,
@@ -1195,6 +1196,11 @@ pub const AppOptions = struct {
         /// once at launch, in this order (at most 16).
         /// docs/platform-hooks.md
         hooks: []const PlatformHook = &.{},
+        /// The Apple developer team ID (10 characters): the prefix of the
+        /// `application-identifier` entitlement embedded in simulator
+        /// builds (build/ios_entitlements.zig). Without it the identifier
+        /// is `.<bundle id>`, which the simulator accepts.
+        team_id: ?[]const u8 = null,
     };
 
     pub const Macos = struct {
@@ -1627,6 +1633,11 @@ fn validAssetPath(path: []const u8) bool {
         if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
         for (part) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.')) return false;
     }
+    return true;
+}
+
+fn isAlnum(text: []const u8) bool {
+    for (text) |ch| if (!std.ascii.isAlphanumeric(ch)) return false;
     return true;
 }
 
@@ -2551,7 +2562,19 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     const dev_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-dev", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| dev_exe.root_module.addImport(imp.name, imp.module);
 
+    // Simulator builds carry their entitlements in __TEXT sections, as
+    // Xcode's do: daemons such as nsurlsessiond (background URLSessions)
+    // and the keychain identify the app by its application-identifier.
+    const sim_entitlements: ?std.Build.LazyPath = if (ios_build.isSimulator(target.result)) blk: {
+        const bundle_id = if (options.package) |pkg| pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name}) else b.fmt("dev.oriel.{s}", .{options.name});
+        if (options.ios.team_id) |t| if (t.len != 10 or !isAlnum(t)) @panic(b.fmt("AppOptions.ios.team_id \"{s}\": a team ID is 10 letters and digits", .{t}));
+        const app_id = ios_entitlements.applicationIdentifier(b.allocator, options.ios.team_id, bundle_id) catch @panic("OOM");
+        const source = ios_entitlements.cSource(b.allocator, .{ .application_identifier = app_id }) catch @panic("OOM");
+        break :blk b.addWriteFiles().add("oriel_simulator_entitlements.c", source);
+    } else null;
+
     for ([_]*std.Build.Step.Compile{ exe, dev_exe }) |c| {
+        if (sim_entitlements) |src| c.root_module.addCSourceFile(.{ .file = src });
         if (sdk) |root| ios_build.link(c.root_module, root, audio_capture);
         ios_build.configure(b, c);
         ios_build.requireSdk(b, c);
@@ -2608,6 +2631,16 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
                 if (lazyPathIsFile(b, res.path)) _ = with_data.addCopyFile(res.path, dest) else _ = with_data.addCopyDirectory(res.path, dest, .{});
             }
             made[idx].dir = with_data.getDirectory();
+        }
+        // On a Mac, sign the simulator bundle ad hoc as Xcode does: the
+        // signature then names the bundle ID and seals Info.plist and the
+        // resources (the linker's own signature covers the executable only).
+        if (ios_build.isSimulator(target.result) and b.graph.host.result.os.tag == .macos) {
+            const sign = b.addSystemCommand(&.{ "sh", "-c", "cp -R \"$0\"/. \"$1\" && chmod -R u+w \"$1\" && codesign --force --sign - --timestamp=none \"$1/$2\"" });
+            sign.addDirectoryArg(made[idx].dir);
+            const signed = sign.addOutputDirectoryArg("ios-signed");
+            sign.addArg(bundle_dir);
+            made[idx].dir = signed;
         }
     }
     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = made[0].dir, .install_dir = .prefix, .install_subdir = "ios" }).step);

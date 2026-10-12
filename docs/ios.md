@@ -23,6 +23,14 @@ Targets: `aarch64-ios` (devices), `aarch64-ios-simulator` (Apple-silicon
 Macs), `x86_64-ios-simulator` (Intel Macs). The minimum is iOS 15
 (`build/ios.zig`); `-Dtarget=aarch64-ios.17.0` raises it.
 
+Simulator builds embed their entitlements the way Xcode's do
+(`application-identifier`, `get-task-allow`, the keychain group, in the
+executable's `__TEXT,__entitlements` and `__TEXT,__ents_der` sections), and
+on a Mac the `.app` is signed ad hoc as a whole. Background URLSessions and
+the keychain need that on the simulator. The identifier is
+`<team>.<bundle id>` with `.ios = .{ .team_id = "ABCDE12345" }`, else
+`.<bundle id>`.
+
 The SDK comes from `-Dapple_sdk` or `$APPLE_SDK`:
 
 - on a Mac: `$(xcrun --sdk iphoneos --show-sdk-path)` (or `iphonesimulator`);
