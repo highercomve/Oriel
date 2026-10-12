@@ -132,7 +132,13 @@ pub fn build(b: *std.Build) void {
         },
         // iOS: keep dictating when the app goes to the background.
         .ios = .{ .background_audio = true },
-        // Android: dictate anywhere from a Quick Settings tile and a keyboard.
-        .android = .{ .tile = "Dictate anywhere", .input_method = "Oriel dictation" },
+        // Android: dictate anywhere from a Quick Settings tile and a keyboard;
+        // platform hooks in Kotlin (src/platform_hooks.zig on the desktop).
+        .android = .{
+            .tile = "Dictate anywhere",
+            .input_method = "Oriel dictation",
+            .sources = &.{b.path("hooks/android/ShowcaseHooks.kt")},
+            .hooks = &.{"dev.oriel.showcase.ShowcaseHooks"},
+        },
     });
 }

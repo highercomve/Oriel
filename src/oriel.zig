@@ -47,6 +47,12 @@ pub const paths = @import("core/paths.zig");
 /// pressure, sleep/wake, terminating (`lifecycle.subscribe`; the page's
 /// `oriel.lifecycle.on`).
 pub const lifecycle = @import("core/lifecycle.zig");
+/// Platform hooks in Zig: each window and web view Oriel creates, with its
+/// native handle (GtkWindow/WebKitWebView, NSWindow/WKWebView,
+/// HWND/ICoreWebView2), on Linux, macOS and Windows
+/// (`hooks.subscribe(.{ .webview_created = f })`; docs/platform-hooks.md).
+/// `hooks.available` is false on Android and iOS, which hook natively.
+pub const hooks = @import("core/hooks.zig");
 /// The app's own native code (`AppOptions.extensions` in build.zig):
 /// Kotlin, Objective-C/Swift or Zig per platform, called by name
 /// (`extensions.get("name").call(...)`); the page through `expose`.
@@ -273,6 +279,7 @@ test {
     std.testing.refAllDecls(paths);
     std.testing.refAllDecls(paths);
     std.testing.refAllDecls(lifecycle);
+    std.testing.refAllDecls(hooks);
     std.testing.refAllDecls(extensions);
     std.testing.refAllDecls(@import("core/extension_spec.zig"));
     std.testing.refAllDecls(@import("core/pending_events.zig"));

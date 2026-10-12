@@ -15,6 +15,7 @@ const chat = oriel.chat;
 const tts = oriel.tts;
 const notes = @import("notes.zig");
 const anywhere = @import("anywhere.zig");
+const platform_hooks = @import("platform_hooks.zig");
 
 const app_id = "dev.oriel.Showcase";
 const desktop = !oriel.target.is_android and !oriel.target.is_ios;
@@ -560,6 +561,7 @@ pub fn main(init: std.process.Init) !u8 {
     anywhere.init(init.io);
     if (oriel.target.is_android) oriel.android.onSystemEvent(onSystemEvent);
     if (oriel.target.is_ios) unloadModelsInBackground();
+    platform_hooks.install();
 
     // Headless checks (desktop): `--chat "<message>"` answers it and a
     // follow-up (the second turn reuses the KV cache), `--transcribe <wav>`
