@@ -170,7 +170,7 @@ start and after each app update.
 
 **Memory.** `unload_on` (critical memory pressure by default) frees the
 context unless speaking ([Local AI](local-ai.md#how-it-works)).
-`oriel.main` shuts playback down and frees the context after its command pool
+`App.run` shuts playback down and frees the context after its command pool
 drains.
 
 ## Examples
@@ -227,9 +227,12 @@ try writeWav(path, audio.samples, audio.rate); // mono f32 at 24 kHz
 ### Play your own PCM
 
 ```zig
-try oriel.audio_play.start(io, gpa, samples, 24000);
-defer oriel.audio_play.stop(); // before `samples` is freed
-while (!oriel.audio_play.finished()) try io.sleep(.fromMilliseconds(20), .awake);
+const s = try oriel.audio_play.Stream.init(io, gpa, 24000);
+defer s.deinit();
+try s.start();
+try s.append(samples); // copied: `samples` can be freed after this
+s.seal();
+while (!s.finished()) try io.sleep(.fromMilliseconds(20), .awake);
 ```
 
 ## Reference
@@ -266,7 +269,7 @@ doesn't read that folder).
 | `download(id) !void` | worker | A model or voice id. Emits `tts:download`; returns at once when the file is there. The file's SHA-256 is checked before it is renamed into place. |
 | `delete(id) !void` | worker | Remove a model (unloaded first) or voice, and a half-finished download of it. |
 | `unloadIdle() void` | any (main included) | Free the context unless speaking. |
-| `deinit() void` | after commands finished | Stop and free the context. `oriel.main` calls it; safe twice or without `init`. |
+| `deinit() void` | after commands finished | Stop and free the context. `App.run` calls it; safe twice or without `init`. |
 | `prepareText(a, text) ![]u8` | any | `text` with its Markdown removed. |
 | `guessLanguage(text) []const u8` | any | `"en-us"`, `"es"`, `"fr"`, `"it"`, `"pt-br"`, `"ja"`, `"zh"`, `"hi"` or `"ru"` (static). |
 | `defaultThreads() c_int` | any | Up to 8 on desktops; on phones the fast cores, 2 to 4. |
@@ -379,23 +382,9 @@ worker.
 
 ### `oriel.audio_play`
 
-`src/modules/audio_play.zig`: mono float32 playback through miniaudio.
-
-**One-shot**, caller-owned PCM, one utterance at a time:
-
-| Declaration | Meaning |
-|---|---|
-| `start(io, gpa, samples, rate) !void` | Play `samples`; stops and joins the previous device first. An empty buffer just stops. Not from an audio callback. |
-| `stop() void` | Control thread: stop and join the callbacks; safe before the first `start` and after `shutdown`. From a callback it only silences. |
-| `finished() bool` | Safe to poll any time. |
-| `shutdown() void` | `stop`; `oriel.main` calls it after its commands drain. |
-| `on_progress: ?*const fn (fraction: f64) void`, `on_done: ?*const fn () void` | Set before `start`, change only after `stop`; they run on the audio thread. `on_done` reports natural completion, not a stop. |
-
-Stop playback before freeing its samples or the allocator its device uses.
-
-**Streaming**, `Stream`: one device for a whole utterance, fed chunk by chunk
-through a bounded ring (`Stream.buffer_seconds = 30`); independent of the
-one-shot API.
+`src/modules/audio_play.zig`: mono float32 playback through miniaudio,
+as a `Stream`: one device for a whole utterance (or any PCM), fed chunk by
+chunk through a bounded ring (`Stream.buffer_seconds = 30`).
 
 ```zig
 const s = try oriel.audio_play.Stream.init(io, gpa, 24000); // heap-allocated
@@ -459,6 +448,12 @@ miniaudio and ucd-tools have their own notices. Oriel's license stays MIT;
 the dependency texts are in `NOTICE` and `licenses/tts`. Models and voices
 are downloaded by the app at run time, not distributed with Oriel; their
 licenses are upstream's.
+
+### Migrating from 0.11
+
+- `audio_play`'s one-shot API (`start`, `stop`, `finished`, `shutdown`,
+  `on_progress`, `on_done`, `session`) is gone: play PCM through
+  `audio_play.Stream` ([example](#example-play)).
 
 ## Troubleshooting
 
