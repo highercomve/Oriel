@@ -2,7 +2,17 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.11.0] — 2026-10-12
+
+Oriel 0.11.0 brings platform hooks to every platform: an app's own Kotlin,
+Objective-C, Swift or Zig code reacts to, or takes over, the platform's app,
+window and web view events, as Android's hooks already could. It also adds
+Objective-C and Swift app extensions on macOS, Swift sources that link any
+Apple framework they import, an iOS hook for background downloads, and
+simulator builds that carry their entitlements like Xcode's. **Breaking:**
+`.ios.resources` takes `.{ .from, .to }` entries. Validated on Linux,
+Android (Poco X3), macOS 15.2, the iOS 18.4 simulator and CI's Xcode 26;
+the Windows hooks compile but haven't run on Windows yet.
 
 ### Added
 
