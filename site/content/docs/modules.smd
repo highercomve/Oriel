@@ -11,7 +11,7 @@
 | Module | Flag | Default | Linux | Windows | macOS | Android | iOS |
 |---|---|---|---|---|---|---|---|
 | Tray | `tray` | on | ✓ | ✓ | ✓ | — | — |
-| Updater | `updater` | on | ✓ | ✓ | ✓ | —¹ | —¹ |
+| Updater | `updater` | on | ✓ | ✓ | ✓ | check¹ | —¹ |
 | Media server | `media_server` | on | ✓ | ✓ | ✓ | — | — |
 | SQL | `sql` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 | File watching | `fs_watch` | on | ✓ | ✓ | ✓ | ✓ | — |
@@ -33,7 +33,7 @@
 | Network / mDNS | `network` | on | ✓ | ✓⁷ | ✓ | ✓ | ✓ |
 | Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-1. Updates come from Google Play and the App Store.
+1. Updates come from Google Play and the App Store. On Android the updater is off by default; on, it checks for a release, and installing one fails with `error.Unsupported`.
 2. Android's Storage Access Framework; iOS's document picker.
 3. Shortcuts inside the app, listed by the system's Meta+/ helper.
 4. The Oriel keyboard (an input method) types into other apps instead.
@@ -41,7 +41,21 @@
 6. Also needs `llama` or `whisper`, which provide the shared ggml tree.
 7. Windows 10 1809 or later.
 
-On Android and iOS, a module marked — is off by default and a build error when turned on: the platform has no such thing (a tray, system-wide hotkeys) or forbids it. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
+# [Availability]($heading.id('availability'))
+
+The flags say what the app uses, once, for every target. Where a module is marked —, the platform has no such thing (a tray, system-wide hotkeys) or forbids it: there `.tray = true` resolves to off, and `oriel.tray.available` is `false`. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
+
+```zig
+if (oriel.tray.available) {
+    tray = try oriel.tray.Tray.create(gpa, .{ ... });
+}
+```
+
+- Code under the guard is never analyzed: it costs nothing where the module is missing, and needs no stub.
+- A call outside the guard is a build error that names the module and the guard (`oriel.tray.Tray is not available on ios: guard the call with if (oriel.tray.available)`), and the same for a module the app left off.
+- Runtime state, like a desktop without a tray host, stays the module's `status()` or an error from the call.
+- The page gets the table as `window.oriel.features` (`{ tray: false, fsWatch: true, ... }`, typed as `Features` in `oriel.ts`).
+- On Oriel's own command line, `-Dtray=true` for a target without a tray is still a build error: someone asked for something impossible.
 
 All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `kokoro`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
 
