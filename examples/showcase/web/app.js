@@ -166,6 +166,17 @@ async function echo() {
 }
 $("echo-form").addEventListener("submit", (e) => { e.preventDefault(); echo(); });
 
+// The app extension "showcase.echo" (build.zig): the page reaches it only
+// through what Zig exposes (oriel.extensions.expose in src/main.zig).
+async function reverseWithExtension() {
+  try {
+    const r = await window.oriel.extensions.call("showcase.echo", "reverse", { text: $("ext-input").value });
+    setResult("ext-out", `✓ ${r.text} (${r.platform}, ${r.device})`, "ok");
+  } catch (e) { setResult("ext-out", "Error: " + (e.message || e), "err"); }
+}
+$("ext-form").addEventListener("submit", (e) => { e.preventDefault(); reverseWithExtension(); });
+window.oriel.extensions?.on("showcase.echo", (e) => setResult("ext-event", `event "${e.name}": ${e.data && e.data.text}`));
+
 const dots = [...document.querySelectorAll(".ticks i")];
 listen("tick", (n) => {
   dots.forEach((d, i) => d.classList.toggle("on", i < n));

@@ -983,6 +983,22 @@ object OrielRuntime {
     @JvmStatic
     fun mdnsStopBrowse(id: Int) = OrielMdns.stopBrowse(id)
 
+    // App extensions (src/platform/android/extensions.zig). Unlike the rest
+    // of this object, extensionLoad and extensionCall run on the
+    // extension's worker thread.
+    // ---------------------------------------------------------------------
+
+    @JvmStatic
+    fun extensionLoad(name: ByteArray): Boolean = OrielExtensions.load(name.utf8())
+
+    @JvmStatic
+    fun extensionCall(name: ByteArray, method: ByteArray, input: ByteArray, id: Long): ByteArray =
+        OrielExtensions.call(name.utf8(), method.utf8(), input, id)
+
+    @JvmStatic
+    fun extensionLifecycle(name: ByteArray, event: ByteArray, level: ByteArray?) =
+        OrielExtensions.lifecycle(name.utf8(), event.utf8(), level?.utf8())
+
     // Keyboard shortcuts (src/plugins/global_shortcut/android.zig)
     // ---------------------------------------------------------------------
 

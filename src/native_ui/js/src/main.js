@@ -982,7 +982,7 @@ g.oriel = Object.freeze({
     if (event === "notification:action") invoke("notification:ready", {}).catch(() => {});
     // Shares that came before the page listened (one that launched the app);
     // lifecycle events (oriel.lifecycle) from before it loaded.
-    if (event === "share:received" || event === "lifecycle") invoke("events:ready", { event }).catch(() => {});
+    if (event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {});
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
@@ -1015,6 +1015,12 @@ g.oriel = Object.freeze({
   // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
   // "resume" | "terminating", level: "moderate" | "critical" | null }.
   lifecycle: Object.freeze({ on(callback) { return g.oriel.listen("lifecycle", callback); } }),
+  // The app's extensions, as far as Zig exposes them (oriel.extensions.expose):
+  // JSON in, JSON out; native events come as `extension:<name>`.
+  extensions: Object.freeze({
+    call(name, method, payload) { return invoke("extensions:call", { name, method, payload: payload === undefined ? null : payload }); },
+    on(name, callback) { return g.oriel.listen("extension:" + name, callback); },
+  }),
   deepLink: Object.freeze({ current() { return invoke("deep_link:current", {}); } }),
   share: Object.freeze({
     // A received file (from share:received's files, or its handle) as a File.

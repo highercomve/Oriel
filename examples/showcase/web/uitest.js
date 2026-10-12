@@ -9,6 +9,8 @@
 //                 tokens stream in, Stop, a follow-up (KV cache reuse), Compare.
 //   dictate-<lang> the Dictate tab with the System engine in <lang> (en, es),
 //                 on test.wav in the models directory (no microphone in CI).
+//   extension     the App tab's app extension: the page's call, its event,
+//                 an unexposed method refused, the call from Zig.
 //   tour          every tab (a screenshot each), IPC echo, events from a
 //                 worker, a note, and a second window opened and closed:
 //                 the native renderer's run (docs/native-renderer.md). The
@@ -233,9 +235,29 @@
     await shot("tour-speak-done");
   }
 
+  // The app extension: the page's exposed call, its event, and the same
+  // extension from a Zig command.
+  async function extension() {
+    location.hash = "#app";
+    $("ext-input").value = "abc👋";
+    $("ext-form").requestSubmit();
+    await until(() => $("ext-out").textContent.startsWith("✓") || $("ext-out").textContent.startsWith("Error"), 15000, "the extension's reply");
+    check($("ext-out").textContent.startsWith("✓ 👋cba"), $("ext-out").textContent);
+    await until(() => $("ext-event").textContent.includes("reversed"), 5000, "the extension's event");
+    await log(`extension: ${$("ext-out").textContent} | ${$("ext-event").textContent}`);
+    const fromZig = JSON.parse(await invoke("echo_extension", { text: "zig" }));
+    check(fromZig.text === "giz", `from Zig: ${JSON.stringify(fromZig)}`);
+    await log(`extension from Zig: ${JSON.stringify(fromZig)}`);
+    let refused = "";
+    try { await window.oriel.extensions.call("showcase.echo", "nope", {}); } catch (e) { refused = String(e.message || e); }
+    check(/not exposed/.test(refused), `an unexposed method: ${refused}`);
+    await log(`unexposed: ${refused}`);
+  }
+
   try {
     await log(`start ${name}`);
     if (name === "chat") await chat();
+    else if (name === "extension") await extension();
     else if (name === "tour") await tour();
     else if (name.startsWith("dictate-")) await dictate(name.slice("dictate-".length));
     else throw new Error(`unknown test ${name}`);

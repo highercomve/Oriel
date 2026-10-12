@@ -16,9 +16,11 @@ const Scanner = @import("wayland").Scanner;
 const ggml = @import("build/ggml.zig");
 const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
+const swift_build = @import("build/swift.zig");
 const android_manifest = @import("build/android_manifest.zig");
 const espeak_data = @import("build/espeak_data.zig");
 const module_table = @import("src/core/module_table.zig");
+const extension_spec = @import("src/core/extension_spec.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -404,6 +406,14 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(android_manifest_tests).step);
 
+    // The swiftc command line of iOS extensions' Swift sources.
+    const swift_tests = b.addTest(.{
+        .root_module = b.createModule(.{ .root_source_file = b.path("build/swift.zig"), .target = b.graph.host }),
+        .use_llvm = true,
+        .use_lld = useLld(b.graph.host),
+    });
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(swift_tests).step);
+
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
@@ -684,6 +694,11 @@ fn addOrielModule(
         module_shims.addFileArg(b.path(n.path));
     }
     oriel.addImport("module_shims", b.createModule(.{ .root_source_file = module_shims_zig }));
+    // The app's extensions (`oriel.extensions`): none until addApp sets
+    // the table it generates from AppOptions.extensions.
+    oriel.addImport("oriel_extensions", b.createModule(.{
+        .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", "//! No app extensions (Oriel's own build).\npub const list = .{};\n"),
+    }));
 
     // gtk4-layer-shell (-Dlayer_shell) isn't linked: it's loaded at runtime
     // when installed (src/platform/linux/overlay.zig, preloadLayerShell), so
@@ -1012,6 +1027,71 @@ pub const AppOptions = struct {
     /// turns on the share module. Each platform's declaration (Android intent
     /// filters, document types, ...) comes with its receive support.
     share_target: ?ShareTarget = null,
+    /// The app's own native code, by name, with an implementation per
+    /// platform (or none): Kotlin on Android, Objective-C or Swift on iOS,
+    /// Zig on the desktop. Zig calls it with `oriel.extensions.get(name)`;
+    /// the page only through Zig (`oriel.extensions.expose`).
+    /// docs/extensions.md
+    extensions: []const Extension = &.{},
+
+    pub const Extension = struct {
+        /// Lowercase dotted words ("pantry.vision"), unique, up to 64
+        /// characters; what Zig, Kotlin and the page call it.
+        name: []const u8,
+        android: ?AndroidExtension = null,
+        ios: ?IosExtension = null,
+        /// Any desktop OS, unless `linux`, `macos` or `windows` overrides it.
+        desktop: ?DesktopExtension = null,
+        linux: ?DesktopExtension = null,
+        macos: ?DesktopExtension = null,
+        windows: ?DesktopExtension = null,
+        /// The cap on a call's input and on its reply (at most 256 MiB).
+        max_bytes: usize = extension_spec.default_max_bytes,
+        /// Calls running at once on the extension's workers (1..8).
+        concurrency: u8 = 1,
+    };
+
+    pub const AndroidExtension = struct {
+        /// The class implementing dev.oriel.OrielAppExtension, with a public
+        /// zero-argument constructor ("dev.app.VisionExtension"); kept by R8.
+        class: []const u8,
+        /// Its Kotlin/Java files (as `android.sources`).
+        sources: []const std.Build.LazyPath = &.{},
+        /// Maven coordinates, merged with `android.dependencies`.
+        dependencies: []const []const u8 = &.{},
+        /// Files or directories shipped as APK assets under `to`.
+        assets: []const Asset = &.{},
+    };
+
+    pub const IosExtension = struct {
+        /// The Objective-C class (or `@objc(Name)` Swift class) conforming
+        /// to OrielAppExtension (src/platform/ios/include/oriel_extension.h).
+        class: []const u8,
+        /// Objective-C files, compiled with `-fobjc-arc`; they can
+        /// `#import "oriel_extension.h"`.
+        sources: []const std.Build.LazyPath = &.{},
+        /// Swift files, compiled by `swiftc` into one object (docs/extensions.md:
+        /// Xcode on a Mac, or the Swift toolchain with xtool's SDK on Linux).
+        swift_sources: []const std.Build.LazyPath = &.{},
+        /// SDK frameworks to link ("Vision", "CoreML").
+        frameworks: []const []const u8 = &.{},
+        /// Files or directories copied to the bundle's root.
+        resources: []const std.Build.LazyPath = &.{},
+    };
+
+    pub const DesktopExtension = struct {
+        /// A Zig file: `pub fn call(ctx: *oriel.extensions.Context, method:
+        /// []const u8, input: []const u8) ![]u8`, optional `pub fn
+        /// onLoad(ctx) !void` and `pub fn onLifecycle(event) void`. It can
+        /// import "oriel" and the app's `imports`.
+        zig: std.Build.LazyPath,
+    };
+
+    /// A file or directory (`from`) placed at `to` (relative, no "..").
+    pub const Asset = struct {
+        from: std.Build.LazyPath,
+        to: []const u8,
+    };
 
     pub const ShareTarget = struct {
         /// MIME types; `text/plain` also means text and URL shares.
@@ -1179,6 +1259,8 @@ const OrielBuild = struct {
     options: *std.Build.Step.Options,
     module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
+    /// The first app's extension names (`setExtensionTable`).
+    extension_names: ?[]const u8 = null,
 };
 var oriel_builds: std.ArrayList(OrielBuild) = .empty;
 
@@ -1332,8 +1414,130 @@ fn checkPlatformExtras(b: *std.Build, options: AppOptions) void {
     }
 }
 
+/// Panics on an `AppOptions.extensions` entry no platform could build, for
+/// any target (like `checkPlatformExtras`).
+fn checkExtensions(b: *std.Build, options: AppOptions) void {
+    const exts = options.extensions;
+    if (exts.len > extension_spec.max_extensions) @panic("AppOptions.extensions: at most 64 extensions");
+    for (exts, 0..) |e, i| {
+        if (!extension_spec.validName(e.name)) @panic(b.fmt("AppOptions.extensions: invalid name \"{s}\" (lowercase dotted words, [a-z][a-z0-9_]* joined by dots, up to 64 characters)", .{e.name}));
+        for (exts[0..i]) |prev| if (std.mem.eql(u8, prev.name, e.name)) @panic(b.fmt("AppOptions.extensions: \"{s}\" is declared twice", .{e.name}));
+        if (e.max_bytes == 0 or e.max_bytes > extension_spec.max_bytes_limit) @panic(b.fmt("AppOptions.extensions: {s}: max_bytes must be 1..{d}", .{ e.name, extension_spec.max_bytes_limit }));
+        if (e.concurrency == 0 or e.concurrency > extension_spec.max_concurrency) @panic(b.fmt("AppOptions.extensions: {s}: concurrency must be 1..{d}", .{ e.name, extension_spec.max_concurrency }));
+        if (e.android) |a| {
+            if (!extension_spec.validJavaClass(a.class)) @panic(b.fmt("AppOptions.extensions: {s}: invalid Android class \"{s}\" (fully qualified, e.g. dev.app.VisionExtension)", .{ e.name, a.class }));
+            if (a.dependencies.len > 64) @panic(b.fmt("AppOptions.extensions: {s}: at most 64 Android dependencies", .{e.name}));
+            for (a.dependencies) |d| if (!android_manifest.mavenCoordinateValid(d)) @panic(b.fmt("AppOptions.extensions: {s}: invalid Maven coordinate \"{s}\"", .{ e.name, d }));
+            for (a.assets) |asset| if (!validAssetPath(asset.to)) @panic(b.fmt("AppOptions.extensions: {s}: invalid asset path \"{s}\" (relative, no \"..\")", .{ e.name, asset.to }));
+        }
+        if (e.ios) |x| {
+            if (!extension_spec.validObjcClass(x.class)) @panic(b.fmt("AppOptions.extensions: {s}: invalid iOS class \"{s}\" (an Objective-C class name)", .{ e.name, x.class }));
+            for (x.frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
+        }
+    }
+}
+
+fn validAssetPath(path: []const u8) bool {
+    if (path.len == 0 or path.len > 256 or path[0] == '/') return false;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+        for (part) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.')) return false;
+    }
+    return true;
+}
+
+fn validFrameworkName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 64) return false;
+    for (name) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+    return true;
+}
+
+test validAssetPath {
+    try std.testing.expect(validAssetPath("detectors"));
+    try std.testing.expect(validAssetPath("models/yoloe.onnx"));
+    try std.testing.expect(!validAssetPath("../x"));
+    try std.testing.expect(!validAssetPath("/abs"));
+    try std.testing.expect(!validAssetPath("a//b"));
+    try std.testing.expect(!validAssetPath(""));
+}
+
+const ExtensionBackend = union(enum) { none, zig: std.Build.LazyPath, android, objc };
+
+/// Which implementation of `e` a build for `platform` has.
+fn extensionBackend(e: AppOptions.Extension, platform: module_table.Platform) ExtensionBackend {
+    const desktop: ?AppOptions.DesktopExtension = switch (platform) {
+        .linux => e.linux orelse e.desktop,
+        .macos => e.macos orelse e.desktop,
+        .windows => e.windows orelse e.desktop,
+        else => null,
+    };
+    if (desktop) |d| return .{ .zig = d.zig };
+    return switch (platform) {
+        .android => if (e.android != null) .android else .none,
+        .ios => if (e.ios != null) .objc else .none,
+        else => .none,
+    };
+}
+
+/// The `oriel_extensions` table of the app's `oriel` module (src/core/
+/// extensions.zig): every declared name (so `get` checks it at build time)
+/// with this target's backend, and an import per desktop Zig module.
+/// Apps built with one Oriel dependency share its module, so they must
+/// declare the same extensions.
+fn setExtensionTable(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) void {
+    const ob = orielBuild(oriel_dep);
+    var names: std.ArrayList(u8) = .empty;
+    for (options.extensions) |e| names.print(b.allocator, "{s};", .{e.name}) catch @panic("OOM");
+    if (ob.extension_names) |prev| {
+        if (!std.mem.eql(u8, prev, names.items)) @panic(b.fmt("{s}: apps sharing one oriel dependency must declare the same AppOptions.extensions", .{options.name}));
+        return;
+    }
+    ob.extension_names = names.items;
+    if (options.extensions.len == 0) return;
+
+    const platform = module_table.platformOf(&ob.target.result);
+    var text: std.ArrayList(u8) = .empty;
+    text.appendSlice(b.allocator, b.fmt("//! Generated by addApp from AppOptions.extensions ({s}: {s}).\npub const list = .{{\n", .{ options.name, @tagName(platform) })) catch @panic("OOM");
+    const Zig = struct { name: []const u8, path: std.Build.LazyPath };
+    var zig_modules: std.ArrayList(Zig) = .empty;
+    for (options.extensions, 0..) |e, i| {
+        const backend = extensionBackend(e, platform);
+        const class: []const u8 = switch (backend) {
+            .android => e.android.?.class,
+            .objc => e.ios.?.class,
+            else => "",
+        };
+        var impl: []const u8 = "void";
+        if (backend == .zig) {
+            const import_name = b.fmt("oriel_extension_{d}", .{i});
+            zig_modules.append(b.allocator, .{ .name = import_name, .path = backend.zig }) catch @panic("OOM");
+            impl = b.fmt("@import(\"{s}\")", .{import_name});
+        }
+        // Names and classes were validated: no quotes or backslashes.
+        text.appendSlice(b.allocator, b.fmt("    .{{ .name = \"{s}\", .max_bytes = {d}, .concurrency = {d}, .backend = .{s}, .class = \"{s}\", .impl = {s} }},\n", .{
+            e.name, e.max_bytes, e.concurrency, @tagName(backend), class, impl,
+        })) catch @panic("OOM");
+    }
+    text.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    const table = b.createModule(.{ .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", text.items) });
+    for (zig_modules.items) |z| {
+        const m = b.createModule(.{
+            .root_source_file = z.path,
+            .target = ob.target,
+            .optimize = ob.module.optimize,
+            .imports = options.imports,
+        });
+        m.addImport("oriel", ob.module);
+        table.addImport(z.name, m);
+    }
+    ob.module.addImport("oriel_extensions", table);
+}
+
 pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
     checkPlatformExtras(b, options);
+    checkExtensions(b, options);
+    setExtensionTable(b, oriel_dep, options);
     if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, options);
     if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, options);
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
@@ -1586,6 +1790,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
+    installExtensionAssets(b, options);
 
     // -Dkokoro: espeak-ng's compiled data as APK assets
     // (zig-out/android-assets/espeak-ng-data, the Gradle project's assets
@@ -1732,7 +1937,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     write_project.addArgs(&.{ "--out", project_dir, "--icons" });
     write_project.addDirectoryArg(icons_dir);
     for (android_vars) |v| write_project.addArgs(&.{ "--var", v });
-    addAndroidAppFiles(write_project, options.android);
+    addAndroidAppFiles(write_project, options);
     if (force) write_project.addArg("--force");
     write_project.has_side_effects = true;
     @import("build/package.zig").getOrCreateStep(b, "android-project", "Write the Android (Gradle) project into android/ (-Dandroid_force rewrites edited files)").dependOn(&write_project.step);
@@ -1741,7 +1946,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     sync_runtime.addDirectoryArg(oriel_dep.path("android/template"));
     sync_runtime.addArgs(&.{ "--out", project_dir });
     for (android_vars) |v| sync_runtime.addArgs(&.{ "--var", v });
-    addAndroidAppFiles(sync_runtime, options.android);
+    addAndroidAppFiles(sync_runtime, options);
     sync_runtime.has_side_effects = true;
     b.getInstallStep().dependOn(&sync_runtime.step);
 
@@ -1756,17 +1961,55 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     return .{ .exe = lib, .dev_exe = dev_lib };
 }
 
-/// `--source`/`--proguard` arguments for `android-project`: the app's own
-/// Kotlin/Java files and R8 rules (`AppOptions.android`).
-fn addAndroidAppFiles(run: *std.Build.Step.Run, android: AppOptions.Android) void {
-    for (android.sources) |src| {
+/// `--source`/`--proguard`/`--keep-class` arguments for `android-project`:
+/// the app's own Kotlin/Java files and R8 rules (`AppOptions.android`), and
+/// its extensions' sources and classes (constructed by name in the
+/// generated registry, so R8 must keep them).
+fn addAndroidAppFiles(run: *std.Build.Step.Run, options: AppOptions) void {
+    for (options.android.sources) |src| {
         run.addArg("--source");
         run.addFileArg(src);
     }
-    if (android.proguard_rules) |rules| {
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.sources) |src| {
+            run.addArg("--source");
+            run.addFileArg(src);
+        }
+        run.addArgs(&.{ "--keep-class", a.class });
+    }
+    if (options.android.proguard_rules) |rules| {
         run.addArg("--proguard");
         run.addFileArg(rules);
     }
+}
+
+/// App extensions' `.android.assets` under the APK's assets
+/// (zig-out/android-assets/<to>). A `from` in the source tree that is a
+/// file is installed as one; anything else as a directory.
+fn installExtensionAssets(b: *std.Build, options: AppOptions) void {
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.assets) |asset| {
+            if (lazyPathIsFile(b, asset.from)) {
+                b.getInstallStep().dependOn(&b.addInstallFileWithDir(asset.from, .{ .custom = android_assets_dir }, asset.to).step);
+            } else {
+                b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = asset.from, .install_dir = .{ .custom = android_assets_dir }, .install_subdir = asset.to }).step);
+            }
+        }
+    }
+}
+
+/// Whether `path` is a regular file now: only paths in the source tree can
+/// be looked at while configuring (generated ones count as directories).
+fn lazyPathIsFile(b: *std.Build, path: std.Build.LazyPath) bool {
+    const p = switch (path) {
+        .src_path => |s| s.owner.pathFromRoot(s.sub_path),
+        .cwd_relative => |c| c,
+        else => return false,
+    };
+    const stat = std.Io.Dir.cwd().statFile(b.graph.io, p, .{}) catch return false;
+    return stat.kind == .file;
 }
 
 fn xmlEscape(b: *std.Build, text: []const u8) []const u8 {
@@ -1942,9 +2185,21 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
             @panic(b.fmt("android.dependencies: invalid Maven coordinate '{s}'", .{coordinate}));
         dependencies.appendSlice(b.allocator, b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate})) catch @panic("OOM");
     }
+    // App extensions' dependencies join the app's (each once); their
+    // classes go into the generated registry (OrielExtensions.kt).
+    var app_extensions: std.ArrayList(u8) = .empty;
+    for (options.extensions) |e| {
+        const a = e.android orelse continue;
+        for (a.dependencies) |coordinate| {
+            const line = b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate});
+            if (std.mem.indexOf(u8, dependencies.items, line) == null) dependencies.appendSlice(b.allocator, line) catch @panic("OOM");
+        }
+        app_extensions.appendSlice(b.allocator, b.fmt("        \"{s}\" -> {s}()\n", .{ e.name, a.class })) catch @panic("OOM");
+    }
 
     return b.allocator.dupe([]const u8, &.{
         b.fmt("android_extensions={s}", .{extensions.items}),
+        b.fmt("app_extensions={s}", .{app_extensions.items}),
         b.fmt("android_dependencies={s}", .{dependencies.items}),
         b.fmt("app_id={s}", .{app_id}),
         b.fmt("name={s}", .{name}),
@@ -2047,6 +2302,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         if (sdk) |root| ios_build.link(c.root_module, root, audio_capture);
         ios_build.configure(b, c);
         ios_build.requireSdk(b, c);
+        addIosExtensions(b, oriel_dep, options, c, sdk);
     }
 
     const pkg = options.package orelse PackageOptions{};
@@ -2087,10 +2343,17 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         made[idx] = .{ .step = run, .dir = out };
         // -Dkokoro: espeak-ng's compiled data at the bundle's root, its
         // resource directory (<Name>.app/espeak-ng-data; oriel.tts finds it).
-        if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+        // App extensions' `.ios.resources` go there too.
+        const espeak = espeak_data.fromDependency(b, oriel_dep.builder);
+        const resources = iosExtensionResources(b, options);
+        if (espeak != null or resources.len > 0) {
             const with_data = b.addWriteFiles();
             _ = with_data.addCopyDirectory(out.path(b, bundle_dir), bundle_dir, .{});
-            _ = with_data.addCopyDirectory(data.dir, b.fmt("{s}/{s}", .{ bundle_dir, espeak_data.name }), .{});
+            if (espeak) |data| _ = with_data.addCopyDirectory(data.dir, b.fmt("{s}/{s}", .{ bundle_dir, espeak_data.name }), .{});
+            for (resources) |res| {
+                const dest = b.fmt("{s}/{s}", .{ bundle_dir, res.name });
+                if (lazyPathIsFile(b, res.path)) _ = with_data.addCopyFile(res.path, dest) else _ = with_data.addCopyDirectory(res.path, dest, .{});
+            }
             made[idx].dir = with_data.getDirectory();
         }
     }
@@ -2120,6 +2383,61 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
     }
     return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+/// App extensions' iOS parts for one of the app's executables (not the
+/// type-check, which builds without an SDK): Objective-C sources with ARC
+/// and oriel_extension.h on the include path, frameworks, and each
+/// extension's Swift sources as one object (build/swift.zig).
+fn addIosExtensions(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions, compile: *std.Build.Step.Compile, sdk: ?[]const u8) void {
+    const include = oriel_dep.path("src/platform/ios/include");
+    var swift = false;
+    for (options.extensions) |e| {
+        const x = e.ios orelse continue;
+        if (x.sources.len > 0 or x.swift_sources.len > 0) compile.root_module.addIncludePath(include);
+        for (x.sources) |src| compile.root_module.addCSourceFile(.{ .file = src, .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" } });
+        for (x.frameworks) |f| compile.root_module.linkFramework(f, .{});
+        if (x.swift_sources.len == 0) continue;
+        const root = sdk orelse {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need the iOS SDK and its Swift modules: on Linux, `oriel ios setup` with Xcode.xip " ++
+                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{e.name})).step);
+            continue;
+        };
+        const swiftc = swift_build.findSwiftc(b) orelse {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{e.name})).step);
+            continue;
+        };
+        if (b.graph.host.result.os.tag != .macos and swift_build.resourceDir(b, root, compile.rootModuleTarget()) == null) {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{e.name})).step);
+            continue;
+        }
+        const module_name = b.dupe(b.fmt("OrielExtension_{s}", .{e.name}));
+        std.mem.replaceScalar(u8, module_name, '.', '_');
+        const obj = swift_build.compile(b, swiftc, x.swift_sources, module_name, compile.rootModuleTarget(), root, include.path(b, "oriel_extension.h"), compile.root_module.optimize orelse .Debug);
+        compile.root_module.addObjectFile(obj);
+        swift = true;
+    }
+    if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
+}
+
+const IosResource = struct { path: std.Build.LazyPath, name: []const u8 };
+
+/// Every extension's `.ios.resources`, named by their base names (source
+/// paths only: the bundle needs the name while configuring).
+fn iosExtensionResources(b: *std.Build, options: AppOptions) []const IosResource {
+    var out: std.ArrayList(IosResource) = .empty;
+    for (options.extensions) |e| {
+        const x = e.ios orelse continue;
+        for (x.resources) |res| {
+            const p = switch (res) {
+                .src_path => |s| s.sub_path,
+                .cwd_relative => |c| c,
+                else => @panic(b.fmt("AppOptions.extensions: {s}: .ios.resources must be paths in the source tree (b.path)", .{e.name})),
+            };
+            out.append(b.allocator, .{ .path = res, .name = std.fs.path.basename(p) }) catch @panic("OOM");
+        }
+    }
+    return out.items;
 }
 
 fn addAndroidLib(

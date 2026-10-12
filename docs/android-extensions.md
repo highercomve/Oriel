@@ -14,6 +14,13 @@ constructs the classes listed in `.android.extensions` and dispatches their
 callbacks. Configure registration in `build.zig`; edits to the generated
 `OrielAppExtensions.kt` are overwritten on the next Android build.
 
+To call your own native code from Zig (and, through Zig, from the page) on
+every platform, use [app extensions](extensions.md) (`AppOptions.extensions`,
+`OrielAppExtension`): Oriel handles the JNI transport, threads,
+cancellation and keep rules, with Objective-C/Swift and Zig counterparts on
+iOS and the desktop. Keep `OrielAndroidExtension` for Activity and WebView
+hooks; one class may implement both interfaces.
+
 ## Register an extension
 
 Keep the implementation outside the generated `android/app/src/main/java/`

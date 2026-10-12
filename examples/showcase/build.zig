@@ -73,7 +73,35 @@ pub fn build(b: *std.Build) void {
             if (target.result.abi.isAndroid() and target.result.cpu.arch == .aarch64) ArmLevel.dotprod else .baseline,
     });
 
+    // App extensions: the same "showcase.echo" in Zig (desktop), Kotlin
+    // (Android) and Objective-C (iOS); the page calls it through
+    // oriel.extensions.expose (src/main.zig). -Dswift_example adds
+    // "showcase.swift", in Swift on iOS only (it needs swiftc: docs/extensions.md).
+    const echo: oriel.AppOptions.Extension = .{
+        .name = "showcase.echo",
+        .desktop = .{ .zig = b.path("src/echo_desktop.zig") },
+        .android = .{
+            .class = "dev.oriel.showcase.EchoExtension",
+            .sources = &.{b.path("extensions/android/EchoExtension.kt")},
+        },
+        .ios = .{
+            .class = "ShowcaseEchoExtension",
+            .sources = &.{b.path("extensions/ios/EchoExtension.m")},
+            .frameworks = &.{"UIKit"},
+        },
+        .max_bytes = 1 << 20,
+    };
+    const swift_echo: oriel.AppOptions.Extension = .{
+        .name = "showcase.swift",
+        .ios = .{
+            .class = "ShowcaseSwiftExtension",
+            .swift_sources = &.{b.path("extensions/ios/SwiftExtension.swift")},
+        },
+    };
+    const swift_example = b.option(bool, "swift_example", "iOS: add the Swift extension \"showcase.swift\" (needs swiftc)") orelse false;
+
     _ = oriel.addApp(b, dep, .{
+        .extensions = if (swift_example) &.{ echo, swift_echo } else &.{echo},
         .name = "oriel-showcase",
         .root_source_file = b.path("src/main.zig"),
         .frontend = .{
