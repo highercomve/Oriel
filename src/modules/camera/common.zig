@@ -235,6 +235,117 @@ fn jpegSize(bytes: []const u8) ?Size {
     return null;
 }
 
+/// EXIF orientation (TIFF tag 0x0112): how the stored pixels turn to
+/// display upright. 1 is as stored; 5 to 8 swap width and height.
+pub const Orientation = enum(u4) {
+    normal = 1,
+    flip_horizontal = 2,
+    rotate_180 = 3,
+    flip_vertical = 4,
+    transpose = 5,
+    rotate_90 = 6,
+    transverse = 7,
+    rotate_270 = 8,
+
+    /// Whether the upright image is `height` x `width`.
+    pub fn swapsSides(o: Orientation) bool {
+        return @intFromEnum(o) >= 5;
+    }
+};
+
+/// The longest marker walk and IFD0 read: real files have a handful of
+/// segments before the frame and a few dozen IFD0 entries.
+const max_jpeg_segments = 64;
+const max_ifd_entries = 512;
+
+/// A JPEG's EXIF orientation (the APP1 "Exif" segment's IFD0), `.normal`
+/// when there is none or it's malformed. Bounded: at most
+/// `max_jpeg_segments` markers before the first scan and
+/// `max_ifd_entries` IFD0 entries, every offset checked against the
+/// segment.
+pub fn jpegOrientation(bytes: []const u8) Orientation {
+    if (bytes.len < 4 or bytes[0] != 0xFF or bytes[1] != 0xD8) return .normal;
+    var i: usize = 2;
+    var segments: usize = 0;
+    while (segments < max_jpeg_segments and i + 4 <= bytes.len) : (segments += 1) {
+        if (bytes[i] != 0xFF) return .normal;
+        const marker = bytes[i + 1];
+        if (marker == 0xFF) { // fill byte
+            i += 1;
+            continue;
+        }
+        if (marker == 0x01 or (marker >= 0xD0 and marker <= 0xD9)) {
+            i += 2;
+            continue;
+        }
+        // The scan's data follows: no EXIF after it.
+        if (marker == 0xDA) return .normal;
+        const len = std.mem.readInt(u16, bytes[i + 2 ..][0..2], .big);
+        if (len < 2 or i + 2 + @as(usize, len) > bytes.len) return .normal;
+        const body = bytes[i + 4 .. i + 2 + @as(usize, len)];
+        if (marker == 0xE1 and body.len >= 6 and std.mem.eql(u8, body[0..6], "Exif\x00\x00"))
+            return exifOrientation(body[6..]) orelse .normal;
+        i += 2 + @as(usize, len);
+    }
+    return .normal;
+}
+
+/// The orientation in a TIFF structure (EXIF's payload): IFD0's tag 0x0112,
+/// a SHORT; null when absent or malformed.
+fn exifOrientation(tiff: []const u8) ?Orientation {
+    if (tiff.len < 8) return null;
+    const endian: std.builtin.Endian = if (std.mem.eql(u8, tiff[0..2], "II")) .little else if (std.mem.eql(u8, tiff[0..2], "MM")) .big else return null;
+    if (std.mem.readInt(u16, tiff[2..4], endian) != 42) return null;
+    const ifd = std.mem.readInt(u32, tiff[4..8], endian);
+    if (ifd < 8 or @as(u64, ifd) + 2 > tiff.len) return null;
+    const count = std.mem.readInt(u16, tiff[ifd..][0..2], endian);
+    const n = @min(count, max_ifd_entries);
+    var e: usize = 0;
+    while (e < n) : (e += 1) {
+        const at = @as(usize, ifd) + 2 + e * 12;
+        if (at + 12 > tiff.len) return null;
+        const entry = tiff[at..][0..12];
+        if (std.mem.readInt(u16, entry[0..2], endian) != 0x0112) continue;
+        // SHORT (3), one value, stored in the entry's first two value bytes.
+        if (std.mem.readInt(u16, entry[2..4], endian) != 3) return null;
+        if (std.mem.readInt(u32, entry[4..8], endian) != 1) return null;
+        const v = std.mem.readInt(u16, entry[8..10], endian);
+        if (v < 1 or v > 8) return null;
+        return @enumFromInt(v);
+    }
+    return null;
+}
+
+/// Turn RGBA pixels (`src`, `sw` x `sh`) upright into `dst`: `sw` x `sh`,
+/// or `sh` x `sw` when `o.swapsSides()`.
+pub fn orient(src: []const u8, sw: u32, sh: u32, dst: []u8, o: Orientation) void {
+    const n = @as(usize, sw) * sh * 4;
+    std.debug.assert(src.len >= n and dst.len >= n);
+    std.debug.assert(sw > 0 and sh > 0);
+    const dw: u32 = if (o.swapsSides()) sh else sw;
+    const dh: u32 = if (o.swapsSides()) sw else sh;
+    var y: u32 = 0;
+    while (y < dh) : (y += 1) {
+        var x: u32 = 0;
+        while (x < dw) : (x += 1) {
+            // The stored pixel shown at (x, y).
+            const s: [2]u32 = switch (o) {
+                .normal => .{ x, y },
+                .flip_horizontal => .{ sw - 1 - x, y },
+                .rotate_180 => .{ sw - 1 - x, sh - 1 - y },
+                .flip_vertical => .{ x, sh - 1 - y },
+                .transpose => .{ y, x },
+                .rotate_90 => .{ y, sh - 1 - x },
+                .transverse => .{ sw - 1 - y, sh - 1 - x },
+                .rotate_270 => .{ sw - 1 - y, x },
+            };
+            const from = (@as(usize, s[1]) * sw + s[0]) * 4;
+            const to = (@as(usize, y) * dw + x) * 4;
+            @memcpy(dst[to..][0..4], src[from..][0..4]);
+        }
+    }
+}
+
 /// Scale RGBA pixels (`src`, `sw` x `sh`) to `dw` x `dh` by averaging each
 /// destination pixel's source area (a box filter: good for scaling down,
 /// nearest for scaling up). `dst` gets RGB when `dst_channels` is 3, the
@@ -383,6 +494,93 @@ test imageSize {
     try std.testing.expectEqual(Size{ .width = 100, .height = 50 }, imageSize(&lossless).?);
     // HEIC: known type, unknown size here.
     try std.testing.expect(imageSize("\x00\x00\x00\x18ftypheic\x00\x00\x00\x00") == null);
+}
+
+/// A JPEG head with an EXIF APP1 whose IFD0 holds one entry (`tag`, SHORT
+/// `value`) after a dummy one, in `endian` byte order.
+fn testExifJpeg(comptime endian: std.builtin.Endian, tag: u16, value: u16) [2 + 4 + 6 + 8 + 2 + 24 + 4]u8 {
+    var out: [2 + 4 + 6 + 8 + 2 + 24 + 4]u8 = undefined;
+    @memcpy(out[0..4], "\xFF\xD8\xFF\xE1");
+    std.mem.writeInt(u16, out[4..6], out.len - 4, .big); // APP1 length (with itself)
+    @memcpy(out[6..12], "Exif\x00\x00");
+    const t = out[12..];
+    @memcpy(t[0..2], if (endian == .little) "II" else "MM");
+    std.mem.writeInt(u16, t[2..4], 42, endian);
+    std.mem.writeInt(u32, t[4..8], 8, endian);
+    std.mem.writeInt(u16, t[8..10], 2, endian);
+    // ImageWidth (0x0100), LONG, 1: skipped.
+    std.mem.writeInt(u16, t[10..12], 0x0100, endian);
+    std.mem.writeInt(u16, t[12..14], 4, endian);
+    std.mem.writeInt(u32, t[14..18], 1, endian);
+    std.mem.writeInt(u32, t[18..22], 640, endian);
+    std.mem.writeInt(u16, t[22..24], tag, endian);
+    std.mem.writeInt(u16, t[24..26], 3, endian);
+    std.mem.writeInt(u32, t[26..30], 1, endian);
+    std.mem.writeInt(u16, t[30..32], value, endian);
+    @memset(t[32..34], 0);
+    @memset(t[34..38], 0); // next IFD
+    return out;
+}
+
+test jpegOrientation {
+    try std.testing.expectEqual(Orientation.rotate_90, jpegOrientation(&testExifJpeg(.little, 0x0112, 6)));
+    try std.testing.expectEqual(Orientation.rotate_270, jpegOrientation(&testExifJpeg(.big, 0x0112, 8)));
+    try std.testing.expectEqual(Orientation.flip_horizontal, jpegOrientation(&testExifJpeg(.big, 0x0112, 2)));
+    // No orientation tag, an out-of-range value: as stored.
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation(&testExifJpeg(.little, 0x0110, 6)));
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation(&testExifJpeg(.little, 0x0112, 9)));
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation(&testExifJpeg(.little, 0x0112, 0)));
+    // After an APP0; not a JPEG; no EXIF before the scan.
+    const app0 = "\xFF\xD8\xFF\xE0\x00\x04\x00\x00";
+    try std.testing.expectEqual(Orientation.rotate_180, jpegOrientation(app0 ++ comptime testExifJpeg(.little, 0x0112, 3)[2..]));
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation("\x89PNG\r\n\x1a\n"));
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation("\xFF\xD8\xFF\xDA\x00\x04\x00\x00"));
+    // Truncated anywhere: as stored, never a read past the end.
+    const full = testExifJpeg(.little, 0x0112, 6);
+    for (0..full.len) |n| {
+        const o = jpegOrientation(full[0..n]);
+        try std.testing.expectEqual(Orientation.normal, o);
+    }
+    // An IFD offset past the segment, a count past it.
+    var bad = full;
+    std.mem.writeInt(u32, bad[16..20], 0xFFFF_FFF0, .little);
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation(&bad));
+    bad = full;
+    std.mem.writeInt(u16, bad[20..22], 0xFFFF, .little);
+    try std.testing.expectEqual(Orientation.rotate_90, jpegOrientation(&bad)); // found before the end
+    bad = full;
+    std.mem.writeInt(u16, bad[20..22], 0xFFFF, .little);
+    std.mem.writeInt(u16, bad[34..36], 0x0110, .little); // no orientation: runs off the segment
+    try std.testing.expectEqual(Orientation.normal, jpegOrientation(&bad));
+}
+
+test orient {
+    // 3 x 2, each pixel's red is its index:
+    //   0 1 2
+    //   3 4 5
+    var src: [6 * 4]u8 = undefined;
+    for (0..6) |i| src[i * 4 ..][0..4].* = .{ @intCast(i), 0, 0, 255 };
+    const cases = [_]struct { o: Orientation, want: [6]u8 }{
+        .{ .o = .normal, .want = .{ 0, 1, 2, 3, 4, 5 } },
+        .{ .o = .flip_horizontal, .want = .{ 2, 1, 0, 5, 4, 3 } },
+        .{ .o = .rotate_180, .want = .{ 5, 4, 3, 2, 1, 0 } },
+        .{ .o = .flip_vertical, .want = .{ 3, 4, 5, 0, 1, 2 } },
+        // 2 x 3 from here on.
+        .{ .o = .transpose, .want = .{ 0, 3, 1, 4, 2, 5 } },
+        .{ .o = .rotate_90, .want = .{ 3, 0, 4, 1, 5, 2 } },
+        .{ .o = .transverse, .want = .{ 5, 2, 4, 1, 3, 0 } },
+        .{ .o = .rotate_270, .want = .{ 2, 5, 1, 4, 0, 3 } },
+    };
+    for (cases) |c| {
+        var dst: [6 * 4]u8 = undefined;
+        orient(&src, 3, 2, &dst, c.o);
+        var got: [6]u8 = undefined;
+        for (0..6) |i| got[i] = dst[i * 4];
+        std.testing.expectEqualSlices(u8, &c.want, &got) catch |err| {
+            std.debug.print("orientation {s}\n", .{@tagName(c.o)});
+            return err;
+        };
+    }
 }
 
 test downscale {

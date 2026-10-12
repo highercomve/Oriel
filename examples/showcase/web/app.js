@@ -219,12 +219,12 @@ async function systemAiStatus() {
 function setupSystemAi() {
   if (!info.system_ai || !window.oriel.features?.systemAi) return;
   $("sysai-card").hidden = false;
-  systemAiStatus().catch((e) => setResult("sysai-status", "Error: " + (e.message || e), "err"));
+  systemAiStatus().catch((e) => setResult("sysai-status", e.message || String(e), "err"));
   $("sysai-download").addEventListener("click", async () => {
     try {
       await window.oriel.systemAi.download((p) => setResult("sysai-status", p.total ? `downloading: ${Math.round((100 * p.downloaded) / p.total)}%` : `download ${p.state}`));
       await systemAiStatus();
-    } catch (e) { setResult("sysai-status", "Error: " + (e.message || e), "err"); }
+    } catch (e) { setResult("sysai-status", e.message || String(e), "err"); }
   });
   $("sysai-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -234,7 +234,7 @@ function setupSystemAi() {
     try {
       const reply = await window.oriel.systemAi.generate({ prompt: $("sysai-prompt").value, maxTokens: 256 }, (piece) => setResult("sysai-out", (text += piece)));
       setResult("sysai-out", reply, "ok");
-    } catch (err) { setResult("sysai-out", "Error: " + (err.message || err), "err"); }
+    } catch (err) { setResult("sysai-out", err.message || String(err), "err"); }
     $("sysai-cancel").hidden = true;
   });
   $("sysai-cancel").addEventListener("click", () => window.oriel.systemAi.cancel());

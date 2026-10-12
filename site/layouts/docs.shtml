@@ -26,7 +26,7 @@
 				<a href="$site.page('docs/tts').link()">Offline text to speech</a>
 				<a href="$site.page('docs/comparison').link()">Oriel and Vercel native</a>
 				<h4>Design</h4>
-				<a href="$site.page('docs/design-app-extensions').link()">App extensions <span class="tag-exp">proposal</span></a>
+				<a href="$site.page('docs/design-app-extensions').link()">App extensions <span class="tag-exp">0.10</span></a>
 			</nav>
 		</aside>
 		<main class="doc">
