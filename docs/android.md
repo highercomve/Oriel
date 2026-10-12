@@ -284,8 +284,14 @@ sets `signal_stack_size = null` unless the app sets it): it only serves
 std's segfault handler, which a JNI library never installs, and bionic
 allocated it in every thread touching the library's TLS. TLS went from 264
 KiB to about 2 KiB. On memory pressure (`onTrimMemory`, running low or
-worse) the runtime purges malloc's caches (`mallopt(M_PURGE)`) and passes
-the level on as the "trim-memory" system event, so apps can unload models.
+worse) and in the background, a built-in `oriel.lifecycle` subscriber
+purges malloc's caches (`mallopt(M_PURGE)`). The level becomes
+`oriel.lifecycle`'s `memory_pressure` (10 moderate; 15, 40 and above
+critical), so chat, dictation and tts unload their models and apps can do
+the same portably; it is also still passed on as the "trim-memory" system
+event. `background` / `foreground` come from OrielActivity's
+onStart/onStop: the started-Activity count reaching 0, then leaving it
+(`NativeLib.onLifecycle`).
 GhostPen Lite does: at TRIM_MEMORY_BACKGROUND, unless dictation or
 captions are running, it frees the whisper model (ggml-small: ~465 MB) and
 its recording buffer, and the next dictation loads the model again.
