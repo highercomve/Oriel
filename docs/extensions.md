@@ -28,6 +28,7 @@ _ = oriel.addApp(b, dep, .{
             .class = "GPVisionExtension",
             .sources = &.{b.path("ios/VisionExtension.m")}, // zig cc -fobjc-arc
             .frameworks = &.{ "Vision", "CoreML" },
+            .weak_frameworks = &.{}, // newer than the minimum: weak, and only when the SDK has them
             .resources = &.{b.path("models/yoloe.mlmodelc")}, // the bundle's root
         },
         .desktop = .{ .zig = b.path("src/vision_desktop.zig") }, // any desktop OS
@@ -251,7 +252,7 @@ build error. Apps without Swift keep Oriel's iOS 15 minimum.
 | | |
 |---|---|
 | Extensions per app | 64 |
-| Name | 64 characters, `[a-z][a-z0-9_]*` joined by dots |
+| Name | 64 characters, `[a-z][a-z0-9_]*` joined by dots; `oriel.*` is Oriel's |
 | Method | 128 printable ASCII characters |
 | Input and reply | `max_bytes` (32 MiB default, 256 MiB at most) |
 | Concurrency | 1..8 workers per extension |
@@ -263,6 +264,19 @@ build error. Apps without Swift keep Oriel's iOS 15 minimum.
 
 Apps that share one Oriel dependency in a build.zig must declare the same
 extensions (they share its `oriel` module).
+
+## Oriel's own extensions
+
+Oriel builds some of its modules on the same primitive: `oriel.system_ai`
+(`-Dsystem_ai`) is the extension `oriel.system_ai`, with a Kotlin class
+(`src/modules/system_ai/OrielSystemAi.kt`, plus its ML Kit dependency) and
+a Swift one (`SystemAi.swift`, FoundationModels weak-linked) shipped in
+Oriel and added to the app's project only when the module is on. They are
+merged before the app's extensions; names starting with `oriel.` are
+reserved (declaring or exposing one is a build error), and their events go
+to their module (which turns them into callbacks and page events) instead
+of `onEvent` and `extension:<name>`. Oriel's Swift counts for the iOS 18
+minimum like an app's.
 
 ## Example
 

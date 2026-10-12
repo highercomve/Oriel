@@ -35,7 +35,8 @@ Missing per platform (`src/core/module_table.zig`):
 |---|---|
 | Android | `tray`, `menu`, `input`, `media_server`, `layer_shell` |
 | iOS | `tray`, `menu`, `input`, `media_server`, `layer_shell`, `global_shortcut`, `updater`, `fs_watch` |
-| Windows, macOS | `layer_shell` (a Wayland thing) |
+| Windows, macOS | `layer_shell` (a Wayland thing), `system_ai` (Windows AI and macOS Foundation Models are later work) |
+| Linux | `system_ai` |
 
 Android keeps `global_shortcut` (in-app shortcuts), `fs_watch` (inotify) and `updater` (opt-in there: checking for a release works,
 installing is the store's job). `zig build --verbose` prints one line listing the flags a build resolved to unavailable.
@@ -537,6 +538,71 @@ oriel.tts.stop();                                         // stop from any threa
 - **Features:** offline synthesis, SHA-256 verified downloads, automatic language detection (`lang = "auto"`), Markdown read as prose, streaming playback via `audio_play.Stream`, warm-up ahead of first utterance (`oriel.tts.warmUp`), and GPU acceleration (`-Dggml_cuda`, `-Dggml_vulkan`, `-Dggml_metal`).
 - **Phoneme data:** bundled espeak-ng runtime data compiled at build time into every `.kokoro = true` app across all desktop and mobile platforms.
 - Complete documentation: [Offline text to speech](tts.md).
+
+### System AI (`oriel.system_ai`)
+
+The device's own language model, with nothing for the app to download or ship: Gemini Nano through ML Kit's
+GenAI Prompt API (AICore) on Android, Apple Foundation Models on iOS 26+ with Apple Intelligence. `-Dsystem_ai`,
+off by default; Android and iOS only (`available` is false on Linux, Windows and macOS: use `oriel.chat` there).
+
+```zig
+// From a worker (an async command, oriel.App.spawn): every call blocks on the platform.
+if (oriel.system_ai.available) {
+    const st = oriel.system_ai.status(); // .available, .downloadable, .downloading, .unavailable + st.reason()
+    if (st.state == .downloadable) try oriel.system_ai.download(io, onProgress);
+    const reply = try oriel.system_ai.generate(io, arena, .{
+        .system = "Answer briefly.",
+        .prompt = "Name three herbs that grow on a windowsill.",
+        .images = &.{.{ .bytes = jpeg, .mime = "image/jpeg" }}, // Android only, one image
+        .temperature = 0.2,
+        .max_tokens = 1024,
+        .schema = null, // a JSON schema, sent as instructions
+    }, onToken); // pieces of the reply, on the platform's thread
+}
+oriel.system_ai.cancel(); // any thread: the call fails with error.Cancelled
+```
+
+- **Status is a runtime fact.** A phone without Gemini Nano (most of them: Pixel 9 and later, recent Galaxy S),
+  iOS before 26, a device that can't run Apple Intelligence or has it off: `status()` says `unavailable` and why.
+  `capabilities()` says what the model takes (`images`, `max_images`, `streaming`, `structured_output`,
+  `max_input_tokens`).
+- **Download:** on Android a supported phone may need the model first (`downloadable`); `download` follows it
+  with progress (`on_progress`, the page's `system_ai:download`). iOS downloads it with Apple Intelligence:
+  `download` returns when it's ready, `error.NotReady` while it isn't.
+- **Errors:** `Unavailable`, `NotReady`, `Busy` (one generate or download at a time; `status` answers meanwhile),
+  `Cancelled`, `Timeout`, `TooLarge`, `InvalidRequest`, `WrongThread` (the main thread), `Failed`.
+  `lastError()` has the platform's code and message.
+- **Caps:** prompt, system prompt and schema 64 KiB each, 4 images of 8 MiB, a 1 MiB reply (a longer stream is
+  cancelled); timeouts of 20 s (status), 3 min (generate) and 10 min (download).
+- **Platforms:**
+
+| | Android | iOS |
+|---|---|---|
+| Model | Gemini Nano (ML Kit `genai-prompt` 1.0.0-beta4, added to Gradle only with `-Dsystem_ai`) | Foundation Models' `SystemLanguageModel.default` |
+| Images | one per request | not yet (`capabilities().images` is false; a request with images is refused) |
+| Streaming | yes | yes (snapshots, sent as pieces) |
+| Schema | as instructions | as instructions |
+| Needs | a phone with AICore and Gemini Nano | iOS 26 and Apple Intelligence at run time; the iOS 26 SDK (Xcode 26) to build the real backend |
+
+  On iOS `-Dsystem_ai` compiles Oriel's Swift backend, so the app's minimum becomes iOS 18 (as for any Swift
+  extension, docs/extensions.md). FoundationModels is weak-linked, and only when the SDK has it: built with
+  Xcode 16 the backend compiles to `unavailable` ("needs the iOS 26 SDK").
+- **The page** has the same API, `oriel.systemAi` (typed `SystemAiApi` in `oriel.ts`):
+
+```js
+if (oriel.features.systemAi) {
+  const st = await oriel.systemAi.status();          // { state, reason }
+  if (st.state === "downloadable") await oriel.systemAi.download((p) => show(p.downloaded, p.total));
+  const text = await oriel.systemAi.generate({ prompt, images: [{ data: file, mime: file.type }] }, (piece) => append(piece));
+}
+oriel.systemAi.cancel();
+```
+
+  The commands are `system_ai:status`, `system_ai:capabilities`, `system_ai:download`, `system_ai:generate` and
+  `system_ai:cancel`; a page under a capability needs them in its `commands`.
+- **How it's built:** the backends are Oriel's own [app extension](extensions.md) `oriel.system_ai`
+  (`src/modules/system_ai/OrielSystemAi.kt` and `SystemAi.swift`), on the same primitive apps use. Names starting
+  with `oriel.` are Oriel's: an app can't declare or expose them.
 
 ### Network and mDNS (`oriel.network`, `oriel.network.mdns`)
 

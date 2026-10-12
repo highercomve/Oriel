@@ -33,6 +33,7 @@
 | Text to speech | `kokoro`⁶ | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Network / mDNS | `network` | on | ✓ | ✓⁷ | ✓ | ✓ | ✓ |
 | Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
+| System AI | `system_ai` | **off** | — | — | —⁸ | ✓ | ✓⁹ |
 
 1. Updates come from Google Play and the App Store. On Android the updater is off by default; on, it checks for a release, and installing one fails with `error.Unsupported`.
 2. Android's Storage Access Framework; iOS's document picker.
@@ -41,6 +42,8 @@
 5. Android and iOS can also use the system's own recognizer.
 6. Also needs `llama` or `whisper`, which provide the shared ggml tree.
 7. Windows 10 1809 or later.
+8. Later: Windows AI APIs and macOS Foundation Models.
+9. iOS 26 with Apple Intelligence at run time; building it raises the minimum to iOS 18.
 
 # [Availability]($heading.id('availability'))
 
@@ -515,6 +518,25 @@ const r = try oriel.chat.generate(gpa, &.{
 **Result:** the text, the stop reason (`eos`, `length`, `cancelled`), the prompt and reply token counts, the tokens reused from the cache, and the tokens per second.
 
 **Building blocks:** `oriel.llama` (the C API and JSON-schema grammars) and `oriel.ggml_gpu`.
+
+# [System AI]($heading.id('system-ai'))
+
+The device's own language model, with nothing for the app to download or ship: Gemini Nano through ML Kit on Android, Apple Foundation Models on iOS 26+ with Apple Intelligence. Needs `-Dsystem_ai`; Android and iOS only (elsewhere `oriel.system_ai.available` is false: use Chat).
+
+```zig
+if (oriel.system_ai.available) {                              // from a worker thread
+    const st = oriel.system_ai.status();                      // available, downloadable, downloading, unavailable
+    if (st.state == .downloadable) try oriel.system_ai.download(io, onProgress);
+    const reply = try oriel.system_ai.generate(io, arena, .{ .prompt = "Name three herbs" }, onToken);
+}
+```
+
+- **Runtime status:** most phones have no Gemini Nano, and iOS needs 26 with Apple Intelligence on: `status()` says `unavailable` and why. `capabilities()` lists images, streaming, structured output and the context window.
+- **Request:** a system prompt, the prompt, images (Android: one), temperature, max tokens, and a JSON schema (sent as instructions). Caps: 64 KiB of text each, 4 images of 8 MiB, a 1 MiB reply.
+- **Streaming and progress:** `on_token` and `system_ai:token` events; download progress as `system_ai:download`. `cancel()` stops a reply from any thread.
+- **The page:** `oriel.systemAi.status()`, `capabilities()`, `download(onProgress)`, `generate(request, onToken)`, `cancel()` (typed `SystemAiApi`).
+- **iOS:** Oriel's Swift backend raises the app's minimum to iOS 18. FoundationModels is weak-linked and needs the iOS 26 SDK (Xcode 26) to build the real backend; with an older SDK it reports `unavailable`. Images aren't supported yet.
+- **Built on app extensions:** the backends are Oriel's own extension `oriel.system_ai` (Kotlin and Swift), on the primitive apps use. Names starting with `oriel.` are reserved.
 
 # [Network and mDNS]($heading.id('network-and-mdns'))
 

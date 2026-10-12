@@ -85,6 +85,8 @@ pub const Commands = struct {
         menu: bool,
         hotkeys: bool,
         anywhere: bool,
+        /// The System AI card (-Dsystem_ai on Android and iOS).
+        system_ai: bool,
         hotkey: []const u8,
     } {
         return .{
@@ -96,6 +98,7 @@ pub const Commands = struct {
             .menu = oriel.menu.available,
             .hotkeys = oriel.global_shortcut.available,
             .anywhere = anywhere.available,
+            .system_ai = oriel.system_ai.available,
             .hotkey = anywhere.hotkey,
         };
     }

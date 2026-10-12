@@ -11,6 +11,7 @@ comptime {
     std.debug.assert(oriel.input.available == !phone);
     std.debug.assert(oriel.global_shortcut.available == !oriel.target.is_ios);
     std.debug.assert(oriel.fs_watch.available == !oriel.target.is_ios);
+    std.debug.assert(oriel.system_ai.available == phone);
     // Off: the stand-in, with the same answer.
     std.debug.assert(!oriel.sql.available);
     std.debug.assert(std.mem.indexOf(u8, oriel.features.js, "tray: " ++ (if (phone) "false" else "true")) != null);
@@ -21,5 +22,7 @@ pub fn main() !void {
         const t = try oriel.tray.Tray.create(std.heap.page_allocator, .{ .id = "x", .title = "x", .icon = .{ .png = "" } });
         t.deinit();
     }
+    // Analyzed only on phones: Oriel's own extension backs it there.
+    if (oriel.system_ai.available) _ = oriel.system_ai.status();
     if (unguarded) _ = try oriel.tray.Tray.create(std.heap.page_allocator, .{ .id = "x", .title = "x", .icon = .{ .png = "" } });
 }
