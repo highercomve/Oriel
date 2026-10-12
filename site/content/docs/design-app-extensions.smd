@@ -1,12 +1,12 @@
 ---
 .title = "Design: app extensions, lifecycle, camera and system AI",
-.description = "Proposed Oriel primitives, found by porting GhostPantry to iOS: one lifecycle API, comptime module availability, app extensions in Kotlin, Objective-C, Swift or Zig, photo capture and the on-device system model. A design, not yet implemented.",
+.description = "Oriel primitives found by porting GhostPantry to iOS: one lifecycle API, comptime module availability, app extensions in Kotlin, Objective-C, Swift or Zig, photo capture and the on-device system model. Implemented in 0.10.0.",
 .date = .date("2026-10-11T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
-> This page is a design under way, published for review. None of it is in a release yet; the [changelog]($link.page('docs/changelog')) will say when each phase ships.
+> Implemented in 0.10.0. This is the design as proposed on 2026-10-11; the shipped APIs are in [App extensions]($link.page('docs/extensions')) and [Modules]($link.page('docs/modules')) ([lifecycle]($link.page('docs/modules').ref('lifecycle')), [availability]($link.page('docs/modules').ref('availability')), [camera]($link.page('docs/modules').ref('camera')), [system AI]($link.page('docs/modules').ref('system-ai'))), and the [changelog]($link.page('docs/changelog')) lists the changes. Still to come: system AI on macOS (Foundation Models) and Windows (Windows AI APIs), Swift extensions before iOS 18 (iOS 15 to 17), and Objective-C and Swift extensions on macOS (Zig extensions there today).
 
 Oriel's apps exist to find what the framework is missing. Porting GhostPantry to iOS
 found four gaps. In each, the app had to write platform code that belongs in Oriel:
