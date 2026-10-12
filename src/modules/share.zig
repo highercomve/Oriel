@@ -21,7 +21,7 @@ pub const available = true;
 
 const std = @import("std");
 const target = @import("../core/target.zig");
-pub const common = @import("share/common.zig");
+const common = @import("share/common.zig");
 
 pub const Source = common.Source;
 pub const File = common.File;
@@ -56,9 +56,6 @@ pub fn open(handle: u32) OpenError!std.Io.File {
     return impl.open(handle);
 }
 
-/// Up to `len` bytes of a received file from `offset` (appended to `out`).
-pub const read = common.read;
-
 /// Let go of a share: its files' handles close and cached copies go.
 pub fn release(id: u32) void {
     impl.release(id);
@@ -66,7 +63,7 @@ pub fn release(id: u32) void {
 
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("share/linux.zig"),
     .windows => @import("share/windows.zig"),
     .macos, .ios => @import("share/apple.zig"),

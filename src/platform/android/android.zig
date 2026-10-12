@@ -15,7 +15,7 @@ const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
 const notification_common = @import("../../modules/notification/common.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 const log = std.log.scoped(.oriel);
 
 pub const window = @import("window.zig");

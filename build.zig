@@ -44,7 +44,7 @@ const Features = struct {
     store: bool,
     menu: bool,
     deep_link: bool,
-    /// The multicast lock and LAN information; also on when the app
+    /// The multicast lock and mDNS/DNS-SD; also on when the app
     /// declares `.permissions.local_network`.
     network: bool,
     /// Receiving shares and the share sheet; also on when the app declares
@@ -393,18 +393,18 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(module_shims_tests).step);
 
-    // The deep-link queue and URL validation are pure: tested even when the
-    // opt-in deep_link module is off in `oriel`.
-    const deep_link_queue_tests = b.addTest(.{
+    // Deep-link URL validation is pure: tested even when the opt-in
+    // deep_link module is off in `oriel`.
+    const deep_link_validation_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/modules/deep_link/queue.zig"),
+            .root_source_file = b.path("src/modules/deep_link/common.zig"),
             .target = if (runs_tests) target else b.graph.host,
             .optimize = optimize,
         }),
         .use_llvm = true,
         .use_lld = useLld(if (runs_tests) target else b.graph.host),
     });
-    if (runs_tests) test_step.dependOn(&b.addRunArtifact(deep_link_queue_tests).step);
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(deep_link_validation_tests).step);
 
     // The Android manifest's regions, as build.zig and package_tool use them.
     const android_manifest_tests = b.addTest(.{

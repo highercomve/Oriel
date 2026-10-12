@@ -11,7 +11,7 @@ const platform = @import("../platform/platform.zig");
 const ipc = @import("ipc.zig");
 const security = @import("security.zig");
 const ThreadPool = @import("ThreadPool.zig").ThreadPool;
-const lifecycle = @import("lifecycle.zig");
+const lifecycle = @import("lifecycle/backend.zig");
 const target = @import("target.zig");
 
 const log = std.log.scoped(.oriel);
@@ -887,7 +887,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
         const copy = o[0..o.len].*;
         break :blk &copy;
     } else null };
-    @import("permissions.zig").setDeclared(config.app.permissions);
+    @import("permissions/gate.zig").setDeclared(config.app.permissions);
     ipc.initToken(io); // before any window (and bridge script) exists
 
     const app_log = @import("log.zig");
@@ -895,7 +895,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     defer app_log.deinit();
 
     if (build_opts.deep_link) {
-        const deep_link = @import("../modules/deep_link.zig");
+        const deep_link = @import("../modules/deep_link/delivery.zig");
         deep_link.setDeclaredSchemes(config.app.url_schemes);
         if (config.app.url_schemes.len == 0)
             std.log.warn("deep links are enabled but no scheme is accepted: declare `.url_schemes` in addApp (build.zig)", .{});
@@ -936,7 +936,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     }
 
     lifecycle.beginRun();
-    @import("extensions.zig").begin(io);
+    @import("extensions/runtime.zig").begin(io);
     const code = platform.run(io, api, config);
     // The loop returned on the main thread (desktop): a quit the backend
     // didn't announce (the last window closed) still sends `terminating`.

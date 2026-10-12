@@ -11,7 +11,7 @@ const gtk = @import("gtk");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
 
@@ -172,7 +172,7 @@ pub fn setMenu(items: anytype, on_action: anytype) !void {
 }
 
 const build_opts = @import("build_options");
-const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link/delivery.zig") else struct {};
 
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
