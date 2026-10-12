@@ -111,7 +111,7 @@ come. Events go to every window's page.
 where the platform allows it, so subscribers can still post to the main
 thread. A desktop run that ends without a backend announcing it (the last
 window closed) still sends it to the Zig subscribers once the main loop
-returns (`App.run`, `terminateAfterLoop`); the pages are gone by then. On
+returns (`oriel.main`, `terminateAfterLoop`); the pages are gone by then. On
 Windows, `WM_ENDSESSION` is the last chance: Windows may end the process as
 soon as the message returns, so Oriel dispatches `terminating` right there,
 from its hidden host window.

@@ -4,7 +4,7 @@
 
 The native menu bar: items, check items, submenus and keyboard shortcuts, in the window on Linux and Windows and at the top of the screen on macOS.
 
-`oriel.App.setMenu` installs the app's menu bar from a list of items you
+`oriel.menu.set` installs the app's menu bar from a list of items you
 describe as data: plain items, check items, separators and submenus, with
 keyboard shortcuts. Linux shows it in every window (GTK's `GMenuModel`),
 Windows attaches it to every window (`HMENU`, shortcuts as an accelerator
@@ -61,7 +61,7 @@ const events = oriel.App.events(Events);
 
 fn setup() !void {
     if (!oriel.menu.available) return;
-    try oriel.App.setMenu(&.{
+    try oriel.menu.set(&.{
         .{ .submenu = .{ .label = "File", .items = &.{
             .{ .item = .{ .id = "new", .label = "New", .shortcut = "Ctrl+N" } },
             .{ .item = .{ .id = "open", .label = "Open...", .shortcut = "Ctrl+O" } },
@@ -90,25 +90,26 @@ On macOS `Ctrl+N` is ⌘N.
 
 ```mermaid
 flowchart LR
-  Zig["setup / a command"] -->|"App.setMenu(items, on_action)"| Shell["Platform shell<br/>(main thread)"]
-  Shell -->|"GMenu + app.act_* actions,<br/>accels"| GTK["Linux: GtkApplication<br/>menubar"]
-  Shell -->|"HMENU per window,<br/>HACCEL"| Win["Windows: window menus"]
-  Shell -->|"NSMenu between<br/>App and Edit/Window"| Mac["macOS: main menu"]
+  Zig["setup / a command"] -->|"oriel.menu.set(items, on_action)"| Backend["menu backend<br/>(main thread)"]
+  Backend -->|"GMenu + app.act_* actions,<br/>accels"| GTK["Linux: GtkApplication<br/>menubar"]
+  Backend -->|"HMENU per window,<br/>HACCEL"| Win["Windows: window menus"]
+  Backend -->|"NSMenu between<br/>App and Edit/Window"| Mac["macOS: main menu"]
   GTK -->|"activate / change-state"| CB["on_action(id, checked)<br/>(main thread)"]
   Win -->|"WM_COMMAND,<br/>TranslateAccelerator"| CB
   Mac -->|"menuAction:"| CB
   CB -->|"your event"| Page["Page"]
 ```
 
-`oriel.App.setMenu` (`src/core/App.zig`) hands the items to the platform
-shell, which replaces the whole menu bar; calling it again swaps the bar
-for a new one. The items are copied, so they needn't outlive the call.
+`oriel.menu.set` (`src/modules/menu.zig`) hands the items to the
+platform's backend, which replaces the whole menu bar; calling it again
+swaps the bar for a new one. The items are copied, so they needn't outlive the call.
 
 - **Linux** (`src/modules/menu/linux.zig`). Each item becomes a
   `GSimpleAction` named `app.act_<id>` on the `GtkApplication` (characters
   GLib doesn't allow in action names are escaped; your callback still gets
   the original id), check items are stateful boolean actions, separators
-  start a new menu section, and `setMenubar` installs the model. Shortcuts
+  start a new menu section, `setMenubar` installs the model and every
+  window shows the menu bar. Shortcuts
   are set with `gtk_application_set_accels_for_action`, so they work in
   every window.
 - **Windows** (`src/modules/menu/windows.zig`). The items are kept and an
@@ -120,14 +121,14 @@ for a new one. The items are copied, so they needn't outlive the call.
 - **macOS** (`src/modules/menu/macos.zig`). Oriel's default main menu (App
   menu: Hide, Show All, Quit; Edit: Undo to Select All; Window: Minimize,
   Zoom, Close) is installed at launch (`src/platform/macos/Shell.zig`).
-  `setMenu` builds a new main menu: the App menu, then your items, then the
+  `set` builds a new main menu: the App menu, then your items, then the
   default Edit and Window menus unless you have top-level submenus with
   those names. If building fails, the old bar stays.
 
 Clicks call `on_action(id, checked)` on the main thread. A check item flips
 its own state first, so `checked` is the new value; plain items pass
 `null`; disabled items call nothing. `id` is a copy, so the callback may
-call `setMenu` again.
+call `set` again.
 
 The menu isn't part of the page: nothing crosses the bridge unless your
 callback emits an event, as above.
@@ -139,7 +140,7 @@ callback emits an event, as above.
 ```zig
 fn setup() !void {
     if (!oriel.menu.available) return;
-    try oriel.App.setMenu(&.{
+    try oriel.menu.set(&.{
         .{ .submenu = .{ .label = "View", .items = &.{
             .{ .check = .{ .id = "sidebar", .label = "Show sidebar", .checked = true } },
             .{ .item = .{ .id = "reload", .label = "Reload", .shortcut = "F5" } },
@@ -168,7 +169,7 @@ the page calls enables "Save" only when there's something to save:
 pub const Commands = struct {
     pub fn set_dirty(args: struct { dirty: bool }) !void {
         if (!oriel.menu.available) return;
-        try oriel.App.setMenu(&.{
+        try oriel.menu.set(&.{
             .{ .submenu = .{ .label = "File", .items = &.{
                 .{ .item = .{ .id = "save", .label = "Save", .shortcut = "Ctrl+S", .enabled = args.dirty } },
                 .separator,
@@ -193,12 +194,12 @@ their ids to the same handler as its keyboard shortcuts.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `.menu` (`-Dmenu` on Oriel's own command line) | on for Linux, Windows, macOS | builds `oriel.menu` and `App.setMenu`. `.menu = false` drops it. On Android and iOS it resolves to off; `-Dmenu=true` for those targets on Oriel's own command line is an error. |
+| `.menu` (`-Dmenu` on Oriel's own command line) | on for Linux, Windows, macOS | builds `oriel.menu`. `.menu = false` drops it. On Android and iOS it resolves to off; `-Dmenu=true` for those targets on Oriel's own command line is an error. |
 
-### `oriel.App.setMenu`
+### `oriel.menu.set`
 
 ```zig
-pub fn setMenu(items: []const oriel.menu.MenuItem, on_action: oriel.menu.ActionCallback) !void;
+pub fn set(items: []const oriel.menu.MenuItem, on_action: oriel.menu.ActionCallback) !void;
 ```
 
 Replaces the app's menu bar with `items` and makes `on_action` the one
@@ -210,8 +211,9 @@ callback for every item.
 - **Errors.** Linux `error.AppNotRunning` (before the app started: call it
   in `setup`); Windows `error.CreateAcceleratorTableFailed`,
   `error.AppendMenuFailed`; macOS `error.InvalidUtf8` (a label that isn't
-  UTF-8); `error.OutOfMemory`; with the flag off (Android, iOS,
-  `.menu = false`) `error.NotImplemented`.
+  UTF-8); `error.OutOfMemory`. With the flag off (Android, iOS,
+  `.menu = false`), using it outside `if (oriel.menu.available)` is a
+  build error naming the module.
 - **State.** Check items start at their `checked` value on every call.
 
 ### `oriel.menu`
@@ -242,6 +244,7 @@ pub const MenuItem = union(enum) {
 
 pub const ActionCallback = *const fn (id: []const u8, checked: ?bool) void;
 
+pub fn set(items: []const MenuItem, on_action: ActionCallback) !void; // above
 pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check; // smoke check
 ```
 
@@ -289,6 +292,13 @@ desktop.
 On macOS `Ctrl` means ⌘, as Mac users expect; there is no way to ask for
 the Control key itself.
 
+### Migrating from 0.11
+
+- `oriel.App.setMenu(items, on_action)` is `oriel.menu.set(items,
+  on_action)`, the same on every desktop. Without a menu bar (Android, iOS,
+  `.menu = false`) it is a build error instead of `error.NotImplemented`,
+  `NotSupported` or `Unsupported`.
+
 ## Troubleshooting
 
 - **Copy and paste stopped working on macOS.** A top-level submenu named
@@ -297,10 +307,10 @@ the Control key itself.
   leave editing to the default one.
 - **A shortcut does nothing on Windows.** Check the log for `failed to
   parse menu shortcut`; use the modifiers and keys listed above.
-- **`error.AppNotRunning` on Linux.** `setMenu` ran before the app started:
-  call it in `setup`.
-- **Using `oriel.App.setMenu` in a phone build** returns
-  `error.NotImplemented`: guard it with `if (oriel.menu.available)`.
+- **`error.AppNotRunning` on Linux.** `oriel.menu.set` ran before the app
+  started: call it in `setup`.
+- **A build error `oriel.menu.set` ... in a phone build.** There is no menu
+  bar there: guard the call with `if (oriel.menu.available)`.
 
 ## Related
 

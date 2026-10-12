@@ -224,7 +224,7 @@ the background (what iOS apps should do: a suspended app holding a large
 model is the one iOS ends), `.{ .memory_pressure = .moderate }` frees them
 earlier, `.{ .memory_pressure = null }` never. On Android, Oriel also purges
 bionic's allocator caches on memory pressure and in the background, after the
-modules have freed their models. `App.run` releases `tts`'s and
+modules have freed their models. `oriel.main` releases `tts`'s and
 `dictation`'s contexts and threads after its command pool drains; `chat`'s
 model lives until the process ends. Models you load yourself are yours to
 free (`Model.deinit`, `Context.deinit`).

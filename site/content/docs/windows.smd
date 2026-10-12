@@ -101,7 +101,7 @@ Android); no URL loads `App.Config.start`; an absolute URL must be on the
 app's origins, `allowed_origins` or a capability's origin. Then it makes the
 native window, the web view with the bridge script, and the overlay
 settings (`overlay.zig` on Linux, macOS and Windows). Back in `openWindow`
-the window joins `App.windows_list`, gets its saved size
+the window joins the window list, gets its saved size
 (`remember_geometry`), goes fullscreen or maximized, is shown unless
 `visible = false`, and every page gets `window:created`.
 
@@ -112,7 +112,8 @@ a window may change, close or send events to only itself unless
 `allow_modify_other_windows` is set; labels, URLs and sizes from the page
 are validated.
 
-Closing a window (the close button, `close()`, `App.closeWindow`) hides it
+Closing a window (the close button, `Window.close()`, the page's
+`close()`) hides it
 instead when it has `hide_on_close`. Otherwise its geometry is saved,
 every page gets `window:closed`, and the window and its web view are
 destroyed. Closing the last open window quits the app. The main window
@@ -188,7 +189,7 @@ Pressing the primary button on an element inside `data-oriel-drag-region`
 
 ```zig
 .window = .{ .title = "Clipboard history", .hide_on_close = true, .visible = false },
-.setup = setup, // create the tray here; its "Show" item calls oriel.App.showWindow()
+.setup = setup, // create the tray here; its "Show" item shows oriel.App.getWindow("main")
 ```
 
 See [Tray]($link.page('docs/tray')).
@@ -256,18 +257,13 @@ where absolute coordinates are not (Wayland).
 | `registerWindow(options: WindowOptions) !void` | Declare a window without creating it; registering a label again replaces its options. Any thread. |
 | `ensureWindow(label) !*Window` | The window, created from its registered options if needed; `error.WindowNotFound` if it was never registered. Main thread. |
 | `isWindowRegistered(label) bool` | Whether `label` was registered (created or not). |
-| `getWindow(label) ?*Window` | An open window. The pointer is freed when the window closes: main thread only. |
-| `getWindowCount() usize` | Open windows. |
-| `closeWindow(label) void` | Close a window (no-op for an unknown label). |
-| `postCloseWindow(label) !void` | Queue a close (what the page's `close()` uses); `error.WindowNotFound`. |
-| `showWindow()`, `hideWindow()`, `toggleWindow()` | Show, hide or toggle the main window. |
-| `emitTo(label, name, payload) !void` | An event to one window ([Commands]($link.page('docs/commands').ref('events'))). |
+| `getWindow(label) ?*Window` | An open window. The pointer is freed when the window closes: main thread only (from another thread, use `runOnMain`). The main window is `getWindow("main")`. |
+| `events(Events).emitTo(label, name, payload) !void` | An event to one window, from any thread ([Commands]($link.page('docs/commands').ref('events'))). |
 | `runOnMain(ctx, func)` | Run on the main thread, from any thread. |
 | `quit(code: u8)` | Quit the app, from any thread. |
 
-`App.windows_list`, `windows_mutex`, `getWindowByHandle`, `main_window`,
-`gtk_app` and `setPendingThemeColor` are public for the platform layer;
-apps don't use them.
+Show, hide, toggle and close a window, the main one included, through its
+`Window`: `if (oriel.App.getWindow("main")) |w| w.toggle();`.
 
 ## [Zig: `App.Window`]($heading.id('zig-window'))
 
@@ -277,7 +273,8 @@ Fields: `label`, `handle` (the platform's), `options` (the window's
 
 | Method | Meaning |
 |---|---|
-| `show()`, `hide()`, `toggle()`, `focus()`, `close()` | Visibility, focus, close. |
+| `show()`, `hide()`, `toggle()`, `focus()` | Visibility and focus. |
+| `close()` | Close it (hide it with `hide_on_close`), at once. |
 | `setTitle(title: [:0]const u8)` | Title bar text. |
 | `setSize(width, height)`, `getSize() WindowSize` | Size in logical pixels (`WindowSize` is `{ width, height }`). |
 | `setFullscreen(bool)`, `isFullscreen() bool` | Fullscreen. |
@@ -288,7 +285,6 @@ Fields: `label`, `handle` (the platform's), `options` (the window's
 | `setClickThrough(enabled: bool)` | Let the mouse pass through to what's below. |
 | `setAlwaysOnTop(enabled: bool)` | Keep above other windows. |
 | `setThemeColor(color: ?[4]u8)` | The caption colour where the platform draws one (Android on ChromeOS and desktop Android); the bridge sends the page's `<meta name="theme-color">` by itself. A no-op elsewhere. |
-| `emit(name, payload)` | An event to this window only. |
 | `saveGeometry()`, `restoreGeometry()` | What `remember_geometry` calls on close and open. |
 
 Native handles (GtkWindow, NSWindow, HWND and their web views) are given to
@@ -318,8 +314,8 @@ in plain scripts).
 | `emitTo(label, event, payload?): Promise<void>` | An event to one window. |
 
 `WindowOptions` from the page: `label` (required), `url`, `title`, `width`,
-`height` (default 800 and 600), `min_width`, `min_height`, `max_width`,
-`max_height`, `resizable`, `decorations`, `fullscreen`, `maximized`. The
+`height` (default 800 and 600), `minWidth`, `minHeight`, `maxWidth`,
+`maxHeight`, `resizable`, `decorations`, `fullscreen`, `maximized`. The
 overlay fields, `visible`, `hide_on_close`, `remember_geometry` and
 `placement` are Zig-only. Sizes must be 1 to 32767.
 
@@ -335,7 +331,7 @@ overlay fields, `visible`, `hide_on_close`, `remember_geometry` and
 | `emit(event, payload?)` | `emitTo(this.label, ...)`. |
 
 Events: `window:created` and `window:closed`, payload `{ label }`, to every
-page (not declared in the generated `Events`: use `window.oriel.listen`).
+page (declared in the generated `Events`).
 
 ## [Window commands]($heading.id('window-commands'))
 
@@ -393,6 +389,20 @@ Errors: `Forbidden` (window API not allowed for this page),
   `App.Config.window` (a `WindowOptions`). Its default size is now 800×600.
 - `show_main_window = false` is `.window = .{ .visible = false }`.
 - `on_close = .hide` is `.window = .{ .hide_on_close = true }`.
+- `App.showWindow()`, `hideWindow()`, `toggleWindow()` are
+  `if (App.getWindow("main")) |w| w.show();` (`hide`, `toggle`).
+- `App.closeWindow(label)` and `App.postCloseWindow(label)` are
+  `if (App.getWindow(label)) |w| w.close();` (main thread; from another
+  thread, inside `App.runOnMain`).
+- `Window.emit(name, payload)` is `App.events(Events).emitTo(label, .name,
+  payload)`, typed ([Commands]($link.page('docs/commands').ref('migrating'))).
+- `App.getWindowCount`, `windows_list`, `windows_mutex`, `getWindowByHandle`,
+  `gtk_app`, `main_window` and `setPendingThemeColor` are internal. Native
+  handles come from [platform hooks]($link.page('docs/platform-hooks'));
+  the GtkApplication is `gtk_window_get_application` of the window
+  `window_created` hands over.
+- The page's `oriel.window.open` takes `minWidth`, `minHeight`, `maxWidth`,
+  `maxHeight` only (no `min_width`, ...).
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

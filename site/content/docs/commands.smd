@@ -303,14 +303,14 @@ on the main thread after the reply.
 | A sync command | The main (UI) thread; the UI waits for it. |
 | A command in `async_commands` | A worker-pool thread. The pool has one thread per CPU (at least 2, at most 16) and holds at most 1024 waiting tasks; beyond that the call fails with `WorkerPoolBusy`. |
 | `oriel.extensions.call`, `oriel.systemAi` calls, `oriel.camera.capturePhoto` from the page | Always a worker (they wait on native code or the user). |
-| `events.emit`, `App.emit`, `App.emitTo`, `Window.emit` | Any thread. On the main thread the event is delivered at once; from others it is queued to the main thread, in order. |
+| `events.emit`, `events.emitTo` | Any thread. On the main thread the event is delivered at once; from others it is queued to the main thread, in order. |
 | `App.spawn(func, args)` | A worker-pool thread. |
 | `App.runOnMain(ctx, func)` | Queued to the main thread from any thread, even from the main thread (it runs after the caller returns). |
 
 Windows, web views, the tray and menus may only be touched on the main
 thread. A window pointer from `App.getWindow` is freed when the window
 closes, so use it on the main thread only; from a worker go by label
-(`App.emitTo`, `App.closeWindow`) or through `App.runOnMain`. Commands
+(`events.emitTo`) or through `App.runOnMain`. Commands
 can't be cancelled.
 
 ## [Errors]($heading.id('errors'))
@@ -348,14 +348,14 @@ pub const Events = struct {
 };
 const events = oriel.App.events(Events);
 events.emit(.status, .{ .message = "Saving", .progress = 50 });
+try events.emitTo("settings", .status, .{ .message = "Saved", .progress = 100 });
 ```
 
 | Declaration | Meaning |
 |---|---|
-| `App.events(comptime Events: type) type` | A namespace with `emit(comptime name: std.meta.FieldEnum(Events), payload: @FieldType(Events, name)) void`: the name and payload type are checked at compile time. |
-| `App.emit(name: []const u8, payload: anytype) void` | Emit an event by name without the type check (for names decided at runtime). |
-| `App.emitTo(label: []const u8, name: []const u8, payload: anytype) !void` | To one window only; `error.WindowNotFound` when no window has that label. |
-| `Window.emit(self: *Window, name: []const u8, payload: anytype) void` | To this window only. |
+| `App.events(comptime Events: type) type` | The app's events, typed: the name and payload type are checked at compile time. `Events` is the struct passed as `Api.events` (a module may pass a struct of its own fields of it). |
+| `events.emit(comptime name: std.meta.FieldEnum(Events), payload: @FieldType(Events, name)) void` | To every window. |
+| `events.emitTo(label: []const u8, comptime name: std.meta.FieldEnum(Events), payload: @FieldType(Events, name)) !void` | To one window only; `error.WindowNotFound` when no window has that label. |
 
 - Each field is an event; its type is the payload (`void` sends `null`).
   Names that aren't JavaScript identifiers (`"sync-done"`) are quoted in the
@@ -377,7 +377,7 @@ interface where marked):
 | `notification:action` | see [Notifications]($link.page('docs/notifications')) | Notifications | Yes |
 | `share:received`, `share:sent` | see [Share]($link.page('docs/share')) | Share | `share:received` |
 | `extension:<name>` | `{ name, data }` | [Extensions]($link.page('docs/extensions')) | Yes |
-| `window:created`, `window:closed` | `{ label: string }` | [Windows]($link.page('docs/windows')) | No |
+| `window:created`, `window:closed` (declared) | `{ label: string }` | [Windows]($link.page('docs/windows')) | No |
 
 For the events that wait, the bridge's `listen()` sends the `events:ready`
 built-in, and Zig then delivers what came before (an app launched by a
@@ -464,6 +464,10 @@ policy governs.
   bridge's `listen()` sends `events:ready` (`{ event }`) for every queued
   event, `deep-link` and `notification:action` included. Pages that only
   use `listen` need no change.
+- `App.emit(name, payload)` (untyped) is gone: declare the event in
+  `Events` and use `App.events(Events).emit(.name, payload)`.
+- `App.emitTo(label, name, payload)` and `Window.emit(name, payload)` are
+  `App.events(Events).emitTo(label, .name, payload)`.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

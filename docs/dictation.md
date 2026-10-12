@@ -201,7 +201,7 @@ takes the audio that follows. Both emit the same events as whisper
 (`backend` "Android" or "Apple"); when the recognizer fails, listening stops
 with `dictation:error` and `dictation:ended`.
 
-**Shutdown and memory.** `App.run` calls `deinit` after its command pool
+**Shutdown and memory.** `oriel.main` calls `deinit` after its command pool
 drains: it joins the threads and frees the models. On Android, the system
 recognizer is cancelled at the `terminating` lifecycle event, while the UI
 thread still runs. `unload_on` (critical memory pressure by default) frees
@@ -337,7 +337,7 @@ const text = try ctx.transcribe(gpa, &buf, .{ .audio_ctx = oriel.whisper.audioCt
 | `find(name) !*const Model` | any | A catalog entry; `error.UnknownModel`. |
 | `present(m) bool` | any after `init` | The model's file is complete. |
 | `unloadIdle() void` | any (main included) | Free the models now unless listening or busy; returns at once. |
-| `deinit() void` | after commands finished | Join the threads, free models and buffers. `App.run` calls it; safe twice or without `init`. |
+| `deinit() void` | after commands finished | Join the threads, free models and buffers. `oriel.main` calls it; safe twice or without `init`. |
 
 | Variable | Meaning |
 |---|---|

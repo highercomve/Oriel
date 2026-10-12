@@ -70,7 +70,7 @@ fn setup() !void {
 }
 
 fn onShortcut(id: []const u8) void {
-    if (std.mem.eql(u8, id, "toggle")) oriel.App.toggleWindow();
+    if (std.mem.eql(u8, id, "toggle")) if (oriel.App.getWindow("main")) |w| w.toggle();
     events.emit(.shortcut, .{ .id = id });
 }
 ```
