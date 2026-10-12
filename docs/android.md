@@ -47,6 +47,7 @@ Platform contract mapping:
 | Single instance | Launcher Activity `singleTask`, `onNewIntent` → `on_second_instance`. |
 | Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |
 | Global shortcuts | In-app only (Android has no system-wide hotkeys): `global_shortcut.register` works while one of the app's windows has focus, with a hardware keyboard. `OrielActivity.dispatchKeyEvent` matches the key before the WebView, and `onProvideKeyboardShortcuts` lists each shortcut's description in the system's Meta+/ helper. |
+| System AI | `-Dsystem_ai`: Gemini Nano through ML Kit's GenAI Prompt API (`com.google.mlkit:genai-prompt:1.0.0-beta4`, added to Gradle only with the flag), as Oriel's own extension `oriel.system_ai` (`OrielSystemAi.kt`). Text and one image, streaming, download with progress. Supported phones only (AICore with Gemini Nano: Pixel 9+, recent Galaxy S); elsewhere `status()` is `unavailable`. Needs Kotlin 2.3 in the Gradle project (the template's; ML Kit's metadata is 2.3). |
 | Menus, tray, input, media server | Not available: an app's `.tray = true` resolves to `oriel.tray.available = false`, and calls under `if (oriel.tray.available)` aren't built ([Availability](modules.md#availability)). No stubs. |
 
 ## Step zero: the silent-GTK trap

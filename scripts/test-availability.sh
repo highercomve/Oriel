@@ -21,6 +21,7 @@ expect_error() { # <message> <dir> <zig build args...>
 }
 
 expect_error "-Dtray is not available on ios" . check -Dtarget=aarch64-ios -Dsql=false -Dtray=true
+expect_error "-Dsystem_ai is not available on windows" . check -Dtarget=x86_64-windows -Dsystem_ai=true
 for t in native aarch64-ios aarch64-ios-simulator aarch64-linux-android x86_64-windows; do
     (cd scripts/availability && zig build check "-Dtarget=$t") >"$log" 2>&1 || fail "scripts/availability: zig build check -Dtarget=$t"
     echo "ok: scripts/availability: zig build check -Dtarget=$t"

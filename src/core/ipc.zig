@@ -23,6 +23,7 @@ const security = @import("security.zig");
 const isolation = @import("isolation.zig");
 const App = @import("App.zig");
 const extensions = @import("extensions.zig");
+const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -228,6 +229,8 @@ test tokenValid {
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     // The page's oriel.extensions.call blocks on native code: always a worker's.
     if (std.mem.eql(u8, cmd, extensions.page_command)) return true;
+    // oriel.systemAi's calls block on the platform too (not its cancel).
+    if (system_ai_bridge.isAsyncCommand(cmd)) return true;
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
     comptime checkAsyncCommands(Commands, list);
@@ -457,6 +460,10 @@ pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, reques
     // its error was never turned into text) must not label this one's.
     fail_len = null;
     if (std.mem.eql(u8, request.cmd, extensions.page_command)) return extensions.pageCall(arena, request.args);
+    if (system_ai_bridge.isCommand(request.cmd)) {
+        if (!@import("build_options").system_ai) return fail("oriel.systemAi isn't in this build (-Dsystem_ai, Android and iOS)", .{});
+        return @import("../modules/system_ai.zig").pageCall(arena, request.cmd, request.args);
+    }
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);
         if (@typeInfo(@TypeOf(field)) == .@"fn" and std.mem.eql(u8, decl.name, request.cmd)) {
@@ -711,6 +718,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  on(name: string, callback: (event: ExtensionEvent) => void): () => void;
             \\}
             \\
+        ++ system_ai_bridge.typescript ++
             \\export interface LifecycleApi {
             \\  /** Events from before the page listened come first. Returns an unsubscribe function. */
             \\  on(callback: (event: LifecycleEvent) => void): () => void;
@@ -735,6 +743,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      deepLink: DeepLinkApi;
             \\      lifecycle: LifecycleApi;
             \\      extensions: ExtensionsApi;
+            \\      systemAi: SystemAiApi;
             \\      permissions: PermissionsApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
@@ -764,6 +773,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const lifecycle: LifecycleApi = (globalThis as any).oriel?.lifecycle;
             \\/** The app's extensions, as far as Zig exposes them (oriel.extensions.expose). */
             \\export const extensions: ExtensionsApi = (globalThis as any).oriel?.extensions;
+            \\/** The device's own model (oriel.system_ai): check features.systemAi, then status(). */
+            \\export const systemAi: SystemAiApi = (globalThis as any).oriel?.systemAi;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */

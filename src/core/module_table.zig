@@ -24,13 +24,15 @@ pub fn platformOf(t: *const std.Target) Platform {
 /// `oriel.tray.available` is false.
 pub fn missingOn(platform: Platform) []const []const u8 {
     return switch (platform) {
-        .linux, .other => &.{},
+        // system_ai is the phone's own model (ML Kit, Foundation Models).
+        .linux, .other => &.{"system_ai"},
         // global_shortcut (in-app shortcuts), fs_watch (inotify) and updater
         // (checking for a release) have real Android backends.
         .android => &.{ "tray", "menu", "input", "media_server", "layer_shell" },
         .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch" },
-        // gtk4-layer-shell is a Wayland thing.
-        .windows, .macos => &.{"layer_shell"},
+        // gtk4-layer-shell is a Wayland thing. system_ai: Windows AI and
+        // macOS Foundation Models are later work.
+        .windows, .macos => &.{ "layer_shell", "system_ai" },
     };
 }
 
@@ -74,6 +76,7 @@ pub const namespaces = [_]Namespace{
     .{ .name = "audio_play", .path = "src/modules/audio_play.zig", .feature = "kokoro", .enable = ".kokoro = true" },
     .{ .name = "tts", .path = "src/modules/tts.zig", .feature = "kokoro", .enable = ".kokoro = true" },
     ns("audio_capture", "src/modules/audio_capture.zig"),
+    ns("system_ai", "src/modules/system_ai.zig"),
     .{ .name = "ggml_gpu", .path = "src/modules/ggml_gpu.zig", .feature = "llama", .enable = ".llama = true or .whisper = true" },
     .{ .name = "chat", .path = "src/modules/chat.zig", .feature = "llama", .enable = ".llama = true" },
     .{ .name = "dictation", .path = "src/modules/dictation.zig", .feature = "whisper", .enable = ".whisper = true and .audio_capture = true" },
@@ -106,6 +109,8 @@ test supported {
     try std.testing.expect(supported("tray", .linux));
     try std.testing.expect(supported("global_shortcut", .android));
     try std.testing.expect(!supported("layer_shell", .windows));
+    try std.testing.expect(supported("system_ai", .android) and supported("system_ai", .ios));
+    try std.testing.expect(!supported("system_ai", .linux) and !supported("system_ai", .macos));
 }
 
 test reason {

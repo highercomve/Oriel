@@ -49,6 +49,12 @@ pub fn validName(name: []const u8) bool {
     return !word_start;
 }
 
+/// Names Oriel keeps for its own modules built on extensions
+/// ("oriel.system_ai"): an app can't declare or expose them.
+pub fn reserved(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "oriel.");
+}
+
 /// A fully qualified Java/Kotlin class: dotted identifiers, at least one
 /// package ("dev.app.VisionExtension"), up to 256 characters.
 pub fn validJavaClass(name: []const u8) bool {
@@ -106,6 +112,8 @@ test validName {
     try std.testing.expect(!validName("pantry-vision"));
     try std.testing.expect(!validName("a" ** (max_name_len + 1)));
     try std.testing.expect(validName("a" ** max_name_len));
+    try std.testing.expect(validName("oriel.system_ai") and reserved("oriel.system_ai"));
+    try std.testing.expect(!reserved("orielx.a") and !reserved("pantry.oriel"));
 }
 
 test validJavaClass {
