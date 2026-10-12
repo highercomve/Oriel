@@ -1,0 +1,341 @@
+---
+.title = "Desktop: Linux, Windows, macOS",
+.description = "What an Oriel app runs on and needs on Linux (GTK 4 and WebKitGTK), Windows (Win32 and WebView2) and macOS (AppKit and WKWebView), with each platform's options and limits.",
+.date = .date("2026-10-12T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+On the desktop an Oriel app is one native executable: Oriel's platform-neutral
+core (`src/core/`: the app, windows, IPC, security) on top of a thin shell
+per operating system (`src/platform/linux`, `windows`, `macos`) that drives
+the system's own web view. Nothing is bundled: no browser engine, no
+runtime. The same `main.zig` and frontend build for all three, and every
+module and plugin has a backend on each (with the few exceptions below).
+
+This page says what each desktop platform uses underneath, what it needs to
+build and run, its build options and its limits. Building installers is on
+[Packaging]($link.page('docs/packaging')), signing on
+[Signing]($link.page('docs/signing')); phones are on
+[Android]($link.page('docs/android')) and [iOS]($link.page('docs/ios')).
+
+# [Availability]($heading.id('availability'))
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Window and app | GTK 4 (`GtkApplication`) | Win32 | AppKit (`NSApplication`) |
+| Web view | WebKitGTK 6.0 | Microsoft Edge WebView2 (Evergreen) | `WKWebView` |
+| CPUs | x86_64, aarch64 | x86_64, aarch64 | Apple silicon, Intel |
+| Oldest OS | GTK 4.12+ with WebKitGTK 6.0 (Ubuntu 24.04, Debian 13, Fedora 39) | Windows 10 1809 (MSIX minimum), with the WebView2 runtime | macOS 13 (15 with Swift sources) |
+| Built on | Linux | Windows, or cross-compiled from Linux | A Mac (Xcode or the Command Line Tools) |
+| Packages | deb, rpm, AppImage | NSIS `setup.exe`, MSIX | `.app`, `.dmg` |
+| Platform options | none | `.windows.capabilities` | `.macos.usage_descriptions`, `.macos.entitlements`, `.macos.hooks` |
+
+Modules that don't exist on a desktop platform resolve to
+`oriel.<module>.available = false` there ([Modules]($link.page('docs/modules'))):
+`system_ai` everywhere on the desktop, and `layer_shell` (a Wayland feature)
+on Windows and macOS.
+
+# [Quick start]($heading.id('quick-start'))
+
+Check and install what the platform needs (without administrator rights
+where it can):
+
+```sh
+oriel doctor --fix
+```
+
+Then, on each platform:
+
+```sh
+oriel dev          # run against the dev server with hot reload
+oriel build        # production build: zig-out/bin/<name> (macOS: also zig-out/<Name>.app)
+oriel package      # installers for this platform (Packaging)
+```
+
+Cross-compile Windows from Linux:
+
+```sh
+oriel build -Dtarget=x86_64-windows       # zig-out/bin/<name>.exe
+oriel package -Dtarget=x86_64-windows     # zig-out/package/<name>-<version>-setup.exe
+```
+
+# [How it works]($heading.id('how-it-works'))
+
+>[]($block.attrs("mermaid"))
+```
+flowchart TB
+  Core["src/core: App, windows, IPC,<br/>security, modules"] -->|"platform contract<br/>(src/platform/platform.zig)"| Shells
+  subgraph Shells["Shell per OS"]
+    L["Linux<br/>GtkApplication + WebKitWebView"]
+    W["Windows<br/>Win32 window + WebView2"]
+    M["macOS<br/>NSApplication + WKWebView"]
+  end
+  L -->|"app scheme handler,<br/>script message handlers"| P1["Page"]
+  W -->|"app.localhost request filter,<br/>postMessage"| P2["Page"]
+  M -->|"app:// WKURLSchemeHandler,<br/>WKScriptMessageHandlerWithReply"| P3["Page"]
+```
+
+`src/platform/platform.zig` picks the shell at compile time from the target
+and checks that it exports every declaration the core uses (windows, the
+main-thread queue, evaluating script, quitting). Each shell runs the
+system's event loop on the main thread, serves the embedded frontend through
+a custom scheme with the app's CSP headers, installs the one bridge script
+(`src/core/bridge_js.zig`) and carries IPC with the same token, origin and
+isolation checks; sync commands run on the main loop, async ones on the
+worker pool ([Commands]($link.page('docs/commands'))).
+
+**Linux** (`src/platform/linux/`). `Shell.zig` runs a `GtkApplication`:
+the event loop, the menu bar, SIGTERM/SIGINT as a clean quit, and logind's
+`PrepareForSleep` as `oriel.lifecycle`'s `suspend` / `resume`. GApplication
+hands later launches to the running instance over D-Bus (single instance,
+deep links). `window.zig` makes a `GtkApplicationWindow` with a
+`WebKitWebView` and its navigation policy; `scheme.zig` serves `app://`;
+`bridge.zig` uses WebKit's script message handlers; `dev_server.zig` starts
+the dev server as a child that dies with the app. On NVIDIA's proprietary
+driver Oriel sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` (unless already set),
+which avoids WebKitGTK's busy compositing loop there. `overlay.zig` places
+overlay windows (below).
+
+**Windows** (`src/platform/windows/`). A Win32 message loop and windows
+(`win32.zig`, `window.zig`), with per-monitor DPI awareness (v2). WebView2 is
+reached through hand-declared COM vtables (`webview2.zig`); its environment
+comes from `WebView2Loader.dll`, loaded only from the executable's own
+directory (no DLL search-order hijacking), with user data in
+`%LOCALAPPDATA%\<app id>\WebView2`. Assets are served at
+`https://app.localhost/` through `AddWebResourceRequestedFilter`; IPC goes
+over `chrome.webview.postMessage` and `WebMessageReceived`. A named mutex
+makes the app single-instance: a second launch finds the running one's
+hidden host window and sends it its arguments (`WM_COPYDATA`), then quits.
+`oriel.lifecycle`'s `terminating` comes at `WM_ENDSESSION`.
+
+**macOS** (`src/platform/macos/`). AppKit through the Objective-C runtime
+([zig-objc](https://github.com/mitchellh/zig-objc)): `Shell.zig` runs
+`NSApplication` with main-thread tasks on the GCD main queue, a default
+app / Edit / Window menu bar, SIGTERM/SIGINT as a clean quit, and a Dock
+click that reopens a hidden main window. `window.zig` makes `NSWindow`s with
+a `WKWebView` and its navigation and UI delegates (JavaScript `alert` /
+`confirm` / `prompt` are `NSAlert` sheets); `scheme.zig` serves `app://`
+through a `WKURLSchemeHandler`; `bridge.zig` uses a
+`WKScriptMessageHandlerWithReply`. Launch Services sends a bundled app's
+second launch to the running one; `single_instance.zig` also catches
+binaries run directly (a terminal, `open -n`) with an `flock` and a Unix
+socket in the per-user temp directory when the app sets
+`on_second_instance`.
+
+Native code of your own reaches these objects through
+[platform hooks]($link.page('docs/platform-hooks')) (`oriel.hooks` hands
+your Zig the `GtkWindow*` / `WebKitWebView*`, `HWND` / `ICoreWebView2*`,
+`NSWindow*` / `WKWebView*`).
+
+# [Examples]($heading.id('examples'))
+
+## [An overlay window on Wayland (Linux)]($heading.id('example-overlay'))
+
+```zig
+// build.zig: compile the layer-shell support in (the library loads at run time).
+const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize, .layer_shell = true });
+```
+
+Windows that ask for `always_on_top`, `skip_taskbar` or a `placement`
+([Windows]($link.page('docs/windows'))) then become layer surfaces on
+compositors with wlr-layer-shell (Hyprland, Sway, KDE...). On X11 the same
+options use EWMH hints and need nothing extra.
+
+## [A Bluetooth device app in an MSIX package (Windows)]($heading.id('example-msix'))
+
+```zig
+.permissions = .{ .bluetooth = "Connects to your heart-rate strap" }, // <DeviceCapability Name="bluetooth"/>
+.windows = .{ .capabilities = &.{
+    .{ .name = "humaninterfacedevice", .kind = .device },
+} },
+```
+
+## [Entitlements and usage keys (macOS)]($heading.id('example-macos'))
+
+```zig
+.permissions = .{ .camera = "Scans receipts" }, // NSCameraUsageDescription + com.apple.security.device.camera
+.macos = .{
+    .usage_descriptions = &.{.{ .key = "NSAppleEventsUsageDescription", .text = "Controls Music" }},
+    .entitlements = &.{"com.apple.security.automation.apple-events"},
+},
+```
+
+# [Reference]($heading.id('reference'))
+
+## [Linux]($heading.id('linux'))
+
+**Build requirements:** Zig 0.16 (the CLI installs it), GTK 4 and
+WebKitGTK 6.0 development packages:
+
+| Distribution | Packages |
+|---|---|
+| Arch | `gtk4 webkitgtk-6.0` |
+| Debian, Ubuntu | `libgtk-4-dev libwebkitgtk-6.0-dev` |
+| Fedora | `gtk4-devel webkitgtk6.0-devel` |
+
+**Run requirements:** GTK 4.12+ and WebKitGTK 6.0. gtk4-layer-shell is
+optional (overlays on Wayland).
+
+**Wayland, X11 and overlays** (`src/platform/linux/overlay.zig`):
+
+| Session | `always_on_top`, `skip_taskbar`, `placement` | Transparency, click-through |
+|---|---|---|
+| Wayland with gtk4-layer-shell and `-Dlayer_shell=true` | Layer surfaces (overlay layer, anchors and margins); dragging moves the surface by its margins | Yes |
+| X11 | EWMH hints (`_NET_WM_STATE_ABOVE`, skip taskbar) and `XMoveWindow`, applied when the window maps; Xlib is looked up at run time | Yes |
+| Wayland without layer-shell | Ignored (logged once): a normal Wayland window can't do them | Yes |
+
+gtk4-layer-shell must be loaded before GTK, so on Wayland an app built with
+`-Dlayer_shell=true` restarts itself once with `libgtk4-layer-shell.so.0`
+in `LD_PRELOAD` when the library is installed (nothing links it, so the app
+also runs without it). `ORIEL_NO_LAYER_SHELL=1` skips that.
+
+**Platform options:** none. Linux packages declare no permissions.
+
+## [Windows]($heading.id('windows-platform'))
+
+**Requirements:**
+
+- The WebView2 runtime (built into Windows 11 and current Windows 10; the
+  NSIS installer checks for it).
+- `WebView2Loader.dll` next to the executable. The CLI downloads it from
+  NuGet, checks its SHA-512 against NuGet's catalog, caches it, and passes
+  `-Dwebview2-loader=<cached dll>` when building for Windows (`oriel webview2`
+  manages the cache). An explicit `-Dwebview2-loader=<path>` wins;
+  `ORIEL_NO_WEBVIEW2_FETCH=1` turns the download off. Offline: take
+  `runtimes/win-x64/native/WebView2Loader.dll` (or `win-arm64`) out of the
+  `Microsoft.Web.WebView2` `.nupkg` (a ZIP). Apps built with `-Dnative_ui`
+  have no web view and don't need it.
+- NSIS (`makensis`) for the installer: `oriel setup nsis`, or found in
+  Program Files.
+- Node.js for Vite templates (`oriel setup node`).
+
+**Platform options:**
+
+```zig
+.windows = .{ .capabilities = &.{
+    .{ .name = "bluetooth", .kind = .device },
+} },
+```
+
+| `Capability` field | Type | Default | Meaning |
+|---|---|---|---|
+| `name` | `[]const u8` | required | `[A-Za-z0-9._-]`, or a device interface's `{GUID}`; up to 200 characters. |
+| `kind` | `enum { general, uap, restricted, device }` | `.general` | `<Capability>`, `<uap:Capability>`, `<rescap:Capability>` (restricted: Store review), `<DeviceCapability>`. |
+
+They join the capabilities the declared permissions write
+(`microphone`, `webcam`, `location`, `bluetooth` device capabilities,
+`privateNetworkClientServer` for `local_network`, the graphics-capture
+restricted ones for `screen_capture`), plus `internetClient` and
+`runFullTrust`, each once. Only the MSIX package has capabilities; the NSIS
+installer ignores them. An invalid name is a build error.
+
+**Installers.** The NSIS installer is per-user
+(`%LOCALAPPDATA%\Programs\<name>`, no administrator rights), adds Start Menu
+shortcuts and an uninstaller, and supports silent `setup.exe /S`. MSIX
+targets Windows 10.0.17763.0 by default (`.package.msix.min_version`).
+Details: [Packaging]($link.page('docs/packaging')).
+
+## [macOS]($heading.id('macos-platform'))
+
+**Requirements:** a Mac with Xcode or the Command Line Tools
+(`xcode-select --install`). The macOS shell links AppKit and WebKit from the
+SDK, so macOS builds are made on a Mac; cross-building from another OS isn't
+supported.
+
+**Deployment target.** A target without a version (`oriel build`, or
+`-Dtarget=aarch64-macos`) builds for macOS 13, so a build from a newer Mac
+runs on older ones; pass `oriel.resolveTarget(b, ...)`'s target to every
+executable you add. An explicit `-Dtarget=aarch64-macos.14.0` wins. Swift
+sources in `.macos.hooks` or an extension's `.macos.objc` raise it to 15.
+
+**Bundles.** `oriel build` also writes `zig-out/<Name>.app`; `oriel package`
+builds `.app` and `.dmg`. Start the bundle (`open zig-out/<Name>.app`) to
+get notifications through Notification Center, permission prompts under the
+app's name, and deep links.
+
+**Platform options:**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `usage_descriptions` | `[]const UsageDescription` | `Info.plist` usage keys no `.permissions` kind writes: `.{ .key, .text }`, the key ending in `UsageDescription` (`[A-Za-z0-9_.~-]`), the text not empty. A key a kind writes too takes this text. |
+| `entitlements` | `[]const []const u8` | Boolean hardened-runtime entitlements (`[A-Za-z0-9_.~-]`) added to `<Name>.entitlements`, used when signing with a Developer ID. The declared permissions add theirs (`device.audio-input` for microphone and system audio, `device.camera`, `personal-information.location`). |
+| `hooks` | `[]const PlatformHook` | Objective-C or Swift [platform hooks]($link.page('docs/platform-hooks').ref('apple-declare')): the app delegate, windows and WebKit delegates; at most 16. Their sources need the macOS SDK: `-Dmacos_sdk=<MacOSX.sdk>`, else `$SDKROOT` when it is a MacOSX SDK, else `xcrun`. |
+
+**Permissions are per bundle.** macOS attributes an unbundled binary to the
+app that started it (Terminal, an IDE), so test microphone, accessibility
+and screen capture from an `.app`. An Accessibility grant is tied to the
+exact code signature: after rebuilding an ad-hoc-signed `.app`, macOS may
+keep matching the old build ("Failed to match existing code requirement" in
+tccd's log) even after removing and re-adding it. Test input injection from
+a Developer ID-signed bundle, or from a terminal that already has
+Accessibility. Microphone, system audio and notifications work with ad-hoc
+bundles.
+
+`ORIEL_SNAPSHOT=/tmp/shot.png` saves the main window's page (WebKit's
+snapshot API) a second after it loaded, without a Screen Recording grant.
+
+## [Single instance]($heading.id('single-instance'))
+
+With `App.Config.on_second_instance` set (or the `deep_link` module on), a
+second launch hands its arguments to the running instance and exits:
+
+| | How |
+|---|---|
+| Linux | GApplication's command line over D-Bus |
+| Windows | A named mutex; the arguments go to the running instance's host window with `WM_COPYDATA` (up to 3 s to find it) |
+| macOS | Launch Services sends a bundle's second launch to the running one (a reopen). With `on_second_instance`, also an `flock` on `<user temp dir>/oriel-<id>.lock` and a Unix socket, for binaries run directly (arguments as a JSON array up to 64 KiB, peers' uids checked, 2 s timeouts) |
+
+Without `on_second_instance` the running instance shows its main window.
+See [Lifecycle]($link.page('docs/lifecycle')) and
+[Deep links]($link.page('docs/deep-links')).
+
+## [Where things go]($heading.id('locations'))
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Log file | `$XDG_DATA_HOME/<id>/app.log` | `%LOCALAPPDATA%\<id>\app.log` | `~/Library/Logs/<id>/app.log` |
+| App data and cache | [Paths]($link.page('docs/paths')) | [Paths]($link.page('docs/paths')) | [Paths]($link.page('docs/paths')) |
+
+## [Limits]($heading.id('limits'))
+
+- **Linux:** Wayland compositors don't let apps position normal windows or
+  keep them on top: overlays need layer-shell (above). Window positions
+  apply on X11.
+- **Windows:** WebView2 shows a cross-origin error page inside a frame whose
+  navigation Oriel blocked (the navigation is still blocked).
+- **macOS:** builds need a Mac; permissions follow the bundle's signature
+  (above).
+- `system_ai` has no desktop backend yet; `layer_shell` is Linux only.
+
+# [Troubleshooting]($heading.id('troubleshooting'))
+
+- **Linux: the build can't find `gtk4` or `webkitgtk-6.0`**: install the
+  development packages above; `oriel doctor` names what's missing.
+- **Linux: high CPU on NVIDIA**: Oriel already sets
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` there; if you set it to `0` yourself,
+  remove that.
+- **Linux: `always_on_top/skip_taskbar/placement need layer-shell on
+  Wayland`**: build with `-Dlayer_shell=true` and install gtk4-layer-shell, or
+  run under X11.
+- **Windows: `WebView2Loader.dll not found next to <exe>`**: package with
+  `-Dwebview2-loader=...` (the CLI does it), or copy the DLL next to the
+  executable.
+- **Windows: `info: no cached WebView2Loader.dll and ORIEL_NO_WEBVIEW2_FETCH=1`**:
+  unset the variable or pass `-Dwebview2-loader=<path>`.
+- **macOS: `macOS 13.0 is below what Swift supports here`**: Swift hooks or
+  extensions need macOS 15; drop the explicit lower version.
+- **macOS: a permission prompt never appears**: run the `.app`, not the bare
+  binary.
+
+# [Related]($heading.id('related'))
+
+- [Getting started]($link.page('docs/getting-started')): installing the CLI
+  and the toolchain.
+- [Building]($link.page('docs/building')), [Packaging]($link.page('docs/packaging')),
+  [Signing]($link.page('docs/signing')): from source to installers.
+- [Windows]($link.page('docs/windows')): window options, overlays and
+  placement.
+- [Platform hooks]($link.page('docs/platform-hooks')): the native window and
+  web view handles.
+- [Android]($link.page('docs/android')) and [iOS]($link.page('docs/ios')).

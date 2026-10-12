@@ -1,0 +1,311 @@
+<!-- Generated from site/content/docs/camera.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Camera
+
+Photos from the camera or the photo library, scaled and encoded, from Zig or the page; and image inputs that open the camera on Android.
+
+`oriel.camera` gets the app **a photo**: one the user takes now with the
+phone's camera app, or one they pick from the photo library. You get it
+scaled to fit a size you choose and encoded as JPEG or PNG, as bytes in Zig
+(`capturePhoto`) or as a data URL in the page
+(`window.oriel.camera.capturePhoto`). With the module on, Android's
+`<input type="file" accept="image/*">` also opens the camera or the system
+photo picker, as it does in a browser.
+
+For live video (a viewfinder, video calls, scanning) use the page's
+`getUserMedia`, whose permission rules are on
+[Permissions](permissions.md). For any kind of file, not
+just photos, use an open dialog ([Dialogs](dialogs.md)).
+
+## Availability
+
+| Platform | `.camera` (take a photo) | `.library` (pick one) | Scaling and encoding | Permission |
+|---|---|---|---|---|
+| Android | The camera app (`ACTION_IMAGE_CAPTURE`) | System photo picker (`ACTION_PICK_IMAGES` on 13+, `ACTION_GET_CONTENT` before) | Kotlin: `ImageDecoder` (`BitmapFactory` fallback), `Bitmap.compress` | `CAMERA`, asked before the camera app starts |
+| iOS | `UIImagePickerController` (`error.Unsupported` on the simulator) | `PHPickerViewController` (PhotosUI) | `UIGraphicsImageRenderer` | `NSCameraUsageDescription`; the library needs none |
+| Linux, Windows, macOS | `error.Unsupported` | The file dialog, filtered to images | zigimg | none |
+
+The module is the `camera` flag, **off by default**. Declaring
+`.permissions.camera` in `addApp` turns it on (and writes Android's
+`CAMERA` permission, and iOS's and macOS's `NSCameraUsageDescription` with
+your text, plus macOS's `com.apple.security.device.camera` entitlement); `b.dependency("oriel", .{ .camera = true })` turns it on
+without the permission. With the module on, the page sees
+`window.oriel.features.camera == true`.
+
+On iOS, `.camera` needs the usage text: without `.permissions.camera` it
+returns `error.PermissionDenied`. On Android, `CAMERA` is asked for only
+when the manifest declares it (Android refuses the camera app to an app
+that declares `CAMERA` without having it granted).
+
+## Quick start
+
+```zig
+// build.zig
+_ = oriel.addApp(b, dep, .{
+    .name = "pantry",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .static_dir = b.path("web") },
+    .permissions = .{ .camera = "Take photos of your groceries" },
+});
+```
+
+```html
+<!-- Android: the camera; iOS: WKWebView's Take Photo / Photo Library menu -->
+<input type="file" accept="image/*" capture>
+```
+
+```js
+// Or the bytes, scaled and encoded:
+const { dataUrl, width, height, mime } =
+  await window.oriel.camera.capturePhoto({ source: "camera", maxSide: 1600 });
+img.src = dataUrl;
+```
+
+The same from Zig, in an async command (it waits for the user):
+
+```zig
+const Commands = struct {
+    pub const async_commands = .{"addPhoto"};
+
+    pub fn addPhoto(io: std.Io, arena: std.mem.Allocator) !u32 {
+        const photo = try oriel.camera.capturePhoto(io, arena, .{
+            .source = .library,
+            .max_side = 1600,
+            .format = .jpeg,
+            .quality = 85,
+        });
+        try savePhoto(photo.bytes, photo.mime); // your code
+        return photo.width;
+    }
+};
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+  Page["Page"] -->|"camera:capture<br/>(async built-in)"| Worker["IPC worker thread"]
+  Zig["App's async command"] --> Capture
+  Worker --> Capture["oriel.camera.capturePhoto<br/>(camera.zig)"]
+  Capture -->|"Android: JNI"| Kotlin["OrielCamera.kt:<br/>camera app / photo picker,<br/>decode, scale, encode"]
+  Capture -->|"iOS: main thread"| UIKit["UIImagePickerController /<br/>PHPickerViewController"]
+  Capture -->|"desktop"| Dialog["file dialog +<br/>zigimg"]
+  Kotlin -->|"onCameraResult(bytes)"| Capture
+  UIKit -->|"UIImage, scaled + encoded<br/>on the waiting thread"| Capture
+  Capture -->|"Photo / data URL"| Worker
+```
+
+`capturePhoto` **blocks until the user is done**, so it runs on a worker
+thread: the page's `camera:capture` command is always async (an IPC worker,
+`src/core/ipc.zig`), and a Zig caller uses an async command. On Android and
+iOS a call on the UI thread returns `error.MainThread`. One capture runs at a
+time (`error.Busy`). Options are checked first (`src/modules/camera/common.zig`),
+then the platform backend runs:
+
+- **Android** (`src/modules/camera/android.zig`, the template's
+  `OrielCamera.kt`): Zig calls into Kotlin over JNI and waits. For
+  `.camera`, Kotlin asks for `CAMERA` when the manifest declares it, then
+  starts the camera app writing into Oriel's capture provider
+  (`<app id>.oriel.capture`, `OrielCaptureProvider.kt`, not exported; it
+  serves only the `capture-<digits>.jpg` files Oriel creates in
+  `<cacheDir>/oriel-captures/`, and files older than a day are swept). For
+  `.library`, the system photo picker. The photo is decoded (orientation
+  applied, HEIC too), scaled and encoded on a Kotlin worker thread, and
+  answered once through `NativeLib.onCameraResult`.
+- **iOS** (`src/modules/camera/ios.zig`): the picker is presented over the
+  view controller in front, on the main thread; the delegate hands the
+  `UIImage` to the waiting thread, which scales and encodes it with
+  `UIGraphicsImageRenderer` (orientation applied). `PHPickerViewController`
+  runs out of process and hands over only what the user picks, so the
+  library needs no photo permission.
+- **Desktop** (`src/modules/camera/desktop.zig`): the dialog module's open
+  dialog, filtered to `jpg jpeg png gif webp bmp heic heif avif` (used
+  whether or not the app turns `dialog` on); the file (at most 64 MiB) is
+  decoded, turned upright by its EXIF orientation (JPEG), box-filtered down
+  and encoded by zigimg. What zigimg can't decode (HEIC, AVIF, WebP,
+  progressive JPEG) comes back **as it was picked**: `mime` from its bytes
+  (else its extension), the size from its header, else 0 x 0.
+
+The page's reply is the photo as a `data:` URL, at most 16 MiB before base64
+(`src/modules/camera/page.zig`).
+
+**Image inputs on Android.** The WebView asks its `WebChromeClient` for a
+file chooser; Oriel's (`OrielWindow.kt`) first asks the app's
+[platform hooks](platform-hooks.md), then `OrielCamera`:
+when the camera module is on and every accepted type is an image (`image/…`
+or an image extension), `capture` opens the camera app (after `CAMERA`),
+falling back to the picker when there is no camera app; without `capture`
+the photo picker, several with `multiple`. Picks the WebView can't decode
+(HEIC, AVIF) are transcoded to JPEG off the UI thread (quality 90, the long
+side halved while it stays at least 1600 px) unless `.camera.transcode` is
+false. Anything else goes to Android's default chooser. On iOS WKWebView
+shows its own Take Photo / Photo Library menu for image inputs; on the
+desktop the browser engine's file chooser opens.
+
+## Examples
+
+### A photo button in the page
+
+From `examples/showcase/web/app.js`:
+
+```js
+document.getElementById("camera-card").hidden = !window.oriel.features.camera;
+
+async function capturePhoto(source) {
+  try {
+    const p = await window.oriel.camera.capturePhoto({ source, maxSide: 1600, quality: 85 });
+    preview.src = p.dataUrl;
+    status.textContent = `${p.mime}, ${p.width}×${p.height}`;
+  } catch (e) {
+    // "Cancelled", "Unsupported", "PermissionDenied", "TooLarge", "Busy", ...
+    status.textContent = String(e);
+  }
+}
+takeButton.onclick = () => capturePhoto("camera");
+pickButton.onclick = () => capturePhoto("library");
+```
+
+### Hide "Take photo" where there is no camera
+
+`.camera` is unsupported on the desktop; offer the library there:
+
+```js
+const phone = ["android", "ios"].includes(window.oriel.platform.os);
+takeButton.hidden = !phone;
+```
+
+### A lossless thumbnail in Zig
+
+```zig
+pub fn thumbnail(io: std.Io, arena: std.mem.Allocator) ![]const u8 {
+    const photo = oriel.camera.capturePhoto(io, arena, .{ .max_side = 256, .format = .png }) catch |err| switch (err) {
+        error.Cancelled => return "",
+        else => return err,
+    };
+    return photo.bytes;
+}
+```
+
+## Reference
+
+### Build options
+
+| Option | Effect |
+|---|---|
+| `.permissions.camera = "<reason>"` (`addApp`) | Turns the module on; Android `CAMERA`, iOS and macOS `NSCameraUsageDescription` with the reason ([Permissions](permissions.md)). |
+| `.camera = true` (`b.dependency("oriel", ...)`) | Turns the module on without declaring the permission. `.camera = false` keeps it off even when the permission is declared (the build warns). |
+| `AppOptions.camera.transcode: bool = true` | Android image inputs: transcode picks the WebView can't decode (HEIC, AVIF) to JPEG (quality 90, long side kept or halved down to 1600 px). Stored as the capture provider's `dev.oriel.camera.transcode` meta-data. |
+
+With the module on, the Android manifest declares the capture provider; on
+iOS the app links PhotosUI; on the desktop it imports zigimg.
+
+### Zig: `oriel.camera`
+
+```zig
+pub const available: bool;
+pub const max_bytes: usize = 32 << 20; // the largest encoded photo returned
+
+pub fn capturePhoto(io: std.Io, arena: std.mem.Allocator, options: Options) Error!Photo;
+
+pub const Source = enum { camera, library };
+pub const Format = enum { jpeg, png }; // .mime(): "image/jpeg", "image/png"
+
+pub const Options = struct {
+    source: Source = .library,
+    max_side: u32 = 1600, // the longest side, 1..8192; never scaled up
+    format: Format = .jpeg,
+    quality: u8 = 85, // JPEG, 1..100; ignored for PNG
+};
+
+pub const Photo = struct {
+    bytes: []u8, // in `arena`
+    width: u32, // 0 when the desktop passed an undecodable file through
+    height: u32,
+    mime: []const u8, // in `arena`
+};
+```
+
+`capturePhoto` validates `options`, runs the backend, and returns
+`error.TooLarge` for a result over `max_bytes`. It blocks until the user is
+done; call it from an async command, never the main thread.
+
+| `Error` | When |
+|---|---|
+| `Cancelled` | The user closed the camera or the picker. |
+| `Unsupported` | No camera: the desktop, the iOS simulator, a phone without a camera app; or no picker. |
+| `PermissionDenied` | Camera access refused, or on iOS no `.permissions.camera` text. |
+| `TooLarge` | Over 32 MiB encoded, or (desktop) a picked file over 64 MiB. |
+| `InvalidOptions` | `max_side` not in 1..8192, `quality` not in 1..100. |
+| `MainThread` | Called on a phone's UI thread. |
+| `Busy` | Another capture is in progress. |
+| `CaptureFailed` | The camera app or picker failed, or the photo couldn't be read, decoded or encoded. |
+| `OutOfMemory` | |
+
+A photo is scaled to fit `max_side` on its longest side, keeping the
+aspect ratio; a smaller one keeps its size. On the desktop, JPEG output
+drops alpha (composited over white). A desktop pass-through (HEIC, WebP, AVIF,
+progressive JPEG) keeps its own format and size whatever `format` and
+`max_side` ask, and a JPEG passed through keeps its EXIF (its size is
+reported upright).
+
+### Page: `window.oriel.camera`
+
+```ts
+interface CapturePhotoOptions {
+  source?: "camera" | "library"; // default "library"
+  maxSide?: number; // 1..8192, default 1600
+  format?: "jpeg" | "png"; // default "jpeg"
+  quality?: number; // 1..100, default 85
+}
+interface CapturedPhoto { dataUrl: string; width: number; height: number; mime: string }
+
+window.oriel.camera.capturePhoto(options?: CapturePhotoOptions): Promise<CapturedPhoto>;
+```
+
+The built-in async command `camera:capture` (unknown fields are ignored).
+It rejects with the `Error` name; bad values reject with `InvalidOptions`,
+a photo over **16 MiB** (before base64) with `TooLarge`, and a build
+without the module with `Unsupported`. The same API exists in the
+[native renderer](native-renderer.md).
+
+### Android image inputs
+
+| Input | Opens |
+|---|---|
+| `accept="image/*" capture` | `CAMERA` asked (when declared), then the camera app; no camera app: the photo picker |
+| `accept="image/*"` | The photo picker |
+| `accept="image/*" multiple` | The photo picker, several photos |
+| any non-image type in `accept` | Android's default file chooser |
+
+The page's `<input>` gets content URIs (the capture provider's for a new
+photo); a cancelled camera deletes its empty file. A platform hook's
+`onShowFileChooser` that answers `true` takes the chooser before Oriel's
+camera handling. Oriel's request codes `0x4F10..0x4F13` are in its reserved
+range ([Platform hooks](platform-hooks.md#android-interface)).
+A new chooser or capture cancels the one pending.
+
+## Troubleshooting
+
+- **`window.oriel.features.camera` is false.** Declare `.permissions.camera`
+  (or `.camera = true` on the dependency). If the dependency sets
+  `.camera = false`, the build warns that `camera` is declared but stays off.
+- **`PermissionDenied` on iOS at once.** No `NSCameraUsageDescription`:
+  declare `.permissions.camera` with a reason. If the user refused before,
+  send them to Settings (`window.oriel.permissions.openSettings("camera")`).
+- **`MainThread`.** `capturePhoto` was called from a sync command or
+  `setup`: list the command in `async_commands`.
+- **`Unsupported` on the desktop.** Expected for `.camera`; use `.library`,
+  or `getUserMedia` for live video.
+- **Width and height are 0.** The desktop returned a file zigimg can't
+  decode (HEIC, AVIF, progressive JPEG) and whose header gave no size.
+- **The Android image input opens the generic file picker.** The module is
+  off, or `accept` lists a non-image type.
+- Log lines are scoped `camera` (`photo picker: ...`); Kotlin logs under
+  the `OrielCamera` tag.
+
+## Related
+
+- [Permissions](permissions.md): `.permissions.camera`, and `getUserMedia` in the page.
+- [Platform hooks](platform-hooks.md): your own camera flow on Android.
+- [Dialogs](dialogs.md): the open dialog the desktop uses.
+- [Android](android.md) and [iOS](ios.md): the platform builds.

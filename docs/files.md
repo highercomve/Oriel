@@ -1,0 +1,299 @@
+<!-- Generated from site/content/docs/files.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Files
+
+How the user's files reach an Oriel app and its page: dropped, picked, shared from other apps, or kept in a folder the user chose, and what crosses the bridge for each.
+
+A file reaches an Oriel app in one of four ways: the user **drops** it on
+the window, **picks** it in a file dialog, **shares** it from another app
+("Open with", the share sheet), or the app writes into a **folder** the
+user chose once. This page says, for each, what the app's Zig code gets,
+what the page gets, and how long access lasts. The rule behind all of
+them: the page never receives a path it could use to read other files.
+What the page holds is either a browser `File` (bytes the web view already
+read) or a **file handle**, a number Oriel maps to a file it opened
+read-only when the user handed it over.
+
+Each way has its own page for the API; this one ties them together:
+[Drag and drop](drag-and-drop.md) (drops into the native
+renderer), [Dialogs](dialogs.md) (pickers and lasting folder
+access), [Share](share.md) (files from other apps).
+
+## Availability
+
+| | Linux | Windows | macOS | Android | iOS |
+|---|---|---|---|---|---|
+| Drop on a web view page | the web view's own `File`s | same | same | same | same |
+| Drop on a native renderer page (`-Dnative_ui`) | handles | handles | handles | handles (`ParcelFileDescriptor`) | handles (descriptor) |
+| `oriel.drop.path` (native renderer) | yes | yes | no | no | no |
+| `<input type="file">` (web view) | WebKitGTK's picker | WebView2's picker | WKWebView's panel | Oriel's chooser (system picker, camera with `oriel.camera`) | WKWebView's menu |
+| `oriel.dialog` pickers (Zig) | paths | paths | paths | cache copy / descriptor | temporary copy / folder path |
+| Received shares (handles) | no | yes (Send To, Open with) | yes (Open with) | no | yes (Open in) |
+| Lasting folder access | path | path | path | SAF tree URI | bookmark |
+
+Drops and `<input type="file">` need nothing turned on. `oriel.dialog` is
+on by default (`.dialog`); shares need `.share_target` in `build.zig`
+([Share](share.md)); the native renderer is `-Dnative_ui`
+([Native renderer](native-renderer.md)). No permission is
+involved: each way is a choice the user made.
+
+## Quick start
+
+A page that accepts dropped files and files shared from other apps, the
+same code in the web view and the native renderer:
+
+```js
+const { listen, share } = window.oriel;
+
+// Drops: standard HTML5, in both renderers.
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  for (const file of e.dataTransfer.files) show(file.name, await file.text());
+});
+
+// Shares (needs .share_target): handles, read as Files on demand.
+listen("share:received", async ({ files }) => {
+  for (const f of files) {
+    const file = await share.file(f); // reads through the handle in 4 MiB chunks
+    show(file.name, await file.text());
+  }
+});
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+  User["The user"] -->|drop| WV["Web view<br/>(WebKitGTK, WebView2,<br/>WKWebView, Android WebView)"]
+  User -->|drop| NR["Native renderer backend<br/>(gtk, win32, appkit,<br/>uikit, android)"]
+  User -->|"Open with / share"| SH["oriel.share backend"]
+  User -->|pick| DLG["oriel.dialog"]
+  WV -->|"browser File (bytes)"| Page["Page"]
+  NR -->|"open read-only"| T1["Engine.drops<br/>(FileHandles, per window)"]
+  SH -->|"open read-only"| T2["share.received<br/>(FileHandles, per process)"]
+  T1 -->|"File { handle }"| Page
+  T2 -->|"{ handle, name, mime, size }"| Page
+  Page -->|"host.fileRead(handle, offset, len)"| T1
+  Page -->|"invoke share:read"| T2
+  DLG -->|"path"| Zig["Your Zig command"]
+  Zig -->|"whatever it returns"| Page
+```
+
+**Handles.** `src/core/file_handles.zig` is a table from a `u32` handle to
+an open, read-only descriptor (a file `HANDLE` on Windows) plus the size
+and modification time it had when it was added. A backend opens each file
+the moment the user hands it over: by path where the OS gives one
+(`addPath`: desktop drops, macOS and Windows shares) or as the descriptor
+the OS gave (`addFd`: Android's `ParcelFileDescriptor` for a drop, iOS's
+drop). Only regular files are kept; a dropped folder or FIFO is skipped
+(files are opened non-blocking, so a FIFO can't hang the UI thread). On
+Windows the file is opened shared for reading, writing and deleting, as
+Chromium opens a dropped file, so the user's other programs keep working
+with it.
+
+Reads go through the handle and nothing else: there is no call that opens
+a path the page names. Every read checks the file's size and mtime again,
+so a file that changed after it was handed over reads as *not readable*,
+as in a browser (snapshot semantics). A read is at most 64 MiB; larger
+reads go in pieces. Reads use a duplicate of the descriptor taken under
+the table's lock, so a long read never stalls other handles, and a release
+during a read can't recycle the descriptor.
+
+There are two tables:
+
+- **Drops into the native renderer** (`src/native_ui/drop.zig`, the
+  engine's `drops`): one per window, per document. The page gets a `File`
+  whose bytes stay in the engine; `file.text()`, `arrayBuffer()`,
+  `FileReader` and `slice()` call `host.fileRead(reqId, handle, offset,
+  length)`, answered on the engine's next turn. The handle is released when
+  the page holds no `File` or slice for it any more (a
+  `FinalizationRegistry` calls `host.fileRelease`), when the page reloads,
+  and when the window closes. The DOM side (DataTransfer, events, effects)
+  is on [Drag and drop](drag-and-drop.md).
+- **Received shares** (`src/modules/share/common.zig`, `received`): one per
+  process. The page gets `{ handle, name, mime, size }` in the
+  `share:received` event and turns a handle into a `File` with
+  `oriel.share.file`, which reads it through the `share:read` command;
+  Zig opens one with `oriel.share.open(handle)`. A share's handles close
+  when Zig calls `oriel.share.release(id)`.
+
+A held descriptor keeps working after the OS takes back what it lent for
+the drag: Android's drag permissions, the macOS sandbox extension, an iOS
+temporary file that was deleted (the descriptor keeps the inode).
+
+**Web view drops** are the web view's business: the page gets ordinary
+browser `File` objects and Oriel never sees them. Oriel adds one guard
+(`drop_guard_js` in `src/core/security.zig`, in every web view's bridge): a
+file dropped on a text field that the page didn't handle would be inserted
+as the file's absolute path (WebKit's default); the guard cancels only that
+default, and the page still gets every drag event.
+
+**Picked files** go to Zig, as paths, because the Zig command asked:
+`oriel.dialog.openFile` returns the file's path on the desktop, a copy in
+the cache on Android and in the temporary directory on iOS. The page sees
+only what the command returns (the text, a name, a size). A web view's
+`<input type="file">` is the browser's: the page gets `File`s and Zig sees
+nothing; on Android Oriel's `WebChromeClient.onShowFileChooser` asks the
+[platform hooks](platform-hooks.md) first, then
+[`oriel.camera`](camera.md) for image inputs, then the
+system picker (several files when the input has `multiple`).
+
+**Lasting access** is a folder id from `oriel.dialog.openFolder`: a path on
+the desktop, a SAF tree URI with a persisted grant on Android, a
+security-scoped bookmark on iOS. It lives in Zig (store it in your
+settings); see [Dialogs](dialogs.md#lasting-access).
+
+## Examples
+
+### Send a dropped file on (native renderer, trusted app)
+
+A transfer app that hands dropped files to its own Zig engine needs the
+path, not the bytes. `oriel.drop.path` turns a dropped file's handle back
+into where the file lives now:
+
+```js
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  for (const file of e.dataTransfer.files) {
+    const path = await window.oriel.drop.path(file); // null: gone or changed (Linux, Windows)
+    if (path) await window.oriel.invoke("send_file", { path, name: file.name });
+  }
+});
+```
+
+The command is checked like any other (`security.capabilities`), and
+answers `null` when the file was deleted or changed since the drop, the
+handle is unknown, or the platform can't resolve it. Linux reads the
+descriptor's `/proc/self/fd` link, Windows asks
+`GetFinalPathNameByHandleW` (so a file renamed after the drop answers its
+new name). HollerShare (`personal/ghostfile`) sends dropped files this way.
+
+### Read a big shared file in Zig
+
+```zig
+fn onShare(r: *const oriel.share.Received) void {
+    for (r.files) |f| {
+        const file = oriel.share.open(f.handle) catch continue; // a duplicate: close it
+        defer file.close(io);
+        importFile(file, f.name, f.size);
+    }
+    oriel.share.release(r.id); // done with this share's files
+}
+```
+
+Register it with `oriel.share.onReceive(onShare)` in `setup`
+([Share](share.md)).
+
+### Save a picked file's contents for the page
+
+```zig
+pub const async_commands = .{"import_csv"};
+
+pub fn import_csv(gpa: std.mem.Allocator, io: std.Io) !?[]const u8 {
+    const path = try oriel.dialog.openFile(gpa, .{
+        .title = "Import a CSV",
+        .filter = .{ .name = "CSV", .extensions = &.{"csv"} },
+    }) orelse return null;
+    return try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(8 << 20));
+}
+```
+
+## Reference
+
+### What crosses to the page
+
+| Source | Page receives | Read with | Released |
+|---|---|---|---|
+| Web view drop, web view `<input type="file">` | browser `File` | the browser's `File` API | by the browser |
+| Native renderer drop | `File` (extensible) with `name`, `type` (from the OS, or guessed from the extension), `size`, `lastModified` (ms), `webkitRelativePath = ""`, and `handle` (a number) | `text()`, `arrayBuffer()`, `bytes()`, `slice()`, `FileReader`; reads are always asynchronous | last `File`/slice collected, page reload, window closed |
+| Received share | `share:received` event: `{ id, source, text, subject, url, files: [{ handle, name, mime, size }] }` | `oriel.share.file(fileOrHandle)` gives a `File` | `oriel.share.release(id)` in Zig |
+| `oriel.dialog` | nothing by itself: what your command returns | | |
+| Lasting folder | nothing by itself: the id stays in Zig | | `oriel.dialog.forgetFolder` |
+
+A native renderer `File` can't cross windows: `oriel.window.emitTo`
+serializes to JSON. Handles in the two tables are separate numbers; a drop
+handle means nothing to `oriel.share.file`, and the reverse.
+
+### Page API
+
+```ts
+// Native renderer only (the web view has no drop handles).
+oriel.drop.path(file: File | number): Promise<string | null>;
+
+// Received shares (oriel.share; full API on the Share page).
+oriel.share.file(f: { handle: number; name?: string; mime?: string } | number): Promise<File>;
+```
+
+- `oriel.drop.path` sends the `drop:path` command; the native bridges on
+  Linux and Windows answer it (after the command policy check). It throws
+  a `TypeError` for anything but a dropped `File` or a number.
+- `oriel.share.file` reads in 4 MiB chunks through `share:read` (base64,
+  at most 16 MiB per call) and assembles a `File` named `name` (default
+  `"file"`) of type `mime`. It fails with `InvalidHandle` once the share
+  was released, and with `NotReadable` when the file changed after it
+  arrived.
+
+### Errors
+
+The handle table's errors, as Zig and the page see them:
+
+| `file_handles.Error` | Page (native renderer read) | Meaning |
+|---|---|---|
+| `BadHandle` | `NotFoundError` (share: `InvalidHandle`) | never given, or released |
+| `NotReadable` | `NotReadableError` | the file changed since it was handed over (size or mtime), or a read failed |
+| `TooLarge` | | a single read over 64 MiB (the JS side splits reads, so pages don't see it) |
+| `NotAFile` | | a descriptor given to `addFd` isn't a regular file |
+| `OpenFailed` | | opening a dropped or shared path failed (the file is skipped) |
+| `Unsupported` | | out of handles (about 4 billion live ones) |
+| `OutOfMemory` | | |
+
+### Limits
+
+- At most 64 MiB per read (`file_handles.max_read`); larger blobs read in
+  pieces.
+- Native renderer drops: at most 4096 items per drop, and 16 MiB per
+  dropped string (see [Drag and drop](drag-and-drop.md)).
+- `share:read`: at most 16 MiB per call; `share:send` from the page: at
+  most 16 MiB of file bytes in all (bigger files go from Zig paths or as
+  received handles).
+- Received shares that arrive before the page listens: the last 8 are kept
+  for it (and for the first Zig handler).
+
+### Internal API
+
+`FileHandles` (`src/core/file_handles.zig`) is the table both features
+use; apps don't create one. For contributors adding a source of files:
+`init(gpa)`, `deinit()` (closes everything), `addPath(path) !?u32` (null
+for a non-regular file), `addFd(fd) !u32` (takes ownership, closes on
+failure), `read(handle, offset, len, out)`, `duplicate(handle) !std.Io.File`
+(an owned copy), `info(handle) ?Entry` (`size`, `mtime_ns`, `mtimeMs()`),
+`release(handle)` (unknown handles ignored), `count()`, `currentPath`
+(Windows: where the file is now, for OS APIs that take only paths; never
+for the page) and `nativePath` (Linux, macOS, Windows: for `drop:path`).
+All are thread-safe. Linux and Android use Linux syscalls, macOS and iOS
+libc, Windows kernel32.
+
+## Troubleshooting
+
+- **Reading a dropped or shared file fails with `NotReadableError`.** The
+  file was saved, touched or truncated after the user handed it over. Ask
+  for it again; this is the browser's behaviour too.
+- **`oriel.drop.path` fails on macOS, Android or iOS.** Only the Linux and
+  Windows native bridges answer `drop:path`; elsewhere the command is
+  unknown and the promise rejects.
+- **The page never gets `share:received` files' bytes on Linux or
+  Android.** Receiving shares isn't written there yet
+  (`oriel.share.capabilities()` reports `receive: null`).
+
+## Related
+
+- [Drag and drop](drag-and-drop.md): drops into native
+  renderer pages, DataTransfer, effects, drags out.
+- [Dialogs](dialogs.md): open, save and folder pickers;
+  lasting folder access.
+- [Share](share.md): receiving files from other apps, and
+  the share sheet.
+- [Camera](camera.md): image inputs and photos.
+- [Security](security.md): which pages may call which
+  commands.

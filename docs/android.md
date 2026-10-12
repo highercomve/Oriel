@@ -1,196 +1,469 @@
-# Oriel on Android: port plan and tracker
+<!-- Generated from site/content/docs/android.smd by tools/docs/gen-md.mjs: edit that file. -->
 
-Started 2026-09-29 on this branch. Source plan: the "Oriel on Android"
-investigation (2026-09-28). This file is the working checklist; tick items
-as they land and add notes under each milestone.
+# Android
 
-Goal: run Oriel apps natively on Android, desktop form factors first
-(Googlebooks, Android desktop windowing, Chromebooks). Phones come along
-with the same SDK and NDK. GhostPen is the first real app.
+Build, run and ship an Oriel app on Android phones, tablets, Chromebooks and Android desktop mode: the toolchain, the oriel android CLI, the Gradle project and every .android option.
 
-## Decisions
+The same `main.zig`, commands, events and web frontend that run on the
+desktop build for Android. Oriel compiles the app into `liboriel.so` and
+wraps it in a thin Kotlin runtime: an Activity per window hosting
+`android.webkit.WebView`, driven from Zig over JNI. A Gradle project in
+`android/`, generated from `build.zig`, packages it as an APK (sideloading)
+or an AAB (Google Play).
 
-| Area | Decision |
+This page covers the toolchain, the `oriel android` CLI, the Gradle project
+and what Oriel rewrites in it, every `.android` option, the Android-only Zig
+API (`oriel.android`), signing and upgrading an existing project. Native
+Kotlin code of your own goes in [app extensions](extensions.md)
+(your Zig calls it) and [platform hooks](platform-hooks.md)
+(the Activity and WebView call it).
+
+## Availability
+
+| | |
 |---|---|
-| Shell | Thin Kotlin `OrielActivity` hosting `android.webkit.WebView`, talking to a Zig `liboriel.so` over JNI (Tauri v2 shape). NativeActivity rejected: no WebView without JNI, poor text input. |
-| Windows | One Activity per window: resizable, multi-instance, freeform desktop mode. |
-| ABIs | `arm64-v8a` (Snapdragon X Elite Googlebooks, phones, ARM Chromebooks; only ABI with Hexagon) and `x86_64` (Intel Panther Lake Googlebooks, emulator). One APK/AAB carries both. |
-| Local models | ggml Vulkan, OpenCL and Hexagon backends (already vendored), each a separate `.so`, probed with a self-test; CPU always linked in as fallback. |
-| Packaging | Generated Gradle project driven by `oriel android init / dev / build`. APK for sideloading, AAB for Play. |
-| minSdk | ≥ 29 (avoids emulated TLS; MediaProjection audio capture). |
-| Chromebooks today | Linux build in Crostini stays the fallback until the Android app replaces it. |
+| Devices | Android 10 (API 29) and newer: phones, tablets, Chromebooks, Android desktop windowing |
+| ABIs | `arm64-v8a` (phones, ARM Chromebooks, Snapdragon laptops) and `x86_64` (Intel Chromebooks, the emulator); one APK or AAB carries both |
+| Web view | `android.webkit.WebView` (Chromium, updated through the Play Store) |
+| Builds on | Linux, macOS and Windows, with the Android SDK, a JDK and the NDK |
+| Packages | APK and AAB, through the generated Gradle project |
+| Compile and target SDK | 36 (Android 16), what Google Play requires for new submissions |
 
-## Architecture
+Most modules work as on the desktop. These don't exist on Android, so an
+app's `.tray = true` resolves to `oriel.tray.available = false` there
+([Modules](modules.md)): `tray`, `menu`, `input`,
+`media_server`, `layer_shell`. `updater` is off unless the app turns it on
+(the stores update apps). `global_shortcut` registers in-app shortcuts
+(hardware keyboard, while a window has focus). What replaces the
+desktop-only parts:
 
-```
-Web      app UI over app:// (dev server via adb reverse)
-Kotlin   OrielActivity + WebView: app:// via shouldInterceptRequest,
-         IPC token injected at document start, JS→Zig via WebMessageListener
-JNI      Java_…_NativeLib_* exports from Zig; worker threads AttachCurrentThread
-Zig      liboriel.so = Oriel core + src/platform/android/
-         (30-declaration contract in platform.zig), ggml CPU linked in;
-         libggml-vulkan.so / libggml-opencl.so / libggml-hexagon.so (+HTP v73–v81)
-```
-
-Platform contract mapping:
-
-| Contract area | On Android |
+| Desktop | Android |
 |---|---|
-| Event loop | Kotlin main thread drives the Activity; Zig processes queued lifecycle, IPC and input events. `quit()` posts a quit marker and calls `finish()`. |
-| Dispatch to UI thread | `Handler(Looper.getMainLooper()).post` |
-| createWindow | New Activity with `FLAG_ACTIVITY_NEW_TASK \| MULTIPLE_TASK` (or `singleInstancePerTask`, API 31+). Cross-window `emitTo` is in-process. |
-| Size & placement | `ActivityOptions.setLaunchBounds`, manifest `<layout>` min size, resize from WindowMetrics. |
-| Drag, click-through, always-on-top | No-ops; caption bar handles dragging. |
-| IPC bridge | Mirrors `linux/bridge.zig`; token and isolation checks (`ipc.zig`) must behave identically. |
-| Dialogs | AlertDialog + Storage Access Framework picker. Folders: `ACTION_OPEN_DOCUMENT_TREE` with a persisted read/write grant (`oriel.dialog.openFolder`, `saveToFolder` through `DocumentsContract.createDocument`). |
-| Clipboard, paths | ClipboardManager; `getFilesDir` / `getCacheDir` / `getExternalFilesDir` handed over at start. Apps use `oriel.paths.appData` / `appCache` (the files and cache dirs themselves) rather than `oriel.android.paths`. |
-| HTTP from Zig | A plain `std.http.Client` on the app's `io` (`init.io`): host names resolve through bionic's getaddrinfo (`io.zig`), CA certificates come from `/system/etc/security/cacerts` (std reads them). `oriel.android.preconnect` is deprecated and no longer needed. An `std.Io.Threaded` the app makes itself resolves from /etc/resolv.conf, which Android lacks: use Oriel's `io`. |
-| Single instance | Launcher Activity `singleTask`, `onNewIntent` → `on_second_instance`. |
-| Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |
-| Global shortcuts | In-app only (Android has no system-wide hotkeys): `global_shortcut.register` works while one of the app's windows has focus, with a hardware keyboard. `OrielActivity.dispatchKeyEvent` matches the key before the WebView, and `onProvideKeyboardShortcuts` lists each shortcut's description in the system's Meta+/ helper. |
-| System AI | `-Dsystem_ai`: Gemini Nano through ML Kit's GenAI Prompt API (`com.google.mlkit:genai-prompt:1.0.0-beta4`, added to Gradle only with the flag), as Oriel's own extension `oriel.system_ai` (`OrielSystemAi.kt`). Text and one image, streaming, download with progress. Supported phones only (AICore with Gemini Nano: Pixel 9+, recent Galaxy S); elsewhere `status()` is `unavailable`. Needs Kotlin 2.3 in the Gradle project (the template's; ML Kit's metadata is 2.3): see [Upgrading an existing project](#upgrading-an-existing-project). |
-| Menus, tray, input, media server | Not available: an app's `.tray = true` resolves to `oriel.tray.available = false`, and calls under `if (oriel.tray.available)` aren't built ([Availability](modules.md#availability)). No stubs. |
+| Tray icon | A Quick Settings tile (`.android.tile`), and actions on the foreground service's notification |
+| System-wide hotkeys | In-app shortcuts (`global_shortcut`), listed in the system's Meta+/ helper |
+| Typing into other apps (`input`) | The Oriel keyboard (`.android.input_method`) and `oriel.android.commitText` |
+| Running in the background | A foreground service (`oriel.android.setForegroundService`) |
+| Updater | The Play Store |
 
-## Step zero: the silent-GTK trap
+## Quick start
 
-Zig treats Android as Linux (`os.tag == .linux`, `abi == .android`). Every
-`switch (builtin.os.tag)` backend selector would silently pick GTK /
-PulseAudio / X11. Fix before any Android code compiles: add `is_android` to
-`src/oriel.zig`, give every selector an explicit Android branch (real
-backend or `@compileError`), and use `is_desktop_linux` in `build.zig` and
-`core/log.zig`.
-
-Selectors (paths under `src/`):
-
-- `platform/platform.zig`
-- `core/permissions.zig`
-- `plugins/global_shortcut.zig`, `plugins/clipboard.zig`, `plugins/input.zig`
-- `updater_core.zig`
-- `modules/notification.zig`, `store.zig`, `menu.zig`, `tray.zig`,
-  `media_scheme.zig`, `fs_watch.zig`, `deep_link.zig`, `dialog.zig`,
-  `media/open.zig`, `audio_capture.zig`
-- Also: `core/log.zig` (glib), `build.zig` GTK/Wayland/Pulse/X11 gating,
-  and the musl ABI reset in `build.zig` that must not apply to Android.
-
-## Running it on a device
-
-Needs a JDK 17, the Android SDK (platform-tools, Gradle 8.11.1+ or Android
-Studio) and the NDK (`$ANDROID_NDK_HOME`, or `$ANDROID_HOME/ndk/<version>`).
+Install a JDK 17 or newer, the Android SDK (platform-tools and
+`platforms;android-36`; Android Studio installs both) and the NDK, then point
+the build at them:
 
 ```sh
-cd examples/showcase               # or your app
-oriel android init                 # android/ already exists in the examples
-oriel android dev --abi x86_64     # emulator; arm64 for a Chromebook or phone
-adb logcat -s Oriel chromium       # logs
+export ANDROID_HOME=$HOME/Android/Sdk          # the SDK (or ANDROID_SDK_ROOT)
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358   # or let Oriel take the newest under $ANDROID_HOME/ndk
 ```
 
-`oriel android dev/build` forward Zig `-D` options, for example
-`oriel android dev --abi arm64 -Dnative_ui` or
-`oriel android build --abi arm64 --apk -Dnative_ui -Doptimize=ReleaseFast`.
-The native UI APK uses the same app sources, rendered by QuickJS and Oriel's
-native view layer. It remains experimental and implements a subset of browser
-HTML and CSS; see [Native renderer](native-renderer.md).
-Explicit options such as `-Doptimize=ReleaseFast` replace the defaults.
+In an Oriel app:
 
-`oriel android dev` builds `zig-out/jniLibs/<abi>/liboriel.so`, installs a
-debug APK and starts it. `oriel android build` makes the release APK and AAB
-for both ABIs (signed with `$ORIEL_ANDROID_KEYSTORE`,
-`$ORIEL_ANDROID_KEYSTORE_PASSWORD`, `$ORIEL_ANDROID_KEY_ALIAS`,
-`$ORIEL_ANDROID_KEY_PASSWORD`). Without the CLI: `zig build
--Dtarget=aarch64-linux-android` then `gradle installDebug` in `android/`.
+```sh
+oriel android init                 # android/: the Gradle project, from build.zig
+oriel android dev                  # debug build on the connected device or emulator, with the dev server
+oriel android build                # release APK and AAB, arm64-v8a and x86_64
+adb logcat -s Oriel chromium       # the app's logs
+```
 
-Release builds are small: Zig strips the library (Debug builds keep their
-symbols) and R8 shrinks the Kotlin side; a hello world's APK is 0.8 MB.
-R8 can't see what native code calls by name over JNI, so
-`android/app/proguard-rules.pro` keeps Oriel's runtime (`dev.oriel.**`). If
-your Zig code calls classes of your own through JNI, add a `-keep` rule for
-them there, or put the rules in a file and name it in
-`.android = .{ .proguard_rules = b.path("src/android/rules.pro") }`: every
-build writes them into `proguard-rules.pro` between `# oriel:proguard`
-markers. Your own Kotlin or Java files go in
-`.android = .{ .sources = &.{b.path("src/android/Helper.kt")} }`:
-every build copies each to `app/src/main/java/<its package as a path>/`
-(and removes the ones you drop from the list). Projects generated before
-this change keep their old `build.gradle.kts`; `oriel android init --force`
-regenerates it.
+`oriel android dev` asks adb for the device's ABI, builds the dev library
+for it, installs a debug APK, forwards the dev server's port to the device
+(`adb reverse`) and starts the app. Run the frontend's dev server yourself
+(`npm run dev`). Nothing in `main.zig` changes for Android.
 
-Apps built with `.kokoro = true` ship espeak-ng's phoneme data as APK assets
-(`zig-out/android-assets`), which the Kotlin runtime copies to
-`<filesDir>/espeak-ng-data` on first start and after each update. New
-projects point Gradle at that directory; a project generated earlier needs
-`sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")` (the
-path from the app module to `zig-out`) inside `android { }` in
-`app/build.gradle.kts`. See [Offline text to speech](tts.md).
+## How it works
 
-For behavior beyond JNI helpers, register app-owned classes with
-`.android.hooks` (formerly `.android.extensions`, which still works). Oriel
-regenerates the internal `OrielAppExtensions` registry on every Android build;
-implement `OrielAndroidHooks` (`OrielAndroidExtension` in Java) in your own
-Kotlin or Java sources. The generated runtime dispatches lifecycle, WebView,
-file-picker, permission and activity-result hooks without requiring edits to
-Oriel's files. See [Android platform hooks](android-extensions.md) for registration,
-request-code namespaces and callback ownership.
+```mermaid
+flowchart LR
+  subgraph Build["zig build -Dtarget=aarch64-linux-android"]
+    Zig["main.zig + Oriel"] -->|"NDK sysroot"| Lib["zig-out/jniLibs/&lt;abi&gt;/<br/>liboriel.so, liboriel_exec.so"]
+    Opts["build.zig<br/>AppOptions.android"] -->|"package_tool android-project"| Proj["android/<br/>runtime, manifest regions,<br/>sources, dependencies, R8 rules"]
+  end
+  Proj -->|"gradle assembleRelease / bundleRelease"| Apk["APK / AAB"]
+  Lib --> Apk
+  subgraph Device
+    Act["OrielActivity<br/>(one per window)"] -->|"WebMessageListener"| Bridge["bridge.zig<br/>token + origin checks"]
+    WV["WebView<br/>(app.localhost)"] -->|"shouldInterceptRequest"| Assets["scheme.zig<br/>embedded assets"]
+    Bridge -->|"JNI"| Core["liboriel.so<br/>App, commands, modules"]
+    Core -->|"OrielRuntime calls"| Act
+  end
+```
 
-The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except
-for the parts between `<!-- oriel:NAME begin -->` and `<!-- oriel:NAME end -->`
-comments: `permissions`, `features`, `queries`, `main-activity` (its intent
-filters: URL schemes) and `components` (the tile, the keyboard, the audio
-service). Every build rewrites those from build.zig
-(`build/android_manifest.zig`), so a permission declared after the first
-build reaches the APK. An entry you declare yourself outside them (the same
-element and `android:name`) isn't generated a second time. Permissions and
-features no `.permissions` kind covers go in `.android = .{ .permissions = &.{.{
-.name = "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" }}, .features =
-&.{...} }`: the build merges them into those regions, one entry per name
-(the kind's entry stays, but an extra without `max_sdk` lifts its
-`maxSdkVersion`). A manifest
-written before the markers existed gets them on its next build, with
-Oriel's old entries moved inside.
+**The library.** For an Android target, `oriel.addApp` builds the app as
+`liboriel.so` against the NDK's sysroot (Zig ships no bionic), with a
+generated root that exports the JNI entry point (`NativeLib.start`, which
+runs the app's `main` on its own thread) and sends logs and panics to
+logcat. Production builds are `ReleaseSafe` and Debug for the dev library,
+unless you pass `-Doptimize`. Next to it goes `liboriel_exec.so`, a small
+launcher that runs the app's `main` in a process of its own, for apps that
+start themselves as helper processes (`src/platform/android/launcher.zig`).
+The Gradle project extracts native libraries on install so Android lets the
+app run it.
 
-Checks that need no NDK: `zig build check -Dtarget=aarch64-linux-android`,
-`scripts/android/check.sh` (apps with llama/whisper) and
-`scripts/android/check-runtime.sh` (compiles the Kotlin runtime and checks
-the JNI contract between Zig and Kotlin).
+**The runtime.** The Kotlin side (`app/src/main/java/dev/oriel/`:
+`OrielActivity.kt`, `OrielRuntime.kt`, `OrielWindow.kt`, ...) is Oriel's,
+and must match the library it talks to over JNI. The launcher icon opens
+`OrielMainActivity` (`singleTask`); every other window is an
+`OrielWindowActivity` in its own task, so in desktop mode each window is a
+separate, resizable window. Pages load from `https://app.localhost/`
+through `shouldInterceptRequest`; the bridge script and IPC go over a
+`WebMessageListener` with the same token and origin checks as every platform
+(`src/platform/android/bridge.zig`). The UI thread's queue is an ALooper
+(`Shell.zig`).
 
-Link check without the NDK (where dl.google.com is unreachable):
-`scripts/android/bionic-sysroot.py <dir>` builds a stand-in NDK from AOSP's
-bionic sources: headers, versioned stub libc/libm/libdl, liblog,
-libandroid and libaaudio stubs, crtbegin_so/crtend_so. `ANDROID_NDK_HOME=<dir>
-zig build -Dtarget=...` then links for real, and `readelf --dyn-syms` shows
-any import the device wouldn't resolve. Never ship what it builds.
+**The Gradle project.** `oriel android init` writes `android/` from Oriel's
+template (`android/template`), with the app's id, name, version, icon,
+permissions and URL schemes. After that the project is yours, except for
+the parts every Android build rewrites from `build.zig` (the
+`package_tool android-project --runtime-only` step,
+`tools/package/android.zig`):
 
-GPU/NPU: `-Dggml_vulkan` (any GPU), `-Dggml_opencl` (Adreno),
-`-Dggml_hexagon_prebuilt=<dir>` (Snapdragon NPU: `libggml-hexagon.so` and
-`libggml-htp-v*.so` from llama.cpp's Snapdragon build at the vendored commit,
-made in `ghcr.io/snapdragon-toolchain/arm64-android`). `ORIEL_GGML_CPU=1`
-forces the CPU; `ORIEL_GGML_BLOCKLIST=Mali-G57,...` skips devices.
+| Rewritten on every build | Where |
+|---|---|
+| Oriel's Kotlin runtime; files a newer Oriel dropped are deleted (your own subpackages under `dev/oriel/` are left alone) | `app/src/main/java/dev/oriel/*.kt` |
+| The generated registries of hooks and extensions | `dev/oriel/OrielHooksRegistry.kt`, `dev/oriel/OrielExtensions.kt` |
+| The manifest's generated regions: `permissions`, `features`, `queries`, `main-activity` (URL scheme intent filters), `components` (the tile, the keyboard, the audio service, the camera provider, native libraries) | between `<!-- oriel:NAME begin -->` and `<!-- oriel:NAME end -->` in `app/src/main/AndroidManifest.xml` |
+| Your Kotlin/Java sources (`.android.sources`, hooks', extensions'); a file dropped from the list is removed | `app/src/main/java/<package path>/`, tracked in `app/.oriel-sources` |
+| Maven dependencies (and, for projects older than 0.9.9, the assets directory) | `app/oriel-dependencies.gradle`, applied from `app/build.gradle.kts` between `// oriel:dependencies` markers |
+| R8 rules (`.android.proguard_rules`, plus a `-keep` per extension class) | between `# oriel:proguard` markers in `app/proguard-rules.pro` |
 
-## Google Play build baseline
+Everything else (Gradle files, plugin versions, `versionCode` and
+`versionName`, resources, the rest of the manifest) is written once and kept.
+An element you declare yourself outside the regions (the same element and
+`android:name`) isn't generated a second time. `oriel android init --force`
+(`zig build android-project -Dandroid_force=true`) rewrites every file from
+the template; save your edits first.
 
-New Android projects compile and target Android 16 (API 36), the minimum for
-new Google Play submissions since August 31, 2026. Templates use Android
-Gradle Plugin 8.13.2 and Kotlin 2.3.21; `oriel android init` creates
-a Gradle 8.14.3 wrapper. Install `platforms;android-36` in your Android SDK.
-The minimum supported device API remains 29 (Android 10).
+**Files and directories.** `oriel.paths.appData` / `appCache` are the
+files and cache directories themselves. Large downloads (models) belong in
+the app-specific external files directory, where `adb push` reaches them.
+Assets bundled with `-Dkokoro` (espeak-ng's data) and extensions'
+`.android.assets` go under the APK's assets (`zig-out/android-assets`); the
+runtime copies espeak-ng's data to `filesDir` on first start and after each
+update.
 
-Project generation preserves existing edited Gradle files. For an existing
-project, update its compile/target SDK and plugin versions, or use
-`oriel android init --force` to regenerate the templates after saving your edits.
-Play submission still requires app signing, a valid store listing, privacy
-and data disclosures, and testing; targeting API 36 alone does not complete it.
+**Networking.** Use the app's `io` (`init.io`): host names resolve through
+bionic's `getaddrinfo` (`src/platform/android/io.zig`), and CA certificates
+come from `/system/etc/security/cacerts`. An `std.Io.Threaded` the app makes
+itself reads `/etc/resolv.conf`, which Android doesn't have, and fails every
+lookup.
 
-References: [target API requirements](https://support.google.com/googleplay/android-developer/answer/11926878)
-and [Android Gradle Plugin compatibility](https://developer.android.com/build/releases/about-agp).
+**Memory.** Oriel's allocations and the app's `gpa` use bionic's malloc
+(`src/core/heap.zig`), the heap ART and the WebView use too. On memory
+pressure and in the background a built-in [`oriel.lifecycle`](lifecycle.md)
+subscriber returns malloc's free pages to the system (`mallopt(M_PURGE)`).
+`onTrimMemory` levels become `memory_pressure` (`moderate` at 10, `critical`
+at 15 and from 40), and the started-Activity count becomes `background` /
+`foreground`.
 
-## Upgrading an existing project
+## Examples
 
-Builds keep your Gradle files (only the Kotlin runtime, the manifest's generated parts, your sources and R8
-rules and `app/oriel-dependencies.gradle` are rewritten), so a project generated by an older Oriel keeps its
-plugin versions. Most features work with them; these need changes by hand:
+### A Quick Settings tile
 
-- **`-Dsystem_ai`** adds ML Kit's GenAI Prompt API, whose metadata needs **Kotlin 2.3**. Projects generated
-  before 0.10 have Kotlin 2.0.21, and the build stops with an error naming the file. In `build.gradle.kts`
-  (the project's root), change
+```zig
+// build.zig
+.android = .{ .tile = "Dictate" },
+```
+
+```zig
+// src/main.zig, in setup
+if (oriel.target.is_android) oriel.android.onSystemEvent(onSystemEvent);
+
+fn onSystemEvent(name: []const u8, data: []const u8) void {
+    _ = data;
+    if (std.mem.eql(u8, name, "tile")) {
+        recording = !recording;
+        oriel.android.setTile(recording, if (recording) "Listening" else "Dictate");
+    }
+}
+```
+
+```js
+// The page sees the same events.
+oriel.listen("android:event", ({ name, data }) => console.log(name, data));
+```
+
+### Keep recording in the background
+
+```zig
+// build.zig: the microphone permission declares the audio service.
+.permissions = .{ .microphone = "Dictation turns your speech into text" },
+```
+
+```zig
+try oriel.android.setForegroundService(true, "Dictation", "Listening…", &.{
+    .{ .id = "stop", .label = "Stop" },
+});
+// A tap on "Stop" sends the system event "action" with data "stop";
+// the headset button sends "media-button" while the service runs.
+try oriel.android.setForegroundService(false, "", "", &.{});
+```
+
+### Type into any app with the Oriel keyboard
+
+```zig
+// build.zig
+.android = .{ .input_method = "My App voice keyboard" },
+```
+
+```zig
+fn onSystemEvent(name: []const u8, data: []const u8) void {
+    _ = data;
+    if (std.mem.eql(u8, name, "ime-mic")) {
+        oriel.android.setKeyboardStatus("Listening…", "■");
+        startDictation();
+    }
+}
+
+fn onFinalText(text: []const u8) void {
+    oriel.android.commitText(text) catch |err| std.log.warn("commitText: {s}", .{@errorName(err)}); // error.NoKeyboard
+}
+```
+
+The user enables the keyboard in the system settings and picks it as their
+input method. The showcase's "dictate anywhere" uses the tile, the keyboard's
+button and the headset button this way.
+
+### A Kotlin helper your Zig calls over JNI
+
+```zig
+// build.zig
+.android = .{
+    .sources = &.{b.path("src/android/Helper.kt")}, // needs a package line: copied to app/src/main/java/com/example/app/
+    .proguard_rules = b.path("src/android/rules.pro"),
+},
+```
+
+```ini
+# src/android/rules.pro: R8 can't see calls made by name from native code.
+-keep class com.example.app.Helper { *; }
+```
+
+For Kotlin code that Zig calls with a method name and bytes, an
+[app extension](extensions.md) does the JNI, threads, keep
+rules and errors for you.
+
+### A vendor SDK from Maven
+
+```zig
+.android = .{
+    .dependencies = &.{"com.example:vision-sdk:2.4.1"},
+    .native_libraries = &.{.{ .name = "libOpenCL.so" }}, // the SDK opens the GPU driver
+    .features = &.{.{ .name = "android.hardware.camera.autofocus" }},
+    .permissions = &.{.{ .name = "android.permission.VIBRATE" }},
+},
+```
+
+## Reference
+
+### Toolchain
+
+| Tool | Found from |
+|---|---|
+| NDK | `-Dandroid_ndk=<path>`, else `$ANDROID_NDK_HOME`, `$ANDROID_NDK_ROOT`, or the newest `$ANDROID_HOME/ndk/<version>` (`$ANDROID_SDK_ROOT` too) |
+| Android SDK | `$ANDROID_HOME` / `$ANDROID_SDK_ROOT` (Gradle's `local.properties` works too); install `platforms;android-36` and platform-tools |
+| Gradle | `android/gradlew` when the project has one (`oriel android init` creates a Gradle 8.14.3 wrapper when `gradle` is on `PATH`), else `gradle` on `PATH` (8.11.1 or newer) |
+| JDK | 17 or newer, for Gradle |
+| adb | `PATH` (platform-tools), for `dev` and `devices` |
+
+Without an NDK, Android targets still type-check:
+`zig build check -Dtarget=aarch64-linux-android`. A real build without one
+stops with an error naming the options above.
+
+### `oriel android`
+
+| Command | What it does |
+|---|---|
+| `oriel android init [--force]` | Runs `zig build android-project` (with `-Dandroid_force=true` for `--force`), then creates a Gradle wrapper if the project has none and `gradle` is on `PATH`. |
+| `oriel android dev [--port N] [--abi arm64\|x86_64] [-Doption[=value]...]` | Builds the `android-dev` step for the device's ABI (from `adb shell getprop ro.product.cpu.abi`, or `--abi`), `gradle installDebug`, `adb reverse tcp:N tcp:N` (default 5173), and starts `<applicationId>/dev.oriel.OrielMainActivity`. |
+| `oriel android build [--abi arm64\|x86_64\|all] [--apk] [--aab] [-Doption[=value]...]` | `zig build -Dtarget=... -Doptimize=ReleaseSafe` for each ABI (default all), then `assembleRelease` and/or `bundleRelease` (both without `--apk`/`--aab`). Outputs: `android/app/build/outputs/apk/release/` and `.../bundle/release/`. |
+| `oriel android devices` | `adb devices -l`. |
+
+`dev` and `build` forward `-D` options to `zig build` (`-Dnative_ui`,
+`-Dggml_vulkan`, ...); an explicit `-Doptimize=...` replaces the default.
+The app's id comes from `applicationId` in `android/app/build.gradle.kts`.
+All of them need an Oriel app (a `build.zig.zon` in the directory or a
+parent); `dev` and `build` need `android/` (`oriel android init` first).
+
+### `zig build` steps for Android targets
+
+| Step | What it does |
+|---|---|
+| `zig build -Dtarget=aarch64-linux-android` | The production `liboriel.so` and `liboriel_exec.so` in `zig-out/jniLibs/<abi>/`, the APK assets in `zig-out/android-assets/`, and the Gradle project's refresh (above). |
+| `zig build android-dev -Dtarget=...` | The dev library (loading `frontend.dev.url`) into `zig-out/jniLibs/<abi>/`. It doesn't refresh the Gradle project: after changing `.android` options, run a plain `zig build -Dtarget=...` (or `oriel android build`) once. |
+| `zig build android-project [-Dandroid_force=true]` | Writes `android/` from the template; existing files are kept unless forced (the manifest gets its regions synced). |
+| `zig build check -Dtarget=...` | Type-check only, no NDK needed. |
+
+Targets are `aarch64-linux-android` and `x86_64-linux-android`; the API
+level is 29 unless the target names a higher one. `zig build types` doesn't
+work for Android targets: generate TypeScript with a native build.
+
+### App metadata on Android
+
+| From `build.zig` | Becomes |
+|---|---|
+| `.package.id` (default `dev.oriel.<name>`) | `applicationId` and `namespace` |
+| `.package.name` (default `.name`) | The app's label (`strings.xml`), the Gradle project name |
+| `.package.version` (default `0.1.0`) | `versionName`, and `versionCode` = MAJOR×10000 + MINOR×100 + PATCH (minor and patch below 100; a `-pre` or `+build` suffix is ignored) |
+| `.icon` | The launcher icons, resized at every build |
+| `.url_schemes` | Intent filters on `OrielMainActivity` (`VIEW`, `BROWSABLE`); see [Deep links](deep-links.md) |
+| `.permissions` | `<uses-permission>` and `<uses-feature>` entries ([Permissions](permissions.md)) |
+| `.camera.transcode` | Whether picked HEIC/AVIF images are transcoded to JPEG ([Camera](camera.md)) |
+
+`versionCode` and `versionName` are written into `app/build.gradle.kts` by
+`oriel android init` only: when you bump `.package.version`, change them
+there too (or regenerate with `--force`). The name and version can't hold
+`" $ \ & < > '`, control characters, or a leading `@` or `?` (they go into
+Kotlin strings and `strings.xml`).
+
+### `AppOptions.android`
+
+```zig
+.android = .{
+    .tile = "Dictate",
+    .input_method = "Voice keyboard",
+    .permissions = &.{.{ .name = "android.permission.BLUETOOTH", .max_sdk = 30 }},
+    .features = &.{.{ .name = "android.hardware.bluetooth_le", .required = false }},
+    .native_libraries = &.{.{ .name = "libOpenCL.so" }},
+    .sources = &.{b.path("src/android/Helper.kt")},
+    .hooks = &.{.{ .class = "dev.example.MyHooks", .sources = &.{b.path("src/android/MyHooks.kt")} }},
+    .dependencies = &.{"com.example:sdk:1.2.3"},
+    .proguard_rules = b.path("src/android/rules.pro"),
+},
+```
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `tile` | `?[]const u8` | `null` | A Quick Settings tile with this label (`OrielTileService`, in the `components` region). Taps send the system event `tile`. |
+| `input_method` | `?[]const u8` | `null` | The Oriel keyboard, with this name in the system's keyboard list (`OrielInputMethod`). `oriel.android.commitText` types through it. |
+| `permissions` | `[]const Permission` | `&.{}` | `<uses-permission>`s no `.permissions` kind declares. `Permission = struct { name: []const u8, max_sdk: ?u32 = null, flags: ?[]const u8 = null }` (`android:maxSdkVersion`, `android:usesPermissionFlags`). One entry per name: a name a kind declares keeps that entry, but an extra without `max_sdk` lifts its `maxSdkVersion`. |
+| `features` | `[]const Feature` | `&.{}` | `<uses-feature>`s. `Feature = struct { name: []const u8, required: bool = false }`; one per name, required if any declaration requires it. |
+| `native_libraries` | `[]const Feature` | `&.{}` | `<uses-native-library>` entries (Android 12+ only lets apps open vendor libraries they declare), in the `components` region; `required` defaults to `false` so a missing library doesn't block installation. Repeated names merge; at most 64. The template already declares `libOpenCL.so` and `libcdsprpc.so` (for ggml) outside the regions. |
+| `sources` | `[]const LazyPath` | `&.{}` | Kotlin (`.kt`) or Java (`.java`) files copied on every build to `app/src/main/java/<path of the file's package line>/`. A file without a `package` line, two files with the same destination, or a file named like one of Oriel's runtime files is an error. |
+| `hooks` | `[]const AndroidHook` | `&.{}` | Platform hooks: `{ .class, .sources, .dependencies }` entries implementing `dev.oriel.OrielAndroidHooks`, constructed once at launch in this order, at most 64. See [Platform hooks](platform-hooks.md#android-declare). |
+| `dependencies` | `[]const []const u8` | `&.{}` | Maven coordinates, exactly `group:artifact:version` (letters, digits, `.`, `_`, `-`; no `+` or ranges), at most 64, written to `app/oriel-dependencies.gradle`. Hooks' and extensions' dependencies join them, each once. Pin a fixed version: `latest.release` and `-SNAPSHOT` aren't rejected but change under you. |
+| `proguard_rules` | `?LazyPath` | `null` | R8 rules for release builds, written between the `# oriel:proguard` markers of `app/proguard-rules.pro`. Rules outside the markers are kept. |
+
+Names in `permissions`, `features` and `native_libraries` can't be empty or
+hold quotes, `<`, `>`, `&`, whitespace or control characters (build error).
+The project's repositories are `google()` and `mavenCentral()`
+(`settings.gradle.kts`, yours to extend); dependencies must also suit the
+project's Kotlin and AGP versions.
+
+Kotlin code of app extensions is declared on the extension
+(`.extensions[].android`: `class`, `sources`, `dependencies`, `assets`):
+[App extensions](extensions.md#appoptions).
+
+### Zig: `oriel.android`
+
+Declared only for Android targets (an empty namespace elsewhere): guard calls
+with `if (oriel.target.is_android)`.
+
+```zig
+/// Keep the app running with an ongoing notification: a foreground service
+/// of type microphone (needs .permissions.microphone, granted first), with
+/// `actions` as buttons. `on = false` stops it. Any thread.
+pub fn setForegroundService(on: bool, title: []const u8, text: []const u8, actions: []const Action) !void; // error.ForegroundServiceFailed
+pub const Action = struct { id: []const u8, label: []const u8 };
+
+/// System events (below), on the main thread. null removes the handler.
+pub fn onSystemEvent(handler: ?SystemEventHandler) void;
+pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
+
+/// Type `text` into the focused field of the app in front, through the Oriel
+/// keyboard (.android.input_method). Any thread.
+pub fn commitText(text: []const u8) !void; // error.NoKeyboard: not the active keyboard, or no field
+/// Whether the Oriel keyboard is up with a field to type into. Any thread.
+pub fn keyboardActive() bool;
+/// The Oriel keyboard's status line and its main button's label.
+pub fn setKeyboardStatus(status: []const u8, button: []const u8) void;
+/// The Quick Settings tile's state and label ("" keeps the label).
+pub fn setTile(active: bool, label: []const u8) void;
+```
+
+The namespace also holds the backend's internals (`window`, `bridge`,
+`runtime`, `jni`, `paths`, `exportStart`, `panic`, ...), which the generated
+library root uses; apps use `oriel.paths` rather than `oriel.android.paths`.
+
+### System events
+
+Delivered to the `onSystemEvent` handler and to the page as `android:event`
+with `{ name, data }` (both strings). Not queued: a page that isn't
+listening misses them.
+
+| `name` | `data` | When |
+|---|---|---|
+| `tile` | `""` | The Quick Settings tile was tapped (`.android.tile`). |
+| `action` | the action's `id` | A button on the foreground service's notification. |
+| `media-button` | the key code | The headset button, while the foreground service runs. |
+| `ime-mic` | `""` | The Oriel keyboard's main button. |
+| `ime-open` | the field's input type | The Oriel keyboard came up. |
+| `ime-close` | `""` | It went away. |
+
+An event that arrives while the app isn't running starts the app instead of
+being delivered. Memory pressure, background and foreground are
+[`oriel.lifecycle`](lifecycle.md)'s, as on every platform;
+notification taps are [`oriel.notification`](notifications.md)'s.
+
+### Signing and release builds
+
+`oriel android build` signs the release APK and AAB when these are set
+(read by the template's `app/build.gradle.kts`):
+
+| Variable | Meaning |
+|---|---|
+| `ORIEL_ANDROID_KEYSTORE` | The keystore file. Unset: the release outputs are unsigned (the CLI says so). |
+| `ORIEL_ANDROID_KEYSTORE_PASSWORD` | Its password. |
+| `ORIEL_ANDROID_KEY_ALIAS` | The key's alias. |
+| `ORIEL_ANDROID_KEY_PASSWORD` | The key's password. |
+
+```sh
+keytool -genkeypair -v -keystore release.jks -alias app -keyalg RSA -keysize 4096 -validity 10000
+ORIEL_ANDROID_KEYSTORE=$PWD/release.jks ORIEL_ANDROID_KEYSTORE_PASSWORD=... \
+ORIEL_ANDROID_KEY_ALIAS=app ORIEL_ANDROID_KEY_PASSWORD=... oriel android build
+```
+
+Release builds are small: Zig strips release libraries (Debug ones keep
+their symbols, and Gradle keeps the libraries as built), and R8 shrinks the
+Kotlin side (`isMinifyEnabled`); a hello world's APK is under 1 MB. R8 can't
+see what native code calls by name, so `proguard-rules.pro` keeps
+`dev.oriel.**`, and your own JNI targets need rules of their own
+(`.proguard_rules`). Play also needs a store listing, data-safety
+disclosures and testing; see [Signing](signing.md) and
+[Packaging](packaging.md).
+
+### GPU, NPU and helper processes
+
+Local AI ([Local AI](local-ai.md)) runs on the CPU with ARM
+dotprod kernels by default (`-Dggml_arm=baseline|dotprod|i8mm`). Optional
+backends, each probed with a self-test and falling back to the CPU:
+
+| Option | Backend |
+|---|---|
+| `-Dggml_vulkan` | Vulkan, any GPU (loaded at run time, no `libvulkan.so` dependency) |
+| `-Dggml_opencl` | OpenCL, Adreno GPUs |
+| `-Dggml_hexagon_prebuilt=<absolute dir>` | Snapdragon NPU: `libggml-hexagon.so` and `libggml-htp-v*.so` from llama.cpp's Snapdragon build at the vendored commit; arm64 only |
+
+`ORIEL_GGML_CPU=1` forces the CPU; `ORIEL_GGML_BLOCKLIST=Mali-G57,...` skips
+devices.
+
+### Google Play baseline
+
+New projects compile and target API 36, with minSdk 29, Android Gradle
+Plugin 8.13.2, Kotlin 2.3.21, Java 17 bytecode and a Gradle 8.14.3 wrapper.
+Projects generated earlier keep their own versions: see below.
+
+### Upgrading an existing project
+
+Builds keep your Gradle files: only the Kotlin runtime, the manifest's
+generated regions, your sources, R8 rules and `app/oriel-dependencies.gradle`
+are rewritten. So a project generated by an older Oriel keeps its plugin
+versions, `compileSdk` and `targetSdk`. Most features work with them; these
+need changes by hand:
+
+- **Kotlin 2.3 for `-Dsystem_ai`.** ML Kit's GenAI Prompt API (added with
+  `-Dsystem_ai`) is built with Kotlin 2.3. Projects generated before 0.10
+  have Kotlin 2.0.21, and the build stops with an error naming the file. In
+  the root `build.gradle.kts`, change
 
   ```kotlin
   id("org.jetbrains.kotlin.android") version "2.0.21" apply false
@@ -202,8 +475,9 @@ plugin versions. Most features work with them; these need changes by hand:
   id("org.jetbrains.kotlin.android") version "2.3.21" apply false
   ```
 
-  and in `app/build.gradle.kts` replace the `kotlinOptions { jvmTarget = "17" }` block inside `android { }`
-  (an error since Kotlin 2.2) with this, after `android { }`:
+  and in `app/build.gradle.kts` replace the `kotlinOptions { jvmTarget = "17" }`
+  block inside `android { }` (an error since Kotlin 2.2) with this, after
+  `android { }`:
 
   ```kotlin
   kotlin {
@@ -211,181 +485,78 @@ plugin versions. Most features work with them; these need changes by hand:
   }
   ```
 
-- **Keep the Android Gradle Plugin version** you have (`com.android.application`, 8.9.3 in older projects)
-  unless you build with the project's Gradle wrapper: AGP 8.13 (the template's) doesn't load with Gradle 9.8,
-  while 8.9.3 with Kotlin 2.3.21 builds with it (the showcase does).
-- **`.kokoro = true`**, **app sources** and **dependencies**: see the notes above (assets path,
-  `oriel-dependencies.gradle`).
+- **Keep your Android Gradle Plugin version** (`com.android.application`,
+  8.9.3 in older projects) unless you build with the project's Gradle
+  wrapper: AGP 8.13 (the template's) doesn't load with Gradle 9.8, while
+  8.9.3 with Kotlin 2.3.21 builds with it.
+- **API 36 for Play.** Set `compileSdk = 36` and `targetSdk = 36` in
+  `app/build.gradle.kts` and install `platforms;android-36`.
+- **Version bumps.** `versionCode` and `versionName` in `app/build.gradle.kts`
+  don't follow `.package.version` after `init`.
 
-`oriel android init --force` regenerates every file from the template instead; save your edits first.
+Projects older than 0.9.9 didn't read `zig-out/android-assets`; the
+generated `oriel-dependencies.gradle` adds it for them, so `-Dkokoro` and
+extensions' assets need no edit. A manifest written before the
+`oriel:NAME` markers existed gets them on its next build, with Oriel's old
+entries moved inside. `oriel android init --force` regenerates every file
+from the template instead; save your edits first.
 
-## Status
+### Migrating from 0.11
 
-(`examples/android-hello`, below, is now `examples/showcase`: the same app
-with every Oriel feature, for all five platforms.)
+- `.android.extensions` is gone: list hook classes in `.android.hooks` as
+  `{ .class, .sources, .dependencies }`, and move their Kotlin files from
+  `.android.sources` to the entry. The interface is `OrielAndroidHooks`
+  ([Platform hooks](platform-hooks.md#migrating)).
+- The system event `trim-memory` is gone: memory pressure is
+  `oriel.lifecycle`'s `memory_pressure`.
+- `oriel.android.preconnect` is gone: the app's `io` resolves names itself.
 
-Runs on Android. On 2026-09-30 (second session) `examples/android-hello`
-was built with the real NDK, packaged with Gradle and the Android Gradle
-Plugin, and passed every prototype check on an Android 15 emulator
-(below). GhostPen Lite builds, installs and starts there too. Still
-unverified: GPU/NPU backends and desktop windowing, which need real
-hardware.
+### Limits
 
-Real toolchain, 2026-09-30 (second session): NDK r28c (28.2.13676358),
-platforms;android-35, build-tools 35.0.0, AGP 8.7.3 with Gradle 8.14.3,
-JDK 21, Zig 0.16.0.
+- Size, placement, always-on-top, click-through and window dragging are
+  no-ops: the system decides (the caption bar drags in desktop mode).
+- Receiving shares (`.share_target`) and the share sheet aren't implemented
+  on Android yet.
+- No media server, no self-update (Play forbids it), no draw-over-apps
+  overlays, no capture of other apps' audio.
+- Hooks, dependencies and native libraries: 64 each.
 
-- `liboriel.so` builds for x86_64 and arm64-v8a against the real NDK:
-  16 KiB-aligned LOAD segments, `.note.android.ident`, TLS 0x82d bytes,
-  NEEDED only liblog, libandroid, libc, libdl (plus libaaudio and libm for
-  GhostPen Lite). Every libc import is versioned; the unversioned ones are
-  `ALooper_*`, `__android_log_write` and (GhostPen) `AAudio*`, because the
-  NDK's liblog/libandroid/libaaudio stubs carry no version nodes. All
-  exist by API 28.
-- `gradle assembleDebug` works as generated (no template change needed):
-  both ABIs stored uncompressed, `zipalign -c -P 16` passes, no Kotlin
-  warnings. `zig build android-project -Dandroid_force=true` rewrites
-  nothing (the committed projects match the template), and
-  `scripts/android/check-runtime.sh` passes.
-- GhostPen Lite with `-Dggml_vulkan` (x86_64): links, packages (APK),
-  installs and starts; the ggml probe finds no usable GPU on the emulator
-  and falls back to the CPU ("whisper backend: CPU"), AAudio lists the
-  microphones. Sent to the background it got TRIM_MEMORY_UI_HIDDEN from
-  the system ("trim-memory 20: purged the malloc caches"), then
-  `am send-trim-memory com.ghostpen.lite BACKGROUND` gave "trim-memory 40"
-  and ran its unload (no model was loaded yet: no "unloaded the whisper
-  model" line; dictation with a downloaded model wasn't tried).
+## Troubleshooting
 
-On the emulator (android-35 google_apis x86_64, android-hello):
+- **`no Android NDK`**: set `$ANDROID_NDK_HOME` or `-Dandroid_ndk=<path>`.
+  `zig build check` works without one.
+- **`error: no Gradle`**: install Gradle 8.11.1+ or run `gradle wrapper` in
+  `android/`.
+- **`no device, or an unsupported ABI`**: connect a device
+  (`oriel android devices`), start the emulator, or pass `--abi`. 32-bit
+  devices aren't supported.
+- **The page can't reach the dev server**: `oriel android dev` runs
+  `adb reverse tcp:5173 tcp:5173`; with another port pass `--port`, and keep
+  the dev server running on the computer.
+- **A new hook, source or permission doesn't show up after
+  `oriel android dev`**: the dev step doesn't refresh the Gradle project;
+  run `zig build -Dtarget=aarch64-linux-android` once.
+- **`... needs Kotlin 2.3 or newer in the Gradle project`**: see
+  [Upgrading an existing project](#upgrading-an-existing-project).
+- **`AndroidManifest.xml: an oriel:NAME begin or end comment is missing`**:
+  restore the markers, or rewrite the manifest with
+  `zig build android-project -Dandroid_force=true` (that rewrites the other
+  edited files too).
+- **Host lookups fail (`NameServerFailure`)**: use the app's `io`, not an
+  `std.Io.Threaded` of your own.
+- **A release build crashes calling into Kotlin from Zig**
+  (`NoSuchMethodError`, `ClassNotFoundException`): R8 renamed or removed the
+  class; add a `-keep` rule in `.proguard_rules`.
+- Logs: `adb logcat -s Oriel chromium`; extension and hook messages are
+  tagged `Oriel` too.
 
-- the page loads from `https://app.localhost/index.html`;
-- the info line reads "android x86_64 · launch #N · main" (IPC and the
-  store; N went up across a process restart);
-- the IPC echo round-trips "héllo 👋" (also a NUL byte and "✓");
-- "Five ticks from a worker": the page's `listen("tick")` got ticks 1–5
-  from the worker thread;
-- resizing the display (`wm size 1280x800`) fires `resize` without a
-  reload and the size line updates (533 × 853 → 853 × 533 CSS px);
-- "Open a second window" opens `OrielWindowActivity` in its own task,
-  with its own page ("second-1");
-- "Notify" asks for POST_NOTIFICATIONS, then posts "Oriel Hello / Hello
-  from Zig" on the `oriel` channel;
-- the page's long-press menu opens; "Copy the echo text" succeeds;
-- `am send-trim-memory dev.oriel.AndroidHello RUNNING_LOW` logs
-  "trim-memory 10: purged the malloc caches", and the page gets
-  `android:event` `{name: "trim-memory", data: "15"}` for RUNNING_CRITICAL.
+## Related
 
-Fixed by these runs: every `OrielRuntime` call shared one cached method
-ID (a type declared in a generic function is deduplicated by what it
-captures), so showing the main window called `showWindow` with
-`createWindow`'s ID and CheckJNI aborted the app; the trim-memory purge
-logged at debug (compiled out in release builds); the GNOME bindings were
-an eager dependency, so Android builds failed where that release asset
-couldn't be fetched.
-
-The emulator had no KVM (no vmx/svm in the CPU), so it ran under TCG,
-about 50 times slower. Two workarounds were needed, neither Oriel's
-problem: system_server's watchdog killed it in a loop during boot
-(`adb root; adb shell setprop ro.hw_timeout_multiplier 10; adb shell stop;
-adb shell start` right after adb comes up fixes it), and the image's
-WebView 124 renderer died with a SIGTRAP about three minutes in, with a
-plain WebView app just the same. Chromium's own SystemWebView 157
-(`chromium-browser-snapshots/AndroidDesktop_x64`, installed and selected
-with `cmd webviewupdate set-webview-implementation com.android.webview`)
-works. With KVM neither step should be needed.
-
-What the first 2026-09-30 session verified, against a stand-in NDK built from
-bionic `android-15.0.0_r1` (`scripts/android/bionic-sysroot.py`, API 29)
-and the real android-34/35 `android.jar`:
-
-- `examples/android-hello`: `liboriel.so` builds and links for x86_64 and
-  arm64-v8a: 16 KiB-aligned LOAD segments, `.note.android.ident` (API
-  29), the 13 JNI exports, and every import versioned against bionic
-  (LIBC..LIBC_Q, LIBLOG, LIBANDROID), so none needs a newer Android.
-- `examples/ghostpen-lite` (whisper, ggml CPU, AAudio) with and without
-  `-Dggml_vulkan`, both ABIs. Vulkan is compiled in with no `libvulkan.so`
-  dependency (loaded at runtime).
-- The generated manifest and resources link with aapt against the Android
-  14 framework (aapt 1 can't read android-35's resources.arsc). The
-  Kotlin runtime compiles warning-free against the android-35 jar.
-
-Fixed by these builds: the manifest's header comment ("--" isn't allowed in
-an XML comment, so every generated manifest was malformed); the Vulkan
-shader list (hard-coded to llama.cpp's ggml, so whisper-only builds failed);
-SPIR-V headers for Vulkan on Android (not in the NDK); a clear error when
-the NDK is missing.
-
-Memory: Oriel's internal allocations on Android go to bionic's malloc
-(`src/core/heap.zig`), the heap the app's `gpa`, ART and WebView already
-use, instead of a second heap (`smp_allocator`) that keeps its own slabs
-and per-thread caches. The app's arena sits on it too (not one mmap per
-chunk). Zig's 256 KiB per-thread signal stack is off (the generated root
-sets `signal_stack_size = null` unless the app sets it): it only serves
-std's segfault handler, which a JNI library never installs, and bionic
-allocated it in every thread touching the library's TLS. TLS went from 264
-KiB to about 2 KiB. On memory pressure (`onTrimMemory`, running low or
-worse) and in the background, a built-in `oriel.lifecycle` subscriber
-purges malloc's caches (`mallopt(M_PURGE)`). The level becomes
-`oriel.lifecycle`'s `memory_pressure` (10 moderate; 15, 40 and above
-critical), so chat, dictation and tts unload their models and apps can do
-the same portably; it is also still passed on as the "trim-memory" system
-event. `background` / `foreground` come from OrielActivity's
-onStart/onStop: the started-Activity count reaching 0, then leaving it
-(`NativeLib.onLifecycle`).
-GhostPen Lite does: at TRIM_MEMORY_BACKGROUND, unless dictation or
-captions are running, it frees the whisper model (ggml-small: ~465 MB) and
-its recording buffer, and the next dictation loads the model again.
-
-| | Done | Verified here | Needs a device |
-|---|---|---|---|
-| M0 build | `target.zig`, every selector, NDK libc file, 16 KiB pages | real NDK r28c build for x86_64 and arm64: page size, API note, TLS, imports; stand-in NDK link check; Android type-check; Linux, Windows checks; unit tests | — |
-| M1/M2 backend | JNI entry, ALooper dispatch, windows as Activities, WebMessageListener IPC with token and isolation, `https://app.localhost` assets | `gradle assembleDebug` (AGP 8.7.3); on the Android 15 emulator: page load, IPC echo, store, resize, worker events, second window (Activity), page context menu | freeform resize from the caption bar, launch bounds (desktop windowing) |
-| M3 modules | permissions, store, clipboard, notifications, SAF dialogs, deep links, fs_watch | emulator: notification permission prompt and notification, store across restarts, clipboard write, trim-memory | SAF dialogs, deep links, fs_watch at runtime |
-| M4 models | AAudio capture, Vulkan and OpenCL compiled in behind runtime loaders, Hexagon prebuilt + stub, self-test and CPU fallback | GhostPen Lite with `-Dggml_vulkan` (real NDK) starts on the emulator and falls back to the CPU; AAudio lists devices | GPU (Vulkan, Adreno OpenCL) and NPU (Hexagon) on real hardware; numbers |
-| M5 CLI | `oriel android init/dev/build/devices`, template in the Oriel package | project generation for both examples; the generated projects build with Gradle and install with adb | `oriel android dev` end to end |
-| M6 GhostPen | tile, keyboard (`commitText`), notification actions, headset button; GhostPen Lite dictation | GhostPen Lite builds, installs and starts | the whole flow |
-| Camera (`oriel.camera`) | `<input type=file accept=image/*>`: the camera app with `capture` (CAMERA asked first when declared) into `<app id>.oriel.capture` (`OrielCaptureProvider`: only `capture-<digits>.jpg` in `cacheDir/oriel-captures`, swept after a day; in the components region when the module is on), else the system photo picker; HEIC/AVIF picks transcoded to JPEG unless `.camera = .{ .transcode = false }`; `capturePhoto` through the same intents, scaled and encoded in Kotlin (`OrielCamera`) | Poco X3 (Android 12, 2026-10-11): permission prompt, camera app capture and confirm, library picks through `<input>` and `capturePhoto`, an AVIF pick transcoded (2048×1536 JPEG), `capturePhoto` scaled to 1600 px, back from the camera → `Cancelled` | Android 13+ `ACTION_PICK_IMAGES`; real HEIC from a camera (the test files from libheif only decoded through the `BitmapFactory` fallback) |
-
-Needs real hardware whatever the emulator shows: GPU and NPU backends
-(Vulkan drivers, Adreno OpenCL, Hexagon HTP; the emulator's ggml probe
-found no usable GPU), desktop windowing on a Chromebook/Googlebook
-(freeform resize from the caption bar, multi-window side by side, launch
-bounds), AAudio capture latency, arm64 at runtime (only x86_64 ran), and
-16 KiB-page devices (the libraries are aligned; not run on one).
-
-Host names and helper processes (2026-10-01, GhostPen with built-in
-models on a Chromebook): the app's `Io` (`src/platform/android/io.zig`)
-resolves names with bionic's getaddrinfo, since `Io.Threaded` reads
-/etc/resolv.conf, which Android doesn't have (every lookup failed with
-NameServerFailure). Its executable path is `liboriel_exec.so`
-(`launcher.zig`), a 9 KB launcher installed next to `liboriel.so` that
-loads it and runs the app's `main` (`oriel_exec_main`), so an app that
-starts itself as a helper (`--llm-helper`) gets a process of its own
-instead of starting app_process64. The Gradle project extracts the
-native libraries (`useLegacyPackaging = true`) so the launcher is a file
-Android lets the app run.
-
-Not done: the updater (sideloaded APK updates), the media server
-(`openat2` may be blocked by Android's seccomp filter), draw-over-apps
-overlays, other apps' audio (MediaProjection), per-device benchmarks.
-
-## Risks
-
-- **NDK libc** gates M0: smoke build first.
-- **WebView ≠ WebKitGTK**: security-critical IPC token/isolation port; reply path via WebMessageListener ports.
-- **Accelerators need real hardware**: emulator has no NPU; Hexagon is experimental upstream; Mali/Adreno drivers vary → self-test, blocklist, CPU fallback.
-- **Desktop windowing differs** across Pixel, DeX, ChromeOS, Googlebook OS.
-- **Play policy**: keyboards OK, draw-over-apps scrutinized, self-update forbidden, mic services need declarations.
-- **Memory / multi-window**: model-size guidance; one main-thread funnel and a shared window registry.
-
-## First prototype pass criteria
-
-Build (`zig build -Dtarget=aarch64-linux-android` or `x86_64-linux-android`),
-`gradle installDebug`, `adb shell am start -n com.example.oriel/.OrielActivity`,
-enable freeform windows. Pass when: the window resizes from its caption bar
-and the page receives `resize`; an IPC echo round-trips; right-click opens
-the web UI's menu; a second instance opens a second window.
-
-Test loops: x86_64 emulator with KVM on the Linux machine
-(`emulator -avd test -no-window -no-audio -gpu swiftshader_indirect`),
-arm64 emulator on the Mac mini, MediaTek Chromebook over `adb connect`.
+- [Platform hooks](platform-hooks.md): Kotlin in the
+  Activity and WebView lifecycle.
+- [App extensions](extensions.md): Kotlin your Zig calls.
+- [Permissions](permissions.md): runtime permissions and
+  manifest entries.
+- [Lifecycle](lifecycle.md): background, memory pressure.
+- [iOS](ios.md) and [Desktop](desktop.md):
+  the other platforms.

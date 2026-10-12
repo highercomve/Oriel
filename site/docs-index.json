@@ -1,0 +1,11 @@
+[
+  { "section": "Start", "pages": ["getting-started", "tutorial", "wrap", "examples"] },
+  { "section": "Core", "pages": ["concepts", "commands", "windows", "security", "development", "cli"] },
+  { "section": "App and system", "pages": ["lifecycle", "deep-links", "permissions", "tray", "menu", "dialogs", "notifications", "files", "store", "paths", "logging", "sql", "fs-watch", "clipboard", "global-shortcuts", "input", "network", "share", "media-server", "camera"] },
+  { "section": "Local AI", "pages": ["local-ai", "chat", "dictation", "tts", "system-ai"] },
+  { "section": "Native code", "pages": ["platform-hooks", "extensions"] },
+  { "section": "Platforms", "pages": ["desktop", "android", "ios"] },
+  { "section": "Ship", "pages": ["building", "packaging", "signing", "updater"] },
+  { "section": "Native UI", "pages": ["native-renderer", "native-ui-reference", "drag-and-drop"] },
+  { "section": "Reference", "pages": ["modules", "comparison"] }
+]

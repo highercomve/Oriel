@@ -1,24 +1,55 @@
 ---
 .title = "Documentation",
 .description = "Guides and reference for building desktop and mobile apps with Oriel.",
-.date = .date("2026-09-24T00:00:00"),
+.date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
-Start with [Getting started]($link.page('docs/getting-started')), then build a complete app in the [tutorial]($link.page('docs/tutorial')). The [examples]($link.page('docs/examples')) show each part of Oriel in a working app.
+Start with [Getting started]($link.page('docs/getting-started')), then build a
+complete app in the [tutorial]($link.page('docs/tutorial')). [Concepts]($link.page('docs/concepts'))
+explains how an Oriel app is put together. Already have a website?
+[Wrap it]($link.page('docs/wrap')) with `oriel wrap`.
 
-Already have a website? [Wrap a web app]($link.page('docs/wrap')) with
-`oriel wrap` to give it a desktop window, tray icon and Linux AppImage.
+Every feature has one page, and every feature page has the same parts:
+where it works, a quick start, how it works (with a diagram), examples, and
+the full reference.
 
-For mobile apps, see [Android and iOS]($link.page('docs/mobile')). React to or
-take over the platform's own app, window and web view events with
-[platform hooks]($link.page('docs/platform-hooks')) (Kotlin on Android,
-Objective-C/Swift on iOS and macOS, `oriel.hooks` in Zig on the desktop).
+# [Core]($heading.id('core'))
 
-# [Capabilities and local AI]($heading.id('capabilities-and-local-ai'))
+[Commands and events]($link.page('docs/commands')) between the page and Zig,
+[windows]($link.page('docs/windows')), [security]($link.page('docs/security')),
+[development]($link.page('docs/development')) with hot reload, and the
+[`oriel` CLI]($link.page('docs/cli')).
 
-- [Modules and plugins]($link.page('docs/modules')): lifecycle, camera, system AI, tray, updater, dialogs, notifications, shortcuts, clipboard, SQLite, deep links, and network mDNS.
-- [App extensions]($link.page('docs/extensions')): your own Kotlin, Objective-C, Swift or Zig code, called by name from Zig and the page.
-- [Offline text to speech]($link.page('docs/tts')): `oriel.tts` with Kokoro-82M voices, verified downloads, and streaming playback on CPU or GPU.
-- [Android and iOS]($link.page('docs/mobile')): camera, microphone, SAF, and mobile-specific modules.
+# [App and system]($heading.id('app-and-system'))
+
+The [modules index]($link.page('docs/modules')) lists every module, its build
+flag and where it works: [lifecycle]($link.page('docs/lifecycle')),
+[deep links]($link.page('docs/deep-links')),
+[permissions]($link.page('docs/permissions')), [tray]($link.page('docs/tray')),
+[menus]($link.page('docs/menu')), [dialogs]($link.page('docs/dialogs')),
+[notifications]($link.page('docs/notifications')), [files]($link.page('docs/files')),
+[settings]($link.page('docs/store')), [SQLite]($link.page('docs/sql')),
+[camera]($link.page('docs/camera')), [sharing]($link.page('docs/share')) and more.
+
+# [Local AI]($heading.id('local-ai'))
+
+[Local AI]($link.page('docs/local-ai')) (llama.cpp, whisper.cpp, GPU
+backends), [chat]($link.page('docs/chat')), [dictation]($link.page('docs/dictation')),
+[text to speech]($link.page('docs/tts')) and the OS's own
+[system AI]($link.page('docs/system-ai')).
+
+# [Native code and platforms]($heading.id('native-code-and-platforms'))
+
+[Platform hooks]($link.page('docs/platform-hooks')) put your Kotlin,
+Objective-C, Swift or Zig code inside the platform's own events;
+[app extensions]($link.page('docs/extensions')) are your native code called
+from Zig. Platform guides: [desktop]($link.page('docs/desktop')),
+[Android]($link.page('docs/android')), [iOS]($link.page('docs/ios')).
+
+# [Ship]($heading.id('ship'))
+
+[Building]($link.page('docs/building')) (every `build.zig` option),
+[packaging]($link.page('docs/packaging')), [signing]($link.page('docs/signing'))
+and [updates]($link.page('docs/updater')).

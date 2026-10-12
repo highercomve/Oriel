@@ -446,3 +446,8 @@ tr:last-child td { border-bottom: 0; }
   .search-dialog { margin-top: 16px; max-height: calc(100dvh - 32px); padding: 18px; }
   .search-footer { font-size: 10px; }
 }
+
+/* Diagrams (site.js renders them with Mermaid). */
+.prose .block.mermaid { margin: 1.4em 0; }
+.prose pre.mermaid { background: var(--code-bg); border: 1px solid var(--border-strong); border-radius: 10px; padding: 18px; text-align: center; color: inherit; overflow-x: auto; }
+.prose pre.mermaid svg { max-width: 100%; height: auto; }

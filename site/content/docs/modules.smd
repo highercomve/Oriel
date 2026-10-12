@@ -1,55 +1,74 @@
 ---
 .title = "Modules",
-.description = "Every built-in module and plugin, its build flag and platform support.",
-.date = .date("2026-09-24T00:00:00"),
+.description = "What an Oriel module is, how build flags turn modules on, and every module and plugin with its flag, platforms and page.",
+.date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
-# [Module overview]($heading.id('module-overview'))
+A module is a piece of Oriel an app switches on in `build.zig`: the tray,
+SQLite, notifications, a local LLM. Each one is a Zig namespace on
+`oriel` (`oriel.tray`, `oriel.sql`) with one public API, and a backend per
+platform underneath. A module the app leaves off is neither compiled nor
+linked, so an app pays only for what it uses. *Plugins* (global shortcuts,
+input injection, the clipboard) work the same way; they live in
+`src/plugins/` instead of `src/modules/` because they reach outside the
+app's own window.
 
-| Module | Flag | Default | Linux | Windows | macOS | Android | iOS |
-|---|---|---|---|---|---|---|---|
-| Tray | `tray` | on | ✓ | ✓ | ✓ | — | — |
-| Updater | `updater` | on | ✓ | ✓ | ✓ | check¹ | —¹ |
-| Media server | `media_server` | on | ✓ | ✓ | ✓ | — | — |
-| SQL | `sql` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
-| File watching | `fs_watch` | on | ✓ | ✓ | ✓ | ✓ | — |
-| Dialogs | `dialog` | on | ✓ | ✓ | ✓ | ✓² | ✓² |
-| Notifications | `notification` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Settings store | `store` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lifecycle | core | always | ✓ | ✓ | ✓ | ✓ | ✓ |
-| App menu | `menu` | on | ✓ | ✓ | ✓ | — | — |
-| Global shortcuts | `global_shortcut` | on | ✓ | ✓ | ✓ | in-app³ | — |
-| Input injection | `input` | on | ✓ | ✓ | ✓ | —⁴ | — |
-| Clipboard | `clipboard` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Deep links | `deep_link` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Vector search | `sqlite_vec` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LLM inference | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Speech-to-text | `whisper` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Audio capture | `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Dictation | `whisper` `audio_capture` | **off** | ✓ | ✓ | ✓ | ✓⁵ | ✓⁵ |
-| Chat (LLM) | `llama` | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Text to speech | `kokoro`⁶ | **off** | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Network / mDNS | `network` | on | ✓ | ✓⁷ | ✓ | ✓ | ✓ |
-| Sharing | `share` | on | ✓ | ✓ | ✓ | ✓ | ✓ |
-| System AI | `system_ai` | **off** | — | — | —⁸ | ✓ | ✓⁹ |
-| Camera | `camera`¹⁰ | **off** | library | library | library | ✓ | ✓ |
+The core is always there and has no flag: windows, commands and events,
+the lifecycle, paths, logging, permissions, platform hooks and app
+extensions. This page is the index; each module's API, examples and
+platform notes are on its own page, linked from the
+[table]($link.ref('every-module')).
 
-1. Updates come from Google Play and the App Store. On Android the updater is off by default; on, it checks for a release, and installing one fails with `error.Unsupported`.
-2. Android's Storage Access Framework; iOS's document picker.
-3. Shortcuts inside the app, listed by the system's Meta+/ helper.
-4. The Oriel keyboard (an input method) types into other apps instead.
-5. Android and iOS can also use the system's own recognizer.
-6. Also needs `llama` or `whisper`, which provide the shared ggml tree.
-7. Windows 10 1809 or later.
-8. Later: Windows AI APIs and macOS Foundation Models.
-9. iOS 26 with Apple Intelligence at run time; building it raises the minimum to iOS 18.
-10. On when the app declares `.permissions.camera`. The desktop picks from files; only phones take photos.
+# [Turning modules on]($heading.id('turning-modules-on'))
+
+Flags are options of the `oriel` dependency in the app's `build.zig`:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .sql = true,          // on by default; written out for clarity
+    .tray = true,
+    .llama = true,        // off by default: a native dependency
+    .media_server = false, // on by default; this app doesn't use it
+});
+```
+
+- **Defaults.** Every module and plugin is on unless the app says
+  otherwise, except the native dependencies and a few opt-ins: `deep_link`,
+  `sqlite_vec`, `llama`, `llama_mtmd`, `whisper`, `kokoro`,
+  `audio_capture`, `camera`, `system_ai`, `layer_shell` and `native_ui`
+  are off. `updater` is also off on Android (the store updates apps
+  there).
+- **`oriel init` writes the list out.** The generated `build.zig` sets the
+  desktop modules to `false`, so a new app starts small; change a line to
+  `true` to use that module.
+- **Declaring a capability turns its module on.** `.permissions.camera`
+  turns on `camera`, `.permissions.local_network` turns on `network`, and
+  `.share_target` turns on `share`, so there is no flag to keep in sync
+  (unless the app set that flag to `false` itself: then the module stays
+  off and the build prints a warning). The other way round, a module that
+  needs a permission declares it: `audio_capture` declares `microphone` and
+  `system_audio`.
+- **Dependencies between flags** are checked when the build starts:
+  `sqlite_vec` needs `sql`, `llama_mtmd` needs `llama`, and `kokoro` needs
+  `llama` or `whisper` (it shares their ggml build). Some namespaces follow
+  another flag instead of having one: `oriel.chat` is on with `llama`,
+  `oriel.tts` and `oriel.audio_play` with `kokoro`, `oriel.dictation` with
+  `whisper` and `audio_capture` together, `oriel.ggml_gpu` with `llama` or
+  `whisper`, and `oriel.canvas` with `native_ui`.
+- **On Oriel's own command line** (building Oriel itself, its examples or
+  tests) the same flags are `-D` options: `zig build -Dllama`,
+  `-Dtray=false`. Apps pass them through too: `oriel build -Dnative_ui`.
 
 # [Availability]($heading.id('availability'))
 
-The flags say what the app uses, once, for every target. Where a module is marked —, the platform has no such thing (a tray, system-wide hotkeys) or forbids it: there `.tray = true` resolves to off, and `oriel.tray.available` is `false`. [Android and iOS]($link.page('docs/mobile')) has what replaces them.
+The flags say what the app uses, once, for every target. Where a module
+can't exist (a tray on a phone, system-wide hotkeys on iOS), its flag
+resolves to off for that target and `oriel.<module>.available` is `false`.
+Guard the calls:
 
 ```zig
 if (oriel.tray.available) {
@@ -57,577 +76,138 @@ if (oriel.tray.available) {
 }
 ```
 
-- Code under the guard is never analyzed: it costs nothing where the module is missing, and needs no stub.
-- A call outside the guard is a build error that names the module and the guard (`oriel.tray.Tray is not available on ios: guard the call with if (oriel.tray.available)`), and the same for a module the app left off.
-- Runtime state, like a desktop without a tray host, stays the module's `status()` or an error from the call.
-- The page gets the table as `window.oriel.features` (`{ tray: false, fsWatch: true, ... }`, typed as `Features` in `oriel.ts`).
-- On Oriel's own command line, `-Dtray=true` for a target without a tray is still a build error: someone asked for something impossible.
+- **`available` is a comptime constant.** Code under a false guard is never
+  analyzed: it costs nothing where the module is missing, and needs no
+  stub.
+- **An unguarded call is a build error** that names the module and the fix:
+  `oriel.tray.Tray is not available on ios: guard the call with
+  if (oriel.tray.available)`, or, for a module the app left off,
+  `... is disabled: enable it with .tray = true in b.dependency("oriel",
+  ...), or guard the call with if (oriel.tray.available)`.
+- **Runtime state stays runtime.** A desktop with no tray host, a phone
+  without Gemini Nano, a denied permission: these are the module's own
+  status calls or errors, documented on its page.
+- **The page sees the same table** as `window.oriel.features`, frozen, in
+  camelCase: `{ tray: false, fsWatch: true, mediaServer: false, ... }`,
+  typed as `Features` in the generated `oriel.ts`. A UI hides what this
+  build can't do.
+- **Asking for the impossible on the command line fails.**
+  `zig build -Dtarget=aarch64-ios -Dtray=true` stops with
+  `-Dtray is not available on ios`. From an app's `b.dependency` the same
+  request quietly resolves to off (`zig build --verbose` lists what was
+  turned off), because the app's flags are meant for every target.
 
-All modules build for Linux, Windows and macOS. Native dependencies (`sqlite_vec`, `llama`, `whisper`, `kokoro`, `audio_capture`) are **off by default** and opt-in via `-D` flags. To disable a default-on module, pass `-D<name>=false`.
+# [How modules work]($heading.id('how-modules-work'))
 
-# [Lifecycle]($heading.id('lifecycle'))
-
-Background and foreground, memory pressure, sleep and wake, and the end of the app, with one API on every platform (core, always on):
-
-```zig
-fn onLifecycle(event: oriel.lifecycle.Event) void {
-    switch (event) {
-        .memory_pressure => |level| if (level == .critical) cache.clear(),
-        .background => saveDraft(),
-        .terminating => flush(),
-        else => {},
-    }
-}
-// In main or setup: up to 16 subscribers (Oriel's modules included), called
-// on the main thread in registration order.
-try oriel.lifecycle.subscribe(onLifecycle);
+>[]($block.attrs("mermaid"))
+```
+flowchart LR
+  B["App build.zig<br/>.tray = true"] -->|flags + target| F["Features.fromOptions<br/>(Oriel's build.zig)"]
+  T["module_table.zig<br/>missingOn(platform)"] -->|supported?| F
+  F -->|build_options| O["src/oriel.zig"]
+  O -->|on| M["src/modules/tray.zig<br/>available = true"]
+  O -->|off or missing| S["generated shim<br/>available = false"]
+  M -->|switch on target.os| L["tray/linux.zig"]
+  M --> W["tray/windows.zig"]
+  M --> C["tray/macos.zig"]
+  F -->|feature_names| J["features.zig"]
+  J -->|window.oriel.features| P["Page"]
+  M -->|check| K["oriel.checkAll<br/>(examples/smoke)"]
 ```
 
-```js
-// The page: { type, level }, queued until the page listens.
-oriel.lifecycle.on((e) => { if (e.type === "memory_pressure") dropCaches(); });
-```
+1. **Resolving the flags.** Oriel's `build.zig` has one `Features`
+   struct with a field per flag. `Features.fromOptions` reads each option
+   from the app's `b.dependency("oriel", ...)` (or the command line), applies
+   the defaults, and asks `src/core/module_table.zig` whether the module
+   exists on the target's platform (`missingOn`, with Android split out of
+   Linux). The result goes into the `build_options` module, along with
+   `feature_names`.
+2. **Choosing the namespace.** `src/oriel.zig` declares each module as
+   `pub const tray = if (options.tray) @import("modules/tray.zig") else
+   unavailable("tray")`. Off, the namespace is a generated shim
+   (`tools/module_shims.zig`) with the same public declarations as the real
+   module, each a build error carrying `module_table.reason`, and
+   `available = false`. A test keeps the shim's declarations equal to the
+   module's.
+3. **Choosing the backend.** The module's facade (`src/modules/tray.zig`)
+   holds the shared types (`tray/common.zig`) and picks its implementation
+   with a `switch` on `target.os`: `tray/linux.zig`, `tray/windows.zig`,
+   `tray/macos.zig`. Some backends serve several platforms (`fs_watch`
+   uses inotify on Linux and Android; `store` shares its Apple backend
+   between macOS and iOS); a module that doesn't exist on a platform has a
+   `@compileError` there, which the shim keeps out of reach.
+4. **Linking.** The same flags decide what Oriel's `build.zig` links:
+   libpulse for `audio_capture` on Linux, xkbcommon and XTest for `input`,
+   llama.cpp and whisper.cpp for `llama` and `whisper`, PhotosUI for
+   `camera` on iOS.
+5. **Telling the page.** `src/core/features.zig` turns the resolved flags
+   into the `window.oriel.features` object the bridge script
+   (`src/core/bridge_js.zig`) defines, the same JSON for the native
+   renderer, and the `Features` TypeScript interface.
+6. **Checking it works.** Most modules have a `check(gpa, ctx)` smoke test
+   in each backend. `oriel.checkAll(gpa, ctx)` runs the permission check
+   and then the check of every enabled module, returning
+   `[]oriel.Check` (`{ module, ok, detail }`); `examples/smoke` shows the
+   results in a window or prints them with `--check`.
+   [`oriel doctor`]($link.page('docs/cli')) is the build machine's side: on
+   Linux it reports the libraries the plugins link (wayland-client,
+   xkbcommon, XTest, X11), whether a tray host and the GlobalShortcuts
+   portal are present.
 
-| Event | Android | iOS | macOS | Windows | Linux |
-| --- | --- | --- | --- | --- | --- |
-| `background` / `foreground` | the last Oriel Activity stopped / one started again | didEnterBackground / willEnterForeground | — | — | — |
-| `memory_pressure` | onTrimMemory: RUNNING_LOW (10) `moderate`; RUNNING_CRITICAL (15), BACKGROUND (40) and above `critical` | memory warning: `critical` | memory-pressure dispatch source: warn `moderate`, critical `critical` | low-memory resource notification: `critical` (once per episode) | GMemoryMonitor: LOW and MEDIUM `moderate`, CRITICAL `critical` |
-| `suspend_` / `resume_` | — | — | NSWorkspace will sleep / did wake | WM_POWERBROADCAST (PBT_APMSUSPEND / PBT_APMRESUMEAUTOMATIC) | logind PrepareForSleep (system bus) |
-| `terminating` | — (Android ends processes without warning) | applicationWillTerminate, `App.quit` | quit (⌘Q, SIGTERM, `App.quit`) | quit, WM_ENDSESSION | quit (SIGTERM, `App.quit`) |
+# [Every module]($heading.id('every-module'))
 
-- **Once per run:** `terminating` comes at most once, before the windows close where the platform allows it; a desktop run that ends otherwise (the last window closed) still sends it to Zig subscribers when the loop returns.
-- **Modules use it:** `oriel.chat`, `oriel.dictation` and `oriel.tts` subscribe when initialized and free their models (`unloadIdle`) on critical memory pressure. Change that with `oriel.chat.unload_on = .{ .background = true }` (also unload in the background) or `.{ .memory_pressure = null }` (never).
-- **Android:** Oriel purges bionic's malloc caches on memory pressure and in the background. `oriel.android.onSystemEvent` still gets `"trim-memory"` with the raw level, and the Android-only events (tile, notification action, keyboard, media button).
-- **Deprecated:** `oriel.ios.onSystemEvent` (now a lifecycle subscriber under the old names) and `App.Config.on_session_end` (still called on Windows, after `terminating`).
-- **Threads:** `subscribe` works from any thread; handlers run on the main thread and should return quickly (iOS suspends the app soon after `background`).
+✓ works; — not on this platform (`available` is false); a note where it
+works differently. *Default* is the flag's value when the app doesn't set
+it.
 
-# [Tray icon]($heading.id('tray-icon'))
+| Module | What it's for | Flag (default) | Linux | Windows | macOS | Android | iOS | Page |
+|---|---|---|---|---|---|---|---|---|
+| `oriel.tray` | System tray icon with a menu | `tray` (on) | ✓ | ✓ | ✓ | — | — | [Tray]($link.page('docs/tray')) |
+| `oriel.menu` | The window's menu bar | `menu` (on) | ✓ | ✓ | ✓ | — | — | [Menu]($link.page('docs/menu')) |
+| `oriel.dialog` | Open, save and folder dialogs | `dialog` (on) | ✓ | ✓ | ✓ | ✓ SAF | ✓ document picker | [Dialogs]($link.page('docs/dialogs')) |
+| `oriel.notification` | System notifications | `notification` (on) | ✓ | ✓ | ✓ | ✓ | ✓ | [Notifications]($link.page('docs/notifications')) |
+| `oriel.store` | Persistent key-value settings | `store` (on) | ✓ | ✓ | ✓ | ✓ | ✓ | [Store]($link.page('docs/store')) |
+| `oriel.sql` | Embedded SQLite | `sql` (on) | ✓ | ✓ | ✓ | ✓ | ✓ | [SQL]($link.page('docs/sql')) |
+| `oriel.sqlite_vec` | Vector search in SQLite (sqlite-vec) | `sqlite_vec` (off; needs `sql`) | ✓ | ✓ | ✓ | ✓ | ✓ | [SQL]($link.page('docs/sql')) |
+| `oriel.fs_watch` | Watching directories for changes | `fs_watch` (on) | ✓ | ✓ | ✓ | ✓ | — | [File watching]($link.page('docs/fs-watch')) |
+| `oriel.deep_link` | Opening the app from its own URL schemes | `deep_link` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Deep links]($link.page('docs/deep-links')) |
+| `oriel.network` | Multicast lock and mDNS/DNS-SD | `network` (on; also on with `.permissions.local_network`) | multicast; no mDNS yet | ✓ (mDNS: Windows 10 1809+) | multicast; no mDNS yet | ✓ | multicast; no mDNS yet | [Network]($link.page('docs/network')) |
+| `oriel.share` | The share sheet, and receiving shares | `share` (on; also on with `.share_target`) | not yet (`error.Unsupported`) | ✓ | ✓ | ✓ | ✓ | [Share]($link.page('docs/share')) |
+| `oriel.camera` | Photos from the camera or library | `camera` (off; on with `.permissions.camera`) | library only | library only | library only | ✓ | ✓ | [Camera]($link.page('docs/camera')) |
+| `oriel.media_server` | Streaming large local media with range requests | `media_server` (on) | ✓ | ✓ | ✓ | — | — | [Media server]($link.page('docs/media-server')) |
+| `oriel.updater` | Signed self-updates | `updater` (on; off on Android) | ✓ | ✓ | ✓ | check only | — | [Updater]($link.page('docs/updater')) |
+| `oriel.global_shortcut` | System-wide hotkeys | `global_shortcut` (on) | ✓ | ✓ | ✓ | in-app shortcuts | — | [Global shortcuts]($link.page('docs/global-shortcuts')) |
+| `oriel.input` | Typing and pasting into other apps | `input` (on) | ✓ | ✓ | ✓ | — | — | [Input]($link.page('docs/input')) |
+| `oriel.clipboard` | Text and image clipboard | `clipboard` (on) | ✓ | ✓ | ✓ | ✓ | ✓ | [Clipboard]($link.page('docs/clipboard')) |
+| `oriel.chat` | Chat with a local LLM (llama.cpp) | `llama` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Chat]($link.page('docs/chat')) |
+| `oriel.llama` | llama.cpp's C API, JSON-schema grammars | `llama` (off); images with `llama_mtmd` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Local AI]($link.page('docs/local-ai')) |
+| `oriel.dictation` | Voice to text, live and from files | `whisper` + `audio_capture` (off) | ✓ | ✓ | ✓ | ✓ (also the system recognizer) | ✓ (also the system recognizer) | [Dictation]($link.page('docs/dictation')) |
+| `oriel.whisper` | whisper.cpp | `whisper` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Local AI]($link.page('docs/local-ai')) |
+| `oriel.audio_capture` | Microphone and system audio as samples | `audio_capture` (off) | ✓ | ✓ | ✓ | microphones | microphones | [Local AI]($link.page('docs/local-ai')) |
+| `oriel.tts` | Offline text to speech (Kokoro-82M) | `kokoro` (off; needs `llama` or `whisper`) | ✓ | ✓ | ✓ | ✓ | ✓ | [Text to speech]($link.page('docs/tts')) |
+| `oriel.kokoro`, `oriel.audio_play` | Synthesis and playback under `oriel.tts` | `kokoro` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Text to speech]($link.page('docs/tts')) |
+| `oriel.ggml_gpu` | GPU backends for llama and whisper: CUDA, Vulkan; OpenCL and Hexagon on Android | `llama` or `whisper` | ✓ | ✓ | ✓ | ✓ | ✓ | [Local AI]($link.page('docs/local-ai')) |
+| `oriel.system_ai` | The phone's own model (Gemini Nano, Foundation Models) | `system_ai` (off) | — | — | — | ✓ | ✓ iOS 26 | [System AI]($link.page('docs/system-ai')) |
+| `oriel.canvas` | Drawing a page's `<canvas>` from Zig | `native_ui` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Native renderer]($link.page('docs/native-renderer')) |
+| (renderer) | Drawing the page with native views instead of a WebView, experimental | `native_ui` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Native renderer]($link.page('docs/native-renderer')) |
+| (windows) | Wayland overlay windows as layer surfaces (gtk4-layer-shell) | `layer_shell` (off) | ✓ Wayland | — | — | — | — | [Windows]($link.page('docs/windows')) |
 
-System tray icon with a clickable menu. Left-click toggles the app window visibility.
+The always-on core, for completeness (no flag; `oriel.hooks.available` is
+the one with platform limits):
 
-```zig
-tray = try oriel.tray.Tray.create(gpa, .{
-    .id = "com.example.App",
-    .title = "My App",
-    .icon = .{ .png = @embedFile("icon.png") },
-    .menu = &.{
-        .{ .item = .{ .id = "show", .label = "Show" } },
-        .{ .check = .{ .id = "dnd", .label = "Do not disturb" } },
-        .{ .separator = {} },
-        .{ .item = .{ .id = "quit", .label = "Quit" } },
-    },
-    .on_menu = onTrayMenu,
-});
-```
-
-**Platform support:** Linux (StatusNotifierItem + DBusMenu) · Windows (Shell_NotifyIconW) · macOS (`NSStatusItem`; right-click opens the menu).
-
-# [Updater]($heading.id('updater'))
-
-Built-in self-updater with Ed25519 signature verification and atomic binary replacement. Emits progress events and restarts the app.
-
-```zig
-const Updater = oriel.updater.Commands(.{
-    .app_id = "com.example.App",
-    .manifest_url = "https://releases.example.com/latest.json",
-    .current_version = "1.0.0",
-    .public_key_b64 = app.update_public_key orelse @panic("missing key"),
-});
-
-pub const Commands = struct {
-    pub const updater_check = Updater.updater_check;
-    pub const updater_install = Updater.updater_install;
-    pub const async_commands = .{ "updater_check", "updater_install" };
-};
-```
-
-See [Code signing]($link.page('docs/signing')) for key generation and signing updates.
-
-**Platform support:** Linux · Windows (tested under Wine) · macOS (plain executables, and whole `.app` bundles with the `app.tar.gz` format, swapped atomically).
-
-# [Media server]($heading.id('media-server'))
-
-HTTP server streaming large video and audio files with range-request support (RFC 9110). No need to load multi-GB files into memory.
-
-```zig
-var media: oriel.media_server.Server = undefined;
-try media.start(io, gpa, .{
-    .root_dir = "/home/me/Videos",
-    .port = 17893,
-    .allowed_origin = "app://app",
-});
-defer media.stop();
-```
-
-Also available at `app://app/media/<path>` for fetch requests (WebKitGTK's media player requires http(s), so use the TCP server for `<video>` tags).
-
-**Platform support:** Linux · Windows (tested under Wine) · macOS (`app://app/media/` streamed through `WKURLSchemeHandler`).
-
-# [SQL and SQLite]($heading.id('sql-and-sqlite'))
-
-Embedded SQLite database with optional vector search (`sqlite_vec`). Thread-safe, persistent storage.
-
-```zig
-const db = try oriel.sql.Db.open("data.db");
-defer db.close();
-
-const stmt = try db.prepare("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);");
-defer stmt.finalize();
-_ = try stmt.step();
-```
-
-**Platform support:** Linux · Windows · macOS.
-
-## [Vector search (`-Dsqlite_vec`)]($heading.id('vector-search-dsqlite-vec'))
-
-Adds the `sqlite-vec` extension for k-nearest-neighbor (KNN) vector search:
-
-```zig
-try db.exec("CREATE VIRTUAL TABLE embeddings USING vec0(data float[384]);");
-
-var insert = try db.prepare("INSERT INTO embeddings (rowid, data) VALUES (?, ?);");
-defer insert.finalize();
-try insert.bindBlob(1, oriel.sqlite_vec.asBytes(&vector));
-_ = try insert.step();
-```
-
-**Status:** Opt-in with `-Dsqlite_vec` (requires `-Dsql`). Default: off.
-
-# [File watching]($heading.id('file-watching'))
-
-Monitor directories for file changes and receive events:
-
-```zig
-try oriel.fs_watch.watch(gpa, "/home/me/Documents", onFileChange);
-```
-
-**Platform support:** Linux (inotify) · Windows (`ReadDirectoryChangesW`) · macOS (FSEvents).
-
-# [Dialogs]($heading.id('dialogs'))
-
-Native file open/save dialogs:
-
-```zig
-const file = try oriel.dialog.openFile(gpa, .{
-    .title = "Select a file",
-    .filter = .{ .name = "Text", .extensions = &.{"txt"} }, // desktop only
-});
-```
-
-**Platform support:** Linux (`GtkFileDialog`) · Windows (`IFileOpenDialog`) · macOS (`NSOpenPanel` / `NSSavePanel`).
-
-# [Camera]($heading.id('camera'))
-
-Photos from the camera or the photo library. Declaring `.permissions.camera` in `addApp` turns the module on; the same text is iOS's camera prompt and Android's `CAMERA` permission.
-
-Image inputs just work: `<input type="file" accept="image/*" capture>` opens the camera, and without `capture` the photo library. On Android, Oriel starts the camera app (asking for `CAMERA` first) or the system photo picker, and transcodes HEIC and AVIF picks to JPEG (`.camera = .{ .transcode = false }` turns that off). On iOS, WKWebView shows its own Take Photo / Photo Library menu. App extensions still see Android's file chooser first.
-
-For bytes, call it from an async command (it waits for the user):
-
-```zig
-const photo = try oriel.camera.capturePhoto(io, arena, .{
-    .source = .camera, // or .library
-    .max_side = 1600,
-    .format = .jpeg,
-    .quality = 85,
-});
-// photo.bytes, photo.width, photo.height, photo.mime
-```
-
-The page gets `oriel.camera.capturePhoto({ source, maxSide })`, which resolves to `{ dataUrl, width, height, mime }`.
-
-- `error.Cancelled` when the user backs out, `error.Unsupported` where there's no camera (the desktop, the iOS simulator), `error.PermissionDenied`, `error.TooLarge`.
-- **Android:** the camera app writes into Oriel's own capture provider (`<app id>.oriel.capture`, only Oriel's files, deleted after a day); the photo is decoded, scaled and encoded in Kotlin.
-- **iOS:** `UIImagePickerController` for the camera, `PHPickerViewController` for the library (no photo library permission needed).
-- **Desktop:** `.library` opens a file dialog filtered to images, and zigimg scales and encodes the photo. What zigimg can't decode (HEIC, WebP) comes back as it was picked.
-
-# [Notifications]($heading.id('notifications'))
-
-System desktop notifications:
-
-```zig
-try oriel.notification.notify(.{
-    .title = "Processing complete",
-    .body = "Your export is ready.",
-});
-```
-
-Clicks and buttons: give the notification an `id` and `actions`, then handle
-clicks in Zig with `onAction` or in the page with the `notification:action`
-event. `action` is the button's id, or null when the notification itself was
-clicked; `id` is the notification's id (`""` when it had none).
-
-```zig
-oriel.notification.onAction(struct {
-    fn f(id: []const u8, action: ?[]const u8) void {
-        std.log.info("notification {s}: {s}", .{ id, action orelse "clicked" });
-    }
-}.f);
-
-try oriel.notification.notify(.{
-    .id = "export-42",
-    .title = "Export ready",
-    .body = "notes.pdf was saved.",
-    .actions = &.{ .{ .id = "open", .label = "Open" }, .{ .id = "show", .label = "Show in folder" } },
-});
-```
-
-```js
-listen("notification:action", ({ id, action }) => { /* action === null: the notification was clicked */ });
-```
-
-Buttons show on Linux, macOS (`.app` bundles), iOS and Android (at most 3). Windows balloons report a click on the balloon but have no buttons; the unbundled macOS `osascript` fallback reports nothing.
-
-**Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled) · Android · iOS.
-
-# [App directories]($heading.id('app-directories'))
-
-Core, always built: the app's private data and cache directories, created if missing (the caller frees the path).
-
-```zig
-const data = try oriel.paths.appData(gpa, .{ .name = "GhostPantry" });
-defer gpa.free(data);
-const cache = try oriel.paths.appCache(gpa, .{ .name = "GhostPantry" });
-```
-
-| | `appData` | `appCache` |
+| Namespace | What it's for | Page |
 |---|---|---|
-| Android | the files dir itself (`getFilesDir()`) | the cache dir itself (`getCacheDir()`) |
-| iOS | `Library/Application Support/<name>` | `Library/Caches/<name>` |
-| macOS | `~/Library/Application Support/<name>` | `~/Library/Caches/<name>` |
-| Linux | `$XDG_DATA_HOME/<name>` | `$XDG_CACHE_HOME/<name>` |
-| Windows | `%LOCALAPPDATA%\<name>` | `%LOCALAPPDATA%\<name>\cache` |
-
-Use `paths.appData` for databases, models and files: no Android special case in the app. The Android sandbox is already per app, so `name` adds no folder there. `oriel.store.dataDir` is the same folder everywhere but Android, where it is `<filesDir>/<app id>` and stays so (existing apps' data lives there). Windows uses Local AppData, not Roaming: databases and models don't roam.
-
-**Platform support:** Linux · Windows · macOS · Android · iOS.
-
-# [Settings store]($heading.id('settings-store'))
-
-Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows, `~/Library/Application Support` and `~/Library/Caches` on macOS):
-
-```zig
-var store = try oriel.store.Store.open(gpa, "dev.example.App", "settings");
-defer store.deinit();
-try store.set("theme", "dark");
-try store.save();
-
-const theme = store.getString("theme");
-```
-
-Also provides `configDir`, `dataDir`, `cacheDir` helpers.
-
-**Platform support:** Linux · Windows · macOS.
-
-# [App menu bar]($heading.id('app-menu-bar'))
-
-Native application menu bar:
-
-```zig
-try oriel.App.setMenu(&.{
-    .{ .submenu = .{ .label = "File", .items = &.{
-        .{ .item = .{ .id = "new", .label = "New", .shortcut = "<Control>n" } },
-        .{ .separator = {} },
-        .{ .item = .{ .id = "quit", .label = "Quit", .shortcut = "<Control>q" } },
-    } } },
-}, onMenuAction);
-```
-
-**Platform support:** Linux (`GMenuModel`) · Windows (Win32 menus; tested under Wine) · macOS (`NSMenu`, between the default App and Edit/Window menus; `<Ctrl>` becomes ⌘).
-
-# [Global shortcuts]($heading.id('global-shortcuts'))
-
-Register system-wide keyboard shortcuts that trigger even when the app is unfocused:
-
-```zig
-try oriel.global_shortcut.register(gpa, .{
-    .id = "rewrite_hotkey",
-    .description = "Rewrite selected text",
-    .trigger = "CTRL+ALT+G",
-}, &onHotkey);
-```
-
-**Platform support:** Linux (Wayland GlobalShortcuts portal + X11 XGrabKey) · Windows (`RegisterHotKey`; tested under Wine) · macOS (Carbon `RegisterEventHotKey`, no permission needed).
-
-# [Input injection]($heading.id('input-injection'))
-
-Simulate keyboard input and clipboard operations:
-
-```zig
-try oriel.input.typeText("Hello from Zig!");
-try oriel.input.keyCombo("ctrl+v");
-```
-
-**Platform support:** Linux (Wayland virtual-keyboard + X11 XTest) · Windows (`SendInput`; tested under Wine) · macOS (`CGEvent`; needs the Accessibility permission, else `error.AccessibilityNotGranted`).
-
-# [Clipboard]($heading.id('clipboard'))
-
-Background clipboard read/write for text and PNG images:
-
-```zig
-const text = try oriel.clipboard.readText(gpa);
-try oriel.clipboard.writeText("New content");
-```
-
-**Platform support:** Linux (Wayland data-control + X11 GdkClipboard) · Windows · macOS (`NSPasteboard`).
-
-# [Deep links]($heading.id('deep-links'))
-
-Handle custom URL schemes (e.g. `myapp://note/123`), delivering links to both cold-starting and already-running app instances.
-
-```zig
-if (oriel.options.deep_link) {
-    oriel.deep_link.onOpen(onDeepLink);
-}
-
-fn onDeepLink(url: []const u8) void {
-    // Validated against declared schemes, max 2048 bytes, no control chars
-    std.log.info("Received deep link: {s}", .{url});
-}
-```
-
-In the webview frontend:
-
-```ts
-import { listen } from "./oriel";
-
-// Listen for incoming deep links
-listen("deep-link", ({ url }) => {
-    console.log("Deep link received:", url);
-});
-
-// Or query the cold-start URL
-const initialUrl = await window.oriel.deepLink.current();
-```
-
-Configure schemes in `build.zig` via `.package = .{ .url_schemes = &.{"myapp"} }` or using the CLI:
-
-```sh
-oriel deep-link add myapp
-```
-
-**Platform support:** Linux (GApplication single-instance + XDG desktop handler) · Windows (Named mutex + `WM_COPYDATA` forwarding + HKCU registry) · macOS (Info.plist `CFBundleURLTypes` in the `.app`; Launch Services delivers links as `kAEGetURL` Apple Events, to the running instance if there is one; `oriel deep-link register` runs `lsregister` on `zig-out/<Name>.app`).
-
-**Status:** Opt-in with `-Ddeep_link`. Default: off.
-
-# [Local AI inference]($heading.id('local-ai-inference'))
-
-## [LLM text generation (`-Dllama`)]($heading.id('llm-text-generation-dllama'))
-
-Embedded llama.cpp for local text generation. Use quantized models (GGUF format):
-
-```zig
-oriel.llama.initBackend();
-defer oriel.llama.deinitBackend();
-
-const model = try oriel.llama.loadModel("path/to/model.gguf", params);
-defer model.deinit();
-```
-
-Build time: ~45 seconds cold; cached builds are fast. CPU features auto-detected; for distribution, use `-Dcpu=x86_64_v2` or `-Dcpu=baseline`.
-
-**Status:** Opt-in with `-Dllama`. Default: off.
-
-**GPU:** CUDA on Linux with `-Dggml_cuda`; Metal on macOS (on by default).
-
-## [Speech recognition (`-Dwhisper`)]($heading.id('speech-recognition-dwhisper'))
-
-Embedded whisper.cpp for speech-to-text:
-
-```zig
-oriel.whisper.initBackend();
-defer oriel.whisper.deinitBackend();
-
-const ctx = try oriel.whisper.loadModel("path/to/ggml-model.bin", params);
-defer ctx.deinit();
-```
-
-Same build-time and distribution considerations as llama.
-
-**Status:** Opt-in with `-Dwhisper`. Default: off.
-
-**GPU:** CUDA on Linux with `-Dggml_cuda`; Vulkan on Linux, Windows and Android with `-Dggml_vulkan`; Metal on macOS and iOS (on by default).
-
-For live dictation and transcription with the tuning done for you, use Dictation (below), built on top of it.
-
-## [CUDA acceleration]($heading.id('cuda-acceleration'))
-
-Compile with `-Dggml_cuda` (Linux only) to offload to NVIDIA GPUs:
-
-```sh
-oriel build -Dllama -Dwhisper -Dggml_cuda -Dcuda_path=/opt/cuda
-```
-
-Measured speedup on RTX 4070 (11 s audio): 3.2 s on CPU → 0.8 s on CUDA.
-
-Requires the CUDA toolkit and an NVIDIA GPU at runtime; CPU fallback works.
-
-## [Phones: ARM CPU kernels (`-Dggml_arm`)]($heading.id('phones-arm-cpu-kernels-dggml-arm'))
-
-ggml, llama.cpp and whisper.cpp are compiled optimized in every build mode, and for ARM phones with the instructions their fast kernels need: `-Dggml_arm=dotprod` (the Android default: every phone since 2018) or `i8mm` (Armv8.6/v9: Tensor G3+, Snapdragon 8 Gen 1+, Dimensity 9000+). A CPU without them is refused at model load (`error.CpuUnsupported`), not crashed. Mobile GPU drivers often lose to these kernels, per model: on a Pixel's Mali-G715, whisper base ran 1.8× faster on the CPU, small 1.6× faster on Vulkan.
-
-## [Metal acceleration (macOS, iOS)]($heading.id('metal-acceleration-macos-ios'))
-
-On macOS and iOS, ggml's Metal backend is built in by default (`-Dggml_metal=false` turns it off); the kernel sources are embedded, so no Xcode `metal` compiler is needed. Measured on an Apple M1 (5.9 s clip, tiny.en, incl. model load): 7.3 s on CPU → about 1 s on Metal.
-
-# [Text to speech]($heading.id('text-to-speech'))
-
-`oriel.tts` reads text aloud offline with Kokoro-82M: enable `.kokoro = true` with `.llama = true` or `.whisper = true`, then
-
-```zig
-oriel.tts.init(init.io, init.gpa, models_dir);           // once, at startup
-try oriel.tts.download("kokoro-82m-q8_0");                // and a voice: "af_heart"
-const r = try oriel.tts.speak(gpa, markdown_text, .{});   // from an async command
-oriel.tts.stop();                                         // Stop, from any thread
-```
-
-- **Models and voices:** Kokoro 82M (q8_0, f16) and curated voices for English, Spanish, French, Portuguese, Italian, Japanese, Chinese and Hindi, downloaded from Hugging Face and checked against their SHA-256 ("tts:download" events).
-- **Out of the box:** Markdown read as prose, the language guessed from the text, playback that starts after the first sentence and streams the rest ("tts:state" events), the model kept loaded between utterances, `warmUp` before the first one, and the GPU where ggml has one (CUDA, Vulkan, Metal), else the CPU.
-- **Phoneme data:** espeak-ng's runtime data is compiled at build time and shipped by `addApp` on every platform (`tts_languages` picks the dictionaries).
-- **Building blocks:** `oriel.kokoro` (synthesis) and `oriel.audio_play` (one-shot and streaming playback).
-
-See [Offline text to speech]($link.page('docs/tts')) for the API, platform notes, measured speeds and dependency notices.
-
-# [Audio capture]($heading.id('audio-capture'))
-
-Record microphones and system audio as mono `f32` samples (16 kHz for whisper).
-
-```zig
-const sources = try oriel.audio_capture.listSources(gpa); // .name, .description, .monitor (system audio)
-defer oriel.audio_capture.freeSources(gpa, sources);
-
-var stream = try oriel.audio_capture.Stream.open(sources[0].name, "My App", 16000);
-defer stream.close();
-var buf: [1600]f32 = undefined; // 100 ms
-try stream.read(&buf); // blocks until full
-```
-
-**Platform support:** Linux (PulseAudio / PipeWire; system audio through monitor sources) · Windows (WASAPI; system audio through loopback of each output) · macOS (CoreAudio; "System audio (all apps)" through a Core Audio process tap on macOS 14.2+, no driver; needs the Microphone or System Audio Recording permission) · Android (AAudio, microphones; a foreground service keeps it going in the background) · iOS (AVAudioSession + AudioQueue, microphones; background audio with `.ios = .{ .background_audio = true }`).
-
-**Status:** Opt-in with `-Daudio_capture`. Default: off.
-
-# [Dictation]($heading.id('dictation'))
-
-Voice to text with the tuning built in: live dictation from the microphone (or system audio, for captions), and transcription of recordings. Needs `-Dwhisper -Daudio_capture`.
-
-```zig
-oriel.dictation.init(init.io, init.gpa, models_dir);          // once, at startup
-const s = try oriel.dictation.start(.{ .language = "de" });    // from an async command
-// the page gets dictation:partial, dictation:final and dictation:level events
-const r = try oriel.dictation.stop(gpa);                       // r.text: everything said
-const t = try oriel.dictation.transcribeFile(gpa, "talk.wav", .{});
-```
-
-**Engines** (`.engine`):
-
-- `.whisper`: whisper.cpp on every platform, about 99 languages, offline.
-- `.system`: the platform's recognizer, with no model to download. On Android, `SpeechRecognizer`: Google's on-device model on a Pixel, streaming about one update a second. Its languages are the phone's (Oriel asks Android to download a missing language pack).
-- `.auto`: the system engine on Android when it runs on the device, otherwise whisper.
-
-**What whisper gets without tuning:**
-
-- Models: tiny, base and small in q8_0, with `download`, `delete` and `status`.
-- Silence skipping: Silero voice detection, so silence never reaches whisper.
-- Speed: whisper's window sized to the clip.
-- Live text from a smaller *draft* model (base under small), while the chosen model writes each phrase when you pause. Each runs on its own faster processor.
-- The CPU or the GPU per device and model (`.backend = .auto`): what `compare()` measured, remembered next to the models. Until then, the GPU on desktops and the CPU on phones; on phones the GPU must be 1.3× faster to be picked.
-
-**Files and samples:** `transcribeFile` reads WAV (PCM or float, any rate and channel count). `transcribeSamples` takes 16 kHz mono samples from any decoder.
-
-**Events:** `dictation:level`, `dictation:partial` (the phrase so far, `""` once final), `dictation:final`, `dictation:download`, `dictation:compare`, `dictation:error`, `dictation:ended`. `oriel.dictation.Events` has their types, for the app's own `Events` struct.
-
-**Building blocks:** `oriel.whisper`, `oriel.audio_capture` and `oriel.ggml_gpu` stay public for pipelines of your own.
-
-The showcase's Dictate tab uses all of it, and its System tab dictates into other apps.
-
-# [Chat]($heading.id('chat'))
-
-Chat and completion with a local LLM, the llama.cpp counterpart of Dictation. Needs `-Dllama`.
-
-```zig
-oriel.chat.init(init.io, init.gpa, models_dir);              // once, at startup
-const r = try oriel.chat.generate(gpa, &.{
-    .{ .role = "system", .content = "Answer briefly." },
-    .{ .role = "user", .content = "What is Zig?" },
-}, .{});                                                      // from an async command
-// chat:token events stream the reply; oriel.chat.cancel() stops it
-```
-
-**What you get without tuning:**
-
-- Models: small multilingual instruct models in q4_0 (Qwen2.5 0.5B and 1.5B, Llama 3.2 1B), and on desktops Qwen3.5 9B and Gemma 4 12B (a computer with 16 GB of memory runs them), with `download`, `delete` and `status`.
-- The model's own chat template (read from its GGUF): `messages` are plain `{ role, content }`. Qwen3.5 and Gemma 4 answer straight away; `.think = true` lets them reason first, and the reasoning stays out of the reply.
-- Tuned like llama-server: a resident threadpool, 2048-token prompt batches on desktops, a q8_0 KV cache with flash attention (f16 where the backend has none), the context capped at what the model was trained for and halved when memory runs out, and the CPU when the model doesn't fit on the GPU.
-- Structured output: `.schema` takes a JSON schema, and the reply follows it.
-- Streaming: `chat:token` events carry whole UTF-8 characters.
-- Speed across turns: the conversation's KV cache is reused, so a turn only evaluates what's new.
-- Long chats: a conversation longer than the context drops its oldest turns, and the system prompt stays.
-- The CPU or the GPU per device and model (`.backend = .auto`), as `compare()` measured it (tokens per second), with a warm-up for GPU models.
-
-**Result:** the text, the stop reason (`eos`, `length`, `cancelled`), the prompt and reply token counts, the tokens reused from the cache, and the tokens per second.
-
-**Building blocks:** `oriel.llama` (the C API and JSON-schema grammars) and `oriel.ggml_gpu`.
-
-# [System AI]($heading.id('system-ai'))
-
-The device's own language model, with nothing for the app to download or ship: Gemini Nano through ML Kit on Android, Apple Foundation Models on iOS 26+ with Apple Intelligence. Needs `-Dsystem_ai`; Android and iOS only (elsewhere `oriel.system_ai.available` is false: use Chat).
-
-```zig
-if (oriel.system_ai.available) {                              // from a worker thread
-    const st = oriel.system_ai.status();                      // available, downloadable, downloading, unavailable
-    if (st.state == .downloadable) try oriel.system_ai.download(io, onProgress);
-    const reply = try oriel.system_ai.generate(io, arena, .{ .prompt = "Name three herbs" }, onToken);
-}
-```
-
-- **Runtime status:** most phones have no Gemini Nano, and iOS needs 26 with Apple Intelligence on: `status()` says `unavailable` and why. `capabilities()` lists images, streaming, structured output and the context window.
-- **Request:** a system prompt, the prompt, images (Android: one), temperature, max tokens, and a JSON schema (sent as instructions). Caps: 64 KiB of text each, 4 images of 8 MiB, a 1 MiB reply.
-- **Streaming and progress:** `on_token` and `system_ai:token` events; download progress as `system_ai:download`. `cancel()` stops a reply from any thread.
-- **The page:** `oriel.systemAi.status()`, `capabilities()`, `download(onProgress)`, `generate(request, onToken)`, `cancel()` (typed `SystemAiApi`).
-- **iOS:** Oriel's Swift backend raises the app's minimum to iOS 18. FoundationModels is weak-linked and needs the iOS 26 SDK (Xcode 26) to build the real backend; with an older SDK it reports `unavailable`. Images aren't supported yet.
-- **Built on app extensions:** the backends are Oriel's own extension `oriel.system_ai` (Kotlin and Swift), on the primitive apps use. Names starting with `oriel.` are reserved.
-
-# [Network and mDNS]($heading.id('network-and-mdns'))
-
-Service registration and browsing (DNS-SD / mDNS on the local link) through the platform's native responder, without opening multicast sockets or needing multicast entitlements:
-
-```zig
-// Register a local service
-const reg = try oriel.network.mdns.register(.{
-    .type = "_my-service._tcp",
-    .name = "MyDevice",
-    .port = 8080,
-    .txt = &.{.{ .key = "version", .value = "1.0" }},
-});
-defer reg.unregister();
-
-// Browse services on the local link
-const browser = try oriel.network.mdns.browse("_my-service._tcp", onServiceEvent, null);
-defer browser.stop();
-
-fn onServiceEvent(ctx: ?*anyopaque, event: *const oriel.network.mdns.Event) void {
-    switch (event.*) {
-        .found => |found| std.log.info("found: {s} at {s}:{d}", .{ found.name, found.addresses[0], found.port }),
-        .lost => |lost| std.log.info("lost: {s}", .{ lost.name }),
-    }
-}
-```
-
-- **Android:** Handled via `NsdManager` (`OrielMdns.kt`).
-- **Windows:** Handled via dnsapi's `DnsServiceRegister`, `DnsServiceBrowse`, and `DnsServiceResolve` (Windows 10 1809+). TXT values must be UTF-8 text strings.
-- Requires `.permissions = .{ .local_network = "Find local devices" }` declared in `build.zig`.
-
-# [System sharing]($heading.id('system-sharing'))
-
-Send content to the system share sheet, and receive shares (files, text, URLs) from other apps:
-
-```zig
-// Handle received shares (also broadcast as "share:received" to webviews)
-oriel.share.onReceive(onShareReceived);
-
-// Trigger native share sheet
-try oriel.share.send(.{ .title = "Report", .text = "Sharing content" }, null, null);
-```
-
-- **Platforms:** Windows (`DataTransferManager`, "Send to", "Open with"), macOS/iOS (`NSSharingServicePicker`, `UIActivityViewController`; receiving on macOS also through the Services menu), and Android share target intents.
-- Receiving incoming shares requires declaring `.share_target` in `build.zig`.
+| `oriel.App` | Windows, commands, events, the app's run loop | [Commands]($link.page('docs/commands')), [Windows]($link.page('docs/windows')) |
+| `oriel.lifecycle` | Background, foreground, memory pressure, sleep, terminating | [Lifecycle]($link.page('docs/lifecycle')) |
+| `oriel.permissions` | Declared OS permissions, queried and requested | [Permissions]($link.page('docs/permissions')) |
+| `oriel.paths` | The app's data and cache directories | [Paths]($link.page('docs/paths')) |
+| `oriel.log` | Logs to stderr and a file | [Logging]($link.page('docs/logging')) |
+| `oriel.security`, `oriel.isolation` | CSP, allowed origins, capabilities, the isolation hook | [Security]($link.page('docs/security')) |
+| `oriel.hooks` | Platform hooks in Zig (Linux, Windows, macOS) | [Platform hooks]($link.page('docs/platform-hooks')) |
+| `oriel.extensions` | The app's own native code, called by name | [App extensions]($link.page('docs/extensions')) |
+
+# [Related]($heading.id('related'))
+
+- [Concepts]($link.page('docs/concepts')): how the window, the bridge and Zig fit together.
+- [Building]($link.page('docs/building')): `AppOptions` and the build steps.
+- [Desktop]($link.page('docs/desktop')), [Android]($link.page('docs/android')), [iOS]($link.page('docs/ios')): what each platform adds or replaces.

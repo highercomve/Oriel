@@ -1,0 +1,430 @@
+<!-- Generated from site/content/docs/chat.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Chat
+
+Chat and completion with a local LLM through oriel.chat: a model catalog with downloads, the model's own chat template, streaming tokens, JSON-schema output and KV-cache reuse, on the CPU or the GPU.
+
+`oriel.chat` answers a conversation with a local LLM (llama.cpp), offline,
+on every platform, with the tuning done: a catalog of small instruct models
+downloaded from Hugging Face, the model's own chat template, replies
+streamed to the page token by token, a JSON schema the reply must follow,
+KV-cache reuse across turns, and the CPU or the GPU per device. You give it
+`{ role, content }` messages and get the reply.
+
+Use it for chat, summaries, rewriting, extraction. For the phone's built-in
+model with nothing to download, use [System AI](system-ai.md);
+for vision models, embeddings or a sampling loop of your own, use
+`oriel.llama` directly ([Local AI](local-ai.md)).
+
+## Availability
+
+| Platform | Models offered | GPU | Default backend (`.auto`, before `compare`) |
+|---|---|---|---|
+| Linux | all five | CUDA, Vulkan | GPU when there is one |
+| Windows | all five | Vulkan | GPU when there is one |
+| macOS | all five | Metal | GPU |
+| Android | the three small ones | Vulkan, OpenCL (Adreno), Hexagon | CPU |
+| iOS | the three small ones | Metal (devices) | CPU |
+
+Turned on by `.llama = true` (off by default). No permission; downloads need
+network access. GPU backends come from the [Local AI](local-ai.md#build-options)
+build options.
+
+## Quick start
+
+`build.zig`:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .llama = true,
+});
+```
+
+`src/main.zig`: initialize the module before `oriel.main`, and expose it
+with commands of your own. `generate` blocks, so its command is async;
+`cancel` must run while `generate` is busy, so it isn't.
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+const chat = oriel.chat;
+
+pub const Events = struct {
+    @"chat:download": @FieldType(chat.Events, "chat:download"),
+    @"chat:token": @FieldType(chat.Events, "chat:token"),
+};
+
+pub const Commands = struct {
+    pub const async_commands = .{ "chat_download", "chat_send" };
+
+    pub fn chat_status(_: std.mem.Allocator) chat.Status {
+        return chat.status();
+    }
+    pub fn chat_download(_: std.mem.Allocator, args: struct { model: []const u8 }) !void {
+        try chat.download(args.model);
+    }
+    pub fn chat_send(gpa: std.mem.Allocator, args: struct { messages: []const chat.Message, options: chat.Options = .{} }) !chat.Result {
+        return chat.generate(gpa, args.messages, args.options);
+    }
+    pub fn chat_stop(_: std.mem.Allocator) void {
+        chat.cancel();
+    }
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    const data = try oriel.paths.appData(init.gpa, .{ .name = "MyApp" });
+    const models_dir = try std.fs.path.join(init.gpa, &.{ data, "models" });
+    chat.init(init.io, init.gpa, models_dir); // both strings live as long as the app
+
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .app = app.build,
+        .window = .{ .title = "Chat", .width = 800, .height = 600 },
+    });
+}
+```
+
+The page:
+
+```js
+const { invoke, listen } = window.oriel;
+
+await invoke("chat_download", { model: "qwen2.5-0.5b" }); // once per device
+listen("chat:token", ({ text }) => { reply.textContent += text; });
+const r = await invoke("chat_send", {
+  messages: [
+    { role: "system", content: "Answer briefly." },
+    { role: "user", content: "What is Zig?" },
+  ],
+});
+console.log(r.text, r.tokens_per_s);
+```
+
+## How it works
+
+```mermaid
+sequenceDiagram
+  participant P as Page
+  participant W as Command worker
+  participant C as oriel.chat
+  participant L as llama.cpp + ggml
+  P->>W: invoke("chat_send", messages)
+  W->>C: generate(messages, options)
+  C->>L: load model + context (first use)
+  C->>C: chat template, drop oldest turns to fit
+  C->>L: decode only the tokens not in the KV cache
+  loop each token, until EOS, max_tokens or cancel
+    L-->>C: logits
+    C->>C: sample (grammar when .schema)
+    C-->>P: chat:token { text }
+  end
+  C-->>W: Result
+  W-->>P: resolve(Result)
+  P->>C: chat_stop (any thread): cancel()
+```
+
+`src/modules/chat.zig` keeps one model and one context loaded, behind one
+mutex: a `generate` holds it from start to end, so replies run one at a
+time and `status`, `delete` and `compare` wait for the reply in progress.
+
+**Which model.** `.model = "auto"` takes the largest catalog model present
+on the device; a name takes that model (`error.NoModel` when nothing is
+downloaded). The model loads on first use and stays loaded; another model,
+the other backend, or a larger `.context` reloads it.
+
+**Loading** follows llama-server and GhostPen:
+
+- On the GPU, every layer is offloaded. A model the GPU can't hold falls
+  back to the CPU (logged as `cannot load <model> on the GPU (...): using
+  the CPU`). On the CPU no GPU device is used at all, so the CPU's repacked
+  ARM kernels get the weights (with a GPU backend's host buffer in between,
+  ChromeOS's virtio-gpu made the CPU 14 times slower).
+- Phones read the weights into memory instead of mapping the file: models
+  live behind Android's FUSE layer, where a mapped file the CPU reads every
+  token is slow.
+- The context is capped at what the model was trained for, with a q8_0 KV
+  cache and flash attention where the backend has it (else an f16 cache);
+  out of memory, it halves the context, down to 2048 tokens
+  (`error.ContextFailed` below that).
+- A resident threadpool: one thread per core on phones up to 4 (the big
+  cores), every core on desktops, half of them on CPUs with 16 or more
+  (SMT siblings share the math units). Prompts are evaluated in batches of
+  2048 tokens on desktops, 512 on phones.
+- A model loaded on the GPU gets one untimed decode (Vulkan builds its
+  pipelines on first use).
+
+**The prompt.** Qwen3/3.5 and Gemma 4 templates are rendered by Oriel
+(`src/modules/chat/format.zig`), so their reasoning can be switched off in
+the prompt; every other family goes through llama.cpp's built-in templates
+(ChatML, Llama 3, Gemma, Mistral, Phi...), and ChatML when the GGUF's
+template isn't recognized. A conversation that doesn't fit `context -
+max_tokens` drops its oldest turns (a user message and its answer); a
+leading system message always stays. `error.PromptTooLong` when the last
+message alone doesn't fit.
+
+**KV-cache reuse.** The context keeps the tokens of the last turn. The next
+`generate` evaluates only what follows their common prefix, so a long chat
+doesn't get slower per turn (`Result.reused_tokens`). Earlier Qwen replies
+keep the empty reasoning block the prompt gave them, so the text is exactly
+what the cache holds: Qwen3.5 (recurrent layers) and Gemma 4 (sliding-window
+attention) can only extend their cache.
+
+**Sampling.** Greedy at `temperature = 0`; otherwise llama.cpp's defaults: a
+light repetition penalty (1.05 over the last 64 tokens: small models loop
+without it), top-k 40, `top_p`, min-p 0.05, then the temperature. With
+`.schema`, the schema's grammar binds the answer (after any reasoning); each
+token is drawn as usual and checked against the grammar, and only when it
+breaks it does the grammar filter the whole vocabulary, much faster than
+filtering every token.
+
+**Streaming.** Every token's text is appended to the raw output; the part
+outside the reasoning block goes to the page as `chat:token` events, cut at
+whole UTF-8 characters (invalid bytes are replaced).
+
+**Cancel.** `cancel()` sets a flag the token loop checks, and llama.cpp's
+abort callback checks it during long prompt evaluations. During the reply,
+`generate` returns what it has with `stop = "cancelled"`; during the prompt,
+it returns `error.Cancelled`. Each `generate` clears the flag when it
+starts, so `cancel()` only stops a reply in progress.
+
+**CPU or GPU.** `.backend = .auto` uses what `compare()` measured for this
+model on this device (saved in `chat-backends.txt` in the models
+directory); until then, the GPU on desktops and the CPU on phones.
+`compare` runs the same short prompt with a 64-token greedy reply on the
+GPU, then on the CPU; the GPU wins on desktops when it is at least as fast,
+on phones only when it is 1.3 times faster (phone CPUs vary with heat, and a
+barely faster GPU isn't worth its battery).
+
+**Memory.** `unload_on` (critical memory pressure by default) frees the
+model through [`oriel.lifecycle`](lifecycle.md) unless a reply
+is running ([Local AI](local-ai.md#how-it-works)).
+
+## Examples
+
+### A chat that streams into the page
+
+The page keeps the conversation and sends it whole each turn; the KV cache
+makes that cheap.
+
+```js
+const { invoke, listen } = window.oriel;
+const history = [{ role: "system", content: "You are a helpful assistant." }];
+let live = null;
+listen("chat:token", ({ text }) => { if (live) live.textContent += text; });
+
+async function send(text) {
+  history.push({ role: "user", content: text });
+  live = addBubble("assistant");
+  try {
+    const r = await invoke("chat_send", { messages: history, options: { max_tokens: 1024 } });
+    history.push({ role: "assistant", content: r.text });
+    status.textContent = `${r.tokens} tokens, ${r.tokens_per_s.toFixed(1)}/s on ${r.backend}` +
+      (r.stop === "length" ? " (cut at max_tokens)" : "");
+  } finally {
+    live = null;
+  }
+}
+stopButton.onclick = () => invoke("chat_stop");
+```
+
+`examples/showcase`'s Chat tab does this, with a model picker, downloads,
+Compare, and a microphone that dictates the message
+([Dictation](dictation.md)).
+
+### Structured output
+
+```zig
+const r = try oriel.chat.generate(gpa, &.{
+    .{ .role = "system", .content = "Extract the recipe." },
+    .{ .role = "user", .content = recipe_text },
+}, .{
+    .temperature = 0,
+    .schema =
+    \\{"type":"object","properties":{
+    \\  "title":{"type":"string"},
+    \\  "ingredients":{"type":"array","items":{"type":"string"}},
+    \\  "minutes":{"type":"integer"}},
+    \\ "required":["title","ingredients"]}
+    ,
+});
+const Recipe = struct { title: []const u8, ingredients: []const []const u8, minutes: ?i64 = null };
+const recipe = try std.json.parseFromSliceLeaky(Recipe, arena, r.text, .{ .ignore_unknown_fields = true });
+```
+
+A reply cut by `max_tokens` (`stop = "length"`) is incomplete JSON: leave
+room.
+
+### Let a reasoning model think
+
+```zig
+const r = try oriel.chat.generate(gpa, messages, .{ .model = "qwen3.5-9b", .think = true, .max_tokens = 4096 });
+// r.text is the answer only; the thinking counts in r.tokens and max_tokens.
+```
+
+### Pick the backend once per device
+
+```zig
+pub fn chat_compare(_: std.mem.Allocator, args: oriel.chat.Options) !oriel.chat.Comparison {
+    return oriel.chat.compare(args); // async command: it runs two replies
+}
+```
+
+The page shows each run from `chat:compare` events (`{ backend, tokens_per_s }`);
+from then on `.backend = .auto` uses the faster one for that model.
+
+### A headless check
+
+`examples/showcase` answers `--chat "<message>"` from the command line on
+the desktop, and a follow-up that reuses the KV cache: `src/main.zig`'s
+`headlessChat` is a complete program around `chat.generate`.
+
+## Reference
+
+### Functions
+
+| Function | Thread | Meaning |
+|---|---|---|
+| `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where the models live (created when needed); `dir` must outlive the app. Silences llama.cpp's logging and subscribes to `oriel.lifecycle`. |
+| `generate(a, messages: []const Message, opts: Options) !Result` | worker | The reply, streamed as `chat:token` and returned whole (strings allocated with `a`). Loads the model the first time. |
+| `cancel() void` | any | Stop the reply in progress. |
+| `status() Status` | worker | The catalog with what's on the device, the backend, the loaded model. Loads the GPU backend the first time; waits while a reply runs. |
+| `download(name) !void` | worker | Fetch a catalog model from Hugging Face, emitting `chat:download`. |
+| `delete(name) !void` | worker (waits for a running reply) | Remove a model (unloading it first) and a half-finished download of it. |
+| `compare(opts: Options) !Comparison` | worker | GPU against CPU on this device (see How it works); remembers the winner. |
+| `find(name) !*const Model` | any | A catalog entry; `error.UnknownModel`. |
+| `present(m: *const Model) bool` | any after `init` | The model's file is complete in the models directory. |
+| `unloadIdle() void` | any (main included) | Free the model now unless a reply is running or the module is busy (returns at once). |
+
+| Variable | Meaning |
+|---|---|
+| `available: bool` | `true` in a build with `.llama`. |
+| `unload_on: oriel.lifecycle.UnloadOn` | When the module frees its model by itself; default `.{}` (critical memory pressure). `.{ .background = true }`, `.{ .memory_pressure = .moderate }`, `.{ .memory_pressure = null }` (never). Set it any time. |
+| `models: [5]Model` | The catalog, smallest first. |
+| `device_models` | Pointers to the models this device offers (phones: no `desktop_only`). |
+
+### The catalog
+
+| Name | Label | File (Hugging Face repository) | Size | Where |
+|---|---|---|---|---|
+| `qwen2.5-0.5b` | Qwen2.5 0.5B | `qwen2.5-0.5b-instruct-q4_0.gguf` (`Qwen/Qwen2.5-0.5B-Instruct-GGUF`) | 409 MB | everywhere |
+| `llama3.2-1b` | Llama 3.2 1B | `Llama-3.2-1B-Instruct-Q4_0.gguf` (`bartowski/Llama-3.2-1B-Instruct-GGUF`) | 737 MB | everywhere |
+| `qwen2.5-1.5b` | Qwen2.5 1.5B | `qwen2.5-1.5b-instruct-q4_0.gguf` (`Qwen/Qwen2.5-1.5B-Instruct-GGUF`) | 1017 MB | everywhere |
+| `qwen3.5-9b` | Qwen3.5 9B | `Qwen3.5-9B-Q4_K_M.gguf` (`unsloth/Qwen3.5-9B-GGUF`) | 5418 MB | desktops (16 GB of memory, or a GPU with 8 GB) |
+| `gemma4-12b` | Gemma 4 12B | `gemma-4-12b-it-Q4_K_M.gguf` (`unsloth/gemma-4-12b-it-GGUF`) | 6792 MB | desktops |
+
+All speak English, Spanish, German, French and more. The small ones are
+q4_0, which ggml repacks for ARM's dotprod and i8mm kernels and the GPU
+backends run natively. Files are fetched from
+`https://huggingface.co/<repo>/resolve/main/<file>`; copying the file into
+the models directory works too.
+
+### Types
+
+```zig
+pub const Message = struct {
+    role: []const u8, // "system", "user" or "assistant"
+    content: []const u8,
+};
+
+pub const Backend = enum { auto, cpu, gpu };
+
+pub const Model = struct {
+    name: []const u8,
+    label: []const u8, // "Qwen2.5 1.5B"
+    repo: []const u8, // Hugging Face repository
+    file: []const u8,
+    mb: u32,
+    desktop_only: bool = false,
+};
+```
+
+`Options`:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `model` | `[]const u8` | `"auto"` | A catalog name; `"auto"`: the largest on the device. |
+| `backend` | `Backend` | `.auto` | `.gpu` falls back to the CPU without a GPU or when the model doesn't fit. |
+| `max_tokens` | `u32` | `512` | Reply length limit (reasoning included). |
+| `temperature` | `f32` | `0.7` | 0: greedy. |
+| `top_p` | `f32` | `0.95` | |
+| `context` | `u32` | `4096` | Prompt plus reply, in tokens; at most what the model was trained for, at least 512. |
+| `think` | `bool` | `false` | Let Qwen3.5 or Gemma 4 reason before answering; the reasoning isn't in the reply. |
+| `schema` | `[]const u8` | `""` | A JSON Schema the reply must follow; `""` for free text. |
+
+`Result` (strings allocated with `generate`'s allocator, `model`/`backend`
+static):
+
+| Field | Meaning |
+|---|---|
+| `text: []const u8` | The reply (without reasoning). |
+| `model`, `backend: []const u8` | The model's name; `"CPU"`, or the GPU backend (`"Vulkan"`, `"OpenCL"`, `"Hexagon"` on Android, `"GPU"` elsewhere). |
+| `stop: []const u8` | `"eos"` (the model finished), `"length"` (`max_tokens`, or the context filled), `"cancelled"`. |
+| `prompt_tokens`, `reused_tokens`, `tokens: u32` | The prompt's tokens, how many of them came from the KV cache, the reply's tokens. |
+| `load_ms`, `prompt_ms`, `generate_ms: u64` | Model loading (0 when loaded), prompt evaluation, generation. |
+| `tokens_per_s: f32` | Generation speed. |
+
+`Status`:
+
+| Field | Meaning |
+|---|---|
+| `backend: []const u8`, `gpu: ?[]const u8` | As `Result.backend` for the GPU ggml found (`"CPU"` without one), and the GPU's name. |
+| `models_dir: []const u8` | |
+| `models: [device_models.len]ModelStatus` | `{ name, label, mb, present, faster: ?[]const u8 }`, `faster` being `"gpu"`/`"cpu"` once `compare` ran. |
+| `loaded`, `downloading: ?[]const u8` | The model in memory; the model downloading. |
+| `generating: bool` | A reply is running. `status` waits for a running reply (one mutex), so in practice it reads `false`. |
+
+`Comparison`: `{ model, gpu: ?Run, cpu: Run, faster: []const u8 }`, with
+`Run = { tokens_per_s: f32, prompt_ms: u64, tokens: u32 }`; `gpu` is null
+without a GPU (then nothing is remembered).
+
+### Events
+
+Emitted to every window; list them in your `Events` struct to type them in
+the page (`oriel.chat.Events` has the payload types).
+
+| Event | Payload | When |
+|---|---|---|
+| `chat:token` | `{ text }` | The reply grew (whole UTF-8 characters). |
+| `chat:download` | `{ model, done_mb, total_mb }` | Each megabyte of a download. |
+| `chat:compare` | `{ backend: "GPU" or "CPU", tokens_per_s }` | Each run of `compare`. |
+
+### Errors
+
+| Error | From | Meaning |
+|---|---|---|
+| `UnknownModel` | `find`, `download`, `delete`, `generate` | Not a catalog name. |
+| `NoModel` | `generate`, `compare` | `"auto"` and nothing downloaded. |
+| `ModelNotFound` | `generate` | The model's file couldn't be loaded. |
+| `CpuUnsupported` | `generate` | The CPU lacks the `ggml_arm` extensions. |
+| `ContextFailed` | `generate` | No context fits in memory, even at 2048 tokens. |
+| `NoMessages`, `EmptyPrompt` | `generate` | Nothing to answer. |
+| `PromptTooLong` | `generate` | The last message alone doesn't fit `context - max_tokens`. |
+| `Cancelled` | `generate` | Cancelled during the prompt. |
+| `DecodeFailed`, `TokenizeFailed`, `ChatTemplateFailed`, `SampleFailed` | `generate` | llama.cpp failed. |
+| `InvalidSchema` | `generate` | `.schema` isn't a JSON Schema llama.cpp can convert. |
+| `AlreadyDownloading` | `download` | One download at a time. |
+| `Downloading`, `Generating` | `delete` | The model is downloading or answering. |
+| `BadHttpStatus`, `Truncated`, `DownloadTooLarge`, `TooManyHttpRedirects`, `InsecureModelUrl`, ... | `download` | See [Model downloads](local-ai.md#how-it-works). |
+
+## Troubleshooting
+
+- **`NoModel`.** Download one first (`download("qwen2.5-0.5b")`), or copy the
+  GGUF file named as in the catalog into the models directory.
+- **Replies are slow on a phone.** Run `compare` once per model: phones start
+  on the CPU, and some GPUs win. Use the 0.5B or 1B model.
+- **The reply stops mid-sentence.** `stop = "length"`: raise `max_tokens`
+  (and `context`).
+- **Stop takes a while to act.** `cancel()` returns at once, so its command
+  needn't be async; listed in `async_commands`, it waits for a free worker
+  (they may all be busy with replies, downloads and comparisons).
+- **The log says `cannot load ... on the GPU`.** The model didn't fit in GPU
+  memory; it runs on the CPU. Use a smaller model or quantization.
+
+## Related
+
+- [Local AI](local-ai.md): llama.cpp, GPU backends, downloads and memory.
+- [System AI](system-ai.md): the phone's own model.
+- [Dictation](dictation.md) and [Text to speech](tts.md): voice in and out for a chat.
+- [Commands](commands.md): async commands and events.

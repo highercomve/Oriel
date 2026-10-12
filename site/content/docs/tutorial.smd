@@ -1,30 +1,52 @@
 ---
 .title = "Tutorial: a notes app",
-.description = "Build a complete Oriel app step by step: commands, events, SQLite and a tray icon.",
-.date = .date("2026-09-24T00:00:00"),
+.description = "Build a complete Oriel app step by step: a command, an event, SQLite storage and a tray icon.",
+.date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
 
+This tutorial builds a small notes app: the page adds notes through a Zig
+command, Zig tells every window when the list changes, the notes live in
+SQLite, and a tray icon keeps the app running when the window closes. It
+assumes the CLI is installed ([Getting started]($link.page('docs/getting-started'))).
+
 # [Step 1: Create the project]($heading.id('step-1-create-the-project'))
 
 ```sh
-oriel init notes
+oriel init notes --id dev.example.Notes
 cd notes
 ```
 
-This scaffolds a React + Vite frontend, a Zig application, and the build files. The Zig side is empty; let's add a command to save notes.
+This scaffolds a React + Vite frontend in `frontend/`, the Zig side in
+`src/main.zig`, and `build.zig`. Run it once to see the template:
 
-# [Step 2: Add a command]($heading.id('step-2-add-a-command'))
+```sh
+oriel dev
+```
 
-Edit `src/main.zig`. The app needs a place to store notes and a command to add them. Start with a simple in-memory list:
+`oriel dev` starts the Vite dev server, builds the app against it and
+reloads the page when the frontend changes; a change to the Zig code
+rebuilds and restarts the app. Leave it running.
+
+# [Step 2: A command]($heading.id('step-2-a-command'))
+
+A [command]($link.page('docs/commands')) is a `pub fn` in the `Commands`
+struct: the page calls it with `invoke`, its arguments arrive as a Zig
+struct parsed from JSON, and what it returns goes back as JSON. Replace
+`src/main.zig` with:
 
 ```zig
 const std = @import("std");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 
+pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };
+
+pub const Events = struct {};
+
 pub const Commands = struct {
+    /// invoke("add_note", { text }) on the page.
     pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) ![]const u8 {
         const text = std.mem.trim(u8, args.text, " \t\r\n");
         if (text.len == 0) return error.EmptyNote;
@@ -32,27 +54,27 @@ pub const Commands = struct {
     }
 };
 
-pub const Events = struct {};
-
 pub fn main(init: std.process.Init) !u8 {
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.example.Notes",
-        .title = "Notes",
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build, // the id, the embedded frontend, the dev server...: from build.zig
+        .window = .{ .title = "Notes", .width = 480, .height = 640 },
     });
 }
 ```
 
-Regenerate TypeScript types:
+- `gpa` is an arena for this one call: everything allocated from it is
+  freed once the result has been sent, so the returned string needs no
+  `free`.
+- An error (`error.EmptyNote`) rejects the page's promise with the error's
+  name.
+- `oriel.log.logFn` sends `std.log` to stderr and to the app's log file
+  ([Logging]($link.page('docs/logging'))).
 
-```sh
-oriel types
-```
+`oriel dev` regenerates `frontend/src/oriel.ts` from `Commands` and
+`Events` (so does `oriel types`), and `invoke("add_note", ...)` is typed in
+the page. Replace `frontend/src/App.tsx`:
 
-Call it from the frontend. Edit `frontend/src/App.tsx`:
-
-```tsx
+```ts
 import { useState } from "react";
 import { invoke } from "./oriel";
 
@@ -60,85 +82,83 @@ export function App() {
   const [text, setText] = useState("");
   const [result, setResult] = useState("");
 
-  const handleAdd = async () => {
-    const msg = await invoke("add_note", { text });
-    setResult(msg);
-    setText("");
+  const add = async () => {
+    try {
+      setResult(await invoke("add_note", { text }));
+      setText("");
+    } catch (err) {
+      setResult(String(err)); // "EmptyNote"
+    }
   };
 
   return (
-    <div>
+    <main>
       <input value={text} onChange={(e) => setText(e.target.value)} />
-      <button onClick={handleAdd}>Add</button>
-      {result && <p>{result}</p>}
-    </div>
+      <button onClick={add}>Add</button>
+      <p>{result}</p>
+    </main>
   );
 }
 ```
 
-Test it:
+Type a note and press Add: the reply comes from Zig.
 
-```sh
-oriel dev
-```
+# [Step 3: Keep notes, and an event]($heading.id('step-3-keep-notes-and-an-event'))
 
-The dev server starts on `localhost:5173` and auto-reloads. In the Zig terminal, type a note and click Add.
-
-# [Step 3: Add list command and events]($heading.id('step-3-add-list-command-and-events'))
-
-Commands can return data; let's track notes in memory and emit an event when they change. Update `src/main.zig`:
+Now keep the notes in a list, return them from a second command, and tell
+the page whenever the list changes with an event. Events are the fields of
+the `Events` struct; `oriel.App.events(Events).emit` sends one to every
+window, typed on both sides.
 
 ```zig
 const std = @import("std");
 const oriel = @import("oriel");
 const app = @import("oriel_app");
 
-pub const Note = struct {
-    id: u32,
-    text: []const u8,
-};
+pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };
+
+pub const Note = struct { id: u32, text: []const u8 };
 
 pub const Events = struct {
     notes_changed: []const Note,
 };
 const events = oriel.App.events(Events);
 
-var note_id: u32 = 0;
-var notes: std.ArrayList(Note) = undefined;
+/// Lives as long as the app, so it can't use a command's arena.
+const persistent = std.heap.smp_allocator;
+var notes: std.ArrayList(Note) = .empty;
+var next_id: u32 = 1;
 
 pub const Commands = struct {
-    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) !void {
+    pub fn add_note(_: std.mem.Allocator, args: struct { text: []const u8 }) !void {
         const text = std.mem.trim(u8, args.text, " \t\r\n");
         if (text.len == 0) return error.EmptyNote;
-        try notes.append(.{ .id = note_id, .text = try gpa.dupe(u8, text) });
-        note_id += 1;
+        try notes.append(persistent, .{ .id = next_id, .text = try persistent.dupe(u8, text) });
+        next_id += 1;
         events.emit(.notes_changed, notes.items);
     }
 
-    pub fn list_notes(_: std.mem.Allocator) ![]Note {
+    pub fn list_notes(_: std.mem.Allocator) []const Note {
         return notes.items;
     }
 };
 
 pub fn main(init: std.process.Init) !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    notes = std.ArrayList(Note).init(gpa.allocator());
-
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.example.Notes",
-        .title = "Notes",
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Notes", .width = 480, .height = 640 },
     });
 }
 ```
 
-Update the frontend:
+Commands that aren't listed in `async_commands` run on the main thread,
+one at a time, so the list needs no lock. `emit` serializes the payload
+straight away.
 
-```tsx
+The page loads the list once and then follows the event:
+
+```ts
 import { useEffect, useState } from "react";
-// Types generated from the Zig structs by `oriel types`.
 import { invoke, listen, type Commands } from "./oriel";
 
 type Note = Commands["list_notes"]["result"][number];
@@ -148,42 +168,50 @@ export function App() {
   const [notes, setNotes] = useState<Note[]>([]);
 
   useEffect(() => {
-    // Load notes on startup
     invoke("list_notes").then(setNotes);
-
-    // Listen to note changes
-    const off = listen("notes_changed", setNotes);
-    return off;
+    return listen("notes_changed", setNotes); // listen returns the unsubscribe
   }, []);
 
-  const handleAdd = async () => {
+  const add = async () => {
     await invoke("add_note", { text });
     setText("");
   };
 
   return (
-    <div>
+    <main>
       <input value={text} onChange={(e) => setText(e.target.value)} />
-      <button onClick={handleAdd}>Add</button>
+      <button onClick={add}>Add</button>
       <ul>
         {notes.map((n) => (
           <li key={n.id}>{n.text}</li>
         ))}
       </ul>
-    </div>
+    </main>
   );
 }
 ```
 
-# [Step 4: Store in SQLite]($heading.id('step-4-store-in-sqlite'))
+# [Step 4: Store the notes in SQLite]($heading.id('step-4-store-the-notes-in-sqlite'))
 
-In-memory data is lost when the app restarts. Use the `sql` module to keep notes in a SQLite file. Modules are opt-in, so first enable it in `build.zig`, in the options passed to the `oriel` dependency:
+The list is gone when the app quits. [`oriel.sql`]($link.page('docs/sql'))
+keeps it in a SQLite file. Modules are switched on in `build.zig`; the
+generated one lists them set to `false`, so change `sql`:
 
 ```zig
-.sql = true,
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    // ...
+    .sql = true,
+    // ...
+});
 ```
 
-Then update `src/main.zig` (the database is `notes.db` in the working directory; a real app would put it in its data directory, see the `store` module):
+The database goes in the app's data directory
+([`oriel.paths.appData`]($link.page('docs/paths')): `~/.local/share/Notes`
+on Linux, `%LOCALAPPDATA%\Notes` on Windows, Application Support on macOS
+and iOS, the app's files directory on Android). `.setup` runs once on the
+main thread after the main window exists, which is a good place to open it:
 
 ```zig
 const std = @import("std");
@@ -191,29 +219,28 @@ const oriel = @import("oriel");
 const app = @import("oriel_app");
 const sql = oriel.sql;
 
-pub const Note = struct {
-    id: i64,
-    text: []const u8,
-};
+pub const std_options: std.Options = .{ .logFn = oriel.log.logFn };
+
+pub const Note = struct { id: i64, text: []const u8 };
 
 pub const Events = struct {
     notes_changed: []const Note,
 };
 const events = oriel.App.events(Events);
 
+const persistent = std.heap.smp_allocator;
 var db: ?sql.Db = null;
 
-fn database() !sql.Db {
-    if (db) |d| return d;
-    const d = try sql.Db.open("notes.db");
-    try d.exec(
-        \\CREATE TABLE notes (
-        \\  id INTEGER PRIMARY KEY,
-        \\  text TEXT NOT NULL
-        \\);
-    );
+fn setup() !void {
+    const dir = try oriel.paths.appData(persistent, .{ .name = "Notes" });
+    defer persistent.free(dir);
+    const path = try std.fmt.allocPrintSentinel(persistent, "{s}/notes.db", .{dir}, 0);
+    defer persistent.free(path);
+
+    const d = try sql.Db.open(path);
+    errdefer d.close();
+    try d.exec("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, text TEXT NOT NULL)");
     db = d;
-    return d;
 }
 
 pub const Commands = struct {
@@ -221,168 +248,119 @@ pub const Commands = struct {
         const text = std.mem.trim(u8, args.text, " \t\r\n");
         if (text.len == 0) return error.EmptyNote;
 
-        const stmt = try (try database()).prepare("INSERT INTO notes (text) VALUES (?1)");
+        const stmt = try (db orelse return error.NoDatabase).prepare("INSERT INTO notes (text) VALUES (?1)");
         defer stmt.finalize();
         try stmt.bindText(1, text);
         _ = try stmt.step();
 
-        const notes = try list_notes(gpa);
-        events.emit(.notes_changed, notes);
+        events.emit(.notes_changed, try list_notes(gpa));
     }
 
     pub fn list_notes(gpa: std.mem.Allocator) ![]Note {
-        const stmt = try (try database()).prepare("SELECT id, text FROM notes ORDER BY id DESC");
+        const stmt = try (db orelse return error.NoDatabase).prepare("SELECT id, text FROM notes ORDER BY id DESC");
         defer stmt.finalize();
         var result: std.ArrayList(Note) = .empty;
         while (try stmt.step()) {
-            try result.append(gpa, .{
-                .id = stmt.int(0),
-                .text = try stmt.text(gpa, 1),
-            });
+            try result.append(gpa, .{ .id = stmt.int(0), .text = try stmt.text(gpa, 1) });
         }
-        return result.toOwnedSlice(gpa);
+        return result.items;
     }
 };
 
 pub fn main(init: std.process.Init) !u8 {
     defer if (db) |d| d.close();
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.example.Notes",
-        .title = "Notes",
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Notes", .width = 480, .height = 640 },
+        .setup = setup,
     });
 }
 ```
 
-Run `oriel dev` again. Notes now persist across app restarts (within the same session; using `:memory:` means they are lost when the process exits; use a file path like `~/.local/share/notes/data.db` for persistent storage).
+`list_notes` builds its result in the call's arena, so nothing leaks and
+nothing needs freeing. The page doesn't change: notes now survive a
+restart.
 
-# [Step 5: Add a tray icon]($heading.id('step-5-add-a-tray-icon'))
+# [Step 5: A tray icon]($heading.id('step-5-a-tray-icon'))
 
-The app should keep running in the tray when the window closes. Enable the module in `build.zig` next to `.sql`:
+The app should keep running in the [tray]($link.page('docs/tray')) when
+its window closes. Turn the module on in `build.zig` next to `.sql`:
 
 ```zig
 .tray = true,
 ```
 
-Put a 32×32 PNG at `src/icon.png` (it is embedded into the binary) and update `src/main.zig`:
+Then change `setup` and `main`, and add the tray's menu handler (the rest
+of the file stays as in step 4):
 
 ```zig
-const std = @import("std");
-const oriel = @import("oriel");
-const app = @import("oriel_app");
-const sql = oriel.sql;
-const Tray = oriel.tray.Tray;
-
-pub const Note = struct {
-    id: i64,
-    text: []const u8,
-};
-
-pub const Events = struct {
-    notes_changed: []const Note,
-};
-const events = oriel.App.events(Events);
-
-var db: ?sql.Db = null;
-var tray: ?*Tray = null;
-
-fn database() !sql.Db {
-    if (db) |d| return d;
-    const d = try sql.Db.open("notes.db");
-    try d.exec(
-        \\CREATE TABLE notes (
-        \\  id INTEGER PRIMARY KEY,
-        \\  text TEXT NOT NULL
-        \\);
-    );
-    db = d;
-    return d;
-}
-
-pub const Commands = struct {
-    pub fn add_note(gpa: std.mem.Allocator, args: struct { text: []const u8 }) !void {
-        const text = std.mem.trim(u8, args.text, " \t\r\n");
-        if (text.len == 0) return error.EmptyNote;
-
-        const stmt = try (try database()).prepare("INSERT INTO notes (text) VALUES (?1)");
-        defer stmt.finalize();
-        try stmt.bindText(1, text);
-        _ = try stmt.step();
-
-        const notes = try list_notes(gpa);
-        events.emit(.notes_changed, notes);
-    }
-
-    pub fn list_notes(gpa: std.mem.Allocator) ![]Note {
-        const stmt = try (try database()).prepare("SELECT id, text FROM notes ORDER BY id DESC");
-        defer stmt.finalize();
-        var result: std.ArrayList(Note) = .empty;
-        while (try stmt.step()) {
-            try result.append(gpa, .{
-                .id = stmt.int(0),
-                .text = try stmt.text(gpa, 1),
-            });
-        }
-        return result.toOwnedSlice(gpa);
-    }
-};
-
-const app_id = "dev.example.Notes";
+var tray: ?*oriel.tray.Tray = null;
 
 fn setup() !void {
-    tray = try Tray.create(std.heap.smp_allocator, .{
-        .id = app_id,
-        .title = "Notes",
-        .icon = .{ .png = @embedFile("icon.png") },
-        .menu = &.{
-            .{ .item = .{ .id = "show", .label = "Show" } },
-            .separator,
-            .{ .item = .{ .id = "quit", .label = "Quit" } },
-        },
-        .on_menu = onTrayMenu,
-    });
+    // ... open the database as in step 4 ...
+
+    // Phones have no tray: there `available` is false and this block isn't
+    // even compiled.
+    if (oriel.tray.available) {
+        tray = try oriel.tray.Tray.create(persistent, .{
+            .id = "dev.example.Notes",
+            .title = "Notes",
+            .icon = .{ .png = app.build.icon.? }, // icon.png from build.zig
+            .menu = &.{
+                .{ .item = .{ .id = "show", .label = "Show" } },
+                .separator,
+                .{ .item = .{ .id = "quit", .label = "Quit" } },
+            },
+            .on_menu = onTrayMenu,
+        });
+    }
 }
 
 fn onTrayMenu(id: []const u8, _: ?bool) void {
-    if (std.mem.eql(u8, id, "show")) {
-        oriel.App.showWindow();
-    } else if (std.mem.eql(u8, id, "quit")) {
-        oriel.App.quit(0);
-    }
+    if (std.mem.eql(u8, id, "show")) oriel.App.showWindow();
+    if (std.mem.eql(u8, id, "quit")) oriel.App.quit(0);
 }
 
 pub fn main(init: std.process.Init) !u8 {
     defer if (db) |d| d.close();
-    defer if (tray) |t| t.deinit();
-
+    defer if (oriel.tray.available) {
+        if (tray) |t| t.deinit();
+    };
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = app_id,
-        .title = "Notes",
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{
+            .title = "Notes",
+            .width = 480,
+            .height = 640,
+            .hide_on_close = true, // closing hides the window; the tray brings it back
+        },
         .setup = setup,
-        .on_close = .hide,
     });
 }
 ```
 
-Now closing the window hides it, and the tray icon remains. Click the icon to show the window again.
+Closing the window now hides it. A left click on the tray icon toggles it
+(that's the default when `.on_activate` is null), and Quit ends the app. On
+Linux the desktop needs a tray host (a StatusNotifierItem host);
+`oriel doctor` says whether there is one.
 
-# [Build the release app]($heading.id('build-the-release-app'))
-
-When you are happy, build the production binary:
-
-```sh
-oriel build
-```
-
-This runs `npm run build`, embeds the frontend into the Zig binary, and outputs `zig-out/bin/notes`. The app is fully self-contained.
-
-To package it for distribution:
+# [Build and package]($heading.id('build-and-package'))
 
 ```sh
-oriel package
+oriel build      # zig-out/bin/notes, the frontend embedded
+oriel package    # zig-out/package: deb, rpm, AppImage on Linux; setup.exe on Windows; .app, .dmg on macOS
 ```
 
-This creates `.deb`, `.rpm` and `.AppImage` packages in `zig-out/package/`.
+`oriel build` runs `npm run build` and embeds the result in the executable,
+so the binary is self-contained. The same project builds for phones with
+`oriel android build` and `oriel ios build`; there the tray block drops out
+on its own.
+
+# [Where to go next]($heading.id('where-to-go-next'))
+
+- [Commands]($link.page('docs/commands')): async commands, `std.Io`,
+  errors and the generated types.
+- [Windows]($link.page('docs/windows')): more windows, overlays, placement.
+- [Modules]($link.page('docs/modules')): everything else the app can turn on.
+- [Packaging]($link.page('docs/packaging')) and [Signing]($link.page('docs/signing')):
+  shipping it.

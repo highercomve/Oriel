@@ -1,236 +1,482 @@
-# Packaging apps
+<!-- Generated from site/content/docs/packaging.smd by tools/docs/gen-md.mjs: edit that file. -->
 
-[Back to Oriel](../README.md) · [Documentation](README.md)
+# Packaging
 
-## Packaging
+Installers for every platform from one build.zig: deb, rpm and AppImage, setup.exe and MSIX, .app and .dmg, APK and AAB, and the iOS .ipa.
 
-Oriel provides integrated packaging for Linux distributions, portable AppImages, Windows installer executables (`setup.exe`) and macOS `.app` bundles and `.dmg` images, with an extensible format architecture. Apps configure packaging metadata in `build.zig` via `.package` inside `oriel.addApp`.
+`oriel package` (the `package` step) turns the production build into the
+installers users download: `.deb`, `.rpm` and `.AppImage` on Linux, a
+per-user `setup.exe` (and optionally an `.msix`) on Windows, a `.app` and
+`.dmg` on macOS. Phones are packaged by their own toolchains: Gradle writes
+the APK and AAB, and the `ios-ipa` step zips the `.app` into an `.ipa`.
 
-### Packaging metadata
+Every format is described once, in `build.zig`: the app id, name, version
+and publisher in `.package`, and the things the platforms register (URL
+schemes, permissions, the share target, file types) in the `AppOptions`
+fields of the features that own them. Oriel writes each format's manifest
+from that, so there is no `Info.plist`, `.desktop` file, NSIS script or
+`AppxManifest.xml` to maintain. Signing is on [Signing](signing.md);
+to package an existing website instead of an app, see [Wrap](wrap.md).
 
-Metadata is configured once in `build.zig` and shared across all target package formats:
+## Availability
+
+| Format | Target | Built on | Default | Tools |
+|---|---|---|---|---|
+| `.deb` | Linux | Linux | yes | `nfpm` |
+| `.rpm` | Linux | Linux | yes | `nfpm` |
+| `.AppImage` | Linux | Linux | yes | `mksquashfs`; the type-2 runtime (downloaded) |
+| NSIS `setup.exe` | Windows | Windows or Linux | yes | `makensis` (NSIS 3) |
+| `.msix` | Windows | Windows or Linux | no (add to `formats`) | none to build; `signtool` to sign |
+| `.app` | macOS | a Mac (assembled anywhere, unsigned off a Mac) | yes | `codesign` |
+| `.dmg` | macOS | a Mac | yes | `hdiutil`, `ditto` |
+| APK, AAB | Android | Linux, macOS, Windows | `oriel android build` | Gradle 8.11.1+, JDK 17, Android SDK and NDK |
+| `.ipa` | iOS | macOS, or Linux with xtool | `ios-ipa` step | `zip`; the iOS SDK |
+
+`oriel doctor` checks the tools; `oriel setup nsis` installs NSIS without
+administrator rights.
+
+## Quick start
 
 ```zig
-.package = .{
-    .id = "dev.oriel.ReactNotes",          // Reverse-DNS application ID (matches desktop entry / registry uninstall key)
-    .name = "Oriel React Notes",           // Display name (defaults to executable name)
-    .summary = "Desktop notes app",        // Short comment / summary
-    .description = "A desktop notes...",   // Multi-line description for package managers
-    .publisher = "Acme Corp <dev@acme.com>", // Maintainer / Vendor / Publisher (set this; defaults to display name)
-    .license = "MIT",                      // Optional SPDX license identifier (omitted if null)
-    .homepage = "https://example.com",     // Optional project URL (omitted if null)
-    .categories = "Utility;TextEditor;",   // Semicolon-delimited XDG desktop categories
-    .version = "0.1.0",                    // Version string (defaults to "0.1.0")
-    .icon = b.path("path/to/icon.png"),    // Optional PNG icon (defaults to Oriel brand icon; converted to .ico for Windows, .icns for macOS)
-    .formats = null,                       // Optional override list of formats (defaults to per-OS list)
-    .extra_deb_depends = &.{},             // Extra deb runtime dependencies
-    .extra_rpm_depends = &.{},             // Extra rpm runtime dependencies
-    .replaces = &.{"old-app-name"},       // deb Replaces / rpm Obsoletes: installing this upgrades them
-    .conflicts = &.{"old-app-name"},      // deb/rpm Conflicts: never installed side by side
-    .webview2_loader = null,               // Optional path to WebView2Loader.dll for Windows (or via -Dwebview2-loader)
-    .contents = .{},                       // What else the packages hold (see "Package contents")
-},
+_ = oriel.addApp(b, dep, .{
+    .name = "notes",
+    .root_source_file = b.path("src/main.zig"),
+    .icon = b.path("icon.png"),
+    .frontend = .{ .dir = "frontend" },
+    .url_schemes = &.{"notes"},
+    .package = .{
+        .id = "dev.example.Notes",
+        .name = "Notes",
+        .summary = "A simple notes app",
+        .publisher = "Example Ltd <dev@example.com>",
+        .version = "1.2.0",
+        .license = "MIT",
+        .homepage = "https://example.com/notes",
+        .categories = "Utility;TextEditor;",
+    },
+});
 ```
 
-> **Note on publisher**: Always set `.publisher` to your organization or maintainer contact info; if omitted, it defaults to the display name.
+```sh
+oriel package                            # this OS's default formats
+oriel package -Dtarget=x86_64-windows    # setup.exe, from Linux
+zig build package-deb                    # one format
+ls zig-out/package
+```
 
-### Package contents
+On Linux that writes `notes_1.2.0_amd64.deb`, `notes-1.2.0-1.x86_64.rpm`
+and `notes-1.2.0-x86_64.AppImage`.
 
-Besides the app's executable, `.contents` chooses what every package (deb, rpm, AppImage, NSIS `setup.exe`, `.app`/`.dmg`) holds:
+## How it works
+
+```mermaid
+flowchart LR
+  Opts["AppOptions<br/>.package, .icon, .url_schemes,<br/>.permissions, .share_target, ..."] -->|"metadata"| Steps["build/package.zig<br/>package-&lt;format&gt; steps"]
+  Exe["production exe<br/>(+ contents.executables)"] -->|"strip (Linux)"| Payload["payload"]
+  Icon["icon.png"] -->|"resize-icons"| Icons["16..512 PNG, .ico, .icns"]
+  Payload --> Tool["package_tool<br/>(tools/package)"]
+  Icons --> Tool
+  Steps -->|"arguments"| Tool
+  Tool -->|"nfpm"| Deb[".deb / .rpm"]
+  Tool -->|"mksquashfs + runtime"| AI[".AppImage"]
+  Tool -->|"makensis"| NSIS["setup.exe<br/>(+ WinGet manifests)"]
+  Tool -->|"zip + block map"| MSIX[".msix"]
+  Tool -->|"Info.plist, codesign, hdiutil"| Mac[".app / .dmg"]
+```
+
+`addApp` calls `addPackageSteps` (`build/package.zig`) with the same
+executable `zig build` installs, so packaging never compiles the app again.
+It resolves the metadata once (defaults filled in), derives the Linux
+runtime dependencies from the enabled modules, and creates one step per
+format, each a run of the host tool `package_tool` (`tools/package/main.zig`)
+with that format's arguments. The tool generates the manifests itself
+(`tools/package/nfpm.zig`, `desktop.zig`, `nsis.zig`, `msix.zig`,
+`macos.zig`, `winget.zig`), converts the icon (`ico.zig`, `icns.zig`, no
+`iconutil` or ImageMagick), strips ELF files (`elf_strip.zig`), and runs the
+external tool for the archive format. Intermediate files (`nfpm.yaml`, the
+AppDir, `installer.nsi`) stay in Zig's cache; only the finished packages are
+installed into `zig-out/package/`.
+
+`package` depends on each selected format's step, and each format also gets
+its own `package-<format>` step. When the target has no formats
+(`oriel package` for Android or iOS), the step fails with
+`no package formats for <os> yet`.
+
+What enters every format is resolved once into a *payload*: the app's
+executable, `.package.contents` (extra executables and files) and Oriel's
+runtime libraries (`libggml-cuda.so`, `libggml-vulkan.so`, `espeak-ng-data/`
+when built with them). Linux packages get stripped copies; `zig-out/bin`
+keeps the originals.
+
+## Examples
+
+### Ship a CLI and a model file with the app
 
 ```zig
-const cli = b.addExecutable(.{ .name = "notes-cli", .root_module = ... });
+const cli = b.addExecutable(.{ .name = "notes-cli", .root_module = cli_module });
 _ = oriel.addApp(b, dep, .{
-    ...
+    // ...
     .package = .{
-        .id = "dev.oriel.Notes",
+        .id = "dev.example.Notes",
         .contents = .{
-            .executables = &.{cli},       // other executables of the build, next to the app's
-            .files = &.{                  // files at a path relative to the app's executable
-                .{ .path = "data/model.bin", .source = b.path("data/model.bin") },
-            },
-            .runtime_libraries = true,    // Oriel's runtime libraries (libggml-cuda.so with -Dggml_cuda); default on
-            .strip = true,                // strip ELF executables and libraries in the packages; default on
+            .executables = &.{cli},
+            .files = &.{.{ .path = "models/tiny.bin", .source = b.path("models/tiny.bin") }},
         },
     },
 });
 ```
 
-- **`executables`**: installed next to the app's executable under their file names (e.g. `notes-cli`, `notes-cli.exe`).
-- **`files`**: `path` is relative to the executable's directory, `/`-separated, with no `.` or `..` components (e.g. `data/model.bin`; at most 200 bytes, and no names Windows can't hold: components ending in `.` or a space, `con`, `nul`, `com1`, ...); files are installed as they are (mode 0644, not stripped).
-- **`runtime_libraries`**: with `-Dggml_cuda`, `libggml-cuda.so` goes next to the executable, where the app loads it from. A `files` entry with the path `libggml-cuda.so` replaces it.
-- **`strip`**: Linux packages get copies of the app, `executables` and the runtime libraries without the symbol table and debug info (like `strip --strip-all`: the dynamic symbol table stays, so a `-Dggml_cuda` app still exports ggml to `libggml-cuda.so`). A ReleaseSafe app drops from about 70 MB to under 20 MB. `zig-out` keeps the unstripped binaries. The app's own executable is stripped too, so a packaged ReleaseSafe app's crash traces show addresses instead of function names: set `.strip = false` to ship the symbols.
+On deb and rpm everything goes to `/usr/lib/notes/` with `/usr/bin/notes`
+and `/usr/bin/notes-cli` symlinks, so each program finds `models/tiny.bin`
+next to its own (resolved) path.
 
-Where they go:
+### Replace an older package name
 
-| Format | App executable | Extra executables and files |
-|---|---|---|
-| deb / rpm, no extras | `/usr/bin/<exe>` | — |
-| deb / rpm, with extras | `/usr/lib/<exe>/<exe>` | `/usr/lib/<exe>/`, plus `/usr/bin/<name>` symlinks for every executable |
-| AppImage | `usr/bin/<exe>` | `usr/bin/` |
-| NSIS | `$INSTDIR\<exe>.exe` | `$INSTDIR\` (removed again by the uninstaller, and emptied subdirectories with them) |
-| macOS `.app` | `Contents/MacOS/<exe>` | executables and Mach-O files in `Contents/MacOS/` (signed inside-out with the bundle); other files in `Contents/Resources/`, with a symlink `Contents/MacOS/<top-level name>` → `../Resources/<top-level name>` so paths relative to the executable still work |
+GhostPen took over the Tauri version's `ghost-pen` package:
 
-With extras, deb and rpm keep everything in `/usr/lib/<exe>/` so each program finds its companions next to its own path (the `/usr/bin` symlinks resolve there): the app loads `libggml-cuda.so` from its executable's directory, and a CLI can start the app next to it. The package tools refuse destinations that collide (two entries, or an entry and the app's executable) and paths that would leave the install directory.
-
-### Building packages
-
-Running `oriel package` in an application directory builds production packages into `zig-out/package/`. All intermediate build files (`nfpm.yaml`, `AppDir`, SquashFS, `installer.nsi`) are isolated in Zig's cache directory:
-
-```sh
-# All formats for the current target OS:
-oriel package
-
-# Cross-compile Windows installer from Linux (WebView2 loader injected automatically):
-oriel package -Dtarget=x86_64-windows
+```zig
+.package = .{ .replaces = &.{"ghost-pen"}, .conflicts = &.{"ghost-pen"} },
 ```
 
-- **All formats for target OS**: `oriel package` (defaults to `.deb`, `.rpm`, `.AppImage` on Linux; NSIS `setup.exe` on Windows; `.app` and `.dmg` on macOS).
-- **macOS (`.app`, `.dmg`)**: `oriel package` on a Mac → `zig-out/package/<Name>.app` and `zig-out/package/<exe>-<version>.dmg` (the `.app` plus an `Applications` link to drag it to). `oriel build` also installs `zig-out/<Name>.app`. See [macOS bundles](#macos-bundles-app-dmg).
-- **Windows Installer (`setup.exe`)**: `oriel package` on Windows, or cross-compiled with `-Dtarget=x86_64-windows` → `zig-out/package/<name>-<version>-setup.exe` (WebView2Loader.dll is resolved from cache automatically, or pass `-Dwebview2-loader=...` manually).
-- **Windows MSIX (`.msix`, opt-in)**: add `.msix` to `package.formats` (e.g. `.formats = &.{ .nsis, .msix }`) → `zig-out/package/<name>-<version>.msix`, built by Oriel itself (no Windows SDK; works from Linux). The manifest declares a full-trust desktop app, capabilities from `.permissions` (bluetooth, `privateNetworkClientServer` for local_network, microphone, webcam, location, graphics capture), and for `.share_target` a Share Target plus "Open with" for its `windows_extensions`. `package.msix` sets `publisher` (the signing certificate's Subject, exactly), `publisher_display_name`, `identity_name` and `min_version`. Signing is never in `build.zig`: `-Dmsix-pfx=<file>` with the password in `$ORIEL_MSIX_PFX_PASSWORD`, or `-Dmsix-cert-sha1=<thumbprint>` for a certificate in your store (or `$ORIEL_MSIX_PFX` / `$ORIEL_MSIX_CERT_SHA1`), plus `-Dmsix-timestamp=<url>`; it runs `signtool` (`$ORIEL_SIGNTOOL`, `PATH`, or the newest Windows Kits 10). Without them the package is unsigned (its publisher carries Windows 11's unsigned OID) and installs with `Add-AppxPackage -AllowUnsigned`, for development and testing.
-- **Individual formats**: inside the app project, `oriel.addApp` also registers granular app build steps if you need to build only a single format: `zig build package-deb`, `zig build package-rpm`, `zig build package-appimage`, `zig build package-nsis`, `zig build package-msix`, `zig build package-app`, `zig build package-dmg`.
-
-> [!TIP]
-> **Packaging existing websites and web apps**: To package an existing web application (like WhatsApp Web, Slack, or Linear) into a standalone AppImage with system tray and close-to-tray support, use [`oriel wrap <url> --package`](cli.md#wrapping-web-apps-oriel-wrap-oriel-pake).
-
-#### Requirements and tools
-
-- **`makensis` (NSIS v3+)**: Used to compile the Windows installer executable (`setup.exe`). Looked up in `$PATH`, `/usr/bin/makensis`, and `/usr/local/bin/makensis` (the `nsis` package on Arch, Debian and Ubuntu). Cross-builds Windows installers directly from Linux hosts.
-- **`nfpm`**: Used to generate `.deb` and `.rpm` packages. Looked up in `$PATH`, then `$HOME/go/bin/nfpm`.
-- **`mksquashfs`**: Used to assemble AppImage SquashFS images.
-- **`desktop-file-validate`**: Used to validate desktop entry files before packaging and installation.
-- **`codesign`, `ditto`, `hdiutil`** (macOS, part of the OS; `xcrun notarytool`/`stapler` from the Xcode command line tools for notarization): signing the `.app` and building the `.dmg`. The `.app` itself can be assembled on any host (unsigned when not built on a Mac); the `.dmg` needs a Mac.
-- **AppImage Runtime**: Uses standard type-2 AppImage runtime (`runtime-<arch>`), automatically downloaded and cached in the local cache dir (overridable via `-Dappimage-runtime=<path>` or env `ORIEL_APPIMAGE_RUNTIME`). Verified for ELF header magic before use.
-
-#### Windows NSIS installer details
-
-The generated NSIS installer provides:
-- **Per-user installation**: Installed to `$LOCALAPPDATA\Programs\<name>` without requiring administrator elevation (`RequestExecutionLevel user`).
-- **Start Menu integration**: Shortcuts for launching the application and the uninstaller under `$SMPROGRAMS\<name>`.
-- **Uninstaller**: Full uninstaller at `$INSTDIR\Uninstall.exe` registered in Windows Add/Remove Programs (`Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>` under `HKCU`).
-- **Multi-resolution ICO**: Automatically converts your PNG application icon into a multi-resolution Windows `.ico` (16, 32, 48, 64, 128, 256 px).
-- **WebView2 Runtime Detection**: Checks the Windows Registry (HKCU and HKLM in both 64-bit and 32-bit views) for the Evergreen WebView2 Runtime (`{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`). If missing, prompts the user to download and run the Microsoft Evergreen Bootstrapper (`https://go.microsoft.com/fwlink/p/?LinkId=2124703`) or opens the download page.
-- **`WebView2Loader.dll`**: Required next to the executable on Windows. Specify it via `.webview2_loader` in `build.zig` or via CLI option `-Dwebview2-loader=<path>` (e.g. from the `Microsoft.Web.WebView2` NuGet package runtimes). Oriel loads it exclusively from the application's executable directory to prevent DLL search-order hijacking. User data is isolated per application in `%LOCALAPPDATA%\<app_id>\WebView2`.
-- *Note*: Packaging a Windows application requires the target app executable to be compiled for Windows (which requires the Windows shell in `src/platform/windows`).
-
-#### WinGet (`winget install`)
-
-WinGet installs from a public URL (a GitHub release asset) described by three
-YAML manifests in microsoft/winget-pkgs. Give the app an identifier and a
-license, and `oriel package` writes the manifests next to the `setup.exe`:
+### An MSIX next to the installer
 
 ```zig
 .package = .{
-    .license = "MIT", // required by WinGet
-    .homepage = "https://example.com/my-app",
-    .winget = .{ .id = "Acme.MyApp", .moniker = "myapp", .tags = &.{ "notes" } },
+    .formats = &.{ .nsis, .msix },
+    .msix = .{ .publisher = "CN=Example Ltd, O=Example Ltd, C=US" },
 },
 ```
 
 ```sh
-oriel package -Dwinget-url=https://github.com/acme/my-app/releases/download/v1.2.0   # or $ORIEL_WINGET_URL
-# zig-out/package/winget/Acme.MyApp.yaml, .installer.yaml, .locale.en-US.yaml
+oriel package -Dtarget=x86_64-windows -Dmsix-pfx=cert.pfx   # password in $ORIEL_MSIX_PFX_PASSWORD
 ```
 
-- The installer manifest is `nullsoft`, per-user (`Scope: user`), silent with
-  `/S`, and its `ProductCode` is the app id: the key the installer writes under
-  `HKCU\...\Uninstall`, so `winget upgrade` recognizes an installed copy. The
-  SHA-256 is that of the `setup.exe` just built: publish that exact file.
-- Submit them once the release is public: `wingetcreate submit --token <PAT>
-  zig-out/package/winget` opens the pull request (a GitHub token with
-  `public_repo`). Microsoft's bots install it in a sandbox and merge it, and
-  then `winget install Acme.MyApp` works. The same command submits each new
-  version.
-- Without `-Dwinget-url` (local builds) no manifests are written.
-- A standalone exe (no installer), like the `oriel` CLI itself, is a WinGet
-  `portable` package: `zig build winget -- --id Acme.Tool --version 1.2.0
-  --name Tool --publisher Acme --license MIT --summary "..." --command tool
-  --portable x64=<file>=<url> --portable arm64=<file>=<url> --out-dir <dir>`
-  (one `--portable` per architecture; WinGet puts `tool` on PATH). Oriel's own
-  release workflow does this for `Highercomve.Oriel`.
+### Publish to WinGet
 
-#### macOS bundles (.app, .dmg)
-
-`<Name>.app/Contents` holds `MacOS/<exe>`, `Resources/icon.icns` (made from the PNG icon, no `iconutil` needed), `PkgInfo` and an `Info.plist` with:
-- `CFBundleIdentifier` = `.package.id`, `CFBundleName`/`CFBundleDisplayName` = `.name`, `CFBundleShortVersionString`/`CFBundleVersion` = `.version`.
-- `LSMinimumSystemVersion` = the executable's deployment target (read from its Mach-O `LC_BUILD_VERSION`, so the two always agree). `addApp` builds for macOS 13.0 when the target names no macOS version (a native build, or `-Dtarget=aarch64-macos`), not for the Mac doing the build, so a release built on a newer Mac or CI runner still runs on older ones; `-Dtarget=aarch64-macos.14.0` picks another minimum. A native CPU becomes the architecture's baseline (Apple M1, x86-64) for the same reason (`-Dcpu` overrides it). Other executables an app puts in the bundle (`.package.contents`) should use `oriel.resolveTarget(b, target)` too; `package-app` warns when one needs a newer macOS than the app. (An executable that links Apple frameworks without importing `oriel` must add the SDK's framework path itself: Zig adds it only for native targets.)
-- `CFBundleURLTypes` for `.url_schemes` (deep links).
-- `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription` when `audio_capture` is enabled (macOS refuses the permission without them).
-
-The bundle is **ad-hoc signed** (`codesign --sign -`), which is enough to run it on the Mac that built it and for macOS to attribute notifications and permission prompts to the app.
-
-**Unnotarized downloads and Gatekeeper.** An ad-hoc signed `.app` downloaded from the web (a GitHub release, say) is quarantined, and Gatekeeper refuses it: "Apple could not verify “<Name>” is free of malware…". Since macOS 15 the old right-click → Open shortcut no longer opens it. Users can allow it once in **System Settings → Privacy & Security → Open Anyway** (after the first attempt, with their password), or clear the quarantine flag from a terminal: `xattr -dr com.apple.quarantine /Applications/<Name>.app`. Notarizing the release (below) removes the prompt.
-
-##### Without a Developer ID: a self-signed certificate
-
-Ad-hoc signed, macOS identifies the app by the hash of that exact build, so every update looks like a new app: the user's grants (Accessibility, Microphone, Screen Recording) stop applying and are asked again. Signed with the same certificate every release, even a self-signed one, the app's designated requirement names the certificate (`identifier "<id>" and certificate leaf = H"<sha1>"`) and the grants survive updates. Gatekeeper still asks once on first launch (only notarization removes that). `oriel signing` makes and installs such a certificate:
-
-```sh
-oriel signing create --name "My App"     # ~/.config/oriel/keys/my-app-codesign.p12 + .password (0600); prints the SHA-1
-oriel signing import ~/.config/oriel/keys/my-app-codesign.p12   # macOS: into a new unlocked keychain (CI); --keychain login for yours
-oriel package -Dmacos-sign-identity=<SHA-1>
+```zig
+.package = .{
+    .license = "MIT", // required by WinGet
+    .winget = .{ .id = "Example.Notes", .moniker = "notes", .tags = &.{"notes"} },
+},
 ```
 
-- `create` needs `openssl`; the `.p12` uses SHA1-3DES encryption and a SHA-1 MAC, which `security import` reads (OpenSSL 3's default AES `.p12` fails with "MAC verification failed"). The private key is never printed. Keep the files and reuse them: a new certificate is a new identity.
-- `import` creates `oriel-signing.keychain-db` with a random throwaway password, unlocks it without a timeout, lets `codesign` use the key without prompts (`set-key-partition-list`) and puts it first in the user's keychain search list (codesign only finds identities there). `security delete-keychain oriel-signing.keychain-db` removes it. The password comes from `<file>.password` or `--password-env VAR`.
-- The certificate is untrusted: `security find-identity -v` doesn't list it (without `-v` it shows `CSSMERR_TP_NOT_TRUSTED`), but `codesign` signs with it, by SHA-1 or name, and Apple's timestamp server accepts it. `oriel signing show` prints the SHA-1.
-- In CI: store the `.p12` (base64) and its password as secrets, write the file, `oriel signing import <file> --password-env MACOS_CERT_PASSWORD`, then `oriel package -Dmacos-sign-identity=<SHA-1>`.
-
-**Distribution (Developer ID + notarization).** Other Macs need a Developer ID signature and notarization (an Apple developer account). `oriel package` does both when told which keychain identity and notarytool profile to use; `oriel build`'s `zig-out/<Name>.app` stays ad-hoc (fast, offline):
-
 ```sh
-# once: store notarization credentials in the keychain (Apple ID + app-specific password, or an API key)
-xcrun notarytool store-credentials oriel-notary --apple-id you@example.com --team-id AB12CD34EF
-
-oriel package -Dmacos-sign-identity="Developer ID Application: Your Name (AB12CD34EF)" \
-              -Dmacos-notarize-profile=oriel-notary
+oriel package -Dtarget=x86_64-windows \
+  -Dwinget-url=https://github.com/example/notes/releases/download/v1.2.0
+wingetcreate submit --token "$GITHUB_TOKEN" zig-out/package/winget
 ```
 
-- `-Dmacos-sign-identity` (or `ORIEL_MACOS_SIGN_IDENTITY`): the `.app` in `zig-out/package` is signed with the hardened runtime, the generated `<Name>.entitlements` (usage entitlements for the declared permissions, e.g. `com.apple.security.device.audio-input`) and a secure timestamp, then checked with `codesign --verify --strict`. The `.dmg` is signed only when it is also notarized: macOS 15 refuses to open a signed disk image whose signature it can't verify (self-signed, or not notarized), which would mean a second Gatekeeper prompt; unsigned, only the app inside is assessed. `security find-identity -v -p codesigning` lists the identities. `-` signs ad-hoc with the hardened runtime, to try the runtime and entitlements locally.
-- `-Dmacos-notarize-profile` (or `ORIEL_MACOS_NOTARIZE_PROFILE`): the signed `.dmg` goes to `xcrun notarytool submit --wait`; when Apple accepts it, the ticket is stapled (`xcrun stapler staple`) and `spctl` checks it. A rejection prints the `xcrun notarytool log` command with the submission id. Credentials stay in the keychain: the build only passes the profile name.
-- The two bundles have different code signatures, so macOS keeps separate permission grants (Accessibility, Microphone, …) for `zig-out/<Name>.app` and the signed package.
-- Nested code (`.contents` executables and libraries in `Contents/MacOS`) is signed first, inside-out, with the same identity, the hardened runtime and a secure timestamp (executables with the app's entitlements, libraries without), then the bundle; no `--deep`. Data files live in `Contents/Resources` (codesign refuses non-code files in `Contents/MacOS`); the symlinks to them are sealed with the bundle. A sandboxed app's helper executables would need `com.apple.security.inherit` instead of the app's entitlements; Oriel doesn't generate a sandbox entitlement.
-- `-Dmacos-sign-dry-run`: print the `codesign`/`notarytool`/`stapler`/`spctl` commands without running them (no identity or profile needed), and sign the package ad-hoc with the hardened runtime and the entitlements, so it runs as the signed app would.
-
-#### The AppImage caveat (system GTK4 & WebKitGTK 6.0)
-
-The AppImage does not bundle GTK4 or WebKitGTK: it relies on the host's GTK4 and WebKitGTK 6.0 (install `gtk4` / `webkitgtk-6.0` or your distro's equivalent). WebKitGTK spawns helper processes (`WebKitWebProcess`, `WebKitNetworkProcess`) from fixed install paths and loads GPU, GStreamer and font stacks that must match the host, so relocating it into an AppImage needs patched paths and a much larger bundle; that is not done yet. The AppImage is therefore small (a few MB) and portable across distros that ship WebKitGTK 6.0, but not to systems without it.
-
-#### Automatic dependency derivation
-
-Runtime package dependencies for Debian and RPM packages are automatically derived from the Oriel features enabled in `build.zig`:
-- Base: `libgtk-4-1` / `gtk4`, `libwebkitgtk-6.0-4` / `webkitgtk6.0`
-- `global_shortcut`: `libx11-6` / `libX11`
-- `input`: `libxkbcommon0` / `libxkbcommon`, `libxtst6` / `libXtst`
-- `input` or `clipboard`: `libwayland-client0` / `libwayland-client`
-
-### Adding formats
-
-The packaging system is built around a pluggable `Format` enum and per-format dispatch in `build/package.zig`. To support additional packaging formats (such as Windows `msi` via WiX):
-1. Add the enum value to `Format` (e.g. `msi`).
-2. Add a corresponding `fn addMsi(ctx: *const Context) *std.Build.Step` function.
-3. Add a branch to the `switch (format)` dispatcher in `addFormat`.
-4. Include the format in `defaultFormats(os_tag)`.
-
-When an unsupported OS target is packaged (or no formats are configured), `oriel package` fails gracefully at build time with a clear message (`"no package formats for <os> yet"`) via `b.addFail`.
-
-### Desktop entry for local runs (`oriel desktop-entry`)
-
-Installed packages ship a `.desktop` file; a build running from `zig-out` has none. On Linux, `oriel desktop-entry` installs one for the local build into `$XDG_DATA_HOME` (`~/.local/share` fallback), so global hotkeys (the GlobalShortcuts portal), the app menu and notifications know the app:
+### Android and iOS
 
 ```sh
-oriel desktop-entry            # the dev build (<id>.Dev, `oriel dev`), or the production build without a dev mode
-oriel desktop-entry --release  # the production build (<id>, `oriel build` / `oriel run`)
+oriel android build --apk --aab   # android/app/build/outputs/{apk,bundle}/release/
+oriel ios build --ipa             # zig-out/<Name>.ipa
+```
+
+## Reference
+
+### `PackageOptions`
+
+`AppOptions.package`; every field is optional.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | `?[]const u8` | `"dev.oriel.<name>"` | Reverse-DNS app id: the desktop entry and icon names, the Linux application id, `CFBundleIdentifier`, the Android `applicationId`, the Windows uninstall key and MSIX identity, `oriel_app.build.id`. |
+| `name` | `?[]const u8` | `AppOptions.name` | Display name: menus, Start Menu, `<Name>.app`, the install directory on Windows. |
+| `summary` | `?[]const u8` | `"<name> application"` | One line: the desktop entry's `Comment`, the MSIX description. |
+| `description` | `?[]const u8` | `summary` | Longer text for deb and rpm. |
+| `publisher` | `?[]const u8` | from the id | Maintainer / vendor / publisher (`"Acme <dev@acme.com>"`): deb `Maintainer`, rpm `Vendor`/`Packager`, NSIS and WinGet publisher, MSIX `PublisherDisplayName`. Without it, the id's organization part (`dev.example.Notes` → `example`). Set it. |
+| `license` | `?[]const u8` | none | SPDX identifier. Required for WinGet. |
+| `homepage` | `?[]const u8` | none | Project URL (deb, rpm, NSIS, WinGet). |
+| `categories` | `?[]const u8` | `"Utility;"` | XDG categories, `;`-separated. |
+| `version` | `?[]const u8` | `"0.1.0"` | The version in every format and file name; Android derives `versionCode` from it ([Building](building.md#android)). |
+| `formats` | `?[]const Format` | per OS | Formats `package` builds: `.deb`, `.rpm`, `.appimage`, `.nsis`, `.msix`, `.app`, `.dmg`. Default: Linux `deb, rpm, appimage`; Windows `nsis`; macOS `app, dmg`. |
+| `extra_deb_depends` | `[]const []const u8` | `&.{}` | Added to the derived deb `Depends`. |
+| `extra_rpm_depends` | `[]const []const u8` | `&.{}` | Added to the derived rpm `Requires`. |
+| `replaces` | `[]const []const u8` | `&.{}` | deb `Replaces`, rpm `Obsoletes`: installing this upgrades those packages. |
+| `conflicts` | `[]const []const u8` | `&.{}` | deb and rpm `Conflicts`. |
+| `webview2_loader` | `?LazyPath` | `-Dwebview2-loader` | `WebView2Loader.dll`, installed next to the Windows executable. |
+| `contents` | `PackageContents` | `.{}` | What else every package holds ([below](#contents)). |
+| `winget` | `?Winget` | `null` | WinGet manifests ([below](#winget)). |
+| `msix` | `Msix` | `.{}` | The `.msix` format's settings ([below](#msix)). |
+
+The icon is `AppOptions.icon` and the URL schemes `AppOptions.url_schemes`
+([Building](building.md#appoptions)).
+
+### Package contents
+
+`PackageContents` (`oriel.PackageContents`):
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `executables` | `[]const *Step.Compile` | `&.{}` | Other executables of the build, installed next to the app's under their file names; on deb and rpm also linked into `/usr/bin`. |
+| `files` | `[]const PackageFile` | `&.{}` | `{ .path, .source }`: `path` relative to the executable's directory, `/`-separated, no `.` or `..`, none of `\ : * ? " < > \| =`, no names Windows can't hold (a component ending in `.` or space, `con`, `nul`, `com1`...), at most 200 bytes. Installed as they are, mode 0644. |
+| `runtime_libraries` | `bool` | `true` | Oriel's runtime libraries and data the app was built with. A `files` entry of the same path replaces one. |
+| `strip` | `bool` | `true` | Linux: package stripped copies of the ELF executables and libraries (no symbol table or debug info; the dynamic symbol table stays). A ReleaseSafe app drops from about 70 MB to under 20 MB, but its crash traces show addresses; `false` keeps the symbols. |
+
+Where the payload goes:
+
+| Format | App executable | Extra executables and files |
+|---|---|---|
+| deb, rpm, no extras | `/usr/bin/<exe>` | none |
+| deb, rpm, with extras | `/usr/lib/<exe>/<exe>` | `/usr/lib/<exe>/`, with `/usr/bin/<name>` symlinks for every executable |
+| AppImage | `usr/bin/<exe>` | `usr/bin/` |
+| NSIS | `$INSTDIR\<exe>.exe` | `$INSTDIR\`, removed by the uninstaller (and emptied directories) |
+| MSIX | the package root | next to it |
+| `.app` | `Contents/MacOS/<exe>` | executables and Mach-O files in `Contents/MacOS/` (signed inside-out with the bundle); other files in `Contents/Resources/`, reached through a `Contents/MacOS/<top-level name>` symlink |
+
+The tools refuse two entries with the same destination, an entry that
+collides with the app's executable, and paths that would leave the install
+directory.
+
+### Build steps and outputs
+
+| Step | Output in `zig-out/package/` |
+|---|---|
+| `package` | Every format in `formats` |
+| `package-deb` | `<exe>_<version>_<arch>.deb` (`amd64`, `arm64`) |
+| `package-rpm` | `<exe>-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`) |
+| `package-appimage` | `<exe>-<version>-<arch>.AppImage` |
+| `package-nsis` | `<exe>-<version>-setup.exe`, and `winget/` with `-Dwinget-url` |
+| `package-msix` | `<exe>-<version>.msix` |
+| `package-app` | `<Name>.app` and `<Name>.entitlements` (signed for distribution with `-Dmacos-sign-identity`) |
+| `package-dmg` | `<exe>-<version>.dmg` (the `.app` and an `Applications` link) |
+
+Options: `-Dwebview2-loader`, `-Dappimage-runtime`, `-Dwinget-url`, and the
+signing options on [Signing](signing.md). `oriel package`
+adds `-Doptimize=ReleaseSafe` and a portable `-Dcpu` when you give neither
+([Building](building.md#steps)).
+
+### deb and rpm
+
+Built with `nfpm` (`$PATH`, then `$HOME/go/bin/nfpm`). They install the
+executable, `/usr/share/applications/<id>.desktop` (validated with
+`desktop-file-validate`) and `/usr/share/icons/hicolor/<size>x<size>/apps/<id>.png`
+for 16 to 512 px. Dependencies are derived from the build:
+
+| Built with | deb | rpm |
+|---|---|---|
+| always | `libgtk-4-1 (>= 4.12)`, `libc6 (>= 2.38)` | `gtk4 >= 4.12`, `glibc >= 2.38` |
+| a web view (not `-Dnative_ui`) | `libwebkitgtk-6.0-4` | `webkitgtk6.0` |
+| `global_shortcut` or `input` | `libx11-6` | `libX11` |
+| `input` | `libxkbcommon0`, `libxtst6` | `libxkbcommon`, `libXtst` |
+| `input` or `clipboard` | `libwayland-client0` | `libwayland-client` |
+
+plus `extra_deb_depends` / `extra_rpm_depends`. GTK 4.12 and glibc 2.38
+mean Ubuntu 24.04, Debian 13, Fedora 39 or later; on older systems the
+package manager says why instead of installing an app that can't start.
+
+### AppImage
+
+A SquashFS image (`mksquashfs`) behind the standard type-2 runtime
+(`runtime-<arch>`), downloaded once into the cache and checked for an ELF
+header; `-Dappimage-runtime=<path>` or `$ORIEL_APPIMAGE_RUNTIME` supplies
+your own. It holds the payload, the desktop entry and the icons.
+
+It doesn't bundle GTK 4 or WebKitGTK: WebKitGTK starts helper processes
+from fixed install paths and loads GPU, GStreamer and font stacks that must
+match the host. The AppImage is therefore a few MB and runs on any
+distribution with GTK 4 and WebKitGTK 6.0 installed, and on none without
+them. The [Updater](updater.md) replaces the outer
+`.AppImage` file when the app runs from one.
+
+### Desktop entries
+
+Packages generate `<id>.desktop` with `Name`, `Comment` (summary), `Exec`,
+`Icon=<id>`, `Categories`, `Terminal=false`, `StartupNotify=true` and
+`StartupWMClass=<id>`; with URL schemes, `Exec=<exe> %u` and
+`MimeType=x-scheme-handler/<scheme>;` for each
+([Deep links](deep-links.md)).
+
+A build run from `zig-out` has no entry, and some desktop features need
+one: the GlobalShortcuts portal registers only apps it can find, and the app
+menu, notifications and deep links use it. Install one for the local build:
+
+```sh
+oriel desktop-entry            # the dev build (<id>.Dev, "Name (Dev)", Exec = zig-out/bin/<name>-dev),
+                               # or the production build when there is no dev mode
+oriel desktop-entry --release  # the production build (<id>)
 oriel desktop-entry --remove   # remove both
 ```
 
-(`zig build desktop-entry` / `desktop-entry-release` are the underlying steps.) It installs:
+It writes `$XDG_DATA_HOME/applications/<id>.desktop` (`~/.local/share`
+when unset) and the hicolor icons there. The underlying steps are
+`zig build desktop-entry` and `desktop-entry-release`.
 
-- **Desktop Entry**: `$XDG_DATA_HOME/applications/<id>.desktop` (validated with `desktop-file-validate`)
-- **Icons**: `$XDG_DATA_HOME/icons/hicolor/<size>x<size>/apps/<id>.png` (sizes: 16, 32, 48, 64, 128, 256, 512)
+### NSIS installer
 
-#### Why install a development desktop entry?
+`<exe>-<version>-setup.exe`, compiled with `makensis` (`$ORIEL_MAKENSIS`,
+`PATH`, `/usr/bin/makensis`, `/usr/local/bin/makensis`; on Windows also
+Program Files). It:
 
-1. **Wayland Global Shortcuts**: The `org.freedesktop.portal.GlobalShortcuts` portal requires an installed desktop entry matching the application ID to register system-wide hotkeys.
-2. **Dev vs. Prod Isolation**: When a dev executable exists, the entry ID is suffixed with `.Dev` (e.g. `dev.oriel.ReactNotes.Dev`), `Name` is suffixed with `(Dev)`, and `Exec` points to the absolute path of the local dev binary in `zig-out/bin/`, preventing collisions with installed production applications.
+- installs per user to `$LOCALAPPDATA\Programs\<name>` without elevation
+  (`RequestExecutionLevel user`);
+- adds Start Menu shortcuts (`$SMPROGRAMS\<name>`) and an uninstaller,
+  registered under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>`;
+- refuses to install or uninstall while the app or one of its extra
+  executables runs (the exe is locked);
+- checks for the WebView2 Evergreen runtime (HKCU and HKLM, both
+  registry views) and offers to download and run Microsoft's bootstrapper;
+- registers each URL scheme under `HKCU\Software\Classes\<scheme>`;
+- with `.share_target`, adds a Send To shortcut (`--oriel-send-to`) and
+  "Open with" for `windows_extensions` (`--oriel-open-with "%1"`);
+- installs silently with `setup.exe /S`, uninstalls with `Uninstall.exe /S`.
+
+`WebView2Loader.dll` is required next to the executable (Oriel loads it
+only from there); without `package.webview2_loader` or
+`-Dwebview2-loader` a Windows package step fails, unless the app is built
+with `-Dnative_ui`. The executable carries the icon as a multi-size `.ico`
+resource (16, 24, 32, 48, 64, 256 px). The installer is unsigned:
+[Signing](signing.md#windows).
+
+### MSIX
+
+Opt-in (`formats = &.{ .nsis, .msix }`). Oriel writes the package itself
+(`tools/package/msix.zig`): no Windows SDK, so it builds on Linux CI. The
+manifest declares a full-trust desktop app, capabilities from
+`.permissions` (bluetooth, `privateNetworkClientServer` for
+`local_network`, microphone, webcam, location, graphics capture) and from
+`.windows.capabilities`, and for `.share_target` a Share Target plus a file
+type association for its `windows_extensions`.
+
+`Msix`:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `publisher` | `?[]const u8` | `null` | Identity Publisher: the signing certificate's Subject, exactly (`"CN=Contoso Ltd, O=Contoso Ltd, C=US"`). `null`: an unsigned package with Windows 11's unsigned-publisher OID. |
+| `publisher_display_name` | `?[]const u8` | `package.publisher` | `PublisherDisplayName`. |
+| `identity_name` | `?[]const u8` | `package.id` | Identity Name: `[A-Za-z0-9.-]`, 3 to 50 characters. |
+| `min_version` | `[]const u8` | `"10.0.17763.0"` | `TargetDeviceFamily MinVersion`. |
+
+An unsigned package installs only with `Add-AppxPackage -AllowUnsigned`
+(development and testing). Signing options are on
+[Signing](signing.md#msix).
+
+### WinGet
+
+`Winget` (`package.winget`):
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `id` | `[]const u8` | required | `PackageIdentifier`, `Publisher.App` (`"Acme.MyApp"`). |
+| `moniker` | `?[]const u8` | `null` | Short name for `winget install <moniker>`. |
+| `tags` | `[]const []const u8` | `&.{}` | Search tags. |
+| `license_url` | `?[]const u8` | `null` | License URL. |
+| `release_notes_url` | `?[]const u8` | `null` | Release notes URL. |
+
+With `-Dwinget-url=<base URL the setup.exe is published under>` (or
+`$ORIEL_WINGET_URL`), `package-nsis` writes `zig-out/package/winget/<id>.yaml`,
+`<id>.installer.yaml` and `<id>.locale.en-US.yaml`. The installer manifest
+is `nullsoft`, `Scope: user`, silent with `/S`, its `ProductCode` is the app
+id (the uninstall key, so `winget upgrade` recognizes an installed copy),
+and its SHA-256 is the `setup.exe` just built: publish that exact file.
+Without `-Dwinget-url` no manifests are written; without `license` the step
+fails. Submit them once the release is public with `wingetcreate submit`
+(a GitHub token with `public_repo`); the same command submits each new
+version.
+
+### macOS `.app` and `.dmg`
+
+`<Name>.app/Contents` holds `MacOS/<exe>`, `Resources/icon.icns`, `PkgInfo`
+and an `Info.plist` with:
+
+- `CFBundleIdentifier` (`package.id`), `CFBundleName` / `CFBundleDisplayName`
+  (`package.name`), `CFBundleShortVersionString` / `CFBundleVersion`
+  (`package.version`), `NSHighResolutionCapable`, `NSPrincipalClass`;
+- `LSMinimumSystemVersion`, read from the executable's own Mach-O build
+  version, so the two always agree (13.0 unless the target says otherwise:
+  [Building](building.md#targets));
+- `CFBundleURLTypes` for `url_schemes`;
+- usage descriptions for the declared permissions and `.macos.usage_descriptions`
+  (macOS refuses a permission without its key);
+- with `.share_target`: `CFBundleDocumentTypes` for its MIME types (Finder's
+  "Open With", drops on the Dock icon) and an `NSServices` entry.
+
+`<Name>.entitlements` lists the hardened-runtime entitlements for the
+declared permissions plus `.macos.entitlements`; it is used when signing.
+
+`zig build` also installs `zig-out/<Name>.app`: start it with
+`open zig-out/<Name>.app` so notifications, permission prompts and deep
+links are attributed to the app. Both bundles are ad-hoc signed
+(`codesign --sign -`), enough for the Mac that built them; a download is
+quarantined and Gatekeeper refuses it until it is signed and notarized
+([Signing](signing.md#apple)). The `.dmg` holds the
+`.app` and an `Applications` link; it is signed only when it is also
+notarized.
+
+### Icons
+
+From the one `AppOptions.icon` PNG (default: Oriel's), resized at build time:
+
+| Platform | What is made |
+|---|---|
+| Linux | hicolor PNGs at 16, 24, 32, 48, 64, 128, 256, 512 px named `<id>.png`; the window's icon name is the app id |
+| Windows | a `.ico` (16, 24, 32, 48, 64, 256) embedded as the executable's resource: Explorer, taskbar, title bar, Alt-Tab, shortcuts, the installer and Settings → Apps use it |
+| macOS | `icon.icns` (16 to 1024 px) in the bundle; unbundled runs set the Dock icon at runtime |
+| Android | launcher icons in the Gradle project |
+| iOS | the app icon in the bundle |
+
+### File associations
+
+File types an app opens come from `AppOptions.share_target`
+([Share](share.md)):
+
+| Platform | Declared from | What the OS shows |
+|---|---|---|
+| Windows (NSIS) | `share_target.windows_extensions`, `label` | "Open with" for each extension, and a Send To entry |
+| Windows (MSIX) | the same | A file type association and a Share Target |
+| macOS | `share_target.types` | `CFBundleDocumentTypes` (Open With, Dock drops) and a Services item |
+| iOS | `share_target.types` | Document types ("Open in", Files); the app gets copies |
+| Android | none yet | No intent filters are generated (receiving shares isn't implemented on Android) |
+| Linux | none yet | The desktop entry declares URL schemes only |
+
+### Android: APK and AAB
+
+`oriel android build [--abi arm64|x86_64|all] [--apk] [--aab]` builds the
+release library for each ABI (`-Doptimize=ReleaseSafe`), then runs Gradle
+(`assembleRelease`, `bundleRelease`) in `android/`. Outputs:
+`android/app/build/outputs/apk/release/` (sideloading) and
+`android/app/build/outputs/bundle/release/` (Google Play). Release builds
+are shrunk by R8. The manifest's permissions, features, URL scheme intent
+filters and services are regenerated from `build.zig` on
+every build. Without `$ORIEL_ANDROID_KEYSTORE` the APK is unsigned
+([Signing](signing.md#android)). The project and the
+device workflow are on [Android](android.md).
+
+### iOS: `.ipa`
+
+`zig build ios-ipa -Dtarget=aarch64-ios` (or `oriel ios build --ipa`)
+writes `zig-out/<Name>.ipa`: `Payload/<Name>.app`, zipped, unsigned. The
+bundle's `Info.plist` gets the id, name, version, minimum iOS, URL schemes,
+document types, usage descriptions and background modes from `build.zig`.
+`xtool install` signs it with your Apple ID to run on a device; for the App
+Store, sign it with a distribution certificate and upload it
+([iOS](ios.md)).
+
+## Troubleshooting
+
+- **`no package formats for <os> yet`**: `oriel package` for Android or
+  iOS; use `oriel android build` or `oriel ios build --ipa`.
+- **`Windows packages need WebView2Loader.dll next to the app`**: run
+  `oriel webview2`, or pass `-Dwebview2-loader=<path>`.
+- **`packaging for Windows requires NSIS`**: `oriel setup nsis`.
+- **`WinGet needs a license`**: set `.package.license`.
+- **The AppImage doesn't start on another distribution**: it needs GTK 4
+  and WebKitGTK 6.0 on the host (`gtk4`, `webkitgtk-6.0`).
+- **A packaged app's crash trace shows only addresses**: Linux packages
+  are stripped; set `.contents.strip = false`.
+- **"Apple could not verify ... is free of malware"**: the `.app` isn't
+  notarized. Users can allow it once in System Settings → Privacy &
+  Security → Open Anyway, or run
+  `xattr -dr com.apple.quarantine /Applications/<Name>.app`; notarizing
+  removes the prompt.
+- **Android: `package.version '...': VersionPartTooLarge`**: minor and
+  patch must be below 100 for the version code.
+
+## Related
+
+- [Building](building.md): `addApp`, `AppOptions` and the build steps.
+- [Signing](signing.md): Authenticode, Developer ID and notarization, MSIX, Android keystores.
+- [Updater](updater.md): shipping new versions of installed apps.
+- [Wrap](wrap.md): package an existing website.
+- [Desktop](desktop.md), [Android](android.md), [iOS](ios.md): the platforms.

@@ -1,0 +1,272 @@
+---
+.title = "Clipboard",
+.description = "Read and write the system clipboard from Zig: text and PNG images, on every platform, from any thread.",
+.date = .date("2026-10-12T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+`oriel.clipboard` reads and writes the system clipboard: plain text and
+images (always as PNG bytes). It is the clipboard of the whole system, not
+the page's: what it writes, every other app can paste, and it reads what
+other apps copied, including while your window is in the background where
+the platform allows it.
+
+Use it when Zig needs the clipboard: a hotkey that rewrites the selected
+text, a tray item that copies a value, a "copy" button whose content comes
+from Zig. To put text into *another* app, write it here and send the paste
+keystroke with [Input]($link.page('docs/input')). The API is Zig-only: the
+page reaches it through one of your [commands]($link.page('docs/commands')).
+
+# [Availability]($heading.id('availability'))
+
+| Platform | Backend | Text | Images | Background reads |
+|---|---|---|---|---|
+| Linux (Wayland) | `ext-data-control-v1` on workers, `GdkClipboard` on the main thread | ✓ | PNG | ✓ where the compositor offers `ext-data-control-v1`; else through GTK |
+| Linux (X11) | `GdkClipboard` | ✓ | PNG (any format GDK decodes) | ✓ |
+| Windows | Win32 `OpenClipboard`, `CF_UNICODETEXT`, registered `PNG` and `CF_DIB`/`CF_DIBV5` | ✓ | PNG; DIBs converted | ✓ |
+| macOS | `NSPasteboard` (general pasteboard) | ✓ | PNG; TIFF converted | ✓ |
+| Android | `ClipboardManager` | ✓ | first image `Uri` of the clip, re-encoded as PNG | ✗: Android 10+ returns `""` to apps not in focus |
+| iOS | `UIPasteboard` (general pasteboard) | ✓ | PNG; JPEG, HEIC... converted | ✓, with iOS's "pasted from" banner |
+
+The module is **on by default** everywhere (`clipboard` in
+`b.dependency("oriel", .{ ... })`; `.clipboard = false` leaves it out).
+`oriel.clipboard.available` is `true` whenever it's built, and
+`window.oriel.features.clipboard` tells the page. It needs no permission
+on any platform; iOS 16+ may ask the user when the app reads what another
+app copied.
+
+# [Quick start]($heading.id('quick-start'))
+
+```zig
+// build.zig: on by default; shown here to be explicit
+const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize, .clipboard = true });
+```
+
+```zig
+// src/main.zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub const Commands = struct {
+    /// Reads may wait for another app: run this command on a worker.
+    pub const async_commands = .{"paste"};
+
+    pub fn copy(_: std.mem.Allocator, args: struct { text: []const u8 }) !void {
+        try oriel.clipboard.writeText(args.text);
+    }
+
+    pub fn paste(gpa: std.mem.Allocator) ![]const u8 {
+        return oriel.clipboard.readText(gpa);
+    }
+};
+
+pub const Events = struct {};
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .app = app.build,
+        .window = .{ .title = "Clipboard", .width = 600, .height = 400 },
+    });
+}
+```
+
+```js
+await window.oriel.invoke("copy", { text: "Hello from the page" });
+const text = await window.oriel.invoke("paste", {});
+```
+
+# [How it works]($heading.id('how-it-works'))
+
+>[]($block.attrs("mermaid"))
+```
+flowchart LR
+  Page -->|"invoke('paste')"| Worker["Worker thread<br/>(async command, App.spawn)"]
+  Worker -->|"readText (blocks)"| API["oriel.clipboard"]
+  API -->|"Linux Wayland:<br/>ext-data-control<br/>(own connection)"| Compositor
+  API -->|"everything else:<br/>marshal and wait"| Main["Main thread"]
+  Main -->|"GdkClipboard / OpenClipboard /<br/>NSPasteboard / ClipboardManager /<br/>UIPasteboard"| OS["System clipboard"]
+  Main -.->|"readTextAsync callback"| Zig["Main-thread code<br/>(hotkey, tray)"]
+```
+
+Every platform's clipboard belongs to the UI thread, so each backend runs
+the actual clipboard call there:
+
+- **Windows, macOS, Android, iOS** (`src/plugins/clipboard/windows.zig`,
+  `macos.zig`, `android.zig`, `ios.zig`): a call made on a worker is
+  marshalled to the main thread with `Shell.runOnMainThread` and the worker
+  waits for it; a call made on the main thread runs there directly. The
+  async reads are queued to the main thread with `Shell.dispatchWithCleanup`
+  and call back there; if the app stops before the queued read runs, the
+  callback gets `error.AppNotRunning`.
+- **Linux** (`src/plugins/clipboard/linux.zig`): GTK can't serve its own
+  selection while the main thread is blocked waiting for it, so a blocking
+  read is never allowed on the main thread (`error.WouldBlockMainThread`).
+  On a worker, under Wayland, the read goes through the
+  `ext-data-control-v1` protocol on a private Wayland connection
+  (`src/plugins/wayland_globals.zig`): it works without window focus. Without
+  that protocol (X11, or a compositor that lacks it) the worker hands the
+  read to the main loop's `GdkClipboard` and waits up to 5 s. Writes from
+  a worker are handed to the main loop the same way.
+- **Your own data.** Every Linux write also offers a per-process marker
+  type (`application/x-oriel-owner-<pid>`) and keeps a copy; a read that
+  sees the marker returns that copy without a round trip through the
+  compositor.
+
+Images are PNG on the Zig side everywhere. Windows reads the registered
+`PNG` format first (trimmed past its `IEND` chunk, since `GlobalSize` pads
+it), else converts `CF_DIBV5`/`CF_DIB` (24 or 32 bpp, top-down or
+bottom-up, bitfields; at most 32768 px a side) to PNG; writes put both a
+DIB and the PNG. macOS writes PNG and TIFF (what most Mac apps paste) and
+converts TIFF on read. iOS converts any image UIKit reads. Android reads
+the clip's first `image/*` `Uri` and re-encodes it, and writes the PNG to
+the runtime's `FileProvider` and puts its `content://` URI on the clip.
+
+# [Examples]($heading.id('examples'))
+
+## [Copy from a global hotkey]($heading.id('example-hotkey'))
+
+A [global shortcut]($link.page('docs/global-shortcuts')) callback runs on
+the main thread. Writing there is fine; reading belongs on a worker:
+
+```zig
+fn onHotkey(_: []const u8) void {
+    oriel.App.spawn(rewriteSelection, .{}) catch |err| std.log.err("spawn: {s}", .{@errorName(err)});
+}
+
+fn rewriteSelection() !void {
+    const gpa = std.heap.smp_allocator;
+    const text = try oriel.clipboard.readText(gpa); // worker: may block
+    defer gpa.free(text);
+    const upper = try std.ascii.allocUpperString(gpa, text);
+    defer gpa.free(upper);
+    try oriel.clipboard.writeText(upper);
+}
+```
+
+## [Read without blocking the main thread]($heading.id('example-async'))
+
+```zig
+fn onTrayItem(_: []const u8, _: ?bool) void {
+    oriel.clipboard.readTextAsync(onText, null);
+}
+
+fn onText(result: anyerror![]const u8, _: ?*anyopaque) void {
+    const text = result catch |err| return std.log.warn("clipboard: {s}", .{@errorName(err)});
+    // `text` is valid only during this call: copy it to keep it.
+    std.log.info("clipboard has {d} bytes", .{text.len});
+}
+```
+
+## [Save and restore what the user had]($heading.id('example-restore'))
+
+GhostPen puts its result on the clipboard to paste it, then puts back what
+was there:
+
+```zig
+const Saved = union(enum) { none, text: []u8, image: []u8 };
+
+fn save(gpa: std.mem.Allocator) Saved {
+    const image = oriel.clipboard.readImage(gpa) catch null;
+    if (image) |png| return .{ .image = png };
+    const text = oriel.clipboard.readText(gpa) catch return .none;
+    return .{ .text = text };
+}
+
+fn restore(saved: Saved) void {
+    switch (saved) {
+        .none => {},
+        .text => |t| oriel.clipboard.writeText(t) catch {},
+        .image => |png| oriel.clipboard.writeImage(png) catch {},
+    }
+}
+```
+
+`examples/showcase` (System tab: copy, paste, dictate anywhere) and
+`examples/smoke` (a write/read round trip) use the module too.
+
+# [Reference]($heading.id('reference'))
+
+## [Functions]($heading.id('functions'))
+
+```zig
+pub const available: bool; // true when the module is built
+
+pub fn readText(gpa: std.mem.Allocator) ![]u8;
+pub fn readImage(gpa: std.mem.Allocator) !?[]u8;
+pub fn writeText(text: []const u8) !void;
+pub fn writeImage(png_bytes: []const u8) !void;
+
+pub const TextCallback = *const fn (result: anyerror![]const u8, user_data: ?*anyopaque) void;
+pub const ImageCallback = *const fn (result: anyerror!?[]const u8, user_data: ?*anyopaque) void;
+pub fn readTextAsync(callback: TextCallback, user_data: ?*anyopaque) void;
+pub fn readImageAsync(callback: ImageCallback, user_data: ?*anyopaque) void;
+
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
+```
+
+| Function | Returns | Threads |
+|---|---|---|
+| `readText` | The clipboard's text, owned by the caller (`gpa`). `""` when it holds no text (or, on Android, when the app isn't focused). | Any on Windows, macOS, Android and iOS. **Linux: workers only**; the main thread gets `error.WouldBlockMainThread`. |
+| `readImage` | PNG bytes owned by the caller, or `null` when there is no image. | As `readText`. |
+| `writeText` | | Any thread. From a worker it waits for the main thread. |
+| `writeImage` | | Any thread. The input must be an image the platform decodes: PNG on Android (checked by signature) and Windows (decoded with zigimg); anything GDK, AppKit or UIKit reads on Linux, macOS and iOS. Otherwise `error.InvalidImage` (Linux: `error.TextureNew`). |
+| `readTextAsync` | Calls `callback` on the main thread with the text, valid only during the call. | Linux: call it on the main thread. Elsewhere any thread. |
+| `readImageAsync` | Calls `callback` with PNG bytes or `null`, valid only during the call. | As `readTextAsync`. |
+| `check` | The module's smoke check (`oriel.checkAll`): which backend is usable. macOS runs a text and PNG round trip on a private pasteboard; Android replaces the user's clipboard with a test string. | |
+
+The clipboard holds one thing at a time: writing text drops an image and
+the other way round. Text is UTF-8 on the Zig side (UTF-16 on Windows,
+converted).
+
+**Android focus.** Android 10 and later only give the clipboard to the app
+in focus. A read on a worker waits up to 1.5 s for one of the app's windows
+to get focus (so a read made as a window opens sees the clipboard); a read
+on the UI thread can't wait and reads at once.
+
+**Limits.** A Wayland background read gives up when the owner sends
+nothing for 2 s (`error.ClipboardTimeout`) or more than 256 MiB
+(`error.ClipboardTooLarge`); a worker waiting for the Linux main loop gives
+up after 5 s (`error.MainThreadTimeout`). Windows retries `OpenClipboard`
+10 times, 10 ms apart, while another app holds it.
+
+## [Errors]($heading.id('errors'))
+
+| Error | Where | Meaning |
+|---|---|---|
+| `error.WouldBlockMainThread` | Linux | `readText` / `readImage` on the main thread: use a worker or the async reads |
+| `error.MainThreadTimeout` | Linux | a worker waited 5 s for the main loop (it isn't running, or another app didn't answer) |
+| `error.ClipboardTimeout`, `error.ClipboardTooLarge` | Linux (Wayland) | the selection owner was too slow, or sent too much |
+| `error.NoDisplay` | Linux | no GDK display (GTK not initialized) |
+| `error.ClipboardReadFailed`, `error.ClipboardSetFailed`, `error.TextureNew` | Linux | GDK refused the read or write, or couldn't decode the image (logged) |
+| `error.AppNotRunning` | Windows, macOS, Android, iOS | called before the app's main loop started, or after it stopped (call from `setup` or later) |
+| `error.ClipboardOpenFailed` | Windows | another app kept the clipboard open |
+| `error.ClipboardWriteFailed` | macOS, Android | the pasteboard or `ClipboardManager` refused the write |
+| `error.InvalidImage` | Windows, macOS, Android, iOS | `writeImage` got bytes that aren't a readable image, or a read image couldn't be converted |
+| `error.InvalidUtf8` | macOS, iOS | `writeText` got invalid UTF-8 |
+
+# [Troubleshooting]($heading.id('troubleshooting'))
+
+- **`error.WouldBlockMainThread` on Linux.** The read ran on the main
+  thread: a sync command, a hotkey or tray callback, `setup`. List the
+  command in `async_commands`, or `oriel.App.spawn` the work, or use
+  `readTextAsync`.
+- **Reads return stale or empty text on Wayland while the window is in the
+  background.** The compositor doesn't offer `ext-data-control-v1`; the
+  smoke check (`oriel.checkAll`) then reports `GdkClipboard on the app's
+  display (Wayland data-control: none)`. The older
+  `zwlr_data_control_manager_v1` is detected but not used.
+- **Android reads return `""`.** The app has no focused window (Android
+  10+). Read in response to the user, while the window is in front.
+- **iOS shows "pasted from" every time.** That is iOS's behaviour for any
+  read of another app's content; read only when the user asks.
+
+# [Related]($heading.id('related'))
+
+- [Input]($link.page('docs/input')): send Ctrl+V (⌘V) after writing, to
+  paste into the focused app.
+- [Global shortcuts]($link.page('docs/global-shortcuts')): the usual
+  trigger for clipboard work.
+- [Commands]($link.page('docs/commands')): exposing a Zig function to the
+  page, and `async_commands`.
