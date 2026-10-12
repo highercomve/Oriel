@@ -10,11 +10,7 @@ pub const Events = struct {};
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.oriel.CanvasDemo",
-        .title = "Oriel canvas demo",
-        .width = 480,
-        .height = 400,
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Oriel canvas demo", .width = 480, .height = 400 },
     });
 }

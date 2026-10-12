@@ -17,7 +17,7 @@ const notes = @import("notes.zig");
 const anywhere = @import("anywhere.zig");
 const platform_hooks = @import("platform_hooks.zig");
 
-const app_id = "dev.oriel.Showcase";
+const app_id = app.build.id;
 const desktop = !oriel.target.is_android and !oriel.target.is_ios;
 
 pub const Events = struct {
@@ -415,7 +415,7 @@ fn setup() !void {
             .id = app_id,
             .title = "Oriel Showcase",
             .tooltip = "Oriel Showcase: dictate anywhere with Ctrl+Alt+D",
-            .icon = .{ .png = app.icon_bytes },
+            .icon = .{ .png = app.build.icon.? },
             .menu = &.{
                 .{ .item = .{ .id = "show", .label = "Show or hide the window" } },
                 .{ .item = .{ .id = "anywhere", .label = "Dictate anywhere (Ctrl+Alt+D)" } },
@@ -603,17 +603,8 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = app_id,
-        .title = "Oriel Showcase",
-        .width = 1120,
-        .height = 780,
-        .min_width = 360,
-        .min_height = 320,
-        .assets = app.assets,
-        .dev = app.dev,
-        .icon = app.icon_bytes,
-        .permissions = app.permissions,
-        .deep_link_schemes = app.url_schemes,
+        .app = app.build,
+        .window = .{ .title = "Oriel Showcase", .width = 1120, .height = 780, .min_width = 360, .min_height = 320 },
         // The demo and its UI tests coordinate the app's own windows.
         .security = .{ .window_api = .{ .allow_modify_other_windows = true } },
         .setup = setup,
