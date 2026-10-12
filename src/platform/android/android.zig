@@ -172,15 +172,15 @@ fn purgeMalloc(event: lifecycle.Event) void {
     }
 }
 
-/// Open `client`'s connection to `uri`'s host with Android's resolver, so
-/// that the next `client.request` to that host reuses it. Needed before
-/// every HTTP request from Zig: std.Io resolves names itself from
-/// /etc/resolv.conf, which Android doesn't have (apps resolve through
-/// netd), so `std.http.Client` alone fails with error.NameServerFailure.
-/// Here bionic's getaddrinfo finds the address and the connection is made
-/// to it, with the host name still used for TLS (SNI, certificate) and as
-/// the pool key. Redirects to another host need the same: handle them
-/// yourself (`.redirect_behavior = .unhandled`) and call this for each.
+/// Deprecated: not needed. The `io` Oriel gives the app (`init.io` in
+/// `main`, and every worker that uses it) resolves host names through
+/// bionic's getaddrinfo (io.zig), so a plain `std.http.Client` request,
+/// redirects included, works on Android as everywhere else. Kept for apps
+/// that still call it; remove the call.
+///
+/// Opens `client`'s connection to `uri`'s host with Android's resolver, so
+/// that the next `client.request` to that host reuses it, with the host
+/// name still used for TLS (SNI, certificate) and as the pool key.
 pub fn preconnect(client: *std.http.Client, uri: std.Uri) !void {
     var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
     const host = try uri.getHost(&host_buf);
