@@ -413,6 +413,16 @@ fn didFailToRegisterForRemoteNotifications(_: apple.id, _: apple.c.SEL, _: apple
     apple_hooks.notify(.did_fail_push, .{err});
 }
 
+/// iOS relaunched or woke the app for a background URLSession's events: the
+/// hook that owns the session (by its identifier) keeps the completion
+/// handler and calls it once the session has delivered them. Unclaimed,
+/// it's called now: iOS waits for it before suspending the app again.
+fn handleEventsForBackgroundURLSession(_: apple.id, _: apple.c.SEL, _: apple.id, identifier: apple.id, completion: apple.id) callconv(.c) void {
+    if (apple_hooks.intercept(.background_url_session, .{ identifier, completion })) return;
+    log.info("background URLSession {s}: no hook owns it", .{apple.utf8(.{ .value = identifier }) orelse "?"});
+    apple.callBlock(completion, &.{}, .{});
+}
+
 /// OrielHooksContext.presentingViewController.
 fn hooksFront() ?*anyopaque {
     const controller = window.frontController() orelse return null;
@@ -638,6 +648,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .{ "orielWillEnterForeground:", willEnterForeground },
                 .{ "application:didRegisterForRemoteNotificationsWithDeviceToken:", didRegisterForRemoteNotifications },
                 .{ "application:didFailToRegisterForRemoteNotificationsWithError:", didFailToRegisterForRemoteNotifications },
+                .{ "application:handleEventsForBackgroundURLSession:completionHandler:", handleEventsForBackgroundURLSession },
             });
             const name = apple.nsString(std.mem.span(apple.c.class_getName(delegate_class.value))) orelse return 1;
             defer name.release();

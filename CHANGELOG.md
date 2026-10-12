@@ -30,7 +30,10 @@ Notable changes in Oriel releases.
   `openURL:` (before `oriel.deep_link`), `continueUserActivity:` (universal
   links, Handoff; Oriel now implements `scene:continueUserActivity:` and
   `application:continueUserActivity:restorationHandler:`) and, on macOS,
-  `applicationShouldHandleReopen:hasVisibleWindows:`. Up to 16 hooks per
+  `applicationShouldHandleReopen:hasVisibleWindows:`; on iOS,
+  `handleEventsForBackgroundURLSession:completionHandler:` (Oriel's app
+  delegate now forwards background URLSession events, so downloads can
+  continue while the app is suspended). Up to 16 hooks per
   platform, constructed once at launch before the first scene or window; a
   class that is also an app extension gets one instance for both. The
   showcase's hooks log what they see and own example.com links (an in-app

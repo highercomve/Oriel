@@ -40,12 +40,13 @@ pub const Method = enum(u8) {
     window_created,
     window_will_close,
     should_handle_reopen,
+    background_url_session,
 
     /// Interceptions return BOOL (YES: the hook owns it); the others
     /// return void.
     pub fn intercepts(m: Method) bool {
         return switch (m) {
-            .decide_policy, .media_capture, .open_url, .continue_user_activity, .should_handle_reopen => true,
+            .decide_policy, .media_capture, .open_url, .continue_user_activity, .should_handle_reopen, .background_url_session => true,
             else => false,
         };
     }
@@ -57,7 +58,7 @@ pub const Method = enum(u8) {
             .scene_did_disconnect, .scene_did_become_active, .scene_will_resign_active => 1,
             .scene_will_enter_foreground, .scene_did_enter_background => 1,
             .web_view_configuration, .web_view_created, .web_view_destroyed => 2,
-            .scene_will_connect, .window_created, .window_will_close, .should_handle_reopen => 2,
+            .scene_will_connect, .window_created, .window_will_close, .should_handle_reopen, .background_url_session => 2,
             .decide_policy => 3,
             .media_capture => 5,
             .did_finish_launching => 1,
@@ -92,6 +93,7 @@ pub fn selector(m: Method, platform: Platform) ?[:0]const u8 {
         .window_created => macos(platform, "windowCreated:label:"),
         .window_will_close => macos(platform, "windowWillClose:label:"),
         .should_handle_reopen => macos(platform, "applicationShouldHandleReopen:hasVisibleWindows:"),
+        .background_url_session => ios(platform, "handleEventsForBackgroundURLSession:completionHandler:"),
     };
 }
 
@@ -192,6 +194,8 @@ test "selectors: scenes on iOS only, windows on macOS only" {
     try std.testing.expect(selector(.scene_did_enter_background, .macos) == null);
     try std.testing.expect(selector(.window_created, .ios) == null);
     try std.testing.expect(selector(.should_handle_reopen, .ios) == null);
+    try std.testing.expect(selector(.background_url_session, .macos) == null);
+    try std.testing.expectEqualStrings("handleEventsForBackgroundURLSession:completionHandler:", selector(.background_url_session, .ios).?);
     try std.testing.expectEqualStrings("applicationDidFinishLaunching:options:", selector(.did_finish_launching, .ios).?);
     try std.testing.expectEqualStrings("applicationDidFinishLaunching:", selector(.did_finish_launching, .macos).?);
     // Shared methods have the same selector on both.
@@ -203,6 +207,7 @@ test "interceptions" {
     try std.testing.expect(Method.decide_policy.intercepts());
     try std.testing.expect(Method.open_url.intercepts());
     try std.testing.expect(Method.should_handle_reopen.intercepts());
+    try std.testing.expect(Method.background_url_session.intercepts());
     try std.testing.expect(!Method.web_view_created.intercepts());
     try std.testing.expect(!Method.registered.intercepts());
 }
