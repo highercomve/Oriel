@@ -402,9 +402,8 @@ pub fn parseKind(name: []const u8) ?Kind;
   `reasonOrDefault(kind)`.
 - **`parseKind(name)`**: a kind from its name, or null.
 
-`setDeclared`, `allowForPage`, `check`, `common` and `impl` are public for
-Oriel's own use (the shell, the window code, the smoke check that `oriel
-check` runs, which reports every kind's status without prompting).
+`check` is the smoke check `oriel check` runs: it reports every kind's
+status without prompting.
 
 ## [Page: `window.oriel.permissions`]($heading.id('page-api'))
 
@@ -557,6 +556,8 @@ kinds `microphone`, `camera`, `screen_capture`, `accessibility`,
 
 - `App.Config.permissions` is gone: the declaration comes with
   `.app = app.build`, from `build.zig`.
+- `setDeclared`, `allowForPage`, `common` and `impl` are no longer part of
+  `oriel.permissions` (Oriel's own, now `src/core/permissions/gate.zig`).
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

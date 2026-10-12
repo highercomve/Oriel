@@ -130,7 +130,7 @@ flowchart LR
 
 **The table.** `build.zig` turns `AppOptions.extensions` into a generated
 module per app and per target (`oriel_extensions`, read by
-`src/core/extensions.zig`): each extension's name, limits and which backend
+`src/core/extensions/runtime.zig`): each extension's name, limits and which backend
 this target has (`none`, `zig`, `android`, `objc`). So
 `oriel.extensions.get("name")` with a name the app didn't declare is a
 compile error that lists the declared ones, and `available()` is decided at
@@ -496,11 +496,10 @@ thread.
 its data is at most 1 MiB. An invalid or oversized event is dropped with a
 log line.
 
-The module also has declarations its backends and Oriel's own modules use
-(`Runner`, `Impl`, `Call`, `Backend`, `begin`, `pageCall`, `pageReady`,
-`emitByName`, `cancelledById`, `decodeStatusReply`, `setSink`, ...): they
-aren't for apps, and `setSink` is a compile error for any name outside
-`oriel.*`.
+The runtime's other declarations, which the backends and Oriel's own
+modules use (`Runner`, `Impl`, `begin`, `pageCall`, `setSink`, ...), live
+in `src/core/extensions/runtime.zig` and aren't part of
+`oriel.extensions`.
 
 ## [Page: `oriel.extensions`]($heading.id('page-api'))
 

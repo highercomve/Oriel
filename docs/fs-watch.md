@@ -262,8 +262,12 @@ its directory and filter by name instead.
 compile error naming the flag; guard shared code with
 `if (oriel.fs_watch.available)`.
 
-The namespace also has `common` (the Windows record parser) and `impl`
-(this OS's backend): internals, not part of the API.
+### Migrating from 0.11
+
+- `oriel.fs_watch.common` and `impl` are no longer public.
+- On Linux and Android `poll` takes `[]oriel.fs_watch.Event` like the
+  other platforms (the backend had its own `Event`, so the documented
+  type didn't compile there).
 
 ## Troubleshooting
 

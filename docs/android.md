@@ -135,7 +135,8 @@ the template; save your edits first.
 
 **Files and directories.** `oriel.paths.appData` / `appCache` are the
 files and cache directories themselves. Large downloads (models) belong in
-the app-specific external files directory, where `adb push` reaches them.
+`oriel.paths.appExternal`, the app-specific external files directory, where
+`adb push` reaches them ([App directories](paths.md)).
 Assets bundled with `-Dkokoro` (espeak-ng's data) and extensions'
 `.android.assets` go under the APK's assets (`zig-out/android-assets`); the
 runtime copies espeak-ng's data to `filesDir` on first start and after each
@@ -381,8 +382,8 @@ pub fn setTile(active: bool, label: []const u8) void;
 ```
 
 The namespace also holds the backend's internals (`window`, `bridge`,
-`runtime`, `jni`, `paths`, `exportStart`, `panic`, ...), which the generated
-library root uses; apps use `oriel.paths` rather than `oriel.android.paths`.
+`runtime`, `jni`, `exportStart`, `panic`, ...), which the generated library
+root uses. The app's directories are `oriel.paths`.
 
 ### System events
 
@@ -510,6 +511,8 @@ from the template instead; save your edits first.
 - The system event `trim-memory` is gone: memory pressure is
   `oriel.lifecycle`'s `memory_pressure`.
 - `oriel.android.preconnect` is gone: the app's `io` resolves names itself.
+- `oriel.android.paths` is gone: use `oriel.paths` (`appData`, `appCache`,
+  `appExternal`).
 
 ### Limits
 
