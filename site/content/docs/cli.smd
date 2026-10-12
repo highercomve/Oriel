@@ -306,9 +306,7 @@ Usage: oriel permission <command>
 | `list` | Show the declared permissions |
 
 Kinds: `microphone`, `camera`, `screen_capture`, `accessibility`,
-`location`, `notifications`, `system_audio`. The `bluetooth` and
-`local_network` kinds exist in `.permissions` but the command doesn't
-accept them yet: write those in `build.zig` by hand.
+`location`, `notifications`, `system_audio`, `bluetooth`, `local_network`.
 The app requests them at runtime with `oriel.permissions.request(kind)`
 (Zig) or `oriel.permissions.request("kind")` (JavaScript); undeclared ones
 are denied. Run `oriel permission` without arguments for this usage. See
