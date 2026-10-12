@@ -9455,7 +9455,7 @@ ${a.stack || ""}`;
       });
       if (event === "notification:action") invoke("notification:ready", {}).catch(() => {
       });
-      if (event === "share:received") invoke("events:ready", { event }).catch(() => {
+      if (event === "share:received" || event === "lifecycle") invoke("events:ready", { event }).catch(() => {
       });
       return () => set.delete(callback);
     },
@@ -9505,6 +9505,11 @@ ${a.stack || ""}`;
         return invoke("permissions:open_settings", { name });
       }
     }),
+    // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
+    // "resume" | "terminating", level: "moderate" | "critical" | null }.
+    lifecycle: Object.freeze({ on(callback) {
+      return g.oriel.listen("lifecycle", callback);
+    } }),
     deepLink: Object.freeze({ current() {
       return invoke("deep_link:current", {});
     } }),

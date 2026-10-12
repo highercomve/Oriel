@@ -27,6 +27,8 @@ internal object NativeLib {
     @JvmStatic external fun onFolderResult(request: Long, status: Int, data: ByteArray?)
     /** A tile tap, notification action, headset button or keyboard event (OrielSystem). */
     @JvmStatic external fun onSystemEvent(name: ByteArray, data: ByteArray)
+    /** oriel.lifecycle: 0 background (no Activity started), 1 foreground (OrielRuntime). */
+    @JvmStatic external fun onLifecycle(event: Int)
     /** A registered keyboard shortcut was pressed (src/plugins/global_shortcut/android.zig). */
     @JvmStatic external fun onShortcut(id: ByteArray)
     /** The system speech recognizer (OrielSpeech): kind 0 partial, 1 final, 2 level, 3 error, 4 ended. */

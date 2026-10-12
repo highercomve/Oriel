@@ -42,6 +42,7 @@ const ggml_gpu = @import("ggml_gpu.zig");
 const format = @import("chat/format.zig");
 const App = @import("../core/App.zig");
 const model_download = @import("model_download.zig");
+const lifecycle = @import("../core/lifecycle.zig");
 
 const log = std.log.scoped(.chat);
 const is_phone = builtin.abi.isAndroid() or builtin.os.tag == .ios;
@@ -163,6 +164,7 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     gpa = app_gpa;
     models_dir = dir;
     llama.silenceLogs();
+    subscribeLifecycle();
 }
 
 /// llama.cpp's backend and the GPU backends, once. Caller holds `mutex`.
@@ -278,9 +280,25 @@ pub fn delete(name: []const u8) !void {
     try model_download.remove(io, models_dir, m.file);
 }
 
-/// Memory pressure (the app in the background): free the model unless it
-/// is answering or loading (then it returns at once: safe to call on the
-/// main thread); the next reply loads it again.
+/// When the module frees its model by itself (`unloadIdle` on an
+/// `oriel.lifecycle` event): critical memory pressure by default. Set it any
+/// time; `.{ .memory_pressure = null }` turns it off.
+pub var unload_on: lifecycle.UnloadOn = .{};
+var lifecycle_subscribed = false;
+
+fn subscribeLifecycle() void {
+    if (lifecycle_subscribed) return;
+    lifecycle_subscribed = true;
+    lifecycle.subscribe(&onLifecycle) catch log.warn("lifecycle: no room to unload on memory pressure", .{});
+}
+
+fn onLifecycle(event: lifecycle.Event) void {
+    if (unload_on.wants(event)) unloadIdle();
+}
+
+/// Memory pressure (`unload_on`): free the model unless it is answering or
+/// loading (then it returns at once: safe to call on the main thread); the
+/// next reply loads it again.
 pub fn unloadIdle() void {
     if (generating.load(.acquire)) return;
     if (!mutex.tryLock()) return;

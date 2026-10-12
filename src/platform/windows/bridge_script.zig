@@ -133,8 +133,9 @@ pub const bridge_js =
     \\      } else if (event === "notification:action") {
     \\        // A click that came before the page listened (one that launched the app).
     \\        try { Promise.resolve(invoke("notification:ready", {})).catch(() => {}); } catch (_) {}
-    \\      } else if (event === "share:received") {
-    \\        // Shares that came before the page listened (one that launched the app).
+    \\      } else if (event === "share:received" || event === "lifecycle") {
+    \\        // Shares that came before the page listened (one that launched the
+    \\        // app); lifecycle events (oriel.lifecycle) from before it loaded.
     \\        try { Promise.resolve(invoke("events:ready", { event })).catch(() => {}); } catch (_) {}
     \\      }
     \\      return () => set.delete(callback);
@@ -159,6 +160,13 @@ pub const bridge_js =
     \\      },
     \\      openSettings(name) {
     \\        return invoke("permissions:open_settings", { name });
+    \\      },
+    \\    }),
+    \\    // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
+    \\    // "resume" | "terminating", level: "moderate" | "critical" | null }.
+    \\    lifecycle: Object.freeze({
+    \\      on(callback) {
+    \\        return window.oriel.listen("lifecycle", callback);
     \\      },
     \\    }),
     \\    deepLink: Object.freeze({

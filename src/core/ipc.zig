@@ -610,6 +610,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
         if (!has_permission_changed) {
             events = events ++ "  \"permission-changed\": { name: PermissionName; status: PermissionStatus };\n";
         }
+        if (!@hasField(Events, "lifecycle")) events = events ++ "  lifecycle: LifecycleEvent;\n";
         var permission_names: []const u8 = "";
         for (std.enums.values(@import("permissions/common.zig").Kind), 0..) |k, i| {
             permission_names = permission_names ++ (if (i == 0) "" else " | ") ++ "\"" ++ @tagName(k) ++ "\"";
@@ -687,6 +688,17 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  current(): Promise<string | null>;
             \\}
             \\
+            \\/** The app's lifecycle (oriel.lifecycle); `level` is set for memory_pressure. */
+            \\export interface LifecycleEvent {
+            \\  type: "background" | "foreground" | "memory_pressure" | "suspend" | "resume" | "terminating";
+            \\  level: "moderate" | "critical" | null;
+            \\}
+            \\
+            \\export interface LifecycleApi {
+            \\  /** Events from before the page listened come first. Returns an unsubscribe function. */
+            \\  on(callback: (event: LifecycleEvent) => void): () => void;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -704,6 +716,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
             \\      window: WindowApi;
             \\      deepLink: DeepLinkApi;
+            \\      lifecycle: LifecycleApi;
             \\      permissions: PermissionsApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
@@ -729,6 +742,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const orielWindow: WindowApi = (globalThis as any).oriel?.window;
             \\/** Built-in deep link API. */
             \\export const deepLink: DeepLinkApi = (globalThis as any).oriel?.deepLink;
+            \\/** Built-in lifecycle API: background, memory pressure, sleep, terminating. */
+            \\export const lifecycle: LifecycleApi = (globalThis as any).oriel?.lifecycle;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
@@ -974,6 +989,8 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "deepLink: DeepLinkApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const deepLink: DeepLinkApi") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const oriel: Window[\"oriel\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  lifecycle: LifecycleEvent;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
 
     const ts_disabled = comptime typescriptWithOptions(Commands, Events, false);
     try std.testing.expect(std.mem.indexOf(u8, ts_disabled, "\"deep-link\": { url: string };") == null);

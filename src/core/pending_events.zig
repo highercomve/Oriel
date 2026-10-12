@@ -20,7 +20,7 @@ const log = std.log.scoped(.events);
 
 /// The events that are queued: the bridges' `listen()` sends `events:ready`
 /// for these (a frozen set, so the bridges and Zig agree).
-pub const queued = [_][]const u8{ "notification:action", "share:received", "deep-link" };
+pub const queued = [_][]const u8{ "notification:action", "share:received", "deep-link", "lifecycle" };
 
 fn slotOf(comptime event: []const u8) usize {
     inline for (queued, 0..) |name, i| {
@@ -353,5 +353,6 @@ test dupeDeep {
 test isQueued {
     try testing.expect(isQueued("notification:action"));
     try testing.expect(isQueued("share:received"));
+    try testing.expect(isQueued("lifecycle"));
     try testing.expect(!isQueued("tick"));
 }

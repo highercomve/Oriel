@@ -15,6 +15,7 @@ const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
 const notification_common = @import("../../modules/notification/common.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 const log = std.log.scoped(.oriel);
 
 pub const window = @import("window.zig");
@@ -103,9 +104,10 @@ pub fn setForegroundService(on: bool, title: []const u8, text: []const u8, actio
 /// OrielSystem.kt): "tile", "action" (data: the action's id),
 /// "media-button" (data: the key code), "ime-mic", "ime-open" (data: the
 /// field's input type), "ime-close"; and "trim-memory" (data: the
-/// `ComponentCallbacks2` level, e.g. "20" UI hidden, "40" background), a
-/// cue to drop caches or unload models. Called on the main thread; the page
-/// also gets an `android:event` event with `{ name, data }`.
+/// `ComponentCallbacks2` level, e.g. "20" UI hidden, "40" background), also
+/// sent as `oriel.lifecycle`'s memory_pressure, which is the portable way to
+/// drop caches or unload models. Called on the main thread; the page also
+/// gets an `android:event` event with `{ name, data }`.
 pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
 
 var system_event_handler: ?SystemEventHandler = null;
@@ -120,7 +122,10 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
     defer gpa.free(name);
     const data = (env.bytesAlloc(gpa, data_arr) catch return) orelse &.{};
     defer if (data.len > 0) gpa.free(data);
-    if (std.mem.eql(u8, name, "trim-memory")) trimMemory(std.fmt.parseInt(i32, data, 10) catch 0);
+    if (std.mem.eql(u8, name, "trim-memory")) {
+        const level = std.fmt.parseInt(i32, data, 10) catch 0;
+        if (lifecycle.fromAndroidTrim(level)) |event| lifecycle.dispatch(event);
+    }
     if (std.mem.eql(u8, name, "notification")) {
         // oriel.notification: a tap or a button (OrielRuntime.notify).
         const t = notification_common.unpackTarget(data);
@@ -131,23 +136,40 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
     App.emit("android:event", .{ .name = name, .data = data });
 }
 
-comptime {
-    @export(&nativeSystemEvent, .{ .name = "Java_dev_oriel_NativeLib_onSystemEvent" });
+/// OrielRuntime's started-Activity count (main thread): 0 background, 1
+/// foreground.
+fn nativeLifecycle(_: *jni.Env, _: jni.jclass, event: jni.jint) callconv(.c) void {
+    lifecycle.dispatch(if (event == 0) .background else .foreground);
 }
 
-/// `ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW`: from here on (running low,
-/// UI hidden, background...) bionic's allocator gives its cached free pages
-/// back to the system. Oriel's own allocations use it (core/heap.zig), and
-/// so does the app's `gpa`.
-const trim_memory_running_low = 10;
+comptime {
+    @export(&nativeSystemEvent, .{ .name = "Java_dev_oriel_NativeLib_onSystemEvent" });
+    @export(&nativeLifecycle, .{ .name = "Java_dev_oriel_NativeLib_onLifecycle" });
+}
+
 /// <malloc.h>: purge the allocator's caches (API 28+).
 const M_PURGE = -101;
 extern "c" fn mallopt(option: c_int, value: c_int) c_int;
 
-fn trimMemory(level: i32) void {
-    if (level < trim_memory_running_low) return;
-    _ = mallopt(M_PURGE, 0);
-    log.info("trim-memory {d}: purged the malloc caches", .{level});
+var purge_subscribed = std.atomic.Value(bool).init(false);
+
+/// Shell.run: from now on, memory pressure and the background make bionic's
+/// allocator give its cached free pages back to the system (after the
+/// modules that subscribed earlier freed their models). Oriel's own
+/// allocations use it (core/heap.zig), and so does the app's `gpa`.
+pub fn subscribeMallocPurge() void {
+    if (purge_subscribed.swap(true, .monotonic)) return;
+    lifecycle.subscribe(&purgeMalloc) catch log.warn("lifecycle: no room for the malloc purge", .{});
+}
+
+fn purgeMalloc(event: lifecycle.Event) void {
+    switch (event) {
+        .memory_pressure, .background => {
+            _ = mallopt(M_PURGE, 0);
+            log.info("{s}: purged the malloc caches", .{event.name()});
+        },
+        else => {},
+    }
 }
 
 /// Open `client`'s connection to `uri`'s host with Android's resolver, so
