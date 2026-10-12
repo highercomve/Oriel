@@ -243,6 +243,10 @@ up after 5 s (`error.MainThreadTimeout`). Windows retries `OpenClipboard`
 | `error.InvalidImage` | Windows, macOS, Android, iOS | `writeImage` got bytes that aren't a readable image, or a read image couldn't be converted |
 | `error.InvalidUtf8` | macOS, iOS | `writeText` got invalid UTF-8 |
 
+### Migrating from 0.11
+
+- `oriel.clipboard.common` and `impl` are no longer public.
+
 ## Troubleshooting
 
 - **`error.WouldBlockMainThread` on Linux.** The read ran on the main

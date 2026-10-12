@@ -82,7 +82,7 @@ flowchart LR
 Each platform shell watches its own signals and calls
 `lifecycle.dispatch` on the main thread (`src/platform/<os>/Shell.zig`,
 and `OrielRuntime.kt` on Android). The mapping from a platform value to an
-event is a pure function in `src/core/lifecycle.zig` (`fromAndroidTrim`,
+event is a pure function in `src/core/lifecycle/backend.zig` (`fromAndroidTrim`,
 `fromDispatchMemoryPressure`, `fromPowerBroadcast`, `fromGioMemoryWarning`),
 tested on every host.
 
@@ -248,12 +248,6 @@ pub fn subscribe(handler: Handler) error{TooManySubscribers}!void;
   Android malloc purge, app extensions); each logs a warning if the table is
   already full.
 
-Oriel's shells call these; apps don't need them: `dispatch(event)` (main
-thread), `post(event)` (`dispatch` from any thread), `beginRun()`,
-`terminateAfterLoop()`, `Table(capacity)`, the platform mappings
-(`fromAndroidTrim`, `fromDispatchMemoryPressure`, `fromPowerBroadcast`,
-`fromGioMemoryWarning`), and `PageEvent` (the page's payload, below).
-
 ### Zig: `UnloadOn`
 
 What a local-AI module frees its models on. `oriel.chat.unload_on`,
@@ -334,6 +328,10 @@ every platform ([Android](android.md)).
 - `oriel.ios.onSystemEvent` is gone: subscribe to `oriel.lifecycle`.
 - Android's `"trim-memory"` no longer reaches `oriel.android.onSystemEvent`
   or `android:event`: handle `memory_pressure`.
+- The shells' side (`dispatch`, `post`, `beginRun`, `terminateAfterLoop`,
+  `Table`, `PageEvent`, the `from*` mappings) moved to
+  `src/core/lifecycle/backend.zig` and is no longer part of
+  `oriel.lifecycle`.
 
 ## Troubleshooting
 

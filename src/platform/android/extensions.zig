@@ -10,8 +10,8 @@ const std = @import("std");
 const jni = @import("jni.zig");
 const runtime = @import("runtime.zig");
 const heap = @import("../../core/heap.zig");
-const extensions = @import("../../core/extensions.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const extensions = @import("../../core/extensions/runtime.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 
 const log = std.log.scoped(.extensions);
 

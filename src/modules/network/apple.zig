@@ -17,4 +17,4 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
 // TODO: DNSServiceRegister / DNSServiceBrowse / DNSServiceResolve +
 // DNSServiceGetAddrInfo (dns_sd.h, in libSystem) or Network.framework
 // nw_listener / nw_browser; iOS needs the types in NSBonjourServices.
-pub const mdns_backend = @import("mdns.zig").Unsupported;
+pub const mdns_backend = @import("backend.zig").MdnsUnsupported;

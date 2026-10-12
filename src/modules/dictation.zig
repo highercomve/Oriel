@@ -172,7 +172,7 @@ var samples_mutex: std.Io.Mutex = .init;
 var samples: std.ArrayList(f32) = .empty;
 
 /// Call once at startup. `dir`: where the models live (created when
-/// needed; e.g. `store.dataDir` + "models", on Android the external files
+/// needed; e.g. `oriel.paths.appExternal` + "models": on Android the external files
 /// directory so `adb push` can reach it); must outlive the app.
 pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     io = app_io;

@@ -12,8 +12,8 @@
 const std = @import("std");
 const objc = @import("objc.zig");
 const instances = @import("instances.zig");
-const extensions = @import("../../core/extensions.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const extensions = @import("../../core/extensions/runtime.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 
 const log = std.log.scoped(.extensions);
 const c = objc.c;

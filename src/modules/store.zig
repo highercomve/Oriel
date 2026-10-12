@@ -1,23 +1,21 @@
-//! App data paths and persistent settings store.
+//! Persistent settings store: small JSON files of key/value settings in
+//! the app's config directory (`oriel.paths.appConfig`; on Android its
+//! `<app id>` folder). Directories for the app's other files are
+//! `oriel.paths`.
 //!
-//! Linux backend: XDG base directories via GLib + JSON store.
-//! Windows backend: Known folders (Roaming/Local AppData) + Win32 JSON store.
-//! macOS backend: ~/Library/Application Support and Caches + libc JSON store.
+//! Linux backend: GLib file I/O.
+//! Windows backend: Win32 file I/O.
+//! macOS, iOS and Android backend: libc file I/O.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;
 
-const builtin = @import("builtin");
 const target = @import("../core/target.zig");
-pub const common = @import("store/common.zig");
 
-pub const configDir = impl.configDir;
-pub const dataDir = impl.dataDir;
-pub const cacheDir = impl.cacheDir;
 pub const Store = impl.Store;
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("store/linux.zig"),
     .windows => @import("store/windows.zig"),
     .macos => @import("store/macos.zig"),
@@ -28,7 +26,7 @@ pub const impl = switch (target.os) {
 
 test {
     const std = @import("std");
-    std.testing.refAllDecls(common);
+    std.testing.refAllDecls(@import("store/common.zig"));
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
 }

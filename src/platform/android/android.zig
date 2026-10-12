@@ -16,7 +16,7 @@ const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
 const internal = @import("../../core/internal.zig");
 const notification_common = @import("../../modules/notification/common.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 const log = std.log.scoped(.oriel);
 
 pub const window = @import("window.zig");
@@ -25,7 +25,6 @@ pub const bridge = @import("bridge.zig");
 pub const scheme = @import("scheme.zig");
 pub const runtime = @import("runtime.zig");
 pub const jni = @import("jni.zig");
-pub const paths = @import("paths.zig");
 pub const entry = @import("entry.zig");
 
 pub const WindowHandle = window.WindowHandle;
@@ -239,6 +238,6 @@ test {
     std.testing.refAllDecls(ShellMod);
     std.testing.refAllDecls(bridge);
     std.testing.refAllDecls(scheme);
-    std.testing.refAllDecls(paths);
+    std.testing.refAllDecls(@import("paths.zig"));
     _ = App;
 }

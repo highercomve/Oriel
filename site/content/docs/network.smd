@@ -372,16 +372,15 @@ name that was `found`.
 | `error.TooMany` | 32 registrations, or 32 browsers, already alive. |
 | `error.OutOfMemory` | |
 
-The namespace also has `common` and `impl` (the shared lock count and
-this OS's backend) and, in `mdns`, the Kotlin wire-format helpers
-(`encodeTxt`, `decodeTxt`, `encodeEvent`, `decodeEvent`, `DecodeError`)
-and `Unsupported` (the stand-in backend): internals, not part of the API.
-
 ## [Migrating from 0.11]($heading.id('migrating'))
 
 - `oriel.network.info` and `oriel.network.onChange` are gone: they never
   had a backend. Oriel has no network-state API; the page's
   `navigator.onLine` and `online`/`offline` events cover connectivity.
+- `oriel.network.common` and `impl`, and in `mdns` the Kotlin wire-format
+  helpers (`encodeTxt`, `decodeTxt`, `encodeEvent`, `decodeEvent`,
+  `DecodeError`, now `network/mdns_wire.zig`) and `Unsupported`, are no
+  longer public.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

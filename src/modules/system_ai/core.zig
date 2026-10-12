@@ -17,7 +17,7 @@
 //! codes arrive as "<code>:<n>").
 
 const std = @import("std");
-const extensions = @import("../../core/extensions.zig");
+const extensions = @import("../../core/extensions/runtime.zig");
 const ipc = @import("../../core/ipc.zig");
 
 const log = std.log.scoped(.system_ai);

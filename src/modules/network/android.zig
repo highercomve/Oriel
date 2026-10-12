@@ -34,6 +34,7 @@ const std = @import("std");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 const mdns = @import("mdns.zig");
+const mdns_wire = @import("mdns_wire.zig");
 const heap = @import("../../core/heap.zig");
 const ShellMod = @import("../../platform/android/Shell.zig");
 const runtime = @import("../../platform/android/runtime.zig");
@@ -190,7 +191,7 @@ pub const mdns_backend = struct {
     pub const supported = true;
 
     pub fn register(service: mdns.Service) mdns.Error!mdns.Registration {
-        const txt = try mdns.encodeTxt(heap.gpa, service.txt);
+        const txt = try mdns_wire.encodeTxt(heap.gpa, service.txt);
         defer heap.gpa.free(txt);
         var waiter: Waiter = .{};
         const id = blk: {
@@ -314,7 +315,7 @@ fn nativeEvent(env: *jni.Env, _: jni.jclass, id_j: jni.jint, data: jni.jobject) 
     };
     var arena: std.heap.ArenaAllocator = .init(heap.gpa);
     defer arena.deinit();
-    const event = mdns.decodeEvent(arena.allocator(), bytes, service_type) catch {
+    const event = mdns_wire.decodeEvent(arena.allocator(), bytes, service_type) catch {
         log.err("malformed event from OrielMdns ({d} bytes)", .{bytes.len});
         return;
     };
