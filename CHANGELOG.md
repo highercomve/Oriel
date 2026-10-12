@@ -6,6 +6,26 @@ Notable changes in Oriel releases.
 
 ### Added
 
+- App extensions (`oriel.extensions`, docs/extensions.md): an app's own
+  native code, declared by name in `AppOptions.extensions` with an
+  implementation per platform: Kotlin (`.android`: `OrielAppExtension`,
+  `OrielCall`, `OrielExtensionError`; sources, Maven dependencies, assets,
+  generated R8 keep rules), Objective-C (`.ios`: the `OrielAppExtension`
+  protocol in `oriel_extension.h`, compiled with `-fobjc-arc`; frameworks,
+  bundle resources), opt-in Swift (`.ios.swift_sources`, with `swiftc` from
+  Xcode or the Linux toolchain plus xtool's SDK) and Zig (`.desktop`, or
+  `.linux`/`.macos`/`.windows`). `oriel.extensions.get("name")` is checked
+  at build time and `available()` is comptime per target; `call(arena,
+  method, input, .{ .timeout_ms, .cancel, .diag })` runs on the
+  extension's own workers (`.concurrency`), with capped inputs and replies
+  (`.max_bytes`, 32 MiB), a bounded queue, cancellation and timeouts, and
+  is refused on the main thread. Native code emits events
+  (`onEvent`; the page's `extension:<name>`) and gets `oriel.lifecycle`.
+- The page reaches extensions only through Zig: an app command, or
+  `oriel.extensions.expose(name, .{ .methods, .filter })` and
+  `oriel.extensions.call(name, method, payload)` / `.on(name, cb)` in every
+  bridge (TypeScript `ExtensionsApi`). The showcase's `showcase.echo` runs
+  in Zig, Kotlin and Objective-C.
 - `oriel.lifecycle`: the app's lifecycle with one API on every platform
   (core, always on). `subscribe(handler)` (up to 16, called on the main
   thread in order) gets `background` / `foreground` (Android: the last
