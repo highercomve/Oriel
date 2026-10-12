@@ -6,6 +6,29 @@ Notable changes in Oriel releases.
 
 ### Added
 
+- `oriel.system_ai` (`-Dsystem_ai`, off by default; Android and iOS): the
+  device's own language model. `status()` (available, downloadable,
+  downloading, unavailable, with a reason), `capabilities()`,
+  `download(io, on_progress)`, `generate(io, arena, .{ .system, .prompt,
+  .images, .temperature, .max_tokens, .schema }, on_token)`, `cancel()` and
+  `lastError()`; one generate or download at a time, from a worker; caps of
+  64 KiB per text, 4 images of 8 MiB and a 1 MiB reply; timeouts of 20 s,
+  3 min and 10 min. Android: Gemini Nano through ML Kit's GenAI Prompt API
+  (`genai-prompt` 1.0.0-beta4, added to Gradle only with the flag), text
+  and one image, streaming, download progress. iOS: Apple Foundation
+  Models (iOS 26+ with Apple Intelligence; text only), weak-linked and
+  compiled only when the SDK has it; Oriel's Swift raises the app's minimum
+  to iOS 18. The page: `oriel.systemAi.status/capabilities/download/
+  generate/cancel` with `system_ai:token` and `system_ai:download` events
+  (TypeScript `SystemAiApi`); `oriel.features.systemAi`. Linux, Windows and
+  macOS report `available = false`. The showcase has a System AI card
+  (`-Dsystem_ai`).
+- Oriel's own app extensions: modules can be built on the extension
+  primitive (`oriel.system_ai` is the first: Kotlin and Swift backends
+  shipped in Oriel, merged before the app's). Names starting with `oriel.`
+  are reserved: an app can't declare or expose them. `.ios.weak_frameworks`
+  weak-links frameworks newer than the app's minimum, only when the SDK has
+  them.
 - App extensions (`oriel.extensions`, docs/extensions.md): an app's own
   native code, declared by name in `AppOptions.extensions` with an
   implementation per platform: Kotlin (`.android`: `OrielAppExtension`,
