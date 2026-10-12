@@ -61,7 +61,7 @@ var media_running = false;
 
 /// The media server (and `app://app/media/`) and the IPC probe origin.
 fn startServers() !void {
-    if (oriel.options.media_server) {
+    if (oriel.media_server.available) {
         test_media_root = try createTestMediaFile(io, servers_gpa);
         errdefer servers_gpa.free(test_media_root);
         try media.start(io, servers_gpa, oriel.media_server.Options{
@@ -116,7 +116,7 @@ const app_id = "dev.oriel.Smoke";
 const icon_png = @embedFile("web/icon.png");
 
 var io: std.Io = undefined;
-var media: if (oriel.options.media_server) oriel.media_server.Server else void = undefined;
+var media: if (oriel.media_server.available) oriel.media_server.Server else void = undefined;
 var test_media_root: []const u8 = "";
 var expected_sample_hex: [200]u8 = undefined;
 const test_total_file_size: u64 = 44 + 1024 * 1024;
@@ -209,19 +209,19 @@ const Commands = struct {
         return .{
             .checks = try oriel.checkAll(gpa, context()),
             .probe_url = probe_origin ++ "/probe.html",
-            .ping_url = if (oriel.options.media_server)
+            .ping_url = if (oriel.media_server.available)
                 try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/ping", .{media_port})
             else
                 null,
-            .media_url = if (oriel.options.media_server)
+            .media_url = if (oriel.media_server.available)
                 try std.fmt.allocPrint(gpa, "http://127.0.0.1:{d}/test.wav", .{media_port})
             else
                 null,
-            .media_app_url = if (oriel.options.media_server)
+            .media_app_url = if (oriel.media_server.available)
                 oriel.security.app_origin ++ "/media/test.wav"
             else
                 null,
-            .expected_sample_hex = if (oriel.options.media_server)
+            .expected_sample_hex = if (oriel.media_server.available)
                 &expected_sample_hex
             else
                 null,
@@ -248,7 +248,7 @@ const Commands = struct {
     /// (the path async commands and hotkey handlers use). Must not hang:
     /// this process owns the selection it reads.
     pub fn clipboard_roundtrip(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
-        if (!oriel.options.clipboard) return .{ .ok = true, .detail = "clipboard plugin disabled" };
+        if (!oriel.clipboard.available) return .{ .ok = true, .detail = "clipboard plugin disabled" };
         const pid = if (builtin.os.tag == .windows)
             std.os.windows.GetCurrentProcessId()
         else
@@ -290,7 +290,7 @@ const Commands = struct {
     }
 
     pub fn test_windows_and_menu(gpa: std.mem.Allocator) !struct { ok: bool, detail: []const u8 } {
-        if (oriel.options.menu) {
+        if (oriel.menu.available) {
             const menu_items = [_]oriel.menu.MenuItem{
                 .{
                     .submenu = .{
@@ -420,7 +420,7 @@ fn context() oriel.CheckContext {
     return .{
         .io = io,
         .icon_png = icon_png,
-        .media_port = if (oriel.options.media_server) media_port else null,
+        .media_port = if (oriel.media_server.available) media_port else null,
         .app_id = app_id,
     };
 }
@@ -506,7 +506,7 @@ pub fn main(init: std.process.Init) !u8 {
         return if (failed == 0) 0 else 1;
     }
 
-    if (oriel.options.deep_link) {
+    if (oriel.deep_link.available) {
         const DLHandler = struct {
             fn handle(_: []const u8) void {}
         };

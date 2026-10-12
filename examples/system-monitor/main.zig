@@ -61,7 +61,7 @@ pub const Commands = struct {
 
     /// Copies text to clipboard via Oriel clipboard plugin.
     pub fn copy_to_clipboard(_: std.mem.Allocator, args: struct { text: []const u8 }) !bool {
-        if (oriel.options.clipboard) {
+        if (oriel.clipboard.available) {
             try oriel.clipboard.writeText(args.text);
             return true;
         }

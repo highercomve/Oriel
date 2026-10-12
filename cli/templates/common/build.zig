@@ -8,7 +8,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Oriel's built-in modules and plugins. Switch on what the app uses:
-    // anything left off is neither compiled nor linked.
+    // anything left off is neither compiled nor linked. Say it once for
+    // every target: where a module doesn't exist (a tray on phones),
+    // `oriel.tray.available` is false, so guard its calls with
+    // `if (oriel.tray.available)`.
     const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
