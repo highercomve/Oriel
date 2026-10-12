@@ -58,26 +58,26 @@ open class OrielActivity : Activity() {
         }
         setContentView(root)
         OrielRuntime.onActivityCreated(this, intent)
-        OrielAppExtensions.registered.forEach { it.onActivityCreated(this, savedInstanceState) }
+        OrielHooksRegistry.registered.forEach { it.onActivityCreated(this, savedInstanceState) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         OrielRuntime.onActivityNewIntent(this, intent)
-        OrielAppExtensions.registered.forEach { it.onNewIntent(this, intent) }
+        OrielHooksRegistry.registered.forEach { it.onNewIntent(this, intent) }
     }
 
     override fun onStart() {
         super.onStart()
         started = true
         OrielRuntime.onActivityStarted()
-        OrielAppExtensions.registered.forEach { it.onActivityStarted(this) }
+        OrielHooksRegistry.registered.forEach { it.onActivityStarted(this) }
     }
 
     override fun onStop() {
         started = false
-        OrielAppExtensions.registered.forEach { it.onActivityStopped(this) }
+        OrielHooksRegistry.registered.forEach { it.onActivityStopped(this) }
         OrielRuntime.onActivityStopped(this)
         super.onStop()
     }
@@ -91,11 +91,11 @@ open class OrielActivity : Activity() {
     override fun onResume() {
         super.onResume()
         OrielRuntime.foreground = this
-        OrielAppExtensions.registered.forEach { it.onActivityResumed(this) }
+        OrielHooksRegistry.registered.forEach { it.onActivityResumed(this) }
     }
 
     override fun onPause() {
-        OrielAppExtensions.registered.forEach { it.onActivityPaused(this) }
+        OrielHooksRegistry.registered.forEach { it.onActivityPaused(this) }
         super.onPause()
     }
 
@@ -107,12 +107,12 @@ open class OrielActivity : Activity() {
         if (w != null && isFinishing && !closingByRuntime && !isChangingConfigurations) NativeLib.onCloseRequested(w.id)
         OrielRuntime.onActivityDestroyed(this)
         OrielCamera.onActivityDestroyed(this)
-        OrielAppExtensions.registered.forEach { it.onActivityDestroyed(this) }
+        OrielHooksRegistry.registered.forEach { it.onActivityDestroyed(this) }
         super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        OrielAppExtensions.registered.forEach { it.onSaveInstanceState(this, outState) }
+        OrielHooksRegistry.registered.forEach { it.onSaveInstanceState(this, outState) }
         super.onSaveInstanceState(outState)
     }
 
@@ -155,7 +155,7 @@ open class OrielActivity : Activity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig) // the WebView relayouts; the page gets `resize`
-        OrielAppExtensions.registered.forEach { it.onConfigurationChanged(this, newConfig) }
+        OrielHooksRegistry.registered.forEach { it.onConfigurationChanged(this, newConfig) }
     }
 
     internal fun hasWindowFocusOrVisible(): Boolean = started
@@ -272,14 +272,14 @@ open class OrielActivity : Activity() {
             REQ_FOLDER -> OrielRuntime.onFolderPicked(if (resultCode == RESULT_OK) data else null)
             in OrielCamera.REQ_CHOOSER_CAMERA..OrielCamera.REQ_PHOTO_LIBRARY -> OrielCamera.onActivityResult(this, requestCode, resultCode, data)
             else -> {
-                if (OrielAppExtensions.activityResult(this, requestCode, resultCode, data)) return
+                if (OrielHooksRegistry.activityResult(this, requestCode, resultCode, data)) return
                 @Suppress("DEPRECATION") super.onActivityResult(requestCode, resultCode, data)
             }
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
-        if (requestCode !in 0x4F00..0x4FFF && OrielAppExtensions.permissionResult(this, requestCode, permissions, grantResults)) return
+        if (requestCode !in 0x4F00..0x4FFF && OrielHooksRegistry.permissionResult(this, requestCode, permissions, grantResults)) return
         OrielPermissions.onResult(this, requestCode, permissions, grantResults)
     }
 

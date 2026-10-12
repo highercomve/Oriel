@@ -1263,15 +1263,10 @@ pub const AppOptions = struct {
         /// `app/src/main/java/<path of the file's package line>/`; a file
         /// dropped from the list is removed from there.
         sources: []const std.Build.LazyPath = &.{},
-        /// Android platform hooks: fully qualified Kotlin/Java classes
-        /// implementing `OrielAndroidHooks` (the same interface as
-        /// `OrielAndroidExtension`) with a public zero-argument constructor.
-        /// Sources are app-owned; registration is regenerated on every
-        /// Android build, in this order (docs/android-extensions.md).
-        hooks: []const []const u8 = &.{},
-        /// Deprecated: the old name of `hooks`. Still registered, after the
-        /// `hooks` classes; a class in both lists is registered once.
-        extensions: []const []const u8 = &.{},
+        /// Platform hooks: classes implementing `dev.oriel.OrielAndroidHooks`,
+        /// constructed once at launch in this order; registration is
+        /// regenerated on every Android build (docs/platform-hooks.md).
+        hooks: []const AndroidHook = &.{},
         /// Maven coordinates (group:artifact:version), regenerated on every build.
         dependencies: []const []const u8 = &.{},
         /// R8 rules for release builds, kept in `app/proguard-rules.pro`
@@ -1280,6 +1275,19 @@ pub const AppOptions = struct {
 
         pub const Permission = android_manifest.Permission;
         pub const Feature = android_manifest.Feature;
+    };
+
+    pub const AndroidHook = struct {
+        /// The fully qualified Kotlin/Java class implementing
+        /// `dev.oriel.OrielAndroidHooks`, with a public zero-argument
+        /// constructor ("dev.app.MyHooks"). A class that is also an app
+        /// extension can be listed here without sources (they come with
+        /// the extension): both get one instance.
+        class: []const u8,
+        /// Its Kotlin/Java files, copied like `android.sources`.
+        sources: []const std.Build.LazyPath = &.{},
+        /// Maven coordinates, merged with `android.dependencies`.
+        dependencies: []const []const u8 = &.{},
     };
 
     pub const Windows = struct {
@@ -2219,7 +2227,8 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
 }
 
 /// `--source`/`--proguard`/`--keep-class` arguments for `android-project`:
-/// the app's own Kotlin/Java files and R8 rules (`AppOptions.android`), and
+/// the app's own Kotlin/Java files (including its hooks') and R8 rules
+/// (`AppOptions.android`), and
 /// its extensions' sources and classes (constructed by name in the
 /// generated registry, so R8 must keep them).
 fn addAndroidAppFiles(run: *std.Build.Step.Run, options: AppOptions) void {
@@ -2227,6 +2236,10 @@ fn addAndroidAppFiles(run: *std.Build.Step.Run, options: AppOptions) void {
         run.addArg("--source");
         run.addFileArg(src);
     }
+    for (options.android.hooks) |h| for (h.sources) |src| {
+        run.addArg("--source");
+        run.addFileArg(src);
+    };
     for (options.extensions) |e| {
         const a = e.android orelse continue;
         for (a.sources) |src| {
@@ -2429,17 +2442,19 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     const assets = b.pathJoin(&.{ b.install_prefix, android_assets_dir });
     const assets_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, assets) catch assets;
 
-    // Platform hooks: `.android.hooks`, then the deprecated `.android.extensions`.
-    var extensions: std.ArrayList(u8) = .empty;
+    // Platform hooks, in declaration order.
+    var hooks: std.ArrayList(u8) = .empty;
     var bad_hook: []const u8 = "";
-    const hook_classes = android_manifest.hookClasses(b.allocator, options.android.hooks, options.android.extensions, &bad_hook) catch |err| switch (err) {
-        error.TooManyHooks => @panic("android.hooks: at most 64 classes are supported (.hooks and .extensions together)"),
+    var hook_names: std.ArrayList([]const u8) = .empty;
+    for (options.android.hooks) |h| hook_names.append(b.allocator, h.class) catch @panic("OOM");
+    const hook_classes = android_manifest.hookClasses(b.allocator, hook_names.items, &bad_hook) catch |err| switch (err) {
+        error.TooManyHooks => @panic("android.hooks: at most 64 classes are supported"),
         error.DuplicateHook => @panic(b.fmt("android.hooks: duplicate class '{s}'", .{bad_hook})),
         error.InvalidHookClass => @panic(b.fmt("android.hooks: invalid class name '{s}'", .{bad_hook})),
         error.OutOfMemory => @panic("OOM"),
     };
     for (hook_classes) |class_name| {
-        extensions.appendSlice(b.allocator, b.fmt("{s}(),", .{class_name})) catch @panic("OOM");
+        hooks.appendSlice(b.allocator, b.fmt("{s}(),", .{class_name})) catch @panic("OOM");
     }
 
     var dependencies: std.ArrayList(u8) = .empty;
@@ -2449,6 +2464,13 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
             @panic(b.fmt("android.dependencies: invalid Maven coordinate '{s}'", .{coordinate}));
         dependencies.appendSlice(b.allocator, b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate})) catch @panic("OOM");
     }
+    // Hooks' dependencies join the app's (each once).
+    for (options.android.hooks) |h| for (h.dependencies) |coordinate| {
+        if (!android_manifest.mavenCoordinateValid(coordinate))
+            @panic(b.fmt("android.hooks: {s}: invalid Maven coordinate '{s}'", .{ h.class, coordinate }));
+        const line = b.fmt("    add(\"implementation\", \"{s}\")\n", .{coordinate});
+        if (std.mem.indexOf(u8, dependencies.items, line) == null) dependencies.appendSlice(b.allocator, line) catch @panic("OOM");
+    };
     // App extensions' dependencies join the app's (each once); their
     // classes go into the generated registry (OrielExtensions.kt).
     var app_extensions: std.ArrayList(u8) = .empty;
@@ -2462,7 +2484,7 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     }
 
     return b.allocator.dupe([]const u8, &.{
-        b.fmt("android_extensions={s}", .{extensions.items}),
+        b.fmt("android_hooks={s}", .{hooks.items}),
         b.fmt("app_extensions={s}", .{app_extensions.items}),
         b.fmt("android_dependencies={s}", .{dependencies.items}),
         b.fmt("app_id={s}", .{app_id}),

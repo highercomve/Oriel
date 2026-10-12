@@ -2,12 +2,12 @@ package dev.oriel;
 
 import java.util.HashSet;
 
-/** JVM regression check: independently developed extensions cannot collide. */
-public final class ExtensionContextTest {
+/** JVM regression check: independently developed hooks cannot collide. */
+public final class HooksContextTest {
     public static void main(String[] args) {
         var codes = new HashSet<Integer>();
-        for (int extension = 0; extension < 64; extension++) {
-            var context = new OrielAndroidExtensionContext(extension);
+        for (int hook = 0; hook < 64; hook++) {
+            var context = new OrielAndroidHooksContext(hook);
             for (int local = 0; local < 256; local++) {
                 int code = context.requestCode(local);
                 if (code < 0 || code > 0xffff || (code >= 0x4f00 && code <= 0x4fff) || !codes.add(code)) {
@@ -18,9 +18,9 @@ public final class ExtensionContextTest {
             expectInvalid(() -> context.requestCode(-1));
             expectInvalid(() -> context.requestCode(256));
         }
-        expectInvalid(() -> new OrielAndroidExtensionContext(-1));
-        expectInvalid(() -> new OrielAndroidExtensionContext(64));
-        System.out.println("ok: 64 independent extension namespaces, 16384 unique request codes");
+        expectInvalid(() -> new OrielAndroidHooksContext(-1));
+        expectInvalid(() -> new OrielAndroidHooksContext(64));
+        System.out.println("ok: 64 independent hook namespaces, 16384 unique request codes");
     }
 
     private static void expectInvalid(Runnable operation) {

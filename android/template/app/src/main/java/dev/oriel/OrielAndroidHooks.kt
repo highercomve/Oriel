@@ -10,18 +10,17 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 
 /**
- * Android platform hooks: app-owned behavior registered by
- * AppOptions.android.hooks (or its deprecated alias, .android.extensions).
- * New code can use the name [OrielAndroidHooks], the same interface.
+ * Android platform hooks: app-owned classes registered by
+ * AppOptions.android.hooks (docs/platform-hooks.md).
  *
- * Extensions are constructed once per process, in declaration order. Callbacks
- * run on the UI thread. An extension must key Activity/window-specific state by
+ * Hooks are constructed once per process, in declaration order. Callbacks
+ * run on the UI thread. A hook must key Activity/window-specific state by
  * that Activity/WebView, and release it in the corresponding destroyed callback.
  * Do not replace Oriel's WebView clients or bridge; use the interception hooks.
  */
-interface OrielAndroidExtension {
-    /** Supplies a request-code namespace that cannot collide with another extension. */
-    fun onRegistered(context: OrielAndroidExtensionContext) {}
+interface OrielAndroidHooks {
+    /** Supplies a request-code namespace that cannot collide with another hook. */
+    fun onRegistered(context: OrielAndroidHooksContext) {}
     fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
     fun onActivityStarted(activity: Activity) {}
     fun onActivityResumed(activity: Activity) {}
@@ -40,7 +39,7 @@ interface OrielAndroidExtension {
 
     /**
      * Return true to own the request and complete callback exactly once (null
-     * on cancellation). False leaves callback untouched for the next extension
+     * on cancellation). False leaves callback untouched for the next hook
      * or Oriel's default picker. Only the first true result handles a request.
      */
     fun onShowFileChooser(activity: Activity, view: WebView, callback: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean = false
@@ -50,18 +49,12 @@ interface OrielAndroidExtension {
     fun onRequestPermissionsResult(activity: Activity, requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean = false
 }
 
-/** Per-extension request-code namespace, assigned in build.zig declaration order. */
-class OrielAndroidExtensionContext internal constructor(private val index: Int) {
-    init { require(index in 0..63) { "Extension index must be in 0..63" } }
-    /** Each extension owns 256 request codes, separate from Oriel and other extensions. */
+/** Per-hook request-code namespace, assigned in build.zig declaration order. */
+class OrielAndroidHooksContext internal constructor(private val index: Int) {
+    init { require(index in 0..63) { "Hook index must be in 0..63" } }
+    /** Each hook class owns 256 request codes, separate from Oriel and other hooks. */
     fun requestCode(localCode: Int): Int {
-        require(localCode in 0..255) { "Extension request code must be in 0..255" }
+        require(localCode in 0..255) { "Hook request code must be in 0..255" }
         return 0x8000 + index * 256 + localCode
     }
 }
-
-/** The platform hooks interface by its Oriel 0.11 name (Kotlin; Java uses OrielAndroidExtension). */
-typealias OrielAndroidHooks = OrielAndroidExtension
-
-/** [OrielAndroidExtensionContext] by its Oriel 0.11 name. */
-typealias OrielAndroidHooksContext = OrielAndroidExtensionContext

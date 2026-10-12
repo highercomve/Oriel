@@ -41,19 +41,19 @@ keep Kotlin or Java implementations in your own sources and register them in
 
 ```zig
 .android = .{
-    .sources = &.{b.path("src/android/MyHooks.kt")},
-    .hooks = &.{"dev.example.MyHooks"},
+    .hooks = &.{.{
+        .class = "dev.example.MyHooks",
+        .sources = &.{b.path("src/android/MyHooks.kt")},
+    }},
 },
 ```
 
-The class implements `dev.oriel.OrielAndroidHooks` (Kotlin; Java implements
-the same interface by its older name, `dev.oriel.OrielAndroidExtension`) and
-needs a public zero-argument constructor. `.android.extensions` is the
-deprecated name of `.android.hooks` and still works. Oriel generates
-`OrielAppExtensions.kt` on each Android build to dispatch lifecycle, WebView,
-native-result, permission, and file-picker hooks. Edit your source and build configuration to change behavior.
-`.android.dependencies` adds pinned Maven SDKs, and `.android.proguard_rules`
-adds R8 rules for JNI calls.
+The class implements `dev.oriel.OrielAndroidHooks` and needs a public
+zero-argument constructor. Oriel generates `OrielHooksRegistry.kt` on each
+Android build to dispatch lifecycle, WebView, native-result, permission, and
+file-picker hooks. Edit your source and build configuration to change behavior.
+`.dependencies` on the hook (or `.android.dependencies`) adds pinned Maven
+SDKs, and `.android.proguard_rules` adds R8 rules for JNI calls.
 
-See [Android platform hooks](https://highercomve.github.io/Oriel/docs/android-extensions/)
+See [Platform hooks](https://highercomve.github.io/Oriel/docs/platform-hooks/)
 for a complete implementation and request-code allocation.

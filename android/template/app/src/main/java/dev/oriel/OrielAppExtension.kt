@@ -14,7 +14,7 @@ import java.io.File
  *
  * The class needs a public zero-argument constructor; the generated
  * [OrielExtensions] registry constructs it (no reflection) on the first call
- * or `load()`. A class may also implement [OrielAndroidExtension] for its
+ * or `load()`. A class may also implement [OrielAndroidHooks] for its
  * Activity and WebView hooks.
  */
 interface OrielAppExtension {
