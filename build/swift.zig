@@ -242,13 +242,184 @@ pub fn minFor(os: std.Target.Os.Tag) std.SemanticVersion {
     return if (os == .macos) min_macos else min_ios;
 }
 
-/// Link the Swift runtime libraries an extension's or hook's object needs:
-/// the SDK's stubs, the OS's libraries at run time (Concurrency is in the OS
+/// The Swift libraries every Swift object links (strong, always loaded):
+/// the runtime, Foundation's and Darwin's overlays, Concurrency (in the OS
 /// from iOS 15 and macOS 12).
-pub fn linkRuntime(module: *std.Build.Module, sdk: []const u8) void {
+pub const baseline = [_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation", "swiftXPC", "swift_Concurrency" };
+
+/// Link the Swift runtime and overlay libraries the app's Swift objects
+/// need: the SDK's stubs, the OS's libraries (/usr/lib/swift) at run time.
+///
+/// swiftc records each library a module imports (`import CoreML` →
+/// libswiftCoreML, -framework CoreML, transitively) as LC_LINKER_OPTION
+/// autolink entries, and Zig's linker ignores them; the link inputs are
+/// fixed before swiftc runs. So: `baseline`, then every other
+/// `libswift*.tbd` the SDK has, with `dead_strip_dylibs` on: the linker
+/// keeps only the dylibs something references (swiftc's
+/// `__swift_FORCE_LOAD_$_swiftX` symbols reference each overlay used), and
+/// every framework and library already in the link (Oriel's, the app's,
+/// those the Swift sources import: `linkImportedFrameworks`; classes are
+/// looked up by name, with no symbol reference) is marked `needed` so it
+/// stays.
+pub fn linkRuntime(exe: *std.Build.Step.Compile, sdk: []const u8) void {
+    const module = exe.root_module;
     const b = module.owner;
-    module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib/swift" }) });
-    for ([_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation", "swiftXPC", "swift_Concurrency" }) |lib|
-        module.linkSystemLibrary(lib, .{});
+    keepLinkedLibraries(module);
+    const dir_path = b.pathJoin(&.{ sdk, "usr/lib/swift" });
+    module.addLibraryPath(.{ .cwd_relative = dir_path });
+    for (baseline) |lib| module.linkSystemLibrary(lib, .{ .needed = true, .use_pkg_config = .no });
+    // The SDK's other overlays, in a stable order.
+    var names: std.ArrayList([]const u8) = .empty;
+    if (std.Io.Dir.cwd().openDir(b.graph.io, dir_path, .{ .iterate = true })) |dir_const| {
+        var dir = dir_const;
+        defer dir.close(b.graph.io);
+        var it = dir.iterate();
+        // An SDK has around a hundred: bounded.
+        var seen: usize = 0;
+        while (it.next(b.graph.io) catch null) |entry| : (seen += 1) {
+            if (seen > 10_000) break;
+            const lib = overlayLibrary(entry.name) orelse continue;
+            if (contains(&baseline, lib)) continue;
+            names.append(b.allocator, b.dupe(lib)) catch @panic("OOM");
+        }
+    } else |_| {}
+    std.mem.sortUnstable([]const u8, names.items, {}, lessThan);
+    for (names.items) |lib| module.linkSystemLibrary(lib, .{ .use_pkg_config = .no });
+    exe.dead_strip_dylibs = true;
     module.addRPathSpecial("/usr/lib/swift");
+}
+
+fn contains(list: []const []const u8, s: []const u8) bool {
+    for (list) |x| if (std.mem.eql(u8, x, s)) return true;
+    return false;
+}
+
+fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+/// "swiftCoreML" for "libswiftCoreML.tbd"; null for anything else (the
+/// remote-mirror and demangling libraries aren't overlays).
+pub fn overlayLibrary(file: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, file, "libswift") or !std.mem.endsWith(u8, file, ".tbd")) return null;
+    const lib = file["lib".len .. file.len - ".tbd".len];
+    for ([_][]const u8{ "swiftRemoteMirror", "swiftDemangle" }) |p| if (std.mem.startsWith(u8, lib, p)) return null;
+    return lib;
+}
+
+test overlayLibrary {
+    try std.testing.expectEqualStrings("swiftCoreML", overlayLibrary("libswiftCoreML.tbd").?);
+    try std.testing.expectEqualStrings("swift_Concurrency", overlayLibrary("libswift_Concurrency.tbd").?);
+    try std.testing.expect(overlayLibrary("libswiftRemoteMirror42.tbd") == null);
+    try std.testing.expect(overlayLibrary("libswiftDemangle.tbd") == null);
+    try std.testing.expect(overlayLibrary("libobjc.tbd") == null);
+    try std.testing.expect(overlayLibrary("CoreML.swiftmodule") == null);
+}
+
+/// Mark every framework and system library in `root`'s module graph as
+/// needed (weak ones stay droppable), so `dead_strip_dylibs` keeps them.
+fn keepLinkedLibraries(root: *std.Build.Module) void {
+    var stack: [64]*std.Build.Module = undefined;
+    var visited: [256]*std.Build.Module = undefined;
+    var stack_len: usize = 1;
+    var visited_len: usize = 0;
+    stack[0] = root;
+    // Bounded: each module once, at most `visited.len`.
+    while (stack_len > 0) {
+        stack_len -= 1;
+        const m = stack[stack_len];
+        if (std.mem.indexOfScalar(*std.Build.Module, visited[0..visited_len], m) != null) continue;
+        if (visited_len == visited.len) @panic("swift: more than 256 modules in the app's graph");
+        visited[visited_len] = m;
+        visited_len += 1;
+        for (m.frameworks.values()) |*opts| if (!opts.weak) {
+            opts.needed = true;
+        };
+        for (m.link_objects.items) |*obj| switch (obj.*) {
+            .system_lib => |*lib| if (!lib.weak) {
+                lib.needed = true;
+            },
+            else => {},
+        };
+        for (m.import_table.values()) |dep| {
+            if (stack_len == stack.len) @panic("swift: module graph too deep");
+            stack[stack_len] = dep;
+            stack_len += 1;
+        }
+    }
+}
+
+/// The modules `text` (Swift source) imports: `import X`, `import X.Sub`,
+/// `import struct X.Y`, `@testable`/`@_implementationOnly`/`@preconcurrency
+/// import X`, one per line. Up to `out.len`; returns how many.
+pub fn importedModules(text: []const u8, out: [][]const u8) usize {
+    var n: usize = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |raw| {
+        if (n == out.len) break;
+        var line = std.mem.trim(u8, raw, " \t\r");
+        // Attributes and access modifiers before `import`.
+        while (line.len > 0 and line[0] == '@') {
+            const sp = std.mem.indexOfAny(u8, line, " \t") orelse break;
+            line = std.mem.trimStart(u8, line[sp..], " \t");
+        }
+        for ([_][]const u8{ "public ", "internal ", "package ", "private ", "fileprivate " }) |m| {
+            if (std.mem.startsWith(u8, line, m)) line = std.mem.trimStart(u8, line[m.len..], " \t");
+        }
+        if (!std.mem.startsWith(u8, line, "import ")) continue;
+        var rest = std.mem.trimStart(u8, line["import ".len..], " \t");
+        for ([_][]const u8{ "struct ", "class ", "enum ", "protocol ", "typealias ", "func ", "var ", "let ", "actor " }) |k| {
+            if (std.mem.startsWith(u8, rest, k)) rest = std.mem.trimStart(u8, rest[k.len..], " \t");
+        }
+        var end: usize = 0;
+        while (end < rest.len and (std.ascii.isAlphanumeric(rest[end]) or rest[end] == '_')) end += 1;
+        if (end == 0) continue;
+        out[n] = rest[0..end];
+        n += 1;
+    }
+    return n;
+}
+
+test importedModules {
+    const src =
+        \\import Foundation
+        \\import CoreML
+        \\@preconcurrency import Vision
+        \\  import struct CoreGraphics.CGRect
+        \\@_implementationOnly import Metal.MTLDevice
+        \\// import NotThis
+        \\let importer = 1
+    ;
+    var out: [8][]const u8 = undefined;
+    const n = importedModules(src, &out);
+    const want = [_][]const u8{ "Foundation", "CoreML", "Vision", "CoreGraphics", "Metal" };
+    try std.testing.expectEqual(want.len, n);
+    for (want, out[0..n]) |w, got| try std.testing.expectEqualStrings(w, got);
+}
+
+/// Link the SDK frameworks `sources` import (Zig ignores swiftc's
+/// autolinking): those with a `<Name>.framework` in the SDK and not in
+/// `weak` (linked weakly by the caller). Call it before `linkRuntime`,
+/// which keeps them (as every framework already linked). Sources must be files in the
+/// source tree or absolute paths (read while configuring); others are
+/// skipped.
+pub fn linkImportedFrameworks(module: *std.Build.Module, sdk: []const u8, sources: []const std.Build.LazyPath, weak: []const []const u8) void {
+    const b = module.owner;
+    for (sources) |src| {
+        const path = switch (src) {
+            .src_path => |s| s.owner.pathFromRoot(s.sub_path),
+            .cwd_relative => |p| p,
+            else => continue,
+        };
+        const text = std.Io.Dir.cwd().readFileAlloc(b.graph.io, path, b.allocator, .limited(4 << 20)) catch continue;
+        var found: [128][]const u8 = undefined;
+        const n = importedModules(text, &found);
+        for (found[0..n]) |name| {
+            if (std.mem.eql(u8, name, "Swift") or std.mem.startsWith(u8, name, "_")) continue;
+            if (contains(weak, name)) continue;
+            const dir = b.pathJoin(&.{ sdk, "System/Library/Frameworks", b.fmt("{s}.framework", .{name}) });
+            std.Io.Dir.cwd().access(b.graph.io, dir, .{}) catch continue;
+            module.linkFramework(b.dupe(name), .{});
+        }
+    }
 }

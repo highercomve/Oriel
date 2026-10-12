@@ -2742,6 +2742,8 @@ fn addAppleUnit(b: *std.Build, oriel_dep: *std.Build.Dependency, compile: *std.B
         compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{unit.who})).step);
         return false;
     }
+    // Zig ignores swiftc's autolinking: the frameworks the sources import.
+    swift_build.linkImportedFrameworks(compile.root_module, root, unit.swift_sources, unit.weak_frameworks);
     const includes = appleIncludes(oriel_dep);
     const obj = swift_build.compile(b, swiftc, unit.swift_sources, unit.module_name, target, root, includes[0].path(b, "oriel_swift.h"), &includes, compile.root_module.optimize orelse .Debug, no_autolink.items);
     compile.root_module.addObjectFile(obj);
@@ -2791,7 +2793,7 @@ fn addIosExtensions(b: *std.Build, oriel_dep: *std.Build.Dependency, options: Ap
         }, sdk)) swift = true;
     }
     if (any) for (appleIncludes(oriel_dep)) |dir| compile.root_module.addIncludePath(dir);
-    if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
+    if (swift) swift_build.linkRuntime(compile, sdk.?);
 }
 
 /// App extensions' `.macos.objc` and `.macos.hooks` for one of the app's
@@ -2834,7 +2836,7 @@ fn addMacosNative(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppO
     for (units.items) |u| {
         if (addAppleUnit(b, oriel_dep, compile, u, sdk)) swift = true;
     }
-    if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
+    if (swift) swift_build.linkRuntime(compile, sdk.?);
 }
 
 const IosResource = struct { path: std.Build.LazyPath, name: []const u8 };
