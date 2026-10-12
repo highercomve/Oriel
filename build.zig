@@ -721,7 +721,7 @@ fn addOrielModule(
         // UIKit + WebKit through the Objective-C runtime (src/platform/apple/
         // objc.zig: no SDK headers, so `zig build check -Dtarget=aarch64-ios`
         // works anywhere). Linking needs the iOS SDK (build/ios.zig).
-        if (ios_build.sdk(b)) |sdk| ios_build.link(oriel, sdk, features.audio_capture);
+        if (ios_build.sdk(b, target.result)) |sdk| ios_build.link(oriel, sdk, features.audio_capture);
     } else if (target.result.os.tag == .windows) {
         oriel.linkSystemLibrary("user32", .{});
         oriel.linkSystemLibrary("gdi32", .{});
@@ -1988,7 +1988,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
     const permissions = appPermissions(oriel_dep, options);
     const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
-    const sdk = ios_build.sdk(b);
+    const sdk = ios_build.sdk(b, target.result);
     const audio_capture = @import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
 
     var install_step: ?*std.Build.Step = null;

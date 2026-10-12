@@ -1,7 +1,8 @@
 //! iOS SDK wiring for the build. Zig ships no iOS libc, so linking an iOS
 //! executable needs Apple's SDK (iPhoneOS.sdk or iPhoneSimulator.sdk: from
 //! Xcode, or the one `xtool setup` extracts from Xcode.xip on Linux), found
-//! from `-Dapple_sdk=<path>`, else `$APPLE_SDK`. Without one, iOS targets can
+//! from `-Dapple_sdk=<path>`, else `$APPLE_SDK`, else Xcode's (`xcrun`) on a
+//! Mac. Without one, iOS targets can
 //! still be type-checked (`zig build check`), which links nothing.
 
 const std = @import("std");
@@ -10,15 +11,28 @@ const std = @import("std");
 /// media capture permission delegate.
 pub const min_os: std.SemanticVersion = .{ .major = 15, .minor = 0, .patch = 0 };
 
-var sdk_cache: ?struct { b: *std.Build, path: ?[]const u8 } = null;
+var sdk_cache: ?struct { b: *std.Build, simulator: bool, path: ?[]const u8 } = null;
 
-/// The SDK root, or null. `-Dapple_sdk` is declared on first use.
-pub fn sdk(b: *std.Build) ?[]const u8 {
-    if (sdk_cache) |c| if (c.b == b) return c.path;
-    const opt = b.option([]const u8, "apple_sdk", "iOS: the SDK to link against (iPhoneOS.sdk or iPhoneSimulator.sdk; default: $APPLE_SDK)");
-    const path = opt orelse b.graph.environ_map.get("APPLE_SDK");
-    sdk_cache = .{ .b = b, .path = path };
+/// The SDK root for `target`, or null: `-Dapple_sdk`, else `$APPLE_SDK`, else
+/// (building on a Mac) Xcode's, from `xcrun`. `-Dapple_sdk` is declared on
+/// first use.
+pub fn sdk(b: *std.Build, target: std.Target) ?[]const u8 {
+    const simulator = isSimulator(target);
+    if (sdk_cache) |c| if (c.b == b and c.simulator == simulator) return c.path;
+    const opt = b.option([]const u8, "apple_sdk", "iOS: the SDK to link against (iPhoneOS.sdk or iPhoneSimulator.sdk; default: $APPLE_SDK, else Xcode's on a Mac)");
+    const path = opt orelse b.graph.environ_map.get("APPLE_SDK") orelse xcodeSdk(b, simulator);
+    sdk_cache = .{ .b = b, .simulator = simulator, .path = path };
     return path;
+}
+
+/// `xcrun --sdk iphoneos|iphonesimulator --show-sdk-path` on a Mac with
+/// Xcode; null elsewhere or when it fails.
+fn xcodeSdk(b: *std.Build, simulator: bool) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .macos) return null;
+    var code: u8 = 0;
+    const out = b.runAllowFail(&.{ "xcrun", "--sdk", if (simulator) "iphonesimulator" else "iphoneos", "--show-sdk-path" }, &code, .ignore) catch return null;
+    const path = std.mem.trim(u8, out, " \t\r\n");
+    return if (path.len == 0) null else path;
 }
 
 pub fn isSimulator(target: std.Target) bool {
@@ -63,12 +77,12 @@ pub fn libcFile(b: *std.Build, root: []const u8) std.Build.LazyPath {
 
 /// An iOS executable: the SDK's libc (see `libcFile`) when there is an SDK.
 pub fn configure(b: *std.Build, compile: *std.Build.Step.Compile) void {
-    if (sdk(b)) |root| compile.setLibCFile(libcFile(b, root));
+    if (sdk(b, compile.rootModuleTarget())) |root| compile.setLibCFile(libcFile(b, root));
 }
 
 /// Fail `compile` when there is no SDK to link with.
 pub fn requireSdk(b: *std.Build, compile: *std.Build.Step.Compile) void {
-    if (sdk(b) != null) return;
+    if (sdk(b, compile.rootModuleTarget()) != null) return;
     compile.step.dependOn(&b.addFail("building for iOS needs the iOS SDK: pass -Dapple_sdk=<path to iPhoneOS.sdk> " ++
         "or set $APPLE_SDK (on Linux, `xtool setup` extracts it from Xcode.xip; `zig build check` works without it)").step);
 }
