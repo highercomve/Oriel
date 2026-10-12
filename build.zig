@@ -1013,9 +1013,9 @@ pub const AppOptions = struct {
     package: ?PackageOptions = null,
     /// Optional base64-encoded Ed25519 public key for the updater.
     update_public_key: ?[]const u8 = null,
-    /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
-    /// If null and package.url_schemes is set, package.url_schemes is used.
-    url_schemes: ?[]const []const u8 = null,
+    /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }):
+    /// declared in every package and delivered by `oriel.deep_link`.
+    url_schemes: []const []const u8 = &.{},
     /// OS permissions the app needs, each with the reason the OS shows the
     /// user ("" for a default text), e.g.
     /// `.permissions = .{ .microphone = "Dictation turns your speech into text", .accessibility = "" }`.
@@ -1808,11 +1808,11 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
-    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
+    const url_schemes = options.url_schemes;
 
     const permissions = appPermissions(oriel_dep, options);
 
-    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+    const app_icon = options.icon orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
 
     const package_tool = oriel_dep.artifact("package_tool");
     const run_icons = b.addRunArtifact(package_tool);
@@ -2051,9 +2051,9 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
-    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
+    const url_schemes = options.url_schemes;
     const permissions = appPermissions(oriel_dep, options);
-    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+    const app_icon = options.icon orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const install_dir: std.Build.InstallDir = .{ .custom = b.fmt("jniLibs/{s}", .{android_build.abiDir(target.result)}) };
     installExtensionAssets(b, options);
 
@@ -2526,9 +2526,9 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
     const fe = options.frontend;
     const fe_dir = b.pathFromRoot(fe.dir);
-    const url_schemes: []const []const u8 = options.url_schemes orelse (if (options.package) |pkg| pkg.url_schemes else &.{});
+    const url_schemes = options.url_schemes;
     const permissions = appPermissions(oriel_dep, options);
-    const app_icon = options.icon orelse (if (options.package) |pkg| pkg.icon else null) orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
+    const app_icon = options.icon orelse oriel_dep.path("assets/brand/oriel-icon-1024.png");
     const sdk = ios_build.sdk(b, target.result);
     const audio_capture = @import("build/package.zig").isFeatureEnabledDefault(oriel_dep, "audio_capture", false);
 

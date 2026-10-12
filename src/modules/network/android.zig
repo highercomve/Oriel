@@ -27,8 +27,8 @@
 //! Zig's locks or the UI thread, so blocking in `register` on any thread is
 //! safe.
 //!
-//! The multicast lock (`setMulticast`, for apps doing raw multicast) and
-//! `info` (ConnectivityManager) aren't written yet.
+//! The multicast lock (`setMulticast`, for apps doing raw multicast) isn't
+//! written yet.
 
 const std = @import("std");
 const oriel = @import("../../oriel.zig");
@@ -46,13 +46,8 @@ pub fn setMulticast(on: bool) common.MulticastError!void {
     return error.Unsupported;
 }
 
-pub fn info(gpa: std.mem.Allocator) !common.Info {
-    _ = gpa;
-    return error.Unsupported;
-}
-
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    return .{ .module = "network", .ok = true, .detail = try gpa.dupe(u8, "mdns: NsdManager; multicast lock and info: not implemented yet") };
+    return .{ .module = "network", .ok = true, .detail = try gpa.dupe(u8, "mdns: NsdManager; multicast lock: not implemented yet") };
 }
 
 // ---------------------------------------------------------------------------

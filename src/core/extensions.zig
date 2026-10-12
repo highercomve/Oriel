@@ -606,13 +606,6 @@ pub fn indexByName(name: []const u8) ?usize {
     return null;
 }
 
-/// The runner of `name`, for native backends.
-pub fn runnerByName(name: []const u8) ?*Runner {
-    if (comptime count == 0) return null;
-    const i = indexByName(name) orelse return null;
-    return &runners[i];
-}
-
 pub fn runnerAt(index: usize) ?*Runner {
     if (comptime count == 0) return null;
     return if (index < count) &runners[index] else null;

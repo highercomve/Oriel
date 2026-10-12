@@ -103,11 +103,9 @@ pub fn setForegroundService(on: bool, title: []const u8, text: []const u8, actio
 /// A system entry point that replaces a desktop hotkey or tray menu (see
 /// OrielSystem.kt): "tile", "action" (data: the action's id),
 /// "media-button" (data: the key code), "ime-mic", "ime-open" (data: the
-/// field's input type), "ime-close"; and "trim-memory" (data: the
-/// `ComponentCallbacks2` level, e.g. "20" UI hidden, "40" background), also
-/// sent as `oriel.lifecycle`'s memory_pressure, which is the portable way to
-/// drop caches or unload models. Called on the main thread; the page also
-/// gets an `android:event` event with `{ name, data }`.
+/// field's input type), "ime-close". Called on the main thread; the page
+/// also gets an `android:event` event with `{ name, data }`. Memory
+/// pressure is `oriel.lifecycle`'s, as on every platform.
 pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
 
 var system_event_handler: ?SystemEventHandler = null;
@@ -125,6 +123,7 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
     if (std.mem.eql(u8, name, "trim-memory")) {
         const level = std.fmt.parseInt(i32, data, 10) catch 0;
         if (lifecycle.fromAndroidTrim(level)) |event| lifecycle.dispatch(event);
+        return;
     }
     if (std.mem.eql(u8, name, "notification")) {
         // oriel.notification: a tap or a button (OrielRuntime.notify).
@@ -170,89 +169,6 @@ fn purgeMalloc(event: lifecycle.Event) void {
         },
         else => {},
     }
-}
-
-/// Deprecated: not needed. The `io` Oriel gives the app (`init.io` in
-/// `main`, and every worker that uses it) resolves host names through
-/// bionic's getaddrinfo (io.zig), so a plain `std.http.Client` request,
-/// redirects included, works on Android as everywhere else. Kept for apps
-/// that still call it; remove the call.
-///
-/// Opens `client`'s connection to `uri`'s host with Android's resolver, so
-/// that the next `client.request` to that host reuses it, with the host
-/// name still used for TLS (SNI, certificate) and as the pool key.
-pub fn preconnect(client: *std.http.Client, uri: std.Uri) !void {
-    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-    const host = try uri.getHost(&host_buf);
-    const protocol = std.http.Client.Protocol.fromUri(uri) orelse return error.UnsupportedUriScheme;
-    const port: u16 = uri.port orelse switch (protocol) {
-        .plain => 80,
-        .tls => 443,
-    };
-    // What `client.request` does before its first TLS connection: load the
-    // CA certificates (bionic's /system/etc/security/cacerts) and the time.
-    if (protocol == .tls and client.now == null) {
-        const io = client.io;
-        var bundle: std.crypto.Certificate.Bundle = .empty;
-        defer bundle.deinit(client.allocator);
-        const now = std.Io.Clock.real.now(io);
-        bundle.rescan(client.allocator, io, now) catch |err| switch (err) {
-            error.Canceled => |e| return e,
-            else => return error.CertificateBundleLoadFailure,
-        };
-        try client.ca_bundle_lock.lock(io);
-        defer client.ca_bundle_lock.unlock(io);
-        if (client.now == null) {
-            client.now = now;
-            std.mem.swap(std.crypto.Certificate.Bundle, &client.ca_bundle, &bundle);
-        }
-    }
-    var ip_buf: [48]u8 = undefined;
-    const ip = try resolve(host.bytes, &ip_buf);
-    const conn = try client.connectTcpOptions(.{
-        .host = try .init(ip),
-        .port = port,
-        .protocol = protocol,
-        .proxied_host = host,
-        .proxied_port = port,
-    });
-    client.connection_pool.release(conn, client.io);
-}
-
-/// `name`'s first address as text (IPv4 first, else IPv6), via bionic.
-fn resolve(name: []const u8, buf: *[48]u8) ![]const u8 {
-    var name_buf: [std.Io.net.HostName.max_len + 1]u8 = undefined;
-    if (name.len >= name_buf.len) return error.NameTooLong;
-    @memcpy(name_buf[0..name.len], name);
-    name_buf[name.len] = 0;
-    const name_z: [*:0]const u8 = @ptrCast(&name_buf);
-    for ([_]c_int{ std.posix.AF.INET, std.posix.AF.INET6 }) |family| {
-        const hints: std.c.addrinfo = .{
-            .flags = .{},
-            .family = family,
-            .socktype = std.posix.SOCK.STREAM,
-            .protocol = 0,
-            .addrlen = 0,
-            .canonname = null,
-            .addr = null,
-            .next = null,
-        };
-        var res: ?*std.c.addrinfo = null;
-        if (@intFromEnum(std.c.getaddrinfo(name_z, null, &hints, &res)) != 0) continue;
-        const list = res orelse continue;
-        defer std.c.freeaddrinfo(list);
-        const sa = list.addr orelse continue;
-        if (family == std.posix.AF.INET) {
-            const a: *const [4]u8 = @ptrCast(&@as(*const std.posix.sockaddr.in, @ptrCast(@alignCast(sa))).addr);
-            return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}", .{ a[0], a[1], a[2], a[3] });
-        }
-        const a = @as(*const std.posix.sockaddr.in6, @ptrCast(@alignCast(sa))).addr;
-        var w: std.Io.Writer = .fixed(buf);
-        for (0..8) |i| try w.print("{s}{x}", .{ if (i == 0) "" else ":", @as(u16, a[2 * i]) << 8 | a[2 * i + 1] });
-        return w.buffered();
-    }
-    log.warn("cannot resolve {s}", .{name});
-    return error.UnknownHostName;
 }
 
 /// Type `text` into the focused field of whatever app the user is in,

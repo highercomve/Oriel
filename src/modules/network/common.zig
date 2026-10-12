@@ -1,27 +1,9 @@
-//! oriel.network's shared part: the types, the multicast lock's reference
-//! count and the change handler. Each OS backend provides
-//! `setMulticast(on: bool) !void` (called on 0 <-> 1 locks) and
-//! `info(gpa) !Info`.
+//! oriel.network's shared part: the types and the multicast lock's
+//! reference count. Each OS backend provides `setMulticast(on: bool) !void`
+//! (called on 0 <-> 1 locks).
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const permissions = @import("../../core/permissions.zig");
-
-/// The network the device is on.
-pub const Transport = enum { wifi, ethernet, cellular, vpn, other, none };
-
-pub const Info = struct {
-    connected: bool,
-    transport: Transport,
-    /// The OS treats it as metered (cellular, a phone's hotspot).
-    metered: bool,
-    /// The device's LAN-scope addresses.
-    addresses: []const std.Io.net.IpAddress,
-
-    pub fn deinit(self: Info, gpa: Allocator) void {
-        gpa.free(self.addresses);
-    }
-};
 
 pub const MulticastError = error{
     /// The app doesn't declare `.permissions = .{ .local_network = "..." }`
@@ -43,8 +25,6 @@ pub const MulticastLock = struct {
         releaseMulticast(self.id);
     }
 };
-
-pub const ChangeHandler = *const fn (Info) void;
 
 /// The OS call for the first lock taken and the last released: the
 /// facade's backend, or a test's.
@@ -108,20 +88,6 @@ fn releaseMulticast(id: u32) void {
 pub fn localNetworkDeclared() bool {
     if (!@hasField(permissions.Declared, "local_network")) return true;
     return permissions.declared().local_network != null;
-}
-
-var change_handler: std.atomic.Value(?ChangeHandler) = .init(null);
-
-/// Set (or clear) the handler for network changes; the page gets the
-/// `network:changed` event with the new `Info`. No backend reports
-/// changes yet.
-pub fn onChange(handler: ?ChangeHandler) void {
-    change_handler.store(handler, .release);
-}
-
-/// The handler `onChange` set, for backends.
-pub fn changeHandler() ?ChangeHandler {
-    return change_handler.load(.acquire);
 }
 
 const testing = std.testing;
