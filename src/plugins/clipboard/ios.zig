@@ -5,7 +5,7 @@
 //! shows iOS's "pasted from" banner (and, from iOS 16, may ask the user).
 
 const std = @import("std");
-const apple = @import("../../platform/ios/apple.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/ios/Shell.zig");
 const oriel = @import("../../oriel.zig");
 pub const common = @import("common.zig");

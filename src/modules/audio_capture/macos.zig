@@ -18,12 +18,12 @@
 //! executable, it asks on behalf of the terminal that started it).
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 const tap_mod = @import("macos_tap.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const c = std.c;
 const log = std.log.scoped(.oriel);
 
@@ -70,7 +70,7 @@ extern "c" fn AudioQueueDispose(queue: AudioQueueRef, immediate: u8) OSStatus;
 extern "c" fn CFStringCreateWithBytes(alloc: ?*anyopaque, bytes: [*]const u8, len: isize, encoding: u32, external: u8) ?CFStringRef;
 extern "c" fn CFStringGetCString(str: CFStringRef, buf: [*]u8, size: isize, encoding: u32) u8;
 extern "c" fn CFRelease(obj: *anyopaque) void;
-extern var AVMediaTypeAudio: cocoa.id;
+extern var AVMediaTypeAudio: apple.id;
 
 fn fourCC(comptime s: *const [4]u8) u32 {
     return std.mem.readInt(u32, s, .big);
@@ -181,7 +181,7 @@ fn hasDefaultInput() bool {
 pub const Permission = enum { not_determined, restricted, denied, authorized };
 
 pub fn microphonePermission() Permission {
-    const cls = cocoa.objc.getClass("AVCaptureDevice") orelse return .authorized;
+    const cls = apple.objc.getClass("AVCaptureDevice") orelse return .authorized;
     const status = cls.msgSend(isize, "authorizationStatusForMediaType:", .{Object{ .value = AVMediaTypeAudio }});
     return switch (status) {
         0 => .not_determined,

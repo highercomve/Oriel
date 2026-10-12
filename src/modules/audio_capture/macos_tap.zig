@@ -12,9 +12,9 @@
 //! silence.
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const log = std.log.scoped(.oriel);
 
 const OSStatus = i32;
@@ -38,9 +38,9 @@ const IOProc = *const fn (device: AudioObjectID, now: ?*const anyopaque, input: 
 
 // macOS 14.2+: weak, so an app built for an older macOS still launches there
 // (null when the running macOS has no process taps).
-const AudioHardwareCreateProcessTap = @extern(?*const fn (description: cocoa.id, out: *AudioObjectID) callconv(.c) OSStatus, .{ .name = "AudioHardwareCreateProcessTap", .linkage = .weak });
+const AudioHardwareCreateProcessTap = @extern(?*const fn (description: apple.id, out: *AudioObjectID) callconv(.c) OSStatus, .{ .name = "AudioHardwareCreateProcessTap", .linkage = .weak });
 const AudioHardwareDestroyProcessTap = @extern(?*const fn (tap: AudioObjectID) callconv(.c) OSStatus, .{ .name = "AudioHardwareDestroyProcessTap", .linkage = .weak });
-extern "c" fn AudioHardwareCreateAggregateDevice(description: cocoa.id, out: *AudioObjectID) OSStatus; // CFDictionaryRef, toll-free bridged
+extern "c" fn AudioHardwareCreateAggregateDevice(description: apple.id, out: *AudioObjectID) OSStatus; // CFDictionaryRef, toll-free bridged
 extern "c" fn AudioHardwareDestroyAggregateDevice(device: AudioObjectID) OSStatus;
 extern "c" fn AudioDeviceCreateIOProcID(device: AudioObjectID, proc: IOProc, user: ?*anyopaque, out: *?AudioDeviceIOProcID) OSStatus;
 extern "c" fn AudioDeviceDestroyIOProcID(device: AudioObjectID, proc: AudioDeviceIOProcID) OSStatus;
@@ -57,7 +57,7 @@ const scope_global = fourCC("glob");
 
 /// Whether this macOS has process taps (14.2+).
 pub fn available() bool {
-    return cocoa.objc.getClass("CATapDescription") != null and
+    return apple.objc.getClass("CATapDescription") != null and
         AudioHardwareCreateProcessTap != null and AudioHardwareDestroyProcessTap != null;
 }
 
@@ -107,15 +107,15 @@ pub const Tap = struct {
     /// to `sink` (called on Core Audio's IO thread). `self` must stay put
     /// until `stop`.
     pub fn start(self: *Tap, rate: u32) !void {
-        const pool = cocoa.objc.AutoreleasePool.init();
+        const pool = apple.objc.AutoreleasePool.init();
         defer pool.deinit();
-        const desc_class = cocoa.objc.getClass("CATapDescription") orelse return error.SystemAudioUnsupported;
-        const empty = cocoa.class("NSArray").msgSend(Object, "array", .{});
+        const desc_class = apple.objc.getClass("CATapDescription") orelse return error.SystemAudioUnsupported;
+        const empty = apple.class("NSArray").msgSend(Object, "array", .{});
         const desc = desc_class.msgSend(Object, "alloc", .{}).msgSend(Object, "initStereoGlobalTapButExcludeProcesses:", .{empty});
         if (desc.value == null) return error.SystemAudioUnsupported;
         defer desc.release();
-        desc.msgSend(void, "setPrivate:", .{cocoa.boolean(true)});
-        if (cocoa.nsString("Oriel system audio")) |name| {
+        desc.msgSend(void, "setPrivate:", .{apple.boolean(true)});
+        if (apple.nsString("Oriel system audio")) |name| {
             defer name.release();
             desc.msgSend(void, "setName:", .{name});
         }
@@ -144,23 +144,23 @@ pub const Tap = struct {
     /// A private aggregate device around the default output and the tap.
     fn createAggregate(self: *Tap, tap_uid: Object) !void {
         const output_uid = try defaultOutputUid();
-        const dict = cocoa.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
-        const agg_uid = cocoa.class("NSUUID").msgSend(Object, "UUID", .{}).msgSend(Object, "UUIDString", .{});
-        const yes = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(true)});
-        const no = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(false)});
+        const dict = apple.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
+        const agg_uid = apple.class("NSUUID").msgSend(Object, "UUID", .{}).msgSend(Object, "UUIDString", .{});
+        const yes = apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(true)});
+        const no = apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(false)});
         try put(dict, "uid", agg_uid);
         try put(dict, "name", try str("Oriel system audio"));
         try put(dict, "master", output_uid);
         try put(dict, "private", yes);
         try put(dict, "stacked", no);
         try put(dict, "tapautostart", yes);
-        const sub = cocoa.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
+        const sub = apple.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
         try put(sub, "uid", output_uid);
-        try put(dict, "subdevices", cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{sub}));
-        const tap = cocoa.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
+        try put(dict, "subdevices", apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{sub}));
+        const tap = apple.class("NSMutableDictionary").msgSend(Object, "dictionary", .{});
         try put(tap, "uid", tap_uid);
         try put(tap, "drift", yes);
-        try put(dict, "taps", cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{tap}));
+        try put(dict, "taps", apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{tap}));
         if (AudioHardwareCreateAggregateDevice(dict.value, &self.aggregate) != 0) return error.AggregateDeviceFailed;
     }
 
@@ -224,7 +224,7 @@ fn ioProc(_: AudioObjectID, _: ?*const anyopaque, input: ?*const AudioBufferList
 
 /// Autoreleased NSString.
 fn str(s: []const u8) !Object {
-    const ns = cocoa.nsString(s) orelse return error.OutOfMemory;
+    const ns = apple.nsString(s) orelse return error.OutOfMemory;
     return ns.msgSend(Object, "autorelease", .{});
 }
 
@@ -239,8 +239,8 @@ fn defaultOutputUid() !Object {
     var size: u32 = @sizeOf(AudioObjectID);
     const addr: AudioObjectPropertyAddress = .{ .selector = fourCC("dOut"), .scope = scope_global, .element = 0 };
     if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, null, &size, &dev) != 0 or dev == 0) return error.NoOutputDevice;
-    var uid: cocoa.id = null;
-    size = @sizeOf(cocoa.id);
+    var uid: apple.id = null;
+    size = @sizeOf(apple.id);
     const uid_addr: AudioObjectPropertyAddress = .{ .selector = fourCC("uid "), .scope = scope_global, .element = 0 };
     if (AudioObjectGetPropertyData(dev, &uid_addr, 0, null, &size, @ptrCast(&uid)) != 0 or uid == null) return error.NoOutputDevice;
     // The property returns a +1 CFString: hand it to the autorelease pool.

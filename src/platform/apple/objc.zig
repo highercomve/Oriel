@@ -1,8 +1,9 @@
-//! The Objective-C runtime in plain Zig: the part of zig-objc's API the
-//! backends use (`Object`, `Class`, `msgSend`, `sel`, class definition,
+//! The Objective-C runtime in plain Zig for the macOS and iOS backends
+//! (`Object`, `Class`, `msgSend`, `msgSendSuper`, `sel`, class definition,
 //! autorelease pools), declared with `extern` functions of libobjc instead of
 //! translated SDK headers. Code using it type-checks without an Apple SDK
-//! (`zig build check -Dtarget=aarch64-ios` on Linux); linking still needs one.
+//! (`zig build check -Dtarget=aarch64-macos` or `-Dtarget=aarch64-ios` on
+//! Linux); linking still needs one.
 //!
 //! Only arm64 (devices and Apple-silicon simulators) and x86_64 simulators:
 //! on x86_64, large struct returns go through `objc_msgSend_stret` and
@@ -24,14 +25,19 @@ pub const c = struct {
     pub extern "objc" fn objc_msgSend() callconv(.c) void;
     pub extern "objc" fn objc_msgSend_stret() callconv(.c) void;
     pub extern "objc" fn objc_msgSend_fpret() callconv(.c) void;
+    pub extern "objc" fn objc_msgSendSuper() callconv(.c) void;
+    pub extern "objc" fn objc_msgSendSuper_stret() callconv(.c) void;
     pub extern "objc" fn objc_getClass(name: [*:0]const u8) RawClass;
     pub extern "objc" fn objc_getProtocol(name: [*:0]const u8) ?*RawProtocol;
     pub extern "objc" fn objc_allocateClassPair(superclass: RawClass, name: [*:0]const u8, extra: usize) RawClass;
     pub extern "objc" fn objc_registerClassPair(cls: RawClass) void;
+    pub extern "objc" fn objc_disposeClassPair(cls: RawClass) void;
     pub extern "objc" fn class_addMethod(cls: RawClass, name: SEL, imp: IMP, types: [*:0]const u8) BOOL;
     pub extern "objc" fn class_addProtocol(cls: RawClass, protocol: *RawProtocol) BOOL;
     pub extern "objc" fn class_respondsToSelector(cls: RawClass, sel: SEL) BOOL;
     pub extern "objc" fn object_getClass(obj: id) RawClass;
+    pub extern "objc" fn object_setClass(obj: id, cls: RawClass) RawClass;
+    pub extern "objc" fn object_getClassName(obj: id) [*:0]const u8;
     pub extern "objc" fn class_getName(cls: RawClass) [*:0]const u8;
     pub extern "objc" fn sel_registerName(name: [*:0]const u8) SEL;
     pub extern "objc" fn objc_autoreleasePoolPush() ?*anyopaque;
@@ -66,8 +72,20 @@ pub const Object = struct {
         return send(self.value, Return, selector, args);
     }
 
+    /// Send `selector` to the implementation in `superclass` (a method of a
+    /// subclass calling `super`).
+    pub fn msgSendSuper(self: Object, superclass: Class, comptime Return: type, selector: anytype, args: anytype) Return {
+        var super: Super = .{ .receiver = self.value, .super_class = superclass.value };
+        return sendSuper(&super, Return, selector, args);
+    }
+
     pub fn getClass(self: Object) ?Class {
         return .{ .value = c.object_getClass(self.value) orelse return null };
+    }
+
+    /// The name of the object's class (borrowed from the runtime).
+    pub fn getClassName(self: Object) [:0]const u8 {
+        return std.mem.span(c.object_getClassName(self.value));
     }
 
     pub fn retain(self: Object) Object {
@@ -135,9 +153,25 @@ fn send(target: ?*anyopaque, comptime Return: type, selector: anytype, args: any
     const s: Sel = if (@TypeOf(selector) == Sel) selector else sel(selector);
     const is_object = Return == Object;
     const Real = if (is_object) c.id else Return;
-    const Fn = MsgSendFn(Real, @TypeOf(args));
+    const Fn = MsgSendFn(c.id, Real, @TypeOf(args));
     const ptr: *const Fn = @ptrCast(@alignCast(comptime msgSendPtr(Real)));
     const result = @call(.auto, ptr, .{ target, s.value } ++ unwrapArgs(args));
+    return if (is_object) .{ .value = result } else result;
+}
+
+/// `struct objc_super`.
+const Super = extern struct {
+    receiver: c.id,
+    super_class: c.RawClass,
+};
+
+fn sendSuper(super: *Super, comptime Return: type, selector: anytype, args: anytype) Return {
+    const s: Sel = if (@TypeOf(selector) == Sel) selector else sel(selector);
+    const is_object = Return == Object;
+    const Real = if (is_object) c.id else Return;
+    const Fn = MsgSendFn(*Super, Real, @TypeOf(args));
+    const ptr: *const Fn = @ptrCast(@alignCast(comptime msgSendSuperPtr(Real)));
+    const result = @call(.auto, ptr, .{ super, s.value } ++ unwrapArgs(args));
     return if (is_object) .{ .value = result } else result;
 }
 
@@ -153,10 +187,23 @@ fn msgSendPtr(comptime Return: type) *const fn () callconv(.c) void {
     };
 }
 
-fn MsgSendFn(comptime Return: type, comptime Args: type) type {
+/// There is no objc_msgSendSuper_fpret: x86_64 returns doubles from super
+/// sends like any other.
+fn msgSendSuperPtr(comptime Return: type) *const fn () callconv(.c) void {
+    return switch (builtin.cpu.arch) {
+        .aarch64 => &c.objc_msgSendSuper,
+        .x86_64 => switch (@typeInfo(Return)) {
+            .@"struct" => if (@sizeOf(Return) > 16) &c.objc_msgSendSuper_stret else &c.objc_msgSendSuper,
+            else => &c.objc_msgSendSuper,
+        },
+        else => @compileError("unsupported Objective-C architecture"),
+    };
+}
+
+fn MsgSendFn(comptime Receiver: type, comptime Return: type, comptime Args: type) type {
     const fields = @typeInfo(Args).@"struct".fields;
     var params: [fields.len + 2]type = undefined;
-    params[0] = c.id;
+    params[0] = Receiver;
     params[1] = c.SEL;
     for (fields, 0..) |f, i| params[i + 2] = Unwrapped(f.type);
     return @Fn(&params, &@splat(.{}), Return, .{ .@"callconv" = .c });
@@ -170,6 +217,15 @@ fn Unwrapped(comptime T: type) type {
     if (T == Protocol) return *c.RawProtocol;
     if (T == comptime_int) return isize;
     if (T == comptime_float) return f64;
+    // Anything else must cross the C ABI as is (a slice would compile and
+    // crash at run time).
+    switch (@typeInfo(T)) {
+        .int, .float, .bool, .@"enum", .pointer => {},
+        .optional => |o| if (@typeInfo(o.child) != .pointer) @compileError("msgSend: " ++ @typeName(T) ++ ": an optional must wrap a pointer"),
+        .@"struct" => |s| if (s.layout != .@"extern" and s.layout != .@"packed") @compileError("msgSend: " ++ @typeName(T) ++ ": a struct must be extern or packed"),
+        .@"union" => |u| if (u.layout != .@"extern") @compileError("msgSend: " ++ @typeName(T) ++ ": a union must be extern"),
+        else => @compileError("msgSend: " ++ @typeName(T) ++ " is not C-ABI compatible"),
+    }
     return T;
 }
 
@@ -197,19 +253,20 @@ inline fn unwrapArgs(args: anytype) UnwrappedArgs(@TypeOf(args)) {
 // ---------------------------------------------------------------------------
 
 /// The Objective-C type encoding of a method implementation's signature,
-/// e.g. `fn (id, SEL, id) callconv(.c) void` -> "v@:@".
+/// e.g. `fn (id, SEL, id) callconv(.c) void` -> "v@:@". `id` and `SEL` are
+/// both raw pointers here, so the second parameter (`_cmd`) is encoded as
+/// the selector by position.
 fn typeEncoding(comptime F: type) [:0]const u8 {
     return comptime blk: {
         const info = @typeInfo(F).@"fn";
         var out: []const u8 = encode(info.return_type.?);
-        for (info.params) |p| out = out ++ encode(p.type.?);
+        for (info.params, 0..) |p, i| out = out ++ if (i == 1) ":" else encode(p.type.?);
         const z = out ++ "\x00";
         break :blk z[0..out.len :0];
     };
 }
 
 fn encode(comptime T: type) []const u8 {
-    if (T == c.BOOL) return "B";
     return switch (@typeInfo(T)) {
         .void => "v",
         .bool => "B",
@@ -221,15 +278,27 @@ fn encode(comptime T: type) []const u8 {
             else => "?",
         },
         .float => |f| if (f.bits == 32) "f" else "d",
-        // id, SEL and other pointers: the runtime only needs sizes to line up.
+        // id, blocks and other pointers: the runtime only needs sizes to line up.
         .optional, .pointer => "@",
-        .@"struct" => "{?}",
+        .@"enum" => |e| encode(e.tag_type),
+        // Named like the type, with its fields (NSRect, CGRect, NSRange...).
+        .@"struct" => |s| comptime blk: {
+            var name_it = std.mem.splitBackwardsScalar(u8, @typeName(T), '.');
+            var out: []const u8 = "{" ++ name_it.first() ++ "=";
+            for (s.fields) |f| out = out ++ encode(f.type);
+            break :blk out ++ "}";
+        },
         else => "?",
     };
 }
 
+const TestPoint = extern struct { x: f64, y: f64 };
+const TestRect = extern struct { origin: TestPoint, size: TestPoint };
+
 test typeEncoding {
-    try std.testing.expectEqualStrings("v@@@", typeEncoding(fn (c.id, c.SEL, c.id) callconv(.c) void));
-    try std.testing.expectEqualStrings("B@@", typeEncoding(fn (c.id, c.SEL) callconv(.c) c.BOOL));
-    try std.testing.expectEqualStrings("q@@@q", typeEncoding(fn (c.id, c.SEL, c.id, i64) callconv(.c) i64));
+    try std.testing.expectEqualStrings("v@:@", typeEncoding(fn (c.id, c.SEL, c.id) callconv(.c) void));
+    try std.testing.expectEqualStrings("B@:", typeEncoding(fn (c.id, c.SEL) callconv(.c) bool));
+    try std.testing.expectEqualStrings("c@:", typeEncoding(fn (c.id, c.SEL) callconv(.c) i8));
+    try std.testing.expectEqualStrings("q@:@q", typeEncoding(fn (c.id, c.SEL, c.id, i64) callconv(.c) i64));
+    try std.testing.expectEqualStrings("v@:{TestRect={TestPoint=dd}{TestPoint=dd}}", typeEncoding(fn (c.id, c.SEL, TestRect) callconv(.c) void));
 }

@@ -1,7 +1,8 @@
-//! macOS SDK wiring for the app's Objective-C and Swift sources
-//! (`.macos.hooks`). Oriel's own macOS backend needs no explicit SDK: it is
-//! built on a Mac, where zig-objc finds Xcode's (cross-building the macOS
-//! framework from another OS isn't supported). Sources that `#import
+//! macOS SDK wiring: the frameworks Oriel's module links (build.zig,
+//! `linkMacos`) and the app's Objective-C and Swift sources (`.macos.hooks`).
+//! Oriel's own backend declares the Objective-C runtime without SDK headers
+//! (src/platform/apple/objc.zig), so `zig build check -Dtarget=aarch64-macos`
+//! needs no SDK; linking does. Sources that `#import
 //! <Foundation/Foundation.h>` need the SDK's headers on their own module,
 //! and swiftc needs `-sdk`: `-Dmacos_sdk=<path>`, else `$SDKROOT` when it
 //! names a MacOSX SDK, else `xcrun --sdk macosx --show-sdk-path` on a Mac.

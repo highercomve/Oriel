@@ -11,9 +11,9 @@
 //! command may open or close windows (including its own) safely.
 
 const std = @import("std");
-const cocoa = @import("cocoa.zig");
-const objc = cocoa.objc;
-const Object = cocoa.Object;
+const apple = @import("../apple/apple.zig");
+const objc = apple.objc;
+const Object = apple.Object;
 const window_mod = @import("window.zig");
 const ShellMod = @import("Shell.zig");
 const App = @import("../../core/App.zig");
@@ -40,12 +40,12 @@ pub const bridge_js = bridge.script(bridge.webkit_transport);
 /// bridge serves (App.pageGetsEvents): any other page could define its own
 /// `window.oriel.__emit` and read the event. (webView.URL is the provisional
 /// URL during a navigation, so a page being left may miss an event.)
-fn evaluateEvent(view: cocoa.id, label: []const u8, script: []const u8) void {
-    const url = cocoa.urlString((Object{ .value = view }).msgSend(Object, "URL", .{})) orelse return;
+fn evaluateEvent(view: apple.id, label: []const u8, script: []const u8) void {
+    const url = apple.urlString((Object{ .value = view }).msgSend(Object, "URL", .{})) orelse return;
     if (!internal.pageGetsEvents(url, label)) return;
-    const str = cocoa.nsString(script) orelse return;
+    const str = apple.nsString(script) orelse return;
     defer str.release();
-    (Object{ .value = view }).msgSend(void, "evaluateJavaScript:completionHandler:", .{ str, cocoa.nil });
+    (Object{ .value = view }).msgSend(void, "evaluateJavaScript:completionHandler:", .{ str, apple.nil });
 }
 
 /// Native windows' engines (-Dnative_ui) to evaluate a script in, gathered
@@ -113,7 +113,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
     // On the main thread (a sync command emitting), evaluate now: queued for
     // later, it would reach the page after the command's reply. Other
     // threads queue it (in order with their command's reply).
-    if (cocoa.isMainThread()) return Task.run(task);
+    if (apple.isMainThread()) return Task.run(task);
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
@@ -163,28 +163,28 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
     };
     task.* = .{ .label = label_copy, .script = script_copy };
     // See evalJs: in order with a sync command's reply.
-    if (cocoa.isMainThread()) return Task.run(task);
+    if (apple.isMainThread()) return Task.run(task);
     ShellMod.dispatchWithCleanup(&Task.run, task, &Task.cleanup);
 }
 
 /// Answer a request: `result_json` becomes the Promise's value (through
 /// NSJSONSerialization, so JS gets objects, not a string).
-fn replySuccess(reply: cocoa.id, result_json: []const u8) void {
-    const data = cocoa.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ result_json.ptr, @as(c_ulong, result_json.len) });
+fn replySuccess(reply: apple.id, result_json: []const u8) void {
+    const data = apple.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ result_json.ptr, @as(c_ulong, result_json.len) });
     const NSJSONReadingFragmentsAllowed: c_ulong = 4; // top-level strings, numbers, null
-    const value = cocoa.class("NSJSONSerialization").msgSend(Object, "JSONObjectWithData:options:error:", .{ data, NSJSONReadingFragmentsAllowed, @as(?*anyopaque, null) });
+    const value = apple.class("NSJSONSerialization").msgSend(Object, "JSONObjectWithData:options:error:", .{ data, NSJSONReadingFragmentsAllowed, @as(?*anyopaque, null) });
     if (value.value == null) {
         replyError(reply, "InvalidReply");
         return;
     }
-    cocoa.callBlock(reply, struct { cocoa.id, cocoa.id }, .{ value.value, null });
+    apple.callBlock(reply, &.{ apple.id, apple.id }, .{ value.value, null });
 }
 
 /// Reject the request's Promise with `Error(err_name)`.
-fn replyError(reply: cocoa.id, err_name: []const u8) void {
-    const msg = cocoa.nsString(err_name) orelse cocoa.nsString("Error").?;
+fn replyError(reply: apple.id, err_name: []const u8) void {
+    const msg = apple.nsString(err_name) orelse apple.nsString("Error").?;
     defer msg.release();
-    cocoa.callBlock(reply, struct { cocoa.id, cocoa.id }, .{ null, msg.value });
+    apple.callBlock(reply, &.{ apple.id, apple.id }, .{ null, msg.value });
 }
 
 pub fn Bridge(
@@ -302,8 +302,8 @@ pub fn Bridge(
             }
         };
 
-        pub fn handlerClass() cocoa.Class {
-            return cocoa.defineClass("OrielMessageHandler", &.{"WKScriptMessageHandlerWithReply"}, .{
+        pub fn handlerClass() apple.Class {
+            return apple.defineClass("OrielMessageHandler", &.{"WKScriptMessageHandlerWithReply"}, .{
                 .{ "userContentController:didReceiveScriptMessage:replyHandler:", onMessage },
             });
         }
@@ -323,19 +323,19 @@ pub fn Bridge(
             defer gpa.free(with_token);
             const source = try std.fmt.allocPrint(gpa, "{s}window.__oriel_window_label = {s};\n{s}", .{ comptime security.bridgePrelude(config.security), label_json, with_token });
             defer gpa.free(source);
-            const source_ns = cocoa.nsString(source) orelse return error.OutOfMemory;
+            const source_ns = apple.nsString(source) orelse return error.OutOfMemory;
             defer source_ns.release();
 
             const WKUserScriptInjectionTimeAtDocumentStart: isize = 0;
-            const script = cocoa.class("WKUserScript").msgSend(Object, "alloc", .{})
-                .msgSend(Object, "initWithSource:injectionTime:forMainFrameOnly:", .{ source_ns, WKUserScriptInjectionTimeAtDocumentStart, cocoa.boolean(true) });
+            const script = apple.class("WKUserScript").msgSend(Object, "alloc", .{})
+                .msgSend(Object, "initWithSource:injectionTime:forMainFrameOnly:", .{ source_ns, WKUserScriptInjectionTimeAtDocumentStart, apple.boolean(true) });
             if (script.value == null) return error.OutOfMemory;
             defer script.release();
             content.msgSend(void, "addUserScript:", .{script});
 
-            const name = cocoa.nsString(handler_name) orelse return error.OutOfMemory;
+            const name = apple.nsString(handler_name) orelse return error.OutOfMemory;
             defer name.release();
-            const world = cocoa.class("WKContentWorld").msgSend(Object, "pageWorld", .{});
+            const world = apple.class("WKContentWorld").msgSend(Object, "pageWorld", .{});
             content.msgSend(void, "addScriptMessageHandlerWithReply:contentWorld:name:", .{ handler, world, name });
         }
 
@@ -344,8 +344,8 @@ pub fn Bridge(
         fn senderOriginUrl(buf: []u8, frame: Object) []const u8 {
             const origin = frame.msgSend(Object, "securityOrigin", .{});
             if (origin.value == null) return "";
-            const scheme = cocoa.utf8(origin.msgSend(Object, "protocol", .{})) orelse return "";
-            const host = cocoa.utf8(origin.msgSend(Object, "host", .{})) orelse return "";
+            const scheme = apple.utf8(origin.msgSend(Object, "protocol", .{})) orelse return "";
+            const host = apple.utf8(origin.msgSend(Object, "host", .{})) orelse return "";
             if (scheme.len == 0 or host.len == 0) return "";
             const port = origin.msgSend(isize, "port", .{});
             return (if (port > 0)
@@ -354,21 +354,21 @@ pub fn Bridge(
                 std.fmt.bufPrint(buf, "{s}://{s}/", .{ scheme, host })) catch "";
         }
 
-        fn onMessage(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, message_id: cocoa.id, reply: cocoa.id) callconv(.c) void {
+        fn onMessage(_: apple.id, _: apple.c.SEL, _: apple.id, message_id: apple.id, reply: apple.id) callconv(.c) void {
             const message: Object = .{ .value = message_id };
             // Only the top frame gets the bridge; a frame reaching the
             // handler otherwise is refused.
             const frame = message.msgSend(Object, "frameInfo", .{});
-            if (frame.value == null or !cocoa.isTrue(frame.msgSend(cocoa.c.BOOL, "isMainFrame", .{}))) {
+            if (frame.value == null or !apple.isTrue(frame.msgSend(apple.c.BOOL, "isMainFrame", .{}))) {
                 replyError(reply, "Forbidden");
                 return;
             }
             const body = message.msgSend(Object, "body", .{});
-            if (body.value == null or !cocoa.isTrue(body.msgSend(cocoa.c.BOOL, "isKindOfClass:", .{cocoa.class("NSString")}))) {
+            if (body.value == null or !apple.isTrue(body.msgSend(apple.c.BOOL, "isKindOfClass:", .{apple.class("NSString")}))) {
                 replyError(reply, "InvalidRequest");
                 return;
             }
-            const req_slice = cocoa.utf8(body) orelse {
+            const req_slice = apple.utf8(body) orelse {
                 replyError(reply, "InvalidRequest");
                 return;
             };
@@ -435,7 +435,7 @@ pub fn Bridge(
                 return;
             };
             async_ctx.* = .{
-                .reply = cocoa.copyBlock(reply),
+                .reply = apple.copyBlock(reply),
                 .arena_state = undefined,
                 .result = null,
                 .err_name = null,
@@ -446,7 +446,7 @@ pub fn Bridge(
                 return;
             }
             ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, checked.json, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
-                cocoa.releaseBlock(async_ctx.reply);
+                apple.releaseBlock(async_ctx.reply);
                 std.heap.smp_allocator.destroy(async_ctx);
                 replyError(reply, ipc.errorText(err));
                 return;
@@ -454,7 +454,7 @@ pub fn Bridge(
         }
 
         const AsyncReply = struct {
-            reply: cocoa.id,
+            reply: apple.id,
             arena_state: std.heap.ArenaAllocator,
             result: ?[:0]const u8,
             err_name: ?[:0]const u8,
@@ -484,7 +484,7 @@ pub fn Bridge(
                 const self: *@This() = @ptrCast(@alignCast(ctx.?));
                 // WebKit objects captured by the block may only be released on
                 // the main thread; from a worker, leak the one reference instead.
-                if (cocoa.isMainThread()) {
+                if (apple.isMainThread()) {
                     // WebKit raises if its reply block is freed uncalled.
                     replyError(self.reply, "AppNotRunning");
                     finish(self);
@@ -496,7 +496,7 @@ pub fn Bridge(
             }
 
             fn finish(self: *@This()) void {
-                cocoa.releaseBlock(self.reply);
+                apple.releaseBlock(self.reply);
                 var a = self.arena_state;
                 a.deinit();
                 std.heap.smp_allocator.destroy(self);
@@ -506,14 +506,14 @@ pub fn Bridge(
         /// A sync command deferred to the main loop. Owns a copy of the reply
         /// block and an arena with the request.
         const SyncCall = struct {
-            reply: cocoa.id,
+            reply: apple.id,
             arena_state: std.heap.ArenaAllocator,
             request: ipc.Request,
             page_url: []const u8,
             win_label: ?[]const u8,
             io: ?std.Io,
 
-            fn queue(reply: cocoa.id, request: ipc.Request, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
+            fn queue(reply: apple.id, request: ipc.Request, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
                 const gpa = std.heap.smp_allocator;
                 const self = gpa.create(SyncCall) catch {
                     replyError(reply, "OutOfMemory");
@@ -533,7 +533,7 @@ pub fn Bridge(
                 // Deep-copy the request out of the caller's parse arena.
                 const request_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch return self.fail("OutOfMemory");
                 self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(ipc.errorText(err));
-                const copied = cocoa.copyBlock(reply);
+                const copied = apple.copyBlock(reply);
                 if (copied == null) return self.fail("OutOfMemory");
                 self.reply = copied;
                 // `run` or `discard` releases the block and frees the task.
@@ -567,12 +567,12 @@ pub fn Bridge(
             /// the call so the page's Promise settles.
             fn discard(ctx: ?*anyopaque) void {
                 const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                if (cocoa.isMainThread()) replyError(self.reply, "AppNotRunning");
+                if (apple.isMainThread()) replyError(self.reply, "AppNotRunning");
                 finish(self);
             }
 
             fn finish(self: *SyncCall) void {
-                cocoa.releaseBlock(self.reply);
+                apple.releaseBlock(self.reply);
                 self.arena_state.deinit();
                 std.heap.smp_allocator.destroy(self);
             }

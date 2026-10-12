@@ -10,20 +10,20 @@
 //! answers that arrive after its window closed find nothing).
 
 const std = @import("std");
-const cocoa = @import("../platform/macos/cocoa.zig");
+const apple = @import("../platform/apple/apple.zig");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
 const draw = @import("apple_draw.zig");
 const Shell = @import("../platform/macos/Shell.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
-const Object = cocoa.Object;
-const id = cocoa.id;
-const SEL = cocoa.c.SEL;
-const BOOL = cocoa.c.BOOL;
-const NSRect = cocoa.NSRect;
-const NSPoint = cocoa.NSPoint;
-const NSSize = cocoa.NSSize;
+const Object = apple.Object;
+const id = apple.id;
+const SEL = apple.c.SEL;
+const BOOL = apple.c.BOOL;
+const NSRect = apple.NSRect;
+const NSPoint = apple.NSPoint;
+const NSSize = apple.NSSize;
 
 const log = std.log.scoped(.native_ui);
 
@@ -36,7 +36,7 @@ pub const Surface = struct {
     engine: *Engine = undefined,
     /// The display link (+1) pacing the page's animation frames
     /// (request_display_frame), or nil until the page asks for one.
-    display_link: Object = cocoa.nil,
+    display_link: Object = apple.nil,
     /// The page asked for an animation frame since the last one.
     frame_wanted: bool = false,
     /// Fonts to load while idle (warm_fonts), the commonest first.
@@ -125,9 +125,9 @@ const Owner = struct { token: u64, node: i64 };
 var by_control: std.AutoHashMapUnmanaged(usize, Owner) = .empty;
 var next_token: u64 = 1;
 
-var view_class: ?cocoa.Class = null;
-var holder_class: ?cocoa.Class = null;
-var field_delegate: Object = cocoa.nil;
+var view_class: ?apple.Class = null;
+var holder_class: ?apple.Class = null;
+var field_delegate: Object = apple.nil;
 
 fn key(o: id) usize {
     return @intFromPtr(o);
@@ -146,7 +146,7 @@ pub fn resolve(token: u64, call_id: u32, ok: bool, text: []const u8) void {
 fn classes() void {
     if (view_class != null) return;
     installKeyUpMonitor();
-    view_class = cocoa.defineSubclass("OrielNuiView", "NSView", &.{}, .{
+    view_class = apple.defineSubclass("OrielNuiView", "NSView", &.{}, .{
         .{ "nuiDisplayFrame:", onDisplayFrame },
         .{ "isFlipped", yes },
         .{ "isOpaque", isOpaque },
@@ -183,7 +183,7 @@ fn classes() void {
         .{ "accessibilityChildren", axChildren },
         .{ "accessibilityHitTest:", axHitTest },
     });
-    ax_class = cocoa.defineSubclass("OrielAxElement", "NSAccessibilityElement", &.{}, .{
+    ax_class = apple.defineSubclass("OrielAxElement", "NSAccessibilityElement", &.{}, .{
         .{ "isAccessibilityElement", yes },
         .{ "accessibilityRole", axRole },
         .{ "accessibilitySubrole", axSubrole },
@@ -198,36 +198,36 @@ fn classes() void {
         .{ "setAccessibilityFocused:", axSetFocused },
     });
     // A field's holder: flipped like the page, so frames read top-down.
-    holder_class = cocoa.defineSubclass("OrielNuiFlippedView", "NSView", &.{}, .{
+    holder_class = apple.defineSubclass("OrielNuiFlippedView", "NSView", &.{}, .{
         .{ "isFlipped", yes },
     });
     // The fields: their class's own, telling the page when they take the
     // keyboard (a click into a text field calls no delegate).
     // An edit in a text field (its field editor's delegate is the field)
     // asks the page first (beforeinput).
-    text_field_class = cocoa.defineSubclass("OrielNuiTextField", "NSTextField", &.{}, .{
+    text_field_class = apple.defineSubclass("OrielNuiTextField", "NSTextField", &.{}, .{
         .{ "becomeFirstResponder", textFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", textFieldShouldChange },
     });
     // A native checkbox, radio or push button: it tells the page when it
     // takes the keyboard (with Full Keyboard Access; without it NSButton doesn't).
-    check_class = cocoa.defineSubclass("OrielNuiCheck", "NSButton", &.{}, .{
+    check_class = apple.defineSubclass("OrielNuiCheck", "NSButton", &.{}, .{
         .{ "becomeFirstResponder", checkBecomeFirst },
     });
-    secure_field_class = cocoa.defineSubclass("OrielNuiSecureTextField", "NSSecureTextField", &.{}, .{
+    secure_field_class = apple.defineSubclass("OrielNuiSecureTextField", "NSSecureTextField", &.{}, .{
         .{ "becomeFirstResponder", secureFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", secureFieldShouldChange },
     });
     // No drags of their own (a text view would insert a dropped file's
     // path): drops over a field reach the page's view, and the page (its
     // drop, or the default that inserts dropped text) decides.
-    text_view_class = cocoa.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
+    text_view_class = apple.defineSubclass("OrielNuiTextView", "NSTextView", &.{}, .{
         .{ "becomeFirstResponder", textViewBecomeFirst },
         .{ "resignFirstResponder", textViewResignFirst },
         .{ "updateDragTypeRegistration", noDragTypes },
         .{ "acceptableDragTypes", noAcceptableDragTypes },
     });
-    field_delegate = cocoa.new(cocoa.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
+    field_delegate = apple.new(apple.defineClass("OrielNuiFieldDelegate", &.{ "NSTextFieldDelegate", "NSTextViewDelegate" }, .{
         .{ "controlTextDidChange:", controlTextDidChange },
         .{ "controlTextDidBeginEditing:", fieldEditingChanged },
         .{ "controlTextDidEndEditing:", fieldEditingChanged },
@@ -253,9 +253,9 @@ fn classes() void {
 fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]const u8 {
     const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
     if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
-    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
-    const fka = cocoa.isTrue(app.msgSend(BOOL, "isFullKeyboardAccessEnabled", .{}));
-    const screen = cocoa.class("NSScreen").msgSend(Object, "mainScreen", .{});
+    const app = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const fka = apple.isTrue(app.msgSend(BOOL, "isFullKeyboardAccessEnabled", .{}));
+    const screen = apple.class("NSScreen").msgSend(Object, "mainScreen", .{});
     const dpr: f64 = if (screen.value != null) screen.msgSend(f64, "backingScaleFactor", .{}) else 1;
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
@@ -267,9 +267,9 @@ fn withPlatformExtras(gpa: std.mem.Allocator, platform_json: [:0]const u8) ?[:0]
 /// platform.accent, the focus ring's and accent-colored controls'.
 fn systemAccent() [3]u8 {
     const blue: [3]u8 = .{ 0, 122, 255 };
-    const c = cocoa.class("NSColor").msgSend(Object, "controlAccentColor", .{});
+    const c = apple.class("NSColor").msgSend(Object, "controlAccentColor", .{});
     if (c.value == null) return blue;
-    const space = cocoa.class("NSColorSpace").msgSend(Object, "sRGBColorSpace", .{});
+    const space = apple.class("NSColorSpace").msgSend(Object, "sRGBColorSpace", .{});
     const rgb = c.msgSend(Object, "colorUsingColorSpace:", .{space});
     if (rgb.value == null) return blue;
     var out: [3]u8 = undefined;
@@ -316,16 +316,16 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     errdefer gpa.free(s.label);
     next_token += 1;
     // Mouse moves (hover, the hand cursor) wherever the view is.
-    const tracking = cocoa.class("NSTrackingArea").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithRect:options:owner:userInfo:", .{
-        frame, @as(c_ulong, 0x01 | 0x02 | 0x80 | 0x200), view, cocoa.nil, // entered/exited, moved, always, in visible rect
+    const tracking = apple.class("NSTrackingArea").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithRect:options:owner:userInfo:", .{
+        frame, @as(c_ulong, 0x01 | 0x02 | 0x80 | 0x200), view, apple.nil, // entered/exited, moved, always, in visible rect
     });
     view.msgSend(void, "addTrackingArea:", .{tracking});
     tracking.release();
     s.accent = systemAccent();
     // The accent color (and other system colors) changing.
-    if (cocoa.nsString("NSSystemColorsDidChangeNotification")) |name| {
+    if (apple.nsString("NSSystemColorsDidChangeNotification")) |name| {
         defer name.release();
-        cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "addObserver:selector:name:object:", .{ view, cocoa.objc.sel("nuiSystemColorsChanged:").value, name, cocoa.nil });
+        apple.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "addObserver:selector:name:object:", .{ view, apple.objc.sel("nuiSystemColorsChanged:").value, name, apple.nil });
     }
     registerDragTypes(view);
     try surfaces.put(std.heap.smp_allocator, s.token, s);
@@ -337,7 +337,7 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     // Scroll bars always shown (System Settings, or a mouse without
     // gestures): WebKit's classic ones keep room in the layout, 15 px (11
     // thin); overlay ones (the default) none.
-    const legacy = cocoa.class("NSScroller").msgSend(c_long, "preferredScrollerStyle", .{}) == 0;
+    const legacy = apple.class("NSScroller").msgSend(c_long, "preferredScrollerStyle", .{}) == 0;
     defer if (extras) |j| gpa.free(j);
     const platform = extras orelse platform_json;
     s.engine = try Engine.create(gpa, .{
@@ -390,7 +390,7 @@ pub fn destroy(s: *Surface) void {
     }
     s.ax_elements.deinit(s.gpa);
     s.ax_elements = .empty; // the engine's teardown below calls `removed`
-    cocoa.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "removeObserver:", .{s.view});
+    apple.class("NSNotificationCenter").msgSend(Object, "defaultCenter", .{}).msgSend(void, "removeObserver:", .{s.view});
     s.warm.deinit(s.gpa);
     s.timer_dues.deinit(s.gpa);
     // The engine first: freeing its tree calls `removed` for every node,
@@ -418,10 +418,10 @@ fn dropField(f: Field) void {
         pending_type = null;
     }
     // A delegate outlives nothing: clear it before the control goes.
-    if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("setDelegate:"))) f.inner.msgSend(void, "setDelegate:", .{cocoa.nil});
+    if (f.inner.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.inner.msgSend(void, "setDelegate:", .{apple.nil});
     // A text field being edited: end it, so the window's field editor
     // doesn't keep a delegate that's going away.
-    if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("abortEditing"))) {
+    if (f.inner.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("abortEditing"))) {
         _ = f.inner.msgSend(BOOL, "abortEditing", .{});
     };
     f.holder.msgSend(void, "removeFromSuperview", .{});
@@ -437,7 +437,7 @@ fn dropField(f: Field) void {
 /// mode. The delayed perform retains `o` and releases it after performing,
 /// so the performed `release` is the one that drops ours.
 fn releaseLater(o: Object) void {
-    o.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("release").value, cocoa.nil, @as(f64, 0) });
+    o.msgSend(void, "performSelector:withObject:afterDelay:", .{ apple.objc.sel("release").value, apple.nil, @as(f64, 0) });
 }
 
 fn surfaceOf(ctx: *anyopaque) *Surface {
@@ -447,7 +447,7 @@ fn surfaceOf(ctx: *anyopaque) *Surface {
 fn isDark(view: Object) bool {
     if (std.c.getenv("ORIEL_COLOR_SCHEME")) |v| return std.mem.eql(u8, std.mem.span(v), "dark");
     const appearance = view.msgSend(Object, "effectiveAppearance", .{});
-    const name = cocoa.utf8(appearance.msgSend(Object, "name", .{})) orelse return false;
+    const name = apple.utf8(appearance.msgSend(Object, "name", .{})) orelse return false;
     return std.mem.indexOf(u8, name, "Dark") != null;
 }
 
@@ -490,7 +490,7 @@ fn requestFrame(ctx: *anyopaque) void {
     const t = std.heap.smp_allocator.create(u64) catch return s.engine.frame();
     t.* = s.token;
     const ms: u32 = @intCast(std.math.clamp(s.render_us * 2 / 1000, 16, 100));
-    cocoa.afterMain(ms, t, onFrame);
+    apple.afterMain(ms, t, onFrame);
 }
 
 fn nowUs() u64 {
@@ -504,7 +504,7 @@ fn onFrame(p: ?*anyopaque) callconv(.c) void {
     const token = t.*;
     std.heap.smp_allocator.destroy(t);
     const s = surfaces.get(token) orelse return;
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     const start = nowUs();
     s.engine.frame();
@@ -525,7 +525,7 @@ const CAFrameRateRange = extern struct { minimum: f32, maximum: f32, preferred: 
 fn hasDisplayLink(view: Object) bool {
     // NSView.displayLink(target:selector:): macOS 14; before, the timer grid.
     const cls = view.getClass() orelse return false;
-    return cls.respondsToSelector(cocoa.objc.sel("displayLinkWithTarget:selector:"));
+    return cls.respondsToSelector(apple.objc.sel("displayLinkWithTarget:selector:"));
 }
 
 fn requestDisplayFrame(ctx: *anyopaque) void {
@@ -538,14 +538,14 @@ fn requestDisplayFrame(ctx: *anyopaque) void {
 /// pointer move to send.
 fn runDisplayLink(s: *Surface) void {
     if (s.display_link.value != null) {
-        s.display_link.msgSend(void, "setPaused:", .{cocoa.boolean(false)});
+        s.display_link.msgSend(void, "setPaused:", .{apple.boolean(false)});
         return;
     }
-    const link = s.view.msgSend(Object, "displayLinkWithTarget:selector:", .{ s.view, cocoa.objc.sel("nuiDisplayFrame:").value });
+    const link = s.view.msgSend(Object, "displayLinkWithTarget:selector:", .{ s.view, apple.objc.sel("nuiDisplayFrame:").value });
     if (link.value == null) return;
     s.display_link = link.retain();
     
-    const loop = cocoa.class("NSRunLoop").msgSend(Object, "currentRunLoop", .{});
+    const loop = apple.class("NSRunLoop").msgSend(Object, "currentRunLoop", .{});
     link.msgSend(void, "addToRunLoop:forMode:", .{ loop, Object{ .value = NSRunLoopCommonModes } });
 }
 
@@ -560,7 +560,7 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
         if (surfaces.get(token) == null) return; // the page closed its window
     }
     if (!s.frame_wanted) {
-        link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
+        link.msgSend(void, "setPaused:", .{apple.boolean(true)});
         return;
     }
     s.frame_wanted = false;
@@ -570,13 +570,13 @@ fn onDisplayFrame(self: id, _: SEL, link_id: id) callconv(.c) void {
     if (!(interval > 0) or !std.math.isFinite(interval)) interval = link.msgSend(f64, "duration", .{}) * 1000;
     if (!(interval > 0) or !std.math.isFinite(interval)) interval = 0;
     const token = s.token;
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     s.engine.displayFrame(interval);
     // The page may have closed its window during the frame (destroy
     // invalidated the link); else the link runs on only if it asked again.
     const still = surfaces.get(token) orelse return;
-    if (!still.frame_wanted) link.msgSend(void, "setPaused:", .{cocoa.boolean(true)});
+    if (!still.frame_wanted) link.msgSend(void, "setPaused:", .{apple.boolean(true)});
 }
 
 /// Backend.warm_fonts: fonts load when the main run loop is idle (about to
@@ -662,7 +662,7 @@ fn onIdle(_: ?*anyopaque, _: c_ulong, _: ?*anyopaque) callconv(.c) void {
         const s = sp.*;
         if (s.warm.items.len == 0) continue;
         const spec = s.warm.orderedRemove(0);
-        const pool = cocoa.objc.AutoreleasePool.init();
+        const pool = apple.objc.AutoreleasePool.init();
         defer pool.deinit();
         draw.warmFont("NSFont", spec);
         break;
@@ -677,7 +677,7 @@ fn addTimer(ctx: *anyopaque, _: *Engine, timer_id: u32, ms: u32) void {
     const d = std.heap.smp_allocator.create(TimerData) catch return;
     d.* = .{ .token = s.token, .id = timer_id };
     s.timer_dues.append(s.gpa, .{ .id = timer_id, .due = CFAbsoluteTimeGetCurrent() + @as(f64, @floatFromInt(ms)) / 1000 }) catch {};
-    cocoa.afterMain(ms, d, onTimer);
+    apple.afterMain(ms, d, onTimer);
 }
 
 fn onTimer(p: ?*anyopaque) callconv(.c) void {
@@ -690,7 +690,7 @@ fn onTimer(p: ?*anyopaque) callconv(.c) void {
         _ = s.timer_dues.swapRemove(i);
         break;
     };
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     s.engine.timerFired(timer_id);
 }
@@ -706,8 +706,8 @@ fn focus(ctx: *anyopaque, n: *Node) void {
     };
     // A control that won't take the keyboard (a popup without Full
     // Keyboard Access): the page takes it from a field that had it.
-    if (!cocoa.isTrue(win.msgSend(BOOL, "makeFirstResponder:", .{f.inner})) or
-        !cocoa.isTrue(f.inner.msgSend(BOOL, "acceptsFirstResponder", .{})))
+    if (!apple.isTrue(win.msgSend(BOOL, "makeFirstResponder:", .{f.inner})) or
+        !apple.isTrue(f.inner.msgSend(BOOL, "acceptsFirstResponder", .{})))
     {
         if (s.focused != 0) _ = win.msgSend(BOOL, "makeFirstResponder:", .{s.view});
     }
@@ -747,12 +747,12 @@ fn laidOut(ctx: *anyopaque) void {
         s.ax_dirty = false;
         NSAccessibilityPostNotification(s.view.value, ns_layout_changed);
     }
-    s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
+    s.view.msgSend(void, "setNeedsDisplay:", .{apple.boolean(true)});
     if (std.c.getenv("ORIEL_NUI_SNAPSHOT") != null and !s.snapshot_queued) {
         const t = std.heap.smp_allocator.create(u64) catch return;
         s.snapshot_queued = true;
         t.* = s.token;
-        cocoa.afterMain(400, t, snapshot);
+        apple.afterMain(400, t, snapshot);
     }
 }
 
@@ -765,19 +765,19 @@ fn snapshot(p: ?*anyopaque) callconv(.c) void {
     const s = surfaces.get(token) orelse return;
     s.snapshot_queued = false;
     const dir = std.c.getenv("ORIEL_NUI_SNAPSHOT") orelse return;
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     const bounds = s.view.msgSend(NSRect, "bounds", .{});
     const bitmap = s.view.msgSend(Object, "bitmapImageRepForCachingDisplayInRect:", .{bounds});
     if (bitmap.value == null) return;
     s.view.msgSend(void, "cacheDisplayInRect:toBitmapImageRep:", .{ bounds, bitmap });
-    const props = cocoa.class("NSDictionary").msgSend(Object, "dictionary", .{});
+    const props = apple.class("NSDictionary").msgSend(Object, "dictionary", .{});
     const png = bitmap.msgSend(Object, "representationUsingType:properties:", .{ @as(c_ulong, 4), props }); // PNG
     var buf: [1024]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/{s}.png", .{ std.mem.span(dir), s.label }) catch return;
-    const ns = cocoa.nsString(path) orelse return;
+    const ns = apple.nsString(path) orelse return;
     defer ns.release();
-    _ = png.msgSend(BOOL, "writeToFile:atomically:", .{ ns, cocoa.boolean(true) });
+    _ = png.msgSend(BOOL, "writeToFile:atomically:", .{ ns, apple.boolean(true) });
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +808,7 @@ fn syncFields(s: *Surface) void {
         if (f.button) if (s.fields.getPtr(n.id)) |fp| buttonLook(n, fp);
         // The page changes placeholders ("Select text first…" → "Tell
         // GhostPen what to do…"); a text area's is drawn under it.
-        if (n.kind == .input and !f.slider) if (cocoa.nsString(n.props.ph orelse "")) |ph| {
+        if (n.kind == .input and !f.slider) if (apple.nsString(n.props.ph orelse "")) |ph| {
             defer ph.release();
             f.inner.msgSend(void, "setPlaceholderString:", .{ph});
         };
@@ -822,17 +822,17 @@ fn syncFields(s: *Surface) void {
         f.holder.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = shown.x, .y = shown.y }, .size = .{ .width = shown.w, .height = shown.h } }});
         f.outer.msgSend(void, "setFrame:", .{NSRect{ .origin = .{ .x = ctl.x - shown.x, .y = ctl.y - shown.y }, .size = .{ .width = @max(1, ctl.w), .height = @max(1, ctl.h) } }});
         const visible = shown.h > 1 and shown.w > 1 and n.props.vis != false;
-        f.holder.msgSend(void, "setHidden:", .{cocoa.boolean(!visible)});
+        f.holder.msgSend(void, "setHidden:", .{apple.boolean(!visible)});
         if (n.kind != .textarea) {
             // (A check sized to its box: small under 14px, mini under 12.)
             if (f.check) f.inner.msgSend(void, "setControlSize:", .{@as(c_ulong, if (r.h >= 14) 0 else if (r.h >= 12) 1 else 2)});
-            f.inner.msgSend(void, "setEnabled:", .{cocoa.boolean(!n.props.dis)});
+            f.inner.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
         } else {
             // A disabled text area: neither edited nor selected (nor focused,
             // as a browser's); a readonly one selected only.
-            f.inner.msgSend(void, "setEditable:", .{cocoa.boolean(!n.props.dis and !n.props.ro)});
-            f.inner.msgSend(void, "setSelectable:", .{cocoa.boolean(!n.props.dis)});
-            f.inner.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(n.props.spellcheck)});
+            f.inner.msgSend(void, "setEditable:", .{apple.boolean(!n.props.dis and !n.props.ro)});
+            f.inner.msgSend(void, "setSelectable:", .{apple.boolean(!n.props.dis)});
+            f.inner.msgSend(void, "setContinuousSpellCheckingEnabled:", .{apple.boolean(n.props.spellcheck)});
         }
         setAccessibilityLabel(f.inner, n.props.al);
     }
@@ -841,92 +841,92 @@ fn syncFields(s: *Surface) void {
 /// A control's accessibility label: the page's name for it (Props.al), or
 /// none (VoiceOver then reads its placeholder or value).
 fn setAccessibilityLabel(control: Object, al: ?[]const u8) void {
-    const label = if (al) |t| cocoa.nsString(t) else null;
+    const label = if (al) |t| apple.nsString(t) else null;
     defer if (label) |l| l.release();
-    control.msgSend(void, "setAccessibilityLabel:", .{if (label) |l| l.value else cocoa.nil.value});
+    control.msgSend(void, "setAccessibilityLabel:", .{if (label) |l| l.value else apple.nil.value});
 }
 
 fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
     var f: Field = switch (n.kind) {
         .input => if (n.props.range != null) blk: {
-            const sl = cocoa.class("NSSlider").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            const sl = apple.class("NSSlider").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (sl.value == null) return null;
             const r = draw.Range.of(n);
             sl.msgSend(void, "setMinValue:", .{r.min});
             sl.msgSend(void, "setMaxValue:", .{r.max});
             sl.msgSend(void, "setDoubleValue:", .{r.min});
-            sl.msgSend(void, "setContinuous:", .{cocoa.boolean(true)});
+            sl.msgSend(void, "setContinuous:", .{apple.boolean(true)});
             sl.msgSend(void, "setTarget:", .{field_delegate});
-            sl.msgSend(void, "setAction:", .{cocoa.objc.sel("sliderChanged:").value});
-            break :blk .{ .holder = cocoa.nil, .outer = sl, .inner = sl, .slider = true };
+            sl.msgSend(void, "setAction:", .{apple.objc.sel("sliderChanged:").value});
+            break :blk .{ .holder = apple.nil, .outer = sl, .inner = sl, .slider = true };
         } else blk: {
             const cls = (if (n.props.pw) secure_field_class else text_field_class).?;
             const tf = cls.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
-            tf.msgSend(void, "setBezeled:", .{cocoa.boolean(false)});
-            tf.msgSend(void, "setBordered:", .{cocoa.boolean(false)});
-            tf.msgSend(void, "setDrawsBackground:", .{cocoa.boolean(false)});
+            tf.msgSend(void, "setBezeled:", .{apple.boolean(false)});
+            tf.msgSend(void, "setBordered:", .{apple.boolean(false)});
+            tf.msgSend(void, "setDrawsBackground:", .{apple.boolean(false)});
             tf.msgSend(void, "setFocusRingType:", .{@as(c_ulong, 1)}); // none: the page draws its own
-            tf.msgSend(void, "setUsesSingleLineMode:", .{cocoa.boolean(true)});
-            if (n.props.ph) |ph| if (cocoa.nsString(ph)) |str| {
+            tf.msgSend(void, "setUsesSingleLineMode:", .{apple.boolean(true)});
+            if (n.props.ph) |ph| if (apple.nsString(ph)) |str| {
                 defer str.release();
                 tf.msgSend(void, "setPlaceholderString:", .{str});
             };
             tf.msgSend(void, "setDelegate:", .{field_delegate});
-            break :blk .{ .holder = cocoa.nil, .outer = tf, .inner = tf };
+            break :blk .{ .holder = apple.nil, .outer = tf, .inner = tf };
         },
         .textarea => blk: {
-            const sv = cocoa.class("NSScrollView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+            const sv = apple.class("NSScrollView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (sv.value == null) return null;
-            sv.msgSend(void, "setDrawsBackground:", .{cocoa.boolean(false)});
+            sv.msgSend(void, "setDrawsBackground:", .{apple.boolean(false)});
             sv.msgSend(void, "setBorderType:", .{@as(c_ulong, 0)});
-            sv.msgSend(void, "setHasVerticalScroller:", .{cocoa.boolean(true)});
-            sv.msgSend(void, "setAutohidesScrollers:", .{cocoa.boolean(true)});
+            sv.msgSend(void, "setHasVerticalScroller:", .{apple.boolean(true)});
+            sv.msgSend(void, "setAutohidesScrollers:", .{apple.boolean(true)});
             const tv = text_view_class.?.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tv.value == null) {
                 sv.release();
                 return null;
             }
-            tv.msgSend(void, "setDrawsBackground:", .{cocoa.boolean(false)});
-            tv.msgSend(void, "setRichText:", .{cocoa.boolean(false)});
+            tv.msgSend(void, "setDrawsBackground:", .{apple.boolean(false)});
+            tv.msgSend(void, "setRichText:", .{apple.boolean(false)});
             // Cmd+Z undoes typing, as in a browser's text area.
-            tv.msgSend(void, "setAllowsUndo:", .{cocoa.boolean(true)});
-            tv.msgSend(void, "setAutomaticQuoteSubstitutionEnabled:", .{cocoa.boolean(false)});
+            tv.msgSend(void, "setAllowsUndo:", .{apple.boolean(true)});
+            tv.msgSend(void, "setAutomaticQuoteSubstitutionEnabled:", .{apple.boolean(false)});
             // Spelling checked as typed, as a browser's text area (and the
             // system's own text views) do by default.
-            tv.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(true)});
+            tv.msgSend(void, "setContinuousSpellCheckingEnabled:", .{apple.boolean(true)});
             tv.msgSend(void, "setEnabledTextCheckingTypes:", .{@as(u64, 1 << 1)});
-            tv.msgSend(void, "setVerticallyResizable:", .{cocoa.boolean(true)});
-            tv.msgSend(void, "setHorizontallyResizable:", .{cocoa.boolean(false)});
+            tv.msgSend(void, "setVerticallyResizable:", .{apple.boolean(true)});
+            tv.msgSend(void, "setHorizontallyResizable:", .{apple.boolean(false)});
             tv.msgSend(void, "setAutoresizingMask:", .{@as(c_ulong, 2)}); // width sizable
             tv.msgSend(void, "setTextContainerInset:", .{NSSize{ .width = 0, .height = 0 }});
             tv.msgSend(Object, "textContainer", .{}).msgSend(void, "setLineFragmentPadding:", .{@as(f64, 0)});
             tv.msgSend(void, "setDelegate:", .{field_delegate});
             sv.msgSend(void, "setDocumentView:", .{tv});
             tv.release(); // the scroll view holds it
-            break :blk .{ .holder = cocoa.nil, .outer = sv, .inner = tv };
+            break :blk .{ .holder = apple.nil, .outer = sv, .inner = tv };
         },
         .select => blk: {
-            const pb = cocoa.class("NSPopUpButton").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:pullsDown:", .{ zero, cocoa.boolean(false) });
+            const pb = apple.class("NSPopUpButton").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:pullsDown:", .{ zero, apple.boolean(false) });
             if (pb.value == null) return null;
-            pb.msgSend(void, "setBordered:", .{cocoa.boolean(false)});
+            pb.msgSend(void, "setBordered:", .{apple.boolean(false)});
             // Each item carries its option's index as its tag: titles may
             // repeat (addItemWithTitle: replaces an equal one) or be skipped.
-            const no_key = cocoa.nsString("") orelse {
+            const no_key = apple.nsString("") orelse {
                 pb.release();
                 return null;
             };
             defer no_key.release();
             const menu = pb.msgSend(Object, "menu", .{});
-            if (n.props.options) |opts| for (opts, 0..) |o, i| if (cocoa.nsString(o[1])) |str| {
+            if (n.props.options) |opts| for (opts, 0..) |o, i| if (apple.nsString(o[1])) |str| {
                 defer str.release();
-                const item = menu.msgSend(Object, "addItemWithTitle:action:keyEquivalent:", .{ str, @as(cocoa.c.SEL, null), no_key });
+                const item = menu.msgSend(Object, "addItemWithTitle:action:keyEquivalent:", .{ str, @as(apple.c.SEL, null), no_key });
                 item.msgSend(void, "setTag:", .{@as(c_long, @intCast(i))});
             };
             pb.msgSend(void, "setTarget:", .{field_delegate});
-            pb.msgSend(void, "setAction:", .{cocoa.objc.sel("popupChanged:").value});
-            break :blk .{ .holder = cocoa.nil, .outer = pb, .inner = pb };
+            pb.msgSend(void, "setAction:", .{apple.objc.sel("popupChanged:").value});
+            break :blk .{ .holder = apple.nil, .outer = pb, .inner = pb };
         },
         // A checkbox or radio (kind check: the backend lists "check" in
         // its controls): an NSButton, non-auto in effect (its state is set
@@ -937,14 +937,14 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             if (b.value == null) return null;
             const radio = if (n.props.ctl) |c| std.mem.eql(u8, c, "radio") else false;
             b.msgSend(void, "setButtonType:", .{@as(c_ulong, if (radio) 4 else 3)}); // NSButtonTypeRadio, Switch
-            if (cocoa.nsString("")) |empty| {
+            if (apple.nsString("")) |empty| {
                 defer empty.release();
                 b.msgSend(void, "setTitle:", .{empty});
             }
-            b.msgSend(void, "setAllowsMixedState:", .{cocoa.boolean(!radio)});
+            b.msgSend(void, "setAllowsMixedState:", .{apple.boolean(!radio)});
             b.msgSend(void, "setTarget:", .{field_delegate});
-            b.msgSend(void, "setAction:", .{cocoa.objc.sel("checkClicked:").value});
-            break :blk .{ .holder = cocoa.nil, .outer = b, .inner = b, .check = true };
+            b.msgSend(void, "setAction:", .{apple.objc.sel("checkClicked:").value});
+            break :blk .{ .holder = apple.nil, .outer = b, .inner = b, .check = true };
         },
         // A push button (kind button: rule 1.4 left its box to the
         // platform): its title and bezel set on every sync (buttonLook).
@@ -953,8 +953,8 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             if (b.value == null) return null;
             b.msgSend(void, "setButtonType:", .{@as(c_ulong, 7)}); // NSButtonTypeMomentaryPushIn
             b.msgSend(void, "setTarget:", .{field_delegate});
-            b.msgSend(void, "setAction:", .{cocoa.objc.sel("buttonClicked:").value});
-            break :blk .{ .holder = cocoa.nil, .outer = b, .inner = b, .button = true };
+            b.msgSend(void, "setAction:", .{apple.objc.sel("buttonClicked:").value});
+            break :blk .{ .holder = apple.nil, .outer = b, .inner = b, .button = true };
         },
         else => return null,
     };
@@ -963,7 +963,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
         f.outer.release();
         return null;
     }
-    if (holder.getClass().?.respondsToSelector(cocoa.objc.sel("setClipsToBounds:"))) holder.msgSend(void, "setClipsToBounds:", .{cocoa.boolean(true)}); // macOS 14+; before, views always clip
+    if (holder.getClass().?.respondsToSelector(apple.objc.sel("setClipsToBounds:"))) holder.msgSend(void, "setClipsToBounds:", .{apple.boolean(true)}); // macOS 14+; before, views always clip
     holder.msgSend(void, "addSubview:", .{f.outer});
     f.outer.release(); // the holder keeps it
     f.holder = holder;
@@ -976,11 +976,11 @@ fn makeField(s: *Surface, n: *Node) ?Field {
 fn setValue(n: *Node, f: Field, v: []const u8) void {
     if (f.slider) return f.inner.msgSend(void, "setDoubleValue:", .{draw.Range.of(n).parse(v)});
     switch (n.kind) {
-        .input => if (cocoa.nsString(v)) |str| {
+        .input => if (apple.nsString(v)) |str| {
             defer str.release();
             f.inner.msgSend(void, "setStringValue:", .{str});
         },
-        .textarea => if (cocoa.nsString(v)) |str| {
+        .textarea => if (apple.nsString(v)) |str| {
             defer str.release();
             f.inner.msgSend(void, "setString:", .{str});
         },
@@ -999,18 +999,18 @@ fn style(n: *Node, f: Field) void {
         const r = draw.Range.of(n);
         f.inner.msgSend(void, "setMinValue:", .{r.min});
         f.inner.msgSend(void, "setMaxValue:", .{r.max});
-        if (n.props.acc) |a| if (f.inner.getClass()) |cls| if (cls.respondsToSelector(cocoa.objc.sel("setTrackFillColor:"))) {
-            f.inner.msgSend(void, "setTrackFillColor:", .{cocoa.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
+        if (n.props.acc) |a| if (f.inner.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setTrackFillColor:"))) {
+            f.inner.msgSend(void, "setTrackFillColor:", .{apple.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
                 @as(f64, a[0] / 255), @as(f64, a[1] / 255), @as(f64, a[2] / 255), @as(f64, a[3]),
             })});
         };
         return;
     }
     const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-    const color = cocoa.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
+    const color = apple.class("NSColor").msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{
         @as(f64, c[0] / 255), @as(f64, c[1] / 255), @as(f64, c[2] / 255), @as(f64, c[3]),
     });
-    const font = cocoa.class("NSFont").msgSend(Object, "systemFontOfSize:", .{@as(f64, n.props.fz orelse 16)});
+    const font = apple.class("NSFont").msgSend(Object, "systemFontOfSize:", .{@as(f64, n.props.fz orelse 16)});
     f.inner.msgSend(void, "setFont:", .{font});
     if (n.kind == .select) return;
     f.inner.msgSend(void, "setTextColor:", .{color});
@@ -1041,7 +1041,7 @@ var pending_has_data = false;
 /// An edit's inputType (Chromium's names) and data, from the event that
 /// made it: null for one that isn't the user's (the page set the value).
 fn editKind(repl: []const u8, textarea: bool) ?struct { t: []const u8, data: bool } {
-    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const app = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{});
     const ev = app.msgSend(Object, "currentEvent", .{});
     var code: c_ushort = 0xffff;
     var flags: c_ulong = 0;
@@ -1079,8 +1079,8 @@ fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
     const o = ownerOf(control) orelse return true;
     if (o.s.updating) return true;
     const t: Object = .{ .value = tv };
-    if (t.value != null and cocoa.isTrue(t.msgSend(BOOL, "hasMarkedText", .{}))) return true;
-    const repl = if (repl_id != null) (cocoa.utf8(.{ .value = repl_id }) orelse "") else "";
+    if (t.value != null and apple.isTrue(t.msgSend(BOOL, "hasMarkedText", .{}))) return true;
+    const repl = if (repl_id != null) (apple.utf8(.{ .value = repl_id }) orelse "") else "";
     const kind = editKind(repl, textarea) orelse return true;
     const gpa = o.s.gpa;
     const data = std.json.Stringify.valueAlloc(gpa, repl, .{}) catch return true;
@@ -1099,15 +1099,15 @@ fn askEdit(control: id, tv: id, repl_id: id, textarea: bool) bool {
 }
 
 fn textFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
-    if (readOnly(self)) return cocoa.boolean(false);
-    if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
-    return superShouldChange(self, cocoa.class("NSTextField"), tv, range, repl);
+    if (readOnly(self)) return apple.boolean(false);
+    if (!askEdit(self, tv, repl, false)) return apple.boolean(false);
+    return superShouldChange(self, apple.class("NSTextField"), tv, range, repl);
 }
 
 fn secureFieldShouldChange(self: id, _: SEL, tv: id, range: NSRange, repl: id) callconv(.c) BOOL {
-    if (readOnly(self)) return cocoa.boolean(false);
-    if (!askEdit(self, tv, repl, false)) return cocoa.boolean(false);
-    return superShouldChange(self, cocoa.class("NSSecureTextField"), tv, range, repl);
+    if (readOnly(self)) return apple.boolean(false);
+    if (!askEdit(self, tv, repl, false)) return apple.boolean(false);
+    return superShouldChange(self, apple.class("NSSecureTextField"), tv, range, repl);
 }
 
 /// The field class's own answer (yes when it has none); a no drops the
@@ -1120,16 +1120,16 @@ fn readOnly(field: id) bool {
     return o.n.props.ro;
 }
 
-fn superShouldChange(self: id, class: cocoa.objc.Class, tv: id, range: NSRange, repl: id) BOOL {
-    const sel = cocoa.objc.sel("textView:shouldChangeTextInRange:replacementString:");
-    if (!cocoa.isTrue(class.msgSend(BOOL, "instancesRespondToSelector:", .{sel.value}))) return cocoa.boolean(true);
+fn superShouldChange(self: id, class: apple.objc.Class, tv: id, range: NSRange, repl: id) BOOL {
+    const sel = apple.objc.sel("textView:shouldChangeTextInRange:replacementString:");
+    if (!apple.isTrue(class.msgSend(BOOL, "instancesRespondToSelector:", .{sel.value}))) return apple.boolean(true);
     const ok = (Object{ .value = self }).msgSendSuper(class, BOOL, "textView:shouldChangeTextInRange:replacementString:", .{ tv, range, repl });
-    if (!cocoa.isTrue(ok)) pending_type = null;
+    if (!apple.isTrue(ok)) pending_type = null;
     return ok;
 }
 
 fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, repl: id) callconv(.c) BOOL {
-    return cocoa.boolean(askEdit(tv, tv, repl, true));
+    return apple.boolean(askEdit(tv, tv, repl, true));
 }
 
 /// After an edit: "input" with [value, inputType, data] (the edit the page
@@ -1175,8 +1175,8 @@ fn setSelection(ctx: *anyopaque, n: *Node, start: u32, end: u32) void {
 /// The text view with a field's text: a text area's own, a text field's
 /// field editor while it's edited.
 fn editorOf(f: Field) ?Object {
-    if (cocoa.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextView").value}))) return f.inner;
-    if (!cocoa.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextField").value}))) return null;
+    if (apple.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{apple.class("NSTextView").value}))) return f.inner;
+    if (!apple.isTrue(f.inner.msgSend(BOOL, "isKindOfClass:", .{apple.class("NSTextField").value}))) return null;
     const ed = f.inner.msgSend(Object, "currentEditor", .{});
     return if (ed.value != null) ed else null;
 }
@@ -1196,26 +1196,26 @@ fn sendValue(s: *Surface, n: *Node, kind: []const u8, text: []const u8) void {
 // field hands the keyboard to the window's field editor; its owner is the
 // editor's delegate. Checked once things settle after a change.
 
-var text_field_class: ?cocoa.objc.Class = null;
-var check_class: ?cocoa.objc.Class = null;
+var text_field_class: ?apple.objc.Class = null;
+var check_class: ?apple.objc.Class = null;
 
 fn checkBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
-    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSButton"), BOOL, "becomeFirstResponder", .{});
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSButton"), BOOL, "becomeFirstResponder", .{});
     focusChangedNear(self);
     return ok;
 }
-var secure_field_class: ?cocoa.objc.Class = null;
-var text_view_class: ?cocoa.objc.Class = null;
+var secure_field_class: ?apple.objc.Class = null;
+var text_view_class: ?apple.objc.Class = null;
 
 fn textFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
-    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
     noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
 }
 
 fn secureFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
-    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSSecureTextField"), BOOL, "becomeFirstResponder", .{});
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSSecureTextField"), BOOL, "becomeFirstResponder", .{});
     noFieldEditorDrags(self);
     focusChangedNear(self);
     return ok;
@@ -1230,37 +1230,37 @@ fn noFieldEditorDrags(field: id) void {
     if (editor.value == null) return;
     // Spelling checked as typed in a text field (a password's isn't, nor
     // one with spellcheck="false": Props.spellcheck).
-    const secure = cocoa.isTrue((Object{ .value = field }).msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSSecureTextField").value}));
+    const secure = apple.isTrue((Object{ .value = field }).msgSend(BOOL, "isKindOfClass:", .{apple.class("NSSecureTextField").value}));
     const wanted = if (ownerOf(field)) |o| o.n.props.spellcheck else true;
-    editor.msgSend(void, "setContinuousSpellCheckingEnabled:", .{cocoa.boolean(!secure and wanted)});
+    editor.msgSend(void, "setContinuousSpellCheckingEnabled:", .{apple.boolean(!secure and wanted)});
     // Only spelling: no capitalizing or correcting as typed (a browser's
     // fields don't). NSTextCheckingTypeSpelling.
     editor.msgSend(void, "setEnabledTextCheckingTypes:", .{@as(u64, 1 << 1)});
     const cls = editor.getClass() orelse return;
     if (std.mem.startsWith(u8, editor.getClassName(), "OrielNuiFieldEditor")) return;
     const sub = fieldEditorClass(cls, editor.getClassName()) orelse return;
-    _ = cocoa.objc.c.object_setClass(editor.value, @ptrCast(sub.value));
+    _ = apple.objc.c.object_setClass(editor.value, @ptrCast(sub.value));
     editor.msgSend(void, "unregisterDraggedTypes", .{});
 }
 
 /// The no-drags subclass of a field editor's class (made once per class).
-var field_editor_subclasses: std.AutoHashMapUnmanaged(usize, cocoa.objc.Class) = .empty;
-fn fieldEditorClass(cls: cocoa.objc.Class, name: [:0]const u8) ?cocoa.objc.Class {
+var field_editor_subclasses: std.AutoHashMapUnmanaged(usize, apple.objc.Class) = .empty;
+fn fieldEditorClass(cls: apple.objc.Class, name: [:0]const u8) ?apple.objc.Class {
     const k = @intFromPtr(cls.value);
     if (field_editor_subclasses.get(k)) |sub| return sub;
     const gpa = std.heap.smp_allocator;
     const sub_name = std.fmt.allocPrintSentinel(gpa, "OrielNuiFieldEditor_{s}", .{name}, 0) catch return null;
     // (The runtime keeps the name for the class's life.)
-    const sub = cocoa.objc.allocateClassPair(cls, sub_name) orelse {
+    const sub = apple.objc.allocateClassPair(cls, sub_name) orelse {
         gpa.free(sub_name);
         return null;
     };
     if (!sub.addMethod("updateDragTypeRegistration", noDragTypes) or !sub.addMethod("acceptableDragTypes", noAcceptableDragTypes)) {
-        cocoa.objc.c.objc_disposeClassPair(@ptrCast(sub.value));
+        apple.objc.c.objc_disposeClassPair(@ptrCast(sub.value));
         gpa.free(sub_name);
         return null;
     }
-    cocoa.objc.registerClassPair(sub);
+    apple.objc.registerClassPair(sub);
     field_editor_subclasses.put(gpa, k, sub) catch {};
     return sub;
 }
@@ -1270,17 +1270,17 @@ fn noDragTypes(self: id, _: SEL) callconv(.c) void {
 }
 
 fn noAcceptableDragTypes(_: id, _: SEL) callconv(.c) id {
-    return cocoa.class("NSArray").msgSend(Object, "array", .{}).value;
+    return apple.class("NSArray").msgSend(Object, "array", .{}).value;
 }
 
 fn textViewBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
-    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextView"), BOOL, "becomeFirstResponder", .{});
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSTextView"), BOOL, "becomeFirstResponder", .{});
     focusChangedNear(self);
     return ok;
 }
 
 fn textViewResignFirst(self: id, _: SEL) callconv(.c) BOOL {
-    const ok = (Object{ .value = self }).msgSendSuper(cocoa.class("NSTextView"), BOOL, "resignFirstResponder", .{});
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSTextView"), BOOL, "resignFirstResponder", .{});
     focusChangedNear(self);
     return ok;
 }
@@ -1301,7 +1301,7 @@ fn queueFocusCheck(s: *Surface) void {
     const t = std.heap.smp_allocator.create(u64) catch return;
     t.* = s.token;
     s.focus_check_queued = true;
-    cocoa.afterMain(0, t, onFocusCheck);
+    apple.afterMain(0, t, onFocusCheck);
 }
 
 fn onFocusCheck(p: ?*anyopaque) callconv(.c) void {
@@ -1315,8 +1315,8 @@ fn onFocusCheck(p: ?*anyopaque) callconv(.c) void {
     const window = s.view.msgSend(Object, "window", .{});
     if (window.value != null) {
         var r = window.msgSend(Object, "firstResponder", .{});
-        if (r.value != null and cocoa.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextView").value})) and
-            cocoa.isTrue(r.msgSend(BOOL, "isFieldEditor", .{}))) r = r.msgSend(Object, "delegate", .{});
+        if (r.value != null and apple.isTrue(r.msgSend(BOOL, "isKindOfClass:", .{apple.class("NSTextView").value})) and
+            apple.isTrue(r.msgSend(BOOL, "isFieldEditor", .{}))) r = r.msgSend(Object, "delegate", .{});
         if (r.value != null) if (by_control.get(key(r.value))) |o| {
             if (o.token == token) nid = o.node;
         };
@@ -1335,21 +1335,21 @@ fn controlTextDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     const field = (Object{ .value = note }).msgSend(Object, "object", .{});
     const o = ownerOf(field.value) orelse return;
     if (o.s.updating) return;
-    const text = cocoa.utf8(field.msgSend(Object, "stringValue", .{})) orelse "";
+    const text = apple.utf8(field.msgSend(Object, "stringValue", .{})) orelse "";
     sendInput(field.value, o.s, o.n, text);
 }
 
 /// Enter (and Escape) in a field: the page's keydown; true when it
 /// prevented the default (no newline in a text area).
 fn commandKey(control: id, selector: SEL) ?bool {
-    const name: []const u8 = if (selector == cocoa.objc.sel("insertNewline:").value)
+    const name: []const u8 = if (selector == apple.objc.sel("insertNewline:").value)
         "Enter"
-    else if (selector == cocoa.objc.sel("cancelOperation:").value)
+    else if (selector == apple.objc.sel("cancelOperation:").value)
         "Escape"
     else
         return null;
     const o = ownerOf(control) orelse return null;
-    const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
+    const event = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
     // The page heard this key as it came (onKeyEvent) and let it through.
     if (event.value != null and event.value == field_key) {
         holdEvent(&field_key, null);
@@ -1362,7 +1362,7 @@ fn commandKey(control: id, selector: SEL) ?bool {
 }
 
 fn controlCommand(_: id, _: SEL, control: id, _: id, selector: SEL) callconv(.c) BOOL {
-    return cocoa.boolean(commandKey(control, selector) orelse false);
+    return apple.boolean(commandKey(control, selector) orelse false);
 }
 
 fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
@@ -1370,13 +1370,13 @@ fn textDidChange(_: id, _: SEL, note: id) callconv(.c) void {
     const o = ownerOf(tv.value) orelse return;
     if (o.s.updating) return;
     // The placeholder under it comes and goes with the text.
-    o.s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
-    const text = cocoa.utf8(tv.msgSend(Object, "string", .{})) orelse "";
+    o.s.view.msgSend(void, "setNeedsDisplay:", .{apple.boolean(true)});
+    const text = apple.utf8(tv.msgSend(Object, "string", .{})) orelse "";
     sendInput(tv.value, o.s, o.n, text);
 }
 
 fn textViewCommand(_: id, _: SEL, tv: id, selector: SEL) callconv(.c) BOOL {
-    return cocoa.boolean(commandKey(tv, selector) orelse false);
+    return apple.boolean(commandKey(tv, selector) orelse false);
 }
 
 /// A check's state as the page has it (NSControlStateValueOn 1, Off 0,
@@ -1395,7 +1395,7 @@ fn checkClicked(_: id, _: SEL, sender: id) callconv(.c) void {
     if (o.s.updating) return;
     const token = o.s.token;
     const nid = o.n.id;
-    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const app = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{});
     const ev = app.msgSend(Object, "currentEvent", .{});
     const flags: c_ulong = if (ev.value != null) ev.msgSend(c_ulong, "modifierFlags", .{}) else 0;
     var buf: [16]u8 = undefined;
@@ -1405,7 +1405,7 @@ fn checkClicked(_: id, _: SEL, sender: id) callconv(.c) void {
     const n = s.engine.tree.get(nid) orelse return;
     checkState(n, .{ .value = sender });
     // And after the page's render (its new props, if any).
-    field_delegate.msgSend(void, "performSelector:withObject:afterDelay:", .{ cocoa.objc.sel("checkResync:").value, sender, @as(f64, 0) });
+    field_delegate.msgSend(void, "performSelector:withObject:afterDelay:", .{ apple.objc.sel("checkResync:").value, sender, @as(f64, 0) });
 }
 
 /// A click on a native push button: the page's click (activate(): a
@@ -1413,7 +1413,7 @@ fn checkClicked(_: id, _: SEL, sender: id) callconv(.c) void {
 fn buttonClicked(_: id, _: SEL, sender: id) callconv(.c) void {
     const o = ownerOf(sender) orelse return;
     if (o.s.updating) return;
-    const app = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{});
+    const app = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{});
     const ev = app.msgSend(Object, "currentEvent", .{});
     const flags: c_ulong = if (ev.value != null) ev.msgSend(c_ulong, "modifierFlags", .{}) else 0;
     var buf: [16]u8 = undefined;
@@ -1460,28 +1460,28 @@ fn buttonLook(n: *const Node, f: *Field) void {
     b.msgSend(void, "setBezelStyle:", .{bz.style});
     b.msgSend(void, "setControlSize:", .{bz.size});
     // (The page's scheme, not the system's: a light page in dark mode.)
-    b.msgSend(void, "setAppearance:", .{cocoa.class("NSAppearance").msgSend(Object, "appearanceNamed:", .{if (n.props.dk) NSAppearanceNameDarkAqua else NSAppearanceNameAqua})});
-    const str = cocoa.nsString(text) orelse return;
+    b.msgSend(void, "setAppearance:", .{apple.class("NSAppearance").msgSend(Object, "appearanceNamed:", .{if (n.props.dk) NSAppearanceNameDarkAqua else NSAppearanceNameAqua})});
+    const str = apple.nsString(text) orelse return;
     defer str.release();
     const fz = n.props.fz orelse 16;
     const fnt: Object = .{ .value = @ptrCast(@alignCast(draw.font("NSFont", fz, n.props.fwt orelse 400, n.props.it, n.props.mono, n.props.ff) orelse return)) };
     // The page's color only when it colored the button (render.js sends
     // col then), else the system's label color for the bezel.
-    const NSColor = cocoa.class("NSColor");
+    const NSColor = apple.class("NSColor");
     const color = if (n.props.col) |c|
         NSColor.msgSend(Object, "colorWithSRGBRed:green:blue:alpha:", .{ @as(f64, c[0] / 255), @as(f64, c[1] / 255), @as(f64, c[2] / 255), @as(f64, c[3]) * @as(f64, if (n.props.dis) 0.4 else 1) })
     else
         NSColor.msgSend(Object, if (n.props.dis) "disabledControlTextColor" else "controlTextColor", .{});
-    const para = cocoa.class("NSMutableParagraphStyle").msgSend(Object, "new", .{});
+    const para = apple.class("NSMutableParagraphStyle").msgSend(Object, "new", .{});
     defer para.release();
     para.msgSend(void, "setAlignment:", .{@as(c_long, 1)}); // centered (NSTextAlignmentCenter)
     para.msgSend(void, "setLineBreakMode:", .{@as(c_ulong, 4)}); // truncated at the end
-    const attrs = cocoa.class("NSDictionary").msgSend(Object, "dictionaryWithObjects:forKeys:count:", .{
+    const attrs = apple.class("NSDictionary").msgSend(Object, "dictionaryWithObjects:forKeys:count:", .{
         &[_]id{ fnt.value, color.value, para.value },
         &[_]id{ NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName },
         @as(c_ulong, 3),
     });
-    const title = cocoa.class("NSAttributedString").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithString:attributes:", .{ str, attrs });
+    const title = apple.class("NSAttributedString").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithString:attributes:", .{ str, attrs });
     defer title.release();
     b.msgSend(void, "setAttributedTitle:", .{title});
 }
@@ -1528,7 +1528,7 @@ fn sliderChanged(_: id, _: SEL, sender: id) callconv(.c) void {
     const text = r.text(&buf, sl.msgSend(f64, "doubleValue", .{}));
     sl.msgSend(void, "setDoubleValue:", .{r.snap(sl.msgSend(f64, "doubleValue", .{}))});
     sendValue(o.s, o.n, "input", text);
-    const event = cocoa.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
+    const event = apple.class("NSApplication").msgSend(Object, "sharedApplication", .{}).msgSend(Object, "currentEvent", .{});
     const kind = if (event.value != null) event.msgSend(c_ulong, "type", .{}) else 0;
     // NSEventTypeLeftMouseDown 1, LeftMouseDragged 6: still dragging.
     if (kind == 1 or kind == 6) return;
@@ -1541,21 +1541,21 @@ fn sliderChanged(_: id, _: SEL, sender: id) callconv(.c) void {
 // The view
 
 fn yes(_: id, _: SEL) callconv(.c) BOOL {
-    return cocoa.boolean(true);
+    return apple.boolean(true);
 }
 
 fn acceptsFirstMouse(_: id, _: SEL, _: id) callconv(.c) BOOL {
-    return cocoa.boolean(true);
+    return apple.boolean(true);
 }
 
 fn isOpaque(self: id, _: SEL) callconv(.c) BOOL {
-    const s = by_view.get(key(self)) orelse return cocoa.boolean(false);
-    return cocoa.boolean(!s.transparent);
+    const s = by_view.get(key(self)) orelse return apple.boolean(false);
+    return apple.boolean(!s.transparent);
 }
 
 fn drawRect(self: id, _: SEL, _: NSRect) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
-    const ctx = cocoa.class("NSGraphicsContext").msgSend(Object, "currentContext", .{});
+    const ctx = apple.class("NSGraphicsContext").msgSend(Object, "currentContext", .{});
     const cg: ?*anyopaque = ctx.msgSend(?*anyopaque, "CGContext", .{});
     // A canvas's bitmap is as many pixels per point as the screen has.
     const win = s.view.msgSend(Object, "window", .{});
@@ -1608,7 +1608,7 @@ fn backingChanged(self: id, _: SEL) callconv(.c) void {
 fn point(view: id, event: id) [2]f32 {
     const ev: Object = .{ .value = event };
     const p = ev.msgSend(NSPoint, "locationInWindow", .{});
-    const q = (Object{ .value = view }).msgSend(NSPoint, "convertPoint:fromView:", .{ p, cocoa.nil });
+    const q = (Object{ .value = view }).msgSend(NSPoint, "convertPoint:fromView:", .{ p, apple.nil });
     return .{ @floatCast(q.x), @floatCast(q.y) };
 }
 
@@ -1652,7 +1652,7 @@ fn mouseDown(self: id, _: SEL, event: id) callconv(.c) void {
 /// same for the first three: left 1, right 2, other 4; then back 8,
 /// forward 16).
 fn pressedButtons() u32 {
-    return @truncate(cocoa.class("NSEvent").msgSend(c_ulong, "pressedMouseButtons", .{}) & 0x1f);
+    return @truncate(apple.class("NSEvent").msgSend(c_ulong, "pressedMouseButtons", .{}) & 0x1f);
 }
 
 /// The right or another button went down: the page's pointer down (its
@@ -1765,7 +1765,7 @@ fn pointerMoved(self: id, event: id, buttons: u32) void {
     const hand = under.link or (under.node != null and clickableUp(under.node.?));
     if (hand != s.pointer_hand) {
         s.pointer_hand = hand;
-        cocoa.class("NSCursor").msgSend(Object, if (hand) "pointingHandCursor" else "arrowCursor", .{}).msgSend(void, "set", .{});
+        apple.class("NSCursor").msgSend(Object, if (hand) "pointingHandCursor" else "arrowCursor", .{}).msgSend(void, "set", .{});
     }
     // :hover: the page hears when the node (or link) under the pointer changes.
     const nid: i64 = under.id;
@@ -1779,7 +1779,7 @@ fn mouseExited(self: id, _: SEL, _: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     if (s.pointer_hand) {
         s.pointer_hand = false;
-        cocoa.class("NSCursor").msgSend(Object, "arrowCursor", .{}).msgSend(void, "set", .{});
+        apple.class("NSCursor").msgSend(Object, "arrowCursor", .{}).msgSend(void, "set", .{});
     }
     if (s.hovered == 0) return;
     s.hovered = 0;
@@ -1789,7 +1789,7 @@ fn mouseExited(self: id, _: SEL, _: id) callconv(.c) void {
 fn scrollWheel(self: id, _: SEL, event: id) callconv(.c) void {
     const s = by_view.get(key(self)) orelse return;
     const ev: Object = .{ .value = event };
-    const precise = cocoa.isTrue(ev.msgSend(BOOL, "hasPreciseScrollingDeltas", .{}));
+    const precise = apple.isTrue(ev.msgSend(BOOL, "hasPreciseScrollingDeltas", .{}));
     const k: f64 = if (precise) 1 else 16;
     // Positive deltas move the content down/right: the page's d is the opposite.
     var dy: f32 = @floatCast(-ev.msgSend(f64, "scrollingDeltaY", .{}) * k);
@@ -1863,7 +1863,7 @@ fn flash(s: *Surface, n: *Node) void {
     const t = std.heap.smp_allocator.create(u64) catch return;
     t.* = s.token;
     s.flash_queued = true;
-    cocoa.afterMain(16, t, onFlash);
+    apple.afterMain(16, t, onFlash);
 }
 
 fn onFlash(p: ?*anyopaque) callconv(.c) void {
@@ -1872,8 +1872,8 @@ fn onFlash(p: ?*anyopaque) callconv(.c) void {
         std.heap.smp_allocator.destroy(t);
         return; // the window is gone
     };
-    s.view.msgSend(void, "setNeedsDisplay:", .{cocoa.boolean(true)});
-    if (draw.nowMs() < s.flash_until + 16) return cocoa.afterMain(16, t, onFlash);
+    s.view.msgSend(void, "setNeedsDisplay:", .{apple.boolean(true)});
+    if (draw.nowMs() < s.flash_until + 16) return apple.afterMain(16, t, onFlash);
     std.heap.smp_allocator.destroy(t);
     s.flash_queued = false;
 }
@@ -1885,7 +1885,7 @@ fn queueTrim(s: *Surface) void {
     const t = std.heap.smp_allocator.create(u64) catch return;
     t.* = s.token;
     s.trim_queued = true;
-    cocoa.afterMain(2000, t, onTrim);
+    apple.afterMain(2000, t, onTrim);
 }
 
 fn onTrim(p: ?*anyopaque) callconv(.c) void {
@@ -1922,7 +1922,7 @@ fn keyName(event: Object) ?[]const u8 {
         121 => "PageDown",
         49 => " ",
         else => blk: {
-            const chars = cocoa.utf8(event.msgSend(Object, "charactersIgnoringModifiers", .{})) orelse break :blk null;
+            const chars = apple.utf8(event.msgSend(Object, "charactersIgnoringModifiers", .{})) orelse break :blk null;
             if (chars.len == 0 or chars.len > 4) break :blk null;
             break :blk chars;
         },
@@ -1983,7 +1983,7 @@ fn installKeyUpMonitor() void {
     key_up_monitor = true;
     key_up_block = .{ .isa = &_NSConcreteGlobalBlock, .flags = block_is_global, .reserved = 0, .invoke = onKeyEvent, .descriptor = &key_up_descriptor };
     // The monitor lives as long as the process (never removed).
-    _ = cocoa.class("NSEvent").msgSend(Object, "addLocalMonitorForEventsMatchingMask:handler:", .{ key_up_mask | key_down_mask | flags_changed_mask, @as(*anyopaque, @ptrCast(&key_up_block)) });
+    _ = apple.class("NSEvent").msgSend(Object, "addLocalMonitorForEventsMatchingMask:handler:", .{ key_up_mask | key_down_mask | flags_changed_mask, @as(*anyopaque, @ptrCast(&key_up_block)) });
 }
 
 fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
@@ -2000,16 +2000,16 @@ fn onKeyEvent(_: *MonitorBlock, event: id) callconv(.c) id {
     } else {
         // A field: its control (a text field's is the field editor's delegate).
         var control = responder;
-        if (cocoa.isTrue(control.msgSend(BOOL, "isKindOfClass:", .{cocoa.class("NSTextView").value})) and
-            cocoa.isTrue(control.msgSend(BOOL, "isFieldEditor", .{}))) control = control.msgSend(Object, "delegate", .{});
+        if (apple.isTrue(control.msgSend(BOOL, "isKindOfClass:", .{apple.class("NSTextView").value})) and
+            apple.isTrue(control.msgSend(BOOL, "isFieldEditor", .{}))) control = control.msgSend(Object, "delegate", .{});
         const o = by_control.get(key(control.value)) orelse return event;
         s = surfaces.get(o.token) orelse return event;
         nid = o.node;
     }
     // While an input method composes (marked text) in a field, its keys
     // are the field's alone: the page hears none of them.
-    const composing = page == null and cocoa.isTrue(responder.msgSend(BOOL, "respondsToSelector:", .{cocoa.objc.sel("hasMarkedText").value})) and
-        cocoa.isTrue(responder.msgSend(BOOL, "hasMarkedText", .{}));
+    const composing = page == null and apple.isTrue(responder.msgSend(BOOL, "respondsToSelector:", .{apple.objc.sel("hasMarkedText").value})) and
+        apple.isTrue(responder.msgSend(BOOL, "hasMarkedText", .{}));
     // The page may close its window in a handler: nothing of it is used
     // after, and the event goes nowhere.
     const token = s.token;
@@ -2100,7 +2100,7 @@ fn sendKey(s: *Surface, nid: i64, event: id, kind: []const u8) bool {
     const k = std.json.Stringify.valueAlloc(gpa, name, .{}) catch return false;
     defer gpa.free(k);
     var buf: [64]u8 = undefined;
-    const repeat = cocoa.isTrue(ev.msgSend(BOOL, "isARepeat", .{}));
+    const repeat = apple.isTrue(ev.msgSend(BOOL, "isARepeat", .{}));
     const json = std.fmt.bufPrint(&buf, "[{s},{d},{}]", .{ k, modFlags(ev.msgSend(c_ulong, "modifierFlags", .{})), repeat }) catch return false;
     return s.engine.event(nid, kind, json);
 }
@@ -2128,15 +2128,15 @@ const pb_url = "public.url"; // NSPasteboardTypeURL
 const pb_html = "public.html"; // NSPasteboardTypeHTML
 
 fn registerDragTypes(view: Object) void {
-    var types: [4]cocoa.id = undefined;
+    var types: [4]apple.id = undefined;
     var n: usize = 0;
     inline for (.{ pb_file_url, pb_string, pb_url, pb_html }) |t| {
-        const str = cocoa.nsString(t) orelse unreachable; // ASCII
+        const str = apple.nsString(t) orelse unreachable; // ASCII
         types[n] = str.value;
         n += 1;
     }
     defer for (types[0..n]) |t| (Object{ .value = t }).release();
-    const array = cocoa.class("NSArray").msgSend(Object, "arrayWithObjects:count:", .{ @as([*]const cocoa.id, &types), @as(c_ulong, n) });
+    const array = apple.class("NSArray").msgSend(Object, "arrayWithObjects:count:", .{ @as([*]const apple.id, &types), @as(c_ulong, n) });
     view.msgSend(void, "registerForDraggedTypes:", .{array});
 }
 
@@ -2185,21 +2185,21 @@ const DragKinds = struct {
 };
 
 fn hasType(pb: Object, comptime t: []const u8) bool {
-    const str = cocoa.nsString(t) orelse unreachable; // ASCII
+    const str = apple.nsString(t) orelse unreachable; // ASCII
     defer str.release();
-    const array = cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{str});
+    const array = apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{str});
     return pb.msgSend(Object, "availableTypeFromArray:", .{array}).value != null;
 }
 
 /// The pasteboard's file URLs (an autoreleased NSArray, maybe empty).
 fn fileURLs(pb: Object) Object {
-    const classes_ = cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{cocoa.class("NSURL")});
-    const key_ = cocoa.nsString("NSPasteboardURLReadingFileURLsOnlyKey") orelse unreachable; // ASCII
+    const classes_ = apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{apple.class("NSURL")});
+    const key_ = apple.nsString("NSPasteboardURLReadingFileURLsOnlyKey") orelse unreachable; // ASCII
     defer key_.release();
-    const yes_ = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(true)});
-    const options = cocoa.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{ yes_, key_ });
+    const yes_ = apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(true)});
+    const options = apple.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{ yes_, key_ });
     const urls = pb.msgSend(Object, "readObjectsForClasses:options:", .{ classes_, options });
-    if (urls.value == null) return cocoa.class("NSArray").msgSend(Object, "array", .{});
+    if (urls.value == null) return apple.class("NSArray").msgSend(Object, "array", .{});
     return urls;
 }
 
@@ -2246,12 +2246,12 @@ fn pickAction(mask: u8, allowed: u8, suggested: u8) u8 {
 
 fn dragPoint(self: id, info: Object) [2]f32 {
     const p = info.msgSend(NSPoint, "draggingLocation", .{});
-    const q = (Object{ .value = self }).msgSend(NSPoint, "convertPoint:fromView:", .{ p, cocoa.nil });
+    const q = (Object{ .value = self }).msgSend(NSPoint, "convertPoint:fromView:", .{ p, apple.nil });
     return .{ @floatCast(q.x), @floatCast(q.y) };
 }
 
 fn dragMods() u32 {
-    return modFlags(cocoa.class("NSEvent").msgSend(c_ulong, "modifierFlags", .{}));
+    return modFlags(apple.class("NSEvent").msgSend(c_ulong, "modifierFlags", .{}));
 }
 
 fn draggingEntered(self: id, _: SEL, info_id: id) callconv(.c) c_ulong {
@@ -2309,25 +2309,25 @@ fn sendDragLeave(s: *Surface, session: u32) void {
     _ = s.engine.dragEvent(0, json);
 }
 
-fn prepareForDragOperation(self: id, _: SEL, _: id) callconv(.c) cocoa.c.BOOL {
-    const s = by_view.get(key(self)) orelse return cocoa.boolean(false);
-    return cocoa.boolean(s.drag_inside and s.drag_op != 0);
+fn prepareForDragOperation(self: id, _: SEL, _: id) callconv(.c) apple.c.BOOL {
+    const s = by_view.get(key(self)) orelse return apple.boolean(false);
+    return apple.boolean(s.drag_inside and s.drag_op != 0);
 }
 
 /// The drop: its items read now (AppKit's are synchronous), "drop" on the
 /// node under it, and the page's own answer is AppKit's.
-fn performDragOperation(self: id, _: SEL, info_id: id) callconv(.c) cocoa.c.BOOL {
-    const s = by_view.get(key(self)) orelse return cocoa.boolean(false);
-    if (!s.drag_inside) return cocoa.boolean(false);
+fn performDragOperation(self: id, _: SEL, info_id: id) callconv(.c) apple.c.BOOL {
+    const s = by_view.get(key(self)) orelse return apple.boolean(false);
+    if (!s.drag_inside) return apple.boolean(false);
     s.drag_inside = false;
     const op = s.drag_op;
     s.drag_op = 0;
     const session = s.drag_session;
     if (op == 0) {
         sendDragLeave(s, session);
-        return cocoa.boolean(false);
+        return apple.boolean(false);
     }
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     const info: Object = .{ .value = info_id };
     const token = s.token;
@@ -2343,12 +2343,12 @@ fn performDragOperation(self: id, _: SEL, info_id: id) callconv(.c) cocoa.c.BOOL
     json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ p[0], p[1], allowed, suggestedAction(allowed), dragMods(), session, items.json.items }) catch {
         items.releaseAll(s);
         sendDragLeave(s, session);
-        return cocoa.boolean(false);
+        return apple.boolean(false);
     };
     const nid: i64 = if (s.engine.tree.hit(p[0], p[1])) |n| n.id else 0;
     const mask = s.engine.dragEvent(nid, json.items);
-    if (surfaces.get(token) == null) return cocoa.boolean(false);
-    return cocoa.boolean(mask & allowed != 0);
+    if (surfaces.get(token) == null) return apple.boolean(false);
+    return apple.boolean(mask & allowed != 0);
 }
 
 /// A drop's items' JSON (comma-separated) and the handles in it.
@@ -2400,7 +2400,7 @@ fn dropFiles(s: *Surface, pb: Object, items: *DropItems) void {
         // The name as Finder shows it (composed, as WebKit's File.name), not
         // the file system's decomposed bytes.
         const last = url.msgSend(Object, "lastPathComponent", .{});
-        const name = (if (last.value != null) cocoa.utf8(last) else null) orelse std.fs.path.basename(path);
+        const name = (if (last.value != null) apple.utf8(last) else null) orelse std.fs.path.basename(path);
         const added = fileItem(items, name, info, handle) catch false;
         if (added) items.handles.append(items.gpa, handle) catch {} else s.engine.drops.release(handle);
     }
@@ -2422,25 +2422,25 @@ fn mimeOf(name: []const u8) []const u8 {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "";
     if (dot == 0 or dot + 1 == name.len) return "";
     // (UniformTypeIdentifiers: loaded with AppKit, but not to be counted on.)
-    const ut = cocoa.objc.getClass("UTType") orelse return "";
-    const ext = cocoa.nsString(name[dot + 1 ..]) orelse return "";
+    const ut = apple.objc.getClass("UTType") orelse return "";
+    const ext = apple.nsString(name[dot + 1 ..]) orelse return "";
     defer ext.release();
     const t = ut.msgSend(Object, "typeWithFilenameExtension:", .{ext});
     if (t.value == null) return "";
     const mime = t.msgSend(Object, "preferredMIMEType", .{});
     if (mime.value == null) return "";
-    return cocoa.utf8(mime) orelse "";
+    return apple.utf8(mime) orelse "";
 }
 
 /// The drag's strings: ["string", type, value] each.
 fn dropStrings(kinds: DragKinds, pb: Object, items: *DropItems) void {
     const types = [_][]const u8{ pb_string, pb_url, pb_html };
     for (kinds.strings(), types) |mime, t| if (mime) |m| {
-        const str = cocoa.nsString(t) orelse continue;
+        const str = apple.nsString(t) orelse continue;
         defer str.release();
         const value = pb.msgSend(Object, "stringForType:", .{str});
         if (value.value == null) continue;
-        const text = cocoa.utf8(value) orelse continue;
+        const text = apple.utf8(value) orelse continue;
         if (text.len > drag_max_string) {
             log.warn("native ui: a dropped {s} over {d} MiB left out", .{ m, drag_max_string >> 20 });
             continue;
@@ -2475,16 +2475,16 @@ fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), str: []cons
 // inside that call). Elements hold only (surface token, id) and read the
 // tree on every query: one whose node is gone reads as empty.
 
-extern fn NSAccessibilityPostNotification(element: cocoa.id, notification: cocoa.id) void;
-extern fn NSAccessibilityUnignoredDescendant(element: cocoa.id) cocoa.id;
-var ns_layout_changed: cocoa.id = null;
+extern fn NSAccessibilityPostNotification(element: apple.id, notification: apple.id) void;
+extern fn NSAccessibilityUnignoredDescendant(element: apple.id) apple.id;
+var ns_layout_changed: apple.id = null;
 
-var ax_class: ?cocoa.objc.Class = null;
+var ax_class: ?apple.objc.Class = null;
 const AxRef = struct { token: u64, id: i64, text: bool };
 var ax_refs: std.AutoHashMapUnmanaged(usize, AxRef) = .empty;
 
 fn no(_: id, _: SEL) callconv(.c) BOOL {
-    return cocoa.boolean(false);
+    return apple.boolean(false);
 }
 
 fn axChanged(ctx: *anyopaque, _: i64) void {
@@ -2496,7 +2496,7 @@ fn axChanged(ctx: *anyopaque, _: i64) void {
 fn axOn(s: *Surface) void {
     if (s.a11y) return;
     s.a11y = true;
-    if (ns_layout_changed == null) ns_layout_changed = (cocoa.nsString("AXLayoutChanged") orelse return).value;
+    if (ns_layout_changed == null) ns_layout_changed = (apple.nsString("AXLayoutChanged") orelse return).value;
     s.engine.setA11y(true);
 }
 
@@ -2516,7 +2516,7 @@ fn axElement(s: *Surface, nid: i64, text: bool) ?Object {
 fn axChildren(self: id, _: SEL) callconv(.c) id {
     const s = by_view.get(key(self)) orelse return null;
     axOn(s);
-    const arr = cocoa.class("NSMutableArray").msgSend(Object, "array", .{});
+    const arr = apple.class("NSMutableArray").msgSend(Object, "array", .{});
     if (s.engine.tree.root) |root| axCollect(s, root, arr, false);
     axSystemChildren(self, arr);
     return arr.value;
@@ -2535,8 +2535,8 @@ fn axSystemChildren(self: id, arr: Object) void {
     const n = kids.msgSend(c_ulong, "count", .{});
     for (0..n) |i| {
         const w = kids.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
-        if (!cocoa.isTrue(w.msgSend(BOOL, "isVisible", .{}))) continue;
-        const role = cocoa.utf8(w.msgSend(Object, "accessibilityRole", .{})) orelse continue;
+        if (!apple.isTrue(w.msgSend(BOOL, "isVisible", .{}))) continue;
+        const role = apple.utf8(w.msgSend(Object, "accessibilityRole", .{})) orelse continue;
         if (std.mem.eql(u8, role, "AXPopover") or std.mem.eql(u8, role, "AXSheet")) arr.msgSend(void, "addObject:", .{w});
     }
 }
@@ -2582,7 +2582,7 @@ fn axHitTest(self: id, _: SEL, screen_point: NSPoint) callconv(.c) id {
     const window = view.msgSend(Object, "window", .{});
     if (window.value == null) return self;
     const in_window = window.msgSend(NSRect, "convertRectFromScreen:", .{NSRect{ .origin = screen_point, .size = .{ .width = 0, .height = 0 } }}).origin;
-    const p = view.msgSend(NSPoint, "convertPoint:fromView:", .{ in_window, cocoa.nil });
+    const p = view.msgSend(NSPoint, "convertPoint:fromView:", .{ in_window, apple.nil });
     var n: ?*Node = s.engine.tree.hit(@floatCast(p.x), @floatCast(p.y));
     while (n) |x| : (n = x.parent) {
         if (s.fields.get(x.id)) |f| return f.outer.msgSend(Object, "accessibilityHitTest:", .{screen_point}).value;
@@ -2603,7 +2603,7 @@ fn axAt(self: id) ?AxAt {
 }
 
 fn nsAuto(text: []const u8) id {
-    const str = cocoa.nsString(text) orelse return null;
+    const str = apple.nsString(text) orelse return null;
     return str.msgSend(Object, "autorelease", .{}).value;
 }
 
@@ -2683,7 +2683,7 @@ fn axValue(self: id, _: SEL) callconv(.c) id {
         return nsAuto(buf.items);
     }
     const e = a.entry orelse return null;
-    const num = cocoa.class("NSNumber");
+    const num = apple.class("NSNumber");
     switch (e.r) {
         .checkbox, .radio, .@"switch" => return num.msgSend(Object, "numberWithInt:", .{@as(c_int, if (e.s & tree_mod.Ax.mixed != 0) 2 else if (e.s & tree_mod.Ax.checked != 0) 1 else 0)}).value,
         .heading => return num.msgSend(Object, "numberWithInt:", .{@as(c_int, e.l)}).value,
@@ -2736,7 +2736,7 @@ fn axFrame(self: id, _: SEL) callconv(.c) NSRect {
     const window = view.msgSend(Object, "window", .{});
     if (window.value == null) return zero;
     const in_view: NSRect = .{ .origin = .{ .x = r[0], .y = r[1] }, .size = .{ .width = r[2], .height = r[3] } };
-    const in_window = view.msgSend(NSRect, "convertRect:toView:", .{ in_view, cocoa.nil });
+    const in_window = view.msgSend(NSRect, "convertRect:toView:", .{ in_view, apple.nil });
     return window.msgSend(NSRect, "convertRectToScreen:", .{in_window});
 }
 
@@ -2746,26 +2746,26 @@ fn axParent(self: id, _: SEL) callconv(.c) id {
 }
 
 fn axEnabled(self: id, _: SEL) callconv(.c) BOOL {
-    const a = axAt(self) orelse return cocoa.boolean(false);
-    const e = a.entry orelse return cocoa.boolean(true);
-    return cocoa.boolean(e.s & tree_mod.Ax.disabled == 0);
+    const a = axAt(self) orelse return apple.boolean(false);
+    const e = a.entry orelse return apple.boolean(true);
+    return apple.boolean(e.s & tree_mod.Ax.disabled == 0);
 }
 
 /// VoiceOver's press (VO-Space): the element's click, as the mouse's.
 fn axPress(self: id, _: SEL) callconv(.c) BOOL {
-    const a = axAt(self) orelse return cocoa.boolean(false);
-    if (a.ref.text) return cocoa.boolean(false);
+    const a = axAt(self) orelse return apple.boolean(false);
+    if (a.ref.text) return apple.boolean(false);
     _ = a.s.engine.event(a.ref.id, "click", "0");
-    return cocoa.boolean(true);
+    return apple.boolean(true);
 }
 
 fn axFocused(self: id, _: SEL) callconv(.c) BOOL {
-    const a = axAt(self) orelse return cocoa.boolean(false);
-    return cocoa.boolean(a.s.focused != 0 and a.s.focused == a.ref.id);
+    const a = axAt(self) orelse return apple.boolean(false);
+    return apple.boolean(a.s.focused != 0 and a.s.focused == a.ref.id);
 }
 
 fn axSetFocused(self: id, _: SEL, on: BOOL) callconv(.c) void {
-    if (!cocoa.isTrue(on)) return;
+    if (!apple.isTrue(on)) return;
     const a = axAt(self) orelse return;
     if (a.entry) |e| if (e.s & tree_mod.Ax.focusable != 0) {
         _ = a.s.engine.event(a.ref.id, "focus", "null");

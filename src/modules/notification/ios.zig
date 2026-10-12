@@ -6,11 +6,11 @@
 //! Clicks and buttons are reported through the same delegate (apple.zig).
 
 const std = @import("std");
-const apple = @import("../../platform/ios/apple.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/ios/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
-const Actions = @import("apple.zig").Actions(apple, complete, .{
+const Actions = @import("apple.zig").Actions(complete, .{
     .{ "userNotificationCenter:willPresentNotification:withCompletionHandler:", willPresent },
 });
 

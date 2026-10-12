@@ -10,13 +10,13 @@
 //! sandboxed app would need a security-scoped bookmark instead (as on iOS).
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 const path_folder = @import("path_folder.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 
 pub const OpenOptions = common.OpenOptions;
 pub const SaveOptions = common.SaveOptions;
@@ -39,26 +39,26 @@ const Params = struct {
 };
 
 fn runPanel(params: *Params) void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
 
     const panel = if (params.kind == .save)
-        cocoa.class("NSSavePanel").msgSend(Object, "savePanel", .{})
+        apple.class("NSSavePanel").msgSend(Object, "savePanel", .{})
     else
-        cocoa.class("NSOpenPanel").msgSend(Object, "openPanel", .{});
+        apple.class("NSOpenPanel").msgSend(Object, "openPanel", .{});
     if (panel.value == null) {
         params.err = error.DialogCreateFailed;
         return;
     }
     if (params.kind != .save) {
         const folder = params.kind == .folder;
-        panel.msgSend(void, "setCanChooseFiles:", .{cocoa.boolean(!folder)});
-        panel.msgSend(void, "setCanChooseDirectories:", .{cocoa.boolean(folder)});
-        panel.msgSend(void, "setAllowsMultipleSelection:", .{cocoa.boolean(false)});
-        if (folder) panel.msgSend(void, "setCanCreateDirectories:", .{cocoa.boolean(true)});
+        panel.msgSend(void, "setCanChooseFiles:", .{apple.boolean(!folder)});
+        panel.msgSend(void, "setCanChooseDirectories:", .{apple.boolean(folder)});
+        panel.msgSend(void, "setAllowsMultipleSelection:", .{apple.boolean(false)});
+        if (folder) panel.msgSend(void, "setCanCreateDirectories:", .{apple.boolean(true)});
         if (params.filter) |f| setFilter(panel, f);
     }
-    if (cocoa.nsString(params.title)) |title| {
+    if (apple.nsString(params.title)) |title| {
         defer title.release();
         // Panels have no title bar since macOS 11: the message shows it.
         panel.msgSend(void, "setTitle:", .{title});
@@ -66,10 +66,10 @@ fn runPanel(params: *Params) void {
     }
 
     // Bring the app forward so the panel isn't hidden behind other apps.
-    ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{cocoa.boolean(true)});
+    ShellMod.sharedApplication().msgSend(void, "activateIgnoringOtherApps:", .{apple.boolean(true)});
     if (panel.msgSend(isize, "runModal", .{}) != NSModalResponseOK) return; // cancelled
 
-    const path = cocoa.utf8(panel.msgSend(Object, "URL", .{}).msgSend(Object, "path", .{})) orelse {
+    const path = apple.utf8(panel.msgSend(Object, "URL", .{}).msgSend(Object, "path", .{})) orelse {
         params.err = error.DialogGetResultFailed;
         return;
     };
@@ -82,11 +82,11 @@ fn runPanel(params: *Params) void {
 /// Only the filter's extensions can be chosen (`allowedFileTypes`:
 /// deprecated for UTTypes, still honored, and needs no UTType lookups).
 fn setFilter(panel: Object, f: common.Filter) void {
-    const list = cocoa.class("NSMutableArray").msgSend(Object, "array", .{});
+    const list = apple.class("NSMutableArray").msgSend(Object, "array", .{});
     var n: usize = 0;
     for (f.extensions[0..@min(f.extensions.len, common.max_filter_extensions)]) |ext| {
         if (!common.validExtension(ext)) continue;
-        const s = cocoa.nsString(ext) orelse continue;
+        const s = apple.nsString(ext) orelse continue;
         defer s.release();
         list.msgSend(void, "addObject:", .{s});
         n += 1;
@@ -141,18 +141,18 @@ fn checkLive(_: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const Probe = struct {
         response: isize = 0,
         fn run(self: *@This()) void {
-            const pool = cocoa.objc.AutoreleasePool.init();
+            const pool = apple.objc.AutoreleasePool.init();
             defer pool.deinit();
-            const panel = cocoa.class("NSOpenPanel").msgSend(Object, "openPanel", .{});
+            const panel = apple.class("NSOpenPanel").msgSend(Object, "openPanel", .{});
             if (panel.value == null) return;
             const app = ShellMod.sharedApplication();
-            const sel = cocoa.objc.sel("abortModal");
+            const sel = apple.objc.sel("abortModal");
             // A timer in the modal run loop mode: performSelector's default
             // mode wouldn't fire while the panel runs.
-            const mode = cocoa.nsString("NSModalPanelRunLoopMode") orelse return;
+            const mode = apple.nsString("NSModalPanelRunLoopMode") orelse return;
             defer mode.release();
-            const modes = cocoa.class("NSArray").msgSend(Object, "arrayWithObject:", .{mode});
-            app.msgSend(void, "performSelector:withObject:afterDelay:inModes:", .{ sel.value, cocoa.nil, @as(f64, 0.5), modes });
+            const modes = apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{mode});
+            app.msgSend(void, "performSelector:withObject:afterDelay:inModes:", .{ sel.value, apple.nil, @as(f64, 0.5), modes });
             self.response = panel.msgSend(isize, "runModal", .{});
         }
     };
@@ -168,11 +168,11 @@ fn checkLive(_: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
 }
 
 fn checkClasses() !oriel.Check {
-    const open_panel = cocoa.objc.getClass("NSOpenPanel") orelse return .{ .module = "dialog", .ok = false, .detail = "NSOpenPanel missing" };
-    const save_panel = cocoa.objc.getClass("NSSavePanel") orelse return .{ .module = "dialog", .ok = false, .detail = "NSSavePanel missing" };
-    const ok = open_panel.respondsToSelector(cocoa.objc.sel("runModal")) and
-        save_panel.respondsToSelector(cocoa.objc.sel("runModal")) and
-        open_panel.respondsToSelector(cocoa.objc.sel("setAllowsMultipleSelection:"));
+    const open_panel = apple.objc.getClass("NSOpenPanel") orelse return .{ .module = "dialog", .ok = false, .detail = "NSOpenPanel missing" };
+    const save_panel = apple.objc.getClass("NSSavePanel") orelse return .{ .module = "dialog", .ok = false, .detail = "NSSavePanel missing" };
+    const ok = open_panel.respondsToSelector(apple.objc.sel("runModal")) and
+        save_panel.respondsToSelector(apple.objc.sel("runModal")) and
+        open_panel.respondsToSelector(apple.objc.sel("setAllowsMultipleSelection:"));
     return .{
         .module = "dialog",
         .ok = ok,

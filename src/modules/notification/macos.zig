@@ -13,16 +13,16 @@
 //! the bundled app (osascript notifications open Script Editor).
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
-const Actions = @import("apple.zig").Actions(cocoa, complete, .{
+const Actions = @import("apple.zig").Actions(complete, .{
     .{ "userNotificationCenter:willPresentNotification:withCompletionHandler:", willPresent },
 });
 
-fn complete(handler: cocoa.id) void {
-    cocoa.callBlock(handler, struct {}, .{});
+fn complete(handler: apple.id) void {
+    apple.callBlock(handler, &.{}, .{});
 }
 
 // UNNotificationPresentationOptions: show it while the app is in front too.
@@ -30,8 +30,8 @@ const present_sound: c_ulong = 1 << 1;
 const present_list: c_ulong = 1 << 3;
 const present_banner: c_ulong = 1 << 4;
 
-fn willPresent(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, _: cocoa.id, handler: cocoa.id) callconv(.c) void {
-    cocoa.callBlock(handler, struct { c_ulong }, .{present_banner | present_list | present_sound});
+fn willPresent(_: apple.id, _: apple.c.SEL, _: apple.id, _: apple.id, handler: apple.id) callconv(.c) void {
+    apple.callBlock(handler, &.{c_ulong}, .{present_banner | present_list | present_sound});
 }
 
 /// Called by the shell as the app finishes launching (main thread): a click
@@ -39,11 +39,11 @@ fn willPresent(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, _: cocoa.id, handler: c
 /// reaches the delegate only if it is set by then.
 pub fn installAtLaunch() void {
     if (!bundled()) return;
-    const center = cocoa.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
+    const center = apple.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
     if (center.value != null) Actions.installDelegate(center);
 }
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const c = std.c;
 const log = std.log.scoped(.oriel);
 
@@ -51,15 +51,15 @@ pub const NotificationOptions = common.NotificationOptions;
 
 /// Whether this process runs from an `.app` bundle with a bundle id.
 fn bundled() bool {
-    const bundle = cocoa.class("NSBundle").msgSend(Object, "mainBundle", .{});
+    const bundle = apple.class("NSBundle").msgSend(Object, "mainBundle", .{});
     if (bundle.value == null) return false;
     if (bundle.msgSend(Object, "bundleIdentifier", .{}).value == null) return false;
-    const path = cocoa.utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
+    const path = apple.utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
     return std.mem.endsWith(u8, path, ".app");
 }
 
 pub fn notify(options: NotificationOptions) !void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     if (!bundled()) return notifyViaOsascript(options);
     var params: Params = .{ .options = options };
@@ -77,16 +77,14 @@ const Params = struct {
 var authorization_requested = false; // main thread only
 var id_counter: std.atomic.Value(u32) = .init(1);
 
-const AuthBlock = cocoa.objc.Block(struct {}, .{ cocoa.c.BOOL, cocoa.id }, void);
-
-fn onAuthorization(_: *const AuthBlock.Context, granted: cocoa.c.BOOL, _: cocoa.id) callconv(.c) void {
-    if (!cocoa.isTrue(granted)) log.warn("notifications are not allowed for this app (System Settings > Notifications)", .{});
+fn onAuthorization(_: *apple.BlockLiteral, granted: apple.c.BOOL, _: apple.id) callconv(.c) void {
+    if (!apple.isTrue(granted)) log.warn("notifications are not allowed for this app (System Settings > Notifications)", .{});
 }
 
 fn notifyBundled(params: *Params) void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
-    const center = cocoa.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
+    const center = apple.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
     if (center.value == null) {
         params.err = error.NotificationCenterUnavailable;
         return;
@@ -96,20 +94,18 @@ fn notifyBundled(params: *Params) void {
         authorization_requested = true;
         const UNAuthorizationOptionSound: c_ulong = 1 << 1;
         const UNAuthorizationOptionAlert: c_ulong = 1 << 2;
-        // The center copies the (stack) block before this call returns.
-        var block = AuthBlock.init(.{}, &onAuthorization);
-        center.msgSend(void, "requestAuthorizationWithOptions:completionHandler:", .{ UNAuthorizationOptionAlert | UNAuthorizationOptionSound, @as(cocoa.id, @ptrCast(&block)) });
+        center.msgSend(void, "requestAuthorizationWithOptions:completionHandler:", .{ UNAuthorizationOptionAlert | UNAuthorizationOptionSound, apple.globalBlock(onAuthorization) });
     }
 
-    const content = cocoa.new(cocoa.class("UNMutableNotificationContent"));
+    const content = apple.new(apple.class("UNMutableNotificationContent"));
     defer content.release();
-    const title = cocoa.nsString(params.options.title) orelse {
+    const title = apple.nsString(params.options.title) orelse {
         params.err = error.InvalidUtf8;
         return;
     };
     defer title.release();
     content.msgSend(void, "setTitle:", .{title});
-    if (params.options.body) |b| if (cocoa.nsString(b)) |body| {
+    if (params.options.body) |b| if (apple.nsString(b)) |body| {
         defer body.release();
         content.msgSend(void, "setBody:", .{body});
     };
@@ -120,24 +116,24 @@ fn notifyBundled(params: *Params) void {
 
     var id_buf: [32]u8 = undefined;
     const id_text = params.options.id orelse (std.fmt.bufPrint(&id_buf, "oriel-{d}", .{id_counter.fetchAdd(1, .monotonic)}) catch unreachable); // fits in 32 bytes
-    const identifier = cocoa.nsString(id_text) orelse {
+    const identifier = apple.nsString(id_text) orelse {
         params.err = error.InvalidUtf8;
         return;
     };
     defer identifier.release();
-    const request = cocoa.class("UNNotificationRequest").msgSend(Object, "requestWithIdentifier:content:trigger:", .{ identifier, content, cocoa.nil });
+    const request = apple.class("UNNotificationRequest").msgSend(Object, "requestWithIdentifier:content:trigger:", .{ identifier, content, apple.nil });
     if (request.value == null) {
         params.err = error.NotificationCreateFailed;
         return;
     }
-    center.msgSend(void, "addNotificationRequest:withCompletionHandler:", .{ request, cocoa.nil });
+    center.msgSend(void, "addNotificationRequest:withCompletionHandler:", .{ request, apple.nil });
 }
 
 // --- osascript fallback ----------------------------------------------------------
 
 extern var environ: [*:null]?[*:0]u8;
 extern "c" fn dispatch_get_global_queue(identifier: isize, flags: usize) ?*anyopaque;
-extern "c" fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: cocoa.DispatchFn) void;
+extern "c" fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: apple.DispatchFn) void;
 
 fn notifyViaOsascript(options: NotificationOptions) !void {
     const gpa = std.heap.smp_allocator;
@@ -175,10 +171,10 @@ fn reap(ctx: ?*anyopaque) callconv(.c) void {
 }
 
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     if (bundled()) {
-        const ok = cocoa.objc.getClass("UNUserNotificationCenter") != null;
+        const ok = apple.objc.getClass("UNUserNotificationCenter") != null;
         return .{
             .module = "notification",
             .ok = ok,

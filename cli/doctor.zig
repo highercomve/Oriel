@@ -736,8 +736,7 @@ fn checkLibrary(c: Context, pkg_config: ?[]const u8, module: []const u8, level: 
     return .{ .label = module, .level = level, .ok = false, .detail = "development files not found", .packages = packages };
 }
 
-/// macOS: the Apple SDK that zig-objc and the AppKit/WebKit frameworks
-/// are found through (`xcrun`, from Xcode or its command-line tools).
+/// macOS: the Apple SDK that the AppKit/WebKit frameworks are linked from (`xcrun`, from Xcode or its command-line tools).
 fn checkXcode(c: Context) !Item {
     const label = "Xcode CLI tools";
     const xcrun = try c.findExecutable("xcrun") orelse

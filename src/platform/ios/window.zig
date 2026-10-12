@@ -10,7 +10,7 @@
 //! UIKit is main-thread only: operations from other threads are forwarded.
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const Object = apple.Object;
 const ShellMod = @import("Shell.zig");
 const scheme_mod = @import("scheme.zig");

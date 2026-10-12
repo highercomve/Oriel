@@ -783,30 +783,11 @@ fn addOrielModule(
             oriel.linkSystemLibrary("comctl32", .{});
         }
     } else if (target.result.os.tag == .macos) {
-        // AppKit + WebKit through the Objective-C runtime (zig-objc). Its build
-        // needs the Apple SDK, so only on a Mac: cross-building the framework for
-        // macOS from elsewhere is not supported, but configuring a macOS target
-        // must still work (the release cross-builds the macOS CLI on Linux).
-        if (b.graph.host.result.os.tag == .macos) {
-            if (b.lazyDependency("objc", .{ .target = target, .optimize = optimize })) |objc| {
-                oriel.addImport("objc", objc.module("objc"));
-            }
-        }
-        oriel.linkFramework("AppKit", .{});
-        oriel.linkFramework("WebKit", .{});
-        // Permissions (always built): AVCaptureDevice, AXIsProcessTrusted +
-        // CGPreflightScreenCaptureAccess, UNUserNotificationCenter.
-        oriel.linkFramework("AVFoundation", .{});
-        oriel.linkFramework("ApplicationServices", .{});
-        oriel.linkFramework("UserNotifications", .{});
-        if (features.fs_watch) oriel.linkFramework("CoreServices", .{}); // FSEvents
-        if (features.global_shortcut) oriel.linkFramework("Carbon", .{}); // RegisterEventHotKey
-        if (features.audio_capture) {
-            oriel.linkFramework("CoreAudio", .{});
-            oriel.linkFramework("AudioToolbox", .{});
-            // dictation's system engine (SFSpeechRecognizer, AVAudioEngine).
-            oriel.linkFramework("Speech", .{});
-        }
+        // AppKit + WebKit through the Objective-C runtime (src/platform/apple/
+        // objc.zig: no SDK headers, so `zig build check -Dtarget=aarch64-macos`
+        // works anywhere). Linking needs the macOS SDK (build/macos.zig: Xcode's
+        // on a Mac, or -Dmacos_sdk / $SDKROOT); without one nothing is linked.
+        if (macos_build.sdk(b)) |sdk| linkMacos(oriel, sdk, features);
     }
 
     if (features.tray or (target.result.os.tag == .windows and features.clipboard)) {
@@ -909,6 +890,31 @@ fn addOrielModule(
     return oriel;
 }
 
+/// The macOS SDK's frameworks and libobjc for Oriel's module (`addOrielModule`).
+fn linkMacos(oriel: *std.Build.Module, sdk: []const u8, features: Features) void {
+    const b = oriel.owner;
+    // Only frameworks and libraries: Oriel's C code keeps the toolchain's libc.
+    oriel.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+    oriel.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });
+    oriel.linkSystemLibrary("objc", .{});
+    oriel.linkFramework("Foundation", .{});
+    oriel.linkFramework("AppKit", .{});
+    oriel.linkFramework("WebKit", .{});
+    // Permissions (always built): AVCaptureDevice, AXIsProcessTrusted +
+    // CGPreflightScreenCaptureAccess, UNUserNotificationCenter.
+    oriel.linkFramework("AVFoundation", .{});
+    oriel.linkFramework("ApplicationServices", .{});
+    oriel.linkFramework("UserNotifications", .{});
+    if (features.fs_watch) oriel.linkFramework("CoreServices", .{}); // FSEvents
+    if (features.global_shortcut) oriel.linkFramework("Carbon", .{}); // RegisterEventHotKey
+    if (features.audio_capture) {
+        oriel.linkFramework("CoreAudio", .{});
+        oriel.linkFramework("AudioToolbox", .{});
+        // dictation's system engine (SFSpeechRecognizer, AVAudioEngine).
+        oriel.linkFramework("Speech", .{});
+    }
+}
+
 /// http.zig for Windows targets: the same sources with the Winsock shutdown
 /// fixes of tools/patch_httpz.zig applied, wired like http.zig's own
 /// build.zig wires its module (metrics, websocket, `build` options).
@@ -966,7 +972,7 @@ pub const default_macos_min: std.SemanticVersion = .{ .major = 13, .minor = 0, .
 ///     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
 /// An executable that links Apple frameworks without importing `oriel`
 /// needs the SDK's framework path added itself: Zig only adds it for
-/// native targets, and Oriel gets it through zig-objc.
+/// native targets, and Oriel adds the SDK's (build/macos.zig) to its module.
 pub fn resolveTarget(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
     if (target.result.os.tag != .macos) return target;
     var query = target.query;
@@ -3191,7 +3197,10 @@ fn pathExists(b: *std.Build, path: []const u8) bool {
 fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
     const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
     // The Apple backends draw with CoreGraphics and CoreText (apple_draw.zig).
-    if (oriel.resolved_target) |t| if (t.result.os.tag == .macos or t.result.os.tag == .ios) {
+    // Without an SDK nothing links (check).
+    if (oriel.resolved_target) |t| if ((t.result.os.tag == .macos and macos_build.sdk(b) != null) or
+        (t.result.os.tag == .ios and ios_build.sdk(b, t.result) != null))
+    {
         oriel.linkFramework("CoreGraphics", .{});
         oriel.linkFramework("CoreText", .{});
         oriel.linkFramework("ImageIO", .{}); // <img>

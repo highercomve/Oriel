@@ -9,7 +9,7 @@
 //! the task is called (WebKit raises an exception if one is).
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const range = @import("../media/range.zig");
 const App = @import("../../core/App.zig");
@@ -17,7 +17,7 @@ const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const open = @import("../media/open.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const c = std.c;
 const log = std.log.scoped(.oriel);
 
@@ -46,13 +46,13 @@ pub fn clearRoot() void {
 /// A running body stream. Owned by its worker until it queues `finish`,
 /// then by the main thread (which frees it).
 const Stream = struct {
-    task: cocoa.id, // retained
+    task: apple.id, // retained
     fd: c.fd_t,
     remaining: u64,
     /// Set on the main thread by stopURLSchemeTask; read by the worker.
     stopped: std.atomic.Value(bool) = .init(false),
     /// Signalled by the main thread after each chunk was handed over.
-    acked: cocoa.Semaphore,
+    acked: apple.Semaphore,
     // Current chunk (worker fills, main thread reads), and whether the
     // stream ended with an error.
     buf: [chunk_size]u8 = undefined,
@@ -81,9 +81,9 @@ pub fn handle(task: Object, url: Object, rel_path: []const u8) void {
     const mime = range.mimeForExtension(std.fs.path.extension(sanitized));
 
     const request = task.msgSend(Object, "request", .{});
-    const range_hdr: ?[:0]const u8 = if (cocoa.nsString("Range")) |name| blk: {
+    const range_hdr: ?[:0]const u8 = if (apple.nsString("Range")) |name| blk: {
         defer name.release();
-        break :blk cocoa.utf8(request.msgSend(Object, "valueForHTTPHeaderField:", .{name}));
+        break :blk apple.utf8(request.msgSend(Object, "valueForHTTPHeaderField:", .{name}));
     } else null;
     const res: range.RangeResult = if (range_hdr) |h| range.parseRange(h, file.size) else .full;
     const r: range.Range = switch (res) {
@@ -118,7 +118,7 @@ pub fn handle(task: Object, url: Object, rel_path: []const u8) void {
     }
 
     const gpa = std.heap.smp_allocator;
-    const acked = cocoa.Semaphore.create() catch return failNow(task, file);
+    const acked = apple.Semaphore.create() catch return failNow(task, file);
     const stream = gpa.create(Stream) catch {
         acked.deinit();
         return failNow(task, file);
@@ -167,7 +167,7 @@ fn deliverChunk(ctx: ?*anyopaque) void {
     const stream: *Stream = @ptrCast(@alignCast(ctx.?));
     defer stream.acked.signal();
     if (stream.stopped.load(.acquire)) return;
-    const data = cocoa.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ &stream.buf, @as(c_ulong, stream.len) });
+    const data = apple.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ &stream.buf, @as(c_ulong, stream.len) });
     (Object{ .value = stream.task }).msgSend(void, "didReceiveData:", .{data});
 }
 
@@ -196,7 +196,7 @@ fn finish(ctx: ?*anyopaque) void {
 /// process is exiting.
 fn abandonFinish(ctx: ?*anyopaque) void {
     const stream: *Stream = @ptrCast(@alignCast(ctx.?));
-    if (cocoa.isMainThread()) {
+    if (apple.isMainThread()) {
         _ = unregister(stream);
         (Object{ .value = stream.task }).release();
         destroy(stream);
@@ -232,16 +232,16 @@ fn failNowTask(task: Object) void {
 }
 
 fn failTask(task: Object) void {
-    const domain = cocoa.nsString("oriel-media") orelse return;
+    const domain = apple.nsString("oriel-media") orelse return;
     defer domain.release();
-    const err = cocoa.class("NSError").msgSend(Object, "errorWithDomain:code:userInfo:", .{ domain, @as(isize, 500), cocoa.nil });
+    const err = apple.class("NSError").msgSend(Object, "errorWithDomain:code:userInfo:", .{ domain, @as(isize, 500), apple.nil });
     task.msgSend(void, "didFailWithError:", .{err});
 }
 
 fn setHeader(headers: Object, name: []const u8, value: []const u8) void {
-    const key = cocoa.nsString(name) orelse return;
+    const key = apple.nsString(name) orelse return;
     defer key.release();
-    const val = cocoa.nsString(value) orelse return;
+    const val = apple.nsString(value) orelse return;
     defer val.release();
     headers.msgSend(void, "setObject:forKey:", .{ val, key });
 }
@@ -249,7 +249,7 @@ fn setHeader(headers: Object, name: []const u8, value: []const u8) void {
 /// didReceiveResponse: with the media headers. False (task already failed)
 /// if the response couldn't be built.
 fn sendHead(task: Object, url: Object, status: isize, mime: []const u8, length: u64, content_range: ?[]const u8) bool {
-    const headers = cocoa.new(cocoa.class("NSMutableDictionary"));
+    const headers = apple.new(apple.class("NSMutableDictionary"));
     defer headers.release();
     var len_buf: [24]u8 = undefined;
     setHeader(headers, "Content-Type", mime);
@@ -261,12 +261,12 @@ fn sendHead(task: Object, url: Object, status: isize, mime: []const u8, length: 
     for (internal.current_security.headers) |h| {
         if (security.headerUsable(h)) setHeader(headers, h.name, h.value);
     }
-    const version = cocoa.nsString("HTTP/1.1") orelse {
+    const version = apple.nsString("HTTP/1.1") orelse {
         failTask(task);
         return false;
     };
     defer version.release();
-    const response = cocoa.class("NSHTTPURLResponse").msgSend(Object, "alloc", .{})
+    const response = apple.class("NSHTTPURLResponse").msgSend(Object, "alloc", .{})
         .msgSend(Object, "initWithURL:statusCode:HTTPVersion:headerFields:", .{ url, status, version, headers });
     if (response.value == null) {
         failTask(task);

@@ -1,10 +1,11 @@
-//! macOS platform backend for Oriel (AppKit + WKWebView through the
-//! Objective-C runtime, via zig-objc).
+//! macOS platform backend for Oriel: AppKit + WKWebView through the
+//! Objective-C runtime (`../apple/objc.zig`, declared without SDK headers,
+//! so the backend type-checks on any host; linking needs the macOS SDK).
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
 
-pub const cocoa = @import("cocoa.zig");
+const apple = @import("../apple/apple.zig");
 pub const window = @import("window.zig");
 pub const ShellMod = @import("Shell.zig");
 pub const bridge = @import("bridge.zig");
@@ -65,7 +66,7 @@ test {
         }
     };
     _ = &Probe.call;
-    std.testing.refAllDecls(cocoa);
+    std.testing.refAllDecls(apple);
     std.testing.refAllDecls(window);
     std.testing.refAllDecls(ShellMod);
     std.testing.refAllDecls(bridge);

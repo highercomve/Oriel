@@ -3,55 +3,58 @@
 //! window (app-modal if the view has no window).
 //!
 //! WebKit hands us a completion block that must be called exactly once.
-//! The sheet's own completion is a block we create; it captures WebKit's
-//! handler, the alert and (for prompt) the text field as objects, so the
-//! block runtime retains them until the sheet closes.
+//! The sheet's own completion is a block we create, carrying a `Sheet`: a
+//! copy of WebKit's handler and the retained alert (which keeps the prompt's
+//! text field), freed when the sheet ends.
 
 const std = @import("std");
-const cocoa = @import("cocoa.zig");
+const apple = @import("../apple/apple.zig");
 
-const Object = cocoa.Object;
-const objc = cocoa.objc;
+const Object = apple.Object;
 
-const NSAlertFirstButtonReturn: i64 = 1000;
+const NSAlertFirstButtonReturn: isize = 1000;
 
 const Kind = enum(u8) { alert, confirm, prompt };
 
-const SheetBlock = objc.Block(struct {
-    handler: cocoa.id, // WebKit's completion block
-    alert: cocoa.id,
-    field: cocoa.id, // the prompt's text field (the alert for alert/confirm)
-    kind: u8,
-}, .{i64}, void); // NSModalResponse (NSInteger; i64: zig-objc encodes it)
+/// What the sheet's completion block carries (owned; freed by `onSheetEnd`).
+const Sheet = struct {
+    /// WebKit's completion block (copied).
+    handler: apple.id,
+    /// Retained; keeps the prompt's text field (its accessory view).
+    alert: Object,
+    /// The prompt's text field, else nil.
+    field: Object,
+    kind: Kind,
+};
 
-/// WKUIDelegate methods for `cocoa.defineClass`.
+/// WKUIDelegate methods for `apple.defineClass`.
 pub const methods = .{
     .{ "webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:", runAlert },
     .{ "webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:", runConfirm },
     .{ "webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:", runPrompt },
 };
 
-fn runAlert(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, message: cocoa.id, _: cocoa.id, handler: cocoa.id) callconv(.c) void {
+fn runAlert(_: apple.id, _: apple.c.SEL, view: apple.id, message: apple.id, _: apple.id, handler: apple.id) callconv(.c) void {
     show(.alert, view, message, null, handler);
 }
 
-fn runConfirm(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, message: cocoa.id, _: cocoa.id, handler: cocoa.id) callconv(.c) void {
+fn runConfirm(_: apple.id, _: apple.c.SEL, view: apple.id, message: apple.id, _: apple.id, handler: apple.id) callconv(.c) void {
     show(.confirm, view, message, null, handler);
 }
 
-fn runPrompt(_: cocoa.id, _: cocoa.c.SEL, view: cocoa.id, prompt: cocoa.id, default_text: cocoa.id, _: cocoa.id, handler: cocoa.id) callconv(.c) void {
+fn runPrompt(_: apple.id, _: apple.c.SEL, view: apple.id, prompt: apple.id, default_text: apple.id, _: apple.id, handler: apple.id) callconv(.c) void {
     show(.prompt, view, prompt, default_text, handler);
 }
 
 fn addButton(alert: Object, title: []const u8) void {
-    const t = cocoa.nsString(title) orelse return;
+    const t = apple.nsString(title) orelse return;
     defer t.release();
     _ = alert.msgSend(Object, "addButtonWithTitle:", .{t});
 }
 
-fn show(kind: Kind, view_id: cocoa.id, message: cocoa.id, default_text: cocoa.id, handler: cocoa.id) void {
-    const alert = cocoa.new(cocoa.class("NSAlert"));
-    defer alert.release(); // the sheet block (or runModal below) keeps it while it's up
+fn show(kind: Kind, view_id: apple.id, message: apple.id, default_text: apple.id, handler: apple.id) void {
+    const alert = apple.new(apple.class("NSAlert"));
+    defer alert.release(); // the `Sheet` keeps it while it is up
     const view: Object = .{ .value = view_id };
     // Title: the page's title, like browsers show the origin.
     const title = view.msgSend(Object, "title", .{});
@@ -64,10 +67,10 @@ fn show(kind: Kind, view_id: cocoa.id, message: cocoa.id, default_text: cocoa.id
     addButton(alert, "OK");
     if (kind != .alert) addButton(alert, "Cancel");
 
-    var field: Object = cocoa.nil;
+    var field: Object = apple.nil;
     if (kind == .prompt) {
-        field = cocoa.class("NSTextField").msgSend(Object, "alloc", .{})
-            .msgSend(Object, "initWithFrame:", .{cocoa.NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 260, .height = 24 } }});
+        field = apple.class("NSTextField").msgSend(Object, "alloc", .{})
+            .msgSend(Object, "initWithFrame:", .{apple.NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 260, .height = 24 } }});
         if (default_text != null) field.msgSend(void, "setStringValue:", .{Object{ .value = default_text }});
         alert.msgSend(void, "setAccessoryView:", .{field});
         field.release(); // the alert keeps it
@@ -75,28 +78,41 @@ fn show(kind: Kind, view_id: cocoa.id, message: cocoa.id, default_text: cocoa.id
         alert.msgSend(Object, "window", .{}).msgSend(void, "setInitialFirstResponder:", .{field});
     }
 
-    // Captured objects must be non-nil (the block runtime retains them):
-    // without a text field, the alert stands in (never read then).
-    const field_capture = if (field.value != null) field.value else alert.value;
-    var block = SheetBlock.init(.{ .handler = handler, .alert = alert.value, .field = field_capture, .kind = @intFromEnum(kind) }, &onSheetEnd);
+    const sheet = std.heap.smp_allocator.create(Sheet) catch {
+        // Answer like a dismissed dialog.
+        answer(kind, handler, false, null);
+        return;
+    };
+    sheet.* = .{ .handler = apple.copyBlock(handler), .alert = alert.retain(), .field = field, .kind = kind };
+    var block = apple.contextBlock(onSheetEnd, sheet);
     const window = view.msgSend(Object, "window", .{});
     if (window.value != null) {
-        // Copies the (stack) block, retaining its captured objects.
-        alert.msgSend(void, "beginSheetModalForWindow:completionHandler:", .{ window, @as(cocoa.id, @ptrCast(&block)) });
+        // AppKit copies the (stack) block; the sheet ends exactly once.
+        alert.msgSend(void, "beginSheetModalForWindow:completionHandler:", .{ window, block.ptr() });
     } else {
-        onSheetEnd(&block, alert.msgSend(i64, "runModal", .{}));
+        onSheetEnd(&block, alert.msgSend(isize, "runModal", .{}));
     }
 }
 
-fn onSheetEnd(ctx: *const SheetBlock.Context, response: i64) callconv(.c) void {
+/// The sheet ended with `response` (NSModalResponse): answer WebKit, free the sheet.
+fn onSheetEnd(block: *apple.ContextBlock, response: isize) callconv(.c) void {
+    const sheet: *Sheet = @ptrCast(@alignCast(block.ctx.?));
+    defer {
+        apple.releaseBlock(sheet.handler);
+        sheet.alert.release();
+        std.heap.smp_allocator.destroy(sheet);
+    }
     const ok = response == NSAlertFirstButtonReturn;
-    switch (@as(Kind, @enumFromInt(ctx.kind))) {
-        .alert => cocoa.callBlock(ctx.handler, struct {}, .{}),
-        .confirm => cocoa.callBlock(ctx.handler, struct { cocoa.c.BOOL }, .{cocoa.boolean(ok)}),
-        .prompt => {
-            const text: cocoa.id = if (ok) (Object{ .value = ctx.field }).msgSend(Object, "stringValue", .{}).value else null;
-            cocoa.callBlock(ctx.handler, struct { cocoa.id }, .{text});
-        },
+    const text: apple.id = if (ok and sheet.field.value != null) sheet.field.msgSend(Object, "stringValue", .{}).value else null;
+    answer(sheet.kind, sheet.handler, ok, text);
+}
+
+/// Call WebKit's completion handler: OK/Cancel for confirm, the text for prompt.
+fn answer(kind: Kind, handler: apple.id, ok: bool, text: apple.id) void {
+    switch (kind) {
+        .alert => apple.callBlock(handler, &.{}, .{}),
+        .confirm => apple.callBlock(handler, &.{apple.c.BOOL}, .{apple.boolean(ok)}),
+        .prompt => apple.callBlock(handler, &.{apple.id}, .{text}),
     }
 }
 
