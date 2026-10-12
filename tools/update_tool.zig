@@ -844,7 +844,7 @@ test "sign-update output verifies with update_manifest.verify" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const verified = try manifest_mod.verify(arena.allocator(), manifest_json, pub_content);
+    const verified = try manifest_mod.verify(arena.allocator(), manifest_json, pub_content, .{});
     try std.testing.expectEqualStrings("dev.oriel.signtest", verified.app_id);
     try std.testing.expectEqualStrings("1.2.3", verified.version); // stripped 'v'
     try std.testing.expectEqualStrings("https://example.com/downloads/app.bin", verified.url);

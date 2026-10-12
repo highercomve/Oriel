@@ -15,73 +15,45 @@ const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const oriel = @import("../oriel.zig");
 
-pub const core = @import("../updater_core.zig");
-
-// Re-export core items so apps have the exact same API
-pub const backend = core.backend;
-pub const update_manifest = core.update_manifest;
-pub const Semver = core.Semver;
-pub const Manifest = core.Manifest;
-pub const verifyManifest = core.verifyManifest;
-pub const verifyManifestWithOptions = core.verifyManifestWithOptions;
+// The engine. `oriel.main` calls its `init` (capture `$APPIMAGE`/`$APPDIR`
+// on the main thread, clean up `<exe>.old`) and `deinit`.
+const core = @import("../updater_core.zig");
+const update_manifest = core.update_manifest;
 
 pub const DEFAULT_TARGET = core.DEFAULT_TARGET;
 pub const DEFAULT_TIMEOUT_MS = core.DEFAULT_TIMEOUT_MS;
 pub const DEFAULT_DOWNLOAD_TIMEOUT_MS = core.DEFAULT_DOWNLOAD_TIMEOUT_MS;
-pub const MAX_CMDLINE_LEN = core.MAX_CMDLINE_LEN;
-pub const MAX_ARGV_COUNT = core.MAX_ARGV_COUNT;
 
-pub const isUnderDir = core.isUnderDir;
-pub const decideDestPath = core.decideDestPath;
-pub const runningAsAppImage = core.runningAsAppImage;
-pub const resolveDestPath = core.resolveDestPath;
-
-pub const Update = core.Update;
 pub const Config = core.Config;
-pub const checkForUpdate = core.checkForUpdate;
+pub const Update = core.Update;
 pub const ProgressCallback = core.ProgressCallback;
+pub const DownloadOptions = core.DownloadOptions;
+pub const checkForUpdate = core.checkForUpdate;
 pub const download = core.download;
-pub const downloadWithOptions = core.downloadWithOptions;
-pub const splitCmdline = core.splitCmdline;
 pub const restart = core.restart;
-pub const unpack = core.unpack;
-
-pub const setTestDestOverride = core.setTestDestOverride;
-pub const setMockExecFn = core.setMockExecFn;
+pub const resolveDestPath = core.resolveDestPath;
+pub const runningAsAppImage = core.runningAsAppImage;
 
 // ---------------------------------------------------------------------------
-// Module Lifecycle & Environment Capture
+// Commands state
 // ---------------------------------------------------------------------------
 
 var state_mutex: std.Io.Mutex = .init;
 var current_state: State = .idle;
 var verified_update: ?Update = null;
 var verified_target_path: ?[]const u8 = null;
-var module_allocator: ?std.mem.Allocator = null;
 
-pub const State = enum {
+const State = enum {
     idle,
     checking,
     installing,
     restarting,
 };
 
-/// Capture APPIMAGE and APPDIR on the main thread during app startup
-/// (`oriel.main` calls this; worker threads never read the environment).
-pub fn init(io: std.Io, allocator: std.mem.Allocator, env_map: ?*const std.process.Environ.Map) !void {
+/// Drop the Commands' state (tests; at exit the process ends anyway).
+fn resetState(io: std.Io, alloc: std.mem.Allocator) void {
     state_mutex.lockUncancelable(io);
     defer state_mutex.unlock(io);
-
-    module_allocator = allocator;
-    try core.init(io, allocator, env_map);
-}
-
-pub fn deinit(io: std.Io) void {
-    state_mutex.lockUncancelable(io);
-    defer state_mutex.unlock(io);
-
-    const alloc = module_allocator orelse std.heap.smp_allocator;
-
     if (verified_update) |*u| {
         u.deinit();
         verified_update = null;
@@ -91,14 +63,10 @@ pub fn deinit(io: std.Io) void {
         verified_target_path = null;
     }
     current_state = .idle;
-    module_allocator = null;
-
-    core.deinit(io);
 }
 
 fn getAllocator(config_allocator: ?std.mem.Allocator) std.mem.Allocator {
-    if (config_allocator) |a| return a;
-    return module_allocator orelse std.heap.smp_allocator;
+    return config_allocator orelse std.heap.smp_allocator;
 }
 
 /// Helper progress callback that emits an `updater://progress` event to JS via `internal.emit`.
@@ -113,22 +81,11 @@ pub fn emitProgress(downloaded: u64, total: ?u64) void {
 /// Generate secure IPC Commands bound to `config`.
 pub fn Commands(comptime config: Config) type {
     comptime {
-        if (config.allow_http_for_test) {
-            if (!@import("builtin").is_test) {
-                @compileError("allow_http_for_test is only permitted in test builds");
-            }
-            if (!std.mem.startsWith(u8, config.manifest_url, "https://") and
-                !std.mem.startsWith(u8, config.manifest_url, "http://127.0.0.1:") and
-                !std.mem.startsWith(u8, config.manifest_url, "http://localhost:") and
-                !std.mem.startsWith(u8, config.manifest_url, "http://127.0.0.1/") and
-                !std.mem.startsWith(u8, config.manifest_url, "http://localhost/"))
-            {
-                @compileError("manifest_url must start with https:// (or http://127.0.0.1 / http://localhost in test mode)");
-            }
-        } else {
-            if (!std.mem.startsWith(u8, config.manifest_url, "https://")) {
-                @compileError("manifest_url must start with https://");
-            }
+        // Oriel's own tests serve the manifest from a loopback http:// URL.
+        if (!std.mem.startsWith(u8, config.manifest_url, "https://") and
+            !(builtin.is_test and std.mem.startsWith(u8, config.manifest_url, "http://127.0.0.1:")))
+        {
+            @compileError("manifest_url must start with https://");
         }
 
         _ = update_manifest.parsePublicKey(config.public_key_b64) catch |err| {
@@ -251,7 +208,7 @@ pub fn Commands(comptime config: Config) type {
                 .callback = &Throttler.onProgress,
             };
 
-            const target_path = try downloadWithOptions(io, alloc, update, null, cb, config.download_timeout_ms);
+            const target_path = try download(io, alloc, update, .{ .progress = cb, .timeout_ms = config.download_timeout_ms });
             emitProgress(throttler.last_downloaded, throttler.last_total);
 
             state_mutex.lockUncancelable(io);
@@ -308,7 +265,7 @@ pub fn Commands(comptime config: Config) type {
 // Module Smoke Check
 // ---------------------------------------------------------------------------
 
-pub const test_payload_gz = core.test_payload_gz;
+const test_payload_gz = core.test_payload_gz;
 
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const key_pair = try Ed25519.KeyPair.generateDeterministic([_]u8{42} ** Ed25519.KeyPair.seed_length);
@@ -338,8 +295,8 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     // App side: verify, check the hash, unpack
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    const manifest = try verifyManifest(arena_state.allocator(), manifest_json, &pk_b64);
-    const payload = try unpack(gpa, manifest, &test_payload_gz);
+    const manifest = try update_manifest.verify(arena_state.allocator(), manifest_json, &pk_b64, .{});
+    const payload = try core.unpack(gpa, manifest, &test_payload_gz);
     defer gpa.free(payload);
 
     // A tampered manifest must be rejected
@@ -348,7 +305,7 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     if (std.mem.indexOf(u8, tampered, "0.0.1")) |idx| {
         tampered[idx] = '9';
     }
-    const rejected = if (verifyManifest(arena_state.allocator(), tampered, &pk_b64)) |_| false else |_| true;
+    const rejected = if (update_manifest.verify(arena_state.allocator(), tampered, &pk_b64, .{})) |_| false else |_| true;
 
     return .{
         .module = "updater",
@@ -401,16 +358,16 @@ test "app merges updater Commands pattern" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "updater_install") != null);
 }
 
-pub const MockServer = core.MockServer;
-
 test "Commands check -> install -> restart state transitions against MockServer with std.testing.allocator" {
     // POSIX-only: stages the fake update binary with Permissions.fromMode (exec bits).
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
     const io = std.testing.io;
     const allocator = std.testing.allocator;
 
-    try init(io, allocator, null);
-    defer deinit(io);
+    try core.init(io, allocator, null);
+    defer core.deinit(io);
+    defer resetState(io, allocator);
+    core.testing.allow_loopback_http = true;
 
     const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{55} ** 32);
     const pk_b64 = "LISK2GZO5lHkiWwTqEqJopZKyl63eouIHmDe1cgbTp0=";
@@ -424,7 +381,7 @@ test "Commands check -> install -> restart state transitions against MockServer 
     const manifest_url = std.fmt.comptimePrint("http://127.0.0.1:{d}/manifest.json", .{TEST_PORT});
     const payload_url = std.fmt.comptimePrint("http://127.0.0.1:{d}/payload", .{TEST_PORT});
 
-    var server = try MockServer.start(io, TEST_PORT, "", new_payload, null);
+    var server = try core.testing.MockServer.start(io, TEST_PORT, "", new_payload, null);
     defer server.stop();
 
     const sign_params = update_manifest.SignParameters{
@@ -451,7 +408,6 @@ test "Commands check -> install -> restart state transitions against MockServer 
         .current_version = "1.0.0",
         .public_key_b64 = pk_b64,
         .target = DEFAULT_TARGET,
-        .allow_http_for_test = true,
         .allocator = allocator,
     });
 
@@ -472,10 +428,8 @@ test "Commands check -> install -> restart state transitions against MockServer 
         try f.writeStreamingAll(io, "initial app binary");
     }
 
-    setTestDestOverride(dummy_app_path);
-    defer {
-        setTestDestOverride(null);
-    }
+    core.testing.dest_override = dummy_app_path;
+    defer core.testing.dest_override = null;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -495,10 +449,8 @@ test "Commands check -> install -> restart state transitions against MockServer 
             return error.MockRestartExecuted;
         }
     };
-    setMockExecFn(&MockState.mockExec);
-    defer {
-        setMockExecFn(null);
-    }
+    core.testing.exec_fn = &MockState.mockExec;
+    defer core.testing.exec_fn = null;
 
     // 3. Test state machine rejects operations when busy
     state_mutex.lockUncancelable(io);

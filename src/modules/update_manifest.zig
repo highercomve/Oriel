@@ -316,18 +316,9 @@ pub fn formatManifest(
     return std.json.Stringify.valueAlloc(allocator, manifest, .{ .whitespace = .indent_2 });
 }
 
-/// Verify signature over the manifest JSON using base64-encoded `public_key_b64`.
-/// Strictly requires https:// URLs.
+/// Verify the signature over a single-platform manifest's JSON using the
+/// base64-encoded `public_key_b64`. URLs must be https:// (`options`).
 pub fn verify(
-    arena: std.mem.Allocator,
-    manifest_json: []const u8,
-    public_key_b64: []const u8,
-) !Manifest {
-    return verifyWithOptions(arena, manifest_json, public_key_b64, .{});
-}
-
-/// Verify signature over manifest JSON with explicit options (e.g. allow_test_http).
-pub fn verifyWithOptions(
     arena: std.mem.Allocator,
     manifest_json: []const u8,
     public_key_b64: []const u8,
@@ -399,7 +390,7 @@ pub fn verifyForTarget(
         const entry = platforms.object.get(target) orelse return error.TargetNotInManifest;
         break :blk try std.json.Stringify.valueAlloc(arena, entry, .{});
     } else json;
-    const m = try verifyWithOptions(arena, entry_json, public_key_b64, options);
+    const m = try verify(arena, entry_json, public_key_b64, options);
     // The signature covers `target`: an entry filed under another key is refused.
     if (!std.mem.eql(u8, m.target, target)) return error.TargetMismatch;
     return m;
@@ -542,7 +533,7 @@ test "Manifest v2 sign, format, and verify with all fields" {
     defer arena.deinit();
 
     // 1. Valid manifest
-    const m = try verify(arena.allocator(), manifest_json, &pk_b64);
+    const m = try verify(arena.allocator(), manifest_json, &pk_b64, .{});
     try std.testing.expectEqualStrings(params.app_id, m.app_id);
     try std.testing.expectEqualStrings(params.version, m.version);
     try std.testing.expectEqualStrings(params.target, m.target);
@@ -558,62 +549,62 @@ test "Manifest v2 sign, format, and verify with all fields" {
         \\{{"app_id":"{s}","version":"9.9.9","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.target, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_ver);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_ver, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_ver, &pk_b64, .{}));
 
     // 3. Tampered app_id rejected
     const tampered_app = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"evil.app","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.version, params.target, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_app);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_app, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_app, &pk_b64, .{}));
 
     // 4. Tampered target rejected
     const tampered_target = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"aarch64-linux","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.version, params.format, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_target);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_target, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_target, &pk_b64, .{}));
 
     // 5. Tampered format rejected
     const tampered_format = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"raw","size":{d},"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.version, params.target, params.size, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_format);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_format, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_format, &pk_b64, .{}));
 
     // 6. Tampered size rejected
     const tampered_size = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":9999,"sha256":"{s}","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.version, params.target, params.format, params.sha256, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_size);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_size, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_size, &pk_b64, .{}));
 
     // 7. Tampered url rejected
     const tampered_url = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"https://evil.com/app","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.version, params.target, params.format, params.size, params.sha256, params.expires.?, sig_b64 });
     defer allocator.free(tampered_url);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_url, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_url, &pk_b64, .{}));
 
     // 8. Tampered sha256 rejected
     const tampered_hash = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"0000000000000000000000000000000000000000000000000000000000000000","url":"{s}","expires":{d},"signature":"{s}"}}
     , .{ params.app_id, params.version, params.target, params.format, params.size, params.url, params.expires.?, sig_b64 });
     defer allocator.free(tampered_hash);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_hash, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_hash, &pk_b64, .{}));
 
     // 9. Tampered expires rejected
     const tampered_exp = try std.fmt.allocPrint(allocator,
         \\{{"app_id":"{s}","version":"{s}","target":"{s}","format":"{s}","size":{d},"sha256":"{s}","url":"{s}","expires":2000000000,"signature":"{s}"}}
     , .{ params.app_id, params.version, params.target, params.format, params.size, params.sha256, params.url, sig_b64 });
     defer allocator.free(tampered_exp);
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_exp, &pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), tampered_exp, &pk_b64, .{}));
 
     // 10. Wrong public key rejected
-    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), manifest_json, &other_pk_b64));
+    try std.testing.expectError(error.SignatureVerificationFailed, verify(arena.allocator(), manifest_json, &other_pk_b64, .{}));
 
     // 11. Bad public key base64 rejected
-    try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), manifest_json, "invalid"));
+    try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), manifest_json, "invalid", .{}));
 }
 
 test "unpadded base64 of the right length is rejected, not decoded past the buffer" {
@@ -633,9 +624,9 @@ test "unpadded base64 of the right length is rejected, not decoded past the buff
     const pk_b64 = encodePublicKey(kp.public_key.toBytes(), &pk_buf);
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), json, "A" ** 43));
-    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, "A" ** 44));
-    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, pk_b64));
+    try std.testing.expectError(error.InvalidPublicKeyLength, verify(arena.allocator(), json, "A" ** 43, .{}));
+    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, "A" ** 44, .{}));
+    try std.testing.expectError(error.InvalidPadding, verify(arena.allocator(), json, pk_b64, .{}));
     try std.testing.expectError(error.InvalidPadding, combine(allocator, &.{json}, .{}));
 }
 
@@ -726,7 +717,7 @@ test "manifest target accepts x86_64-windows" {
     var pk_b64: [PUBLIC_KEY_B64_LEN]u8 = undefined;
     _ = encodePublicKey(kp.public_key.toBytes(), &pk_b64);
 
-    const verified = try verify(arena.allocator(), manifest_json, &pk_b64);
+    const verified = try verify(arena.allocator(), manifest_json, &pk_b64, .{});
     try std.testing.expectEqualStrings("com.example.winapp", verified.app_id);
     try std.testing.expectEqualStrings("1.2.3", verified.version);
     try std.testing.expectEqualStrings("x86_64-windows", verified.target);
