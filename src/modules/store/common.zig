@@ -1,37 +1,20 @@
-//! Common logic for application data directories and path resolution.
-//!
-//! Platform-neutral validation, pure path joining, and generic JSON store.
+//! The store's folder and the generic JSON store over a platform backend.
 
 const std = @import("std");
+const paths = @import("../../core/paths.zig");
+const target = @import("../../core/target.zig");
 
-pub const AppIdError = error{
-    EmptyAppId,
-    InvalidAppId,
-};
-
-/// Validates that an `app_id` cannot contain path separators, traversal (`..`),
-/// colons (Windows ADS / drive separators), NUL bytes, or control characters.
-pub fn validateAppId(app_id: []const u8) AppIdError!void {
-    if (app_id.len == 0) return error.EmptyAppId;
-    if (std.mem.indexOfScalar(u8, app_id, 0) != null) return error.InvalidAppId;
-    if (std.mem.indexOfScalar(u8, app_id, '/') != null) return error.InvalidAppId;
-    if (std.mem.indexOfScalar(u8, app_id, '\\') != null) return error.InvalidAppId;
-    if (std.mem.indexOfScalar(u8, app_id, ':') != null) return error.InvalidAppId;
-    if (std.mem.indexOf(u8, app_id, "..") != null) return error.InvalidAppId;
-
-    for (app_id) |c| {
-        if (c < 0x20 or c == 0x7F) return error.InvalidAppId;
-    }
-}
-
-/// Joins base directory, validated app_id, and an optional subdirectory.
-pub fn buildAppPath(gpa: std.mem.Allocator, base: []const u8, app_id: []const u8, subdir: ?[]const u8) ![]const u8 {
-    try validateAppId(app_id);
-    if (subdir) |sub| {
-        return try std.fs.path.join(gpa, &.{ base, app_id, sub });
-    } else {
-        return try std.fs.path.join(gpa, &.{ base, app_id });
-    }
+/// The store's folder: `oriel.paths.appConfig`, and on Android an
+/// `<app_id>` folder inside it (`<filesDir>/<app_id>`), where existing
+/// apps' settings already are. Created if missing; caller frees.
+pub fn configDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8 {
+    const base = try paths.appConfig(gpa, .{ .name = app_id });
+    if (comptime target.os != .android) return base;
+    defer gpa.free(base);
+    const dir = try std.fs.path.join(gpa, &.{ base, app_id });
+    errdefer gpa.free(dir);
+    try @import("../../core/paths/posix.zig").makePath(gpa, dir);
+    return dir;
 }
 
 /// Generic thread-safe JSON settings store parameterized over a platform backend.
@@ -251,52 +234,6 @@ pub fn GenericStore(comptime Backend: type) type {
             try Backend.writeFileAtomic(self.file_path, json_text);
         }
     };
-}
-
-test "validateAppId: valid identifiers" {
-    try validateAppId("com.example.App");
-    try validateAppId("dev.oriel.demo");
-    try validateAppId("my-app_1.0");
-    try validateAppId("singleword");
-}
-
-test "validateAppId: invalid identifiers" {
-    // Empty
-    try std.testing.expectError(error.EmptyAppId, validateAppId(""));
-
-    // Path separators
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo/bar"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo\\bar"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("/root"));
-
-    // Traversal
-    try std.testing.expectError(error.InvalidAppId, validateAppId(".."));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("../foo"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo..bar"));
-
-    // Drive letters / ADS colons
-    try std.testing.expectError(error.InvalidAppId, validateAppId("C:app"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("app:stream"));
-
-    // Control characters and NUL
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo\x00bar"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo\nbar"));
-    try std.testing.expectError(error.InvalidAppId, validateAppId("foo\tbar"));
-}
-
-test "buildAppPath: joining base, app_id, and optional subdir" {
-    const gpa = std.testing.allocator;
-
-    const p1 = try buildAppPath(gpa, "/base/dir", "com.example.App", null);
-    defer gpa.free(p1);
-    try std.testing.expect(std.mem.endsWith(u8, p1, "com.example.App"));
-
-    const p2 = try buildAppPath(gpa, "/base/dir", "com.example.App", "cache");
-    defer gpa.free(p2);
-    try std.testing.expect(std.mem.endsWith(u8, p2, "cache"));
-
-    // Rejects invalid app_id during build
-    try std.testing.expectError(error.InvalidAppId, buildAppPath(gpa, "/base/dir", "../evil", null));
 }
 
 const MockBackend = struct {

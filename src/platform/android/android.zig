@@ -24,7 +24,6 @@ pub const bridge = @import("bridge.zig");
 pub const scheme = @import("scheme.zig");
 pub const runtime = @import("runtime.zig");
 pub const jni = @import("jni.zig");
-pub const paths = @import("paths.zig");
 pub const entry = @import("entry.zig");
 
 pub const WindowHandle = window.WindowHandle;
@@ -239,6 +238,6 @@ test {
     std.testing.refAllDecls(ShellMod);
     std.testing.refAllDecls(bridge);
     std.testing.refAllDecls(scheme);
-    std.testing.refAllDecls(paths);
+    std.testing.refAllDecls(@import("paths.zig"));
     _ = App;
 }
