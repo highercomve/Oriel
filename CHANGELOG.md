@@ -161,6 +161,11 @@ Notable changes in Oriel releases.
 
 ### Fixed
 
+- Android projects generated before 0.9.9 now ship `zig-out/android-assets`
+  (Oriel's runtime data and app extensions' `.android.assets`): their own
+  `build.gradle.kts` never read it, so those files were left out of the APK
+  silently. Oriel's managed `oriel-dependencies.gradle` adds the folder when
+  the project doesn't.
 - iOS 26 SDKs: Objective-C sources that import UIKit failed to compile
   (UIKit's headers include `<UIUtilities/UIDefines.h>`, from the SDK's
   `System/Library/SubFrameworks`, now on the framework path).
