@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const csp_mod = @import("../../core/csp.zig");
@@ -34,7 +35,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             const rest = url[prefix.len..];
             const path = if (std.mem.indexOfAny(u8, rest, "?#")) |i| rest[0..i] else rest;
 
-            const asset = App.findAsset(config.app.assets, path, config.spa_fallback) orelse return not_found;
+            const asset = internal.findAsset(config.app.assets, path, config.spa_fallback) orelse return not_found;
             const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(arena, c, asset.script_hashes, asset.style_hashes) catch null else null;
             const extra = comptime headerLines(security.comptimeHeaderLines(config.security.headers));
             const headers = if (page_csp orelse csp_z) |csp|

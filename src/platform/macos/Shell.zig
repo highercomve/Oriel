@@ -224,11 +224,6 @@ pub fn sharedApplication() Object {
 
 /// Global shortcut, tray and menu backends
 /// can hook shutdown here, like on Windows.
-pub fn setMenu(items: anytype, on_action: anytype) !void {
-    const menu_mod = @import("../../modules/menu.zig");
-    try menu_mod.set(items, on_action);
-}
-
 // ---------------------------------------------------------------------------
 // Application delegate
 // ---------------------------------------------------------------------------
@@ -358,7 +353,7 @@ fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id)
         paths.append(std.heap.smp_allocator, path) catch return;
     }
     if (paths.items.len == 0) return;
-    if (finished_launching) App.showWindow();
+    if (finished_launching) if (App.getWindow("main")) |w| w.show();
     share.receivePaths(paths.items, .open_with, false);
 }
 
@@ -367,7 +362,7 @@ fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id)
 /// `service`. The window comes forward.
 fn orielShareService(_: cocoa.id, _: cocoa.c.SEL, pboard: cocoa.id, _: cocoa.id, _: ?*cocoa.id) callconv(.c) void {
     if (!build_opts.share) return;
-    App.showWindow();
+    if (App.getWindow("main")) |w| w.show();
     share.receiveService(.{ .value = pboard });
 }
 
@@ -379,7 +374,7 @@ fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, app: cocoa.id, has
     // A platform hook that returns YES handled it.
     if (apple_hooks.intercept(.should_handle_reopen, .{ raw(app), apple_hooks.boolean(cocoa.isTrue(has_visible_windows)) })) return cocoa.boolean(true);
     if (reopen_handler) |h| h(&.{});
-    if (!cocoa.isTrue(has_visible_windows)) App.showWindow();
+    if (!cocoa.isTrue(has_visible_windows)) if (App.getWindow("main")) |w| w.show();
     return cocoa.boolean(true);
 }
 
@@ -566,7 +561,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (!finished_launching) {
                 deep_link.setColdStartUrl(url);
             } else {
-                App.showWindow();
+                if (App.getWindow("main")) |w| w.show();
             }
             deep_link.deliver(url);
         }

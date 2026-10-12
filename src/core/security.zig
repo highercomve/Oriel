@@ -128,7 +128,7 @@ pub fn headerUsable(h: Header) bool {
     return headerNameAllowed(h.name) and headerValueValid(h.value) and !headerBuiltIn(h.name);
 }
 
-/// Compile error for a header an app may not set (App.run calls it).
+/// Compile error for a header an app may not set (internal.run calls it).
 pub fn checkHeaders(comptime headers: []const Header) void {
     inline for (headers, 0..) |h, i| {
         if (comptime !headerNameAllowed(h.name)) @compileError("security.headers: '" ++ h.name ++ "' is not an allowed header (see security.allowed_header_names; CSP has its own `csp` option)");

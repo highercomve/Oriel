@@ -15,6 +15,7 @@
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
@@ -96,9 +97,9 @@ const EvalTask = struct {
         // Collect ids under the lock, call Java after (Java may call back).
         var ids: [64]u32 = undefined;
         var n: usize = 0;
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        for (App.windows_list.items) |win| {
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        for (internal.windows_list.items) |win| {
             if (self.target) |t| if (!win.handle.eql(t)) continue;
             if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
             if (n < ids.len) {
@@ -106,7 +107,7 @@ const EvalTask = struct {
                 n += 1;
             }
         }
-        App.windows_mutex.unlock();
+        internal.windows_mutex.unlock();
         for (ids[0..n]) |id| if (self.as_message) post(id, 0, self.text) else evaluate(id, self.text);
     }
 
@@ -224,10 +225,10 @@ pub fn Bridge(
                 var label: []const u8 = "";
                 var url: ?[]const u8 = null;
                 {
-                    App.ensureWindowsMutex();
-                    App.windows_mutex.lock();
-                    defer App.windows_mutex.unlock();
-                    for (App.windows_list.items) |w| if (w.handle.id == window) {
+                    internal.ensureWindowsMutex();
+                    internal.windows_mutex.lock();
+                    defer internal.windows_mutex.unlock();
+                    for (internal.windows_list.items) |w| if (w.handle.id == window) {
                         label = arena.dupe(u8, w.label) catch return;
                         url = if (w.options.url) |u| (arena.dupe(u8, u) catch return) else null;
                         break;
@@ -237,8 +238,8 @@ pub fn Bridge(
                 const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "https://app.localhost/index.html";
                 const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args_json, .{}) catch .null;
                 const request: ipc.Request = .{ .cmd = cmd, .args = args };
-                const pool = App.getWorkerPool();
-                defer if (pool != null) App.releaseWorkerPool();
+                const pool = internal.getWorkerPool();
+                defer if (pool != null) internal.releaseWorkerPool();
 
                 const result: anyerror![]const u8 = blk: {
                     if (window_commands.isWindowCommand(cmd))
@@ -349,8 +350,8 @@ pub fn Bridge(
                 return sendErrorReply(id, load, req.id, "Forbidden");
             }
 
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
+            const pool = internal.getWorkerPool();
+            defer if (pool != null) internal.releaseWorkerPool();
             if (ipc.isBuiltinCommand(call.cmd) or !ipc.isAsync(api.commands, call.cmd)) {
                 return SyncCall.queue(id, load, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
             }

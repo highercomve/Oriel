@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const cocoa = @import("cocoa.zig");
 const ShellMod = @import("Shell.zig");
 const WindowHandle = @import("window.zig").WindowHandle;
@@ -94,7 +95,7 @@ fn onMain(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) void {
 }
 
 fn alive(handle: WindowHandle) bool {
-    return App.getWindowByHandle(handle) != null;
+    return internal.getWindowByHandle(handle) != null;
 }
 
 pub fn setWindowPlacement(handle: WindowHandle, placement: App.Placement) void {
@@ -127,7 +128,7 @@ pub fn setWindowAlwaysOnTop(handle: WindowHandle, enabled: bool) void {
         handle: WindowHandle,
         enabled: bool,
         fn run(c: *@This()) void {
-            const w = App.getWindowByHandle(c.handle) orelse return;
+            const w = internal.getWindowByHandle(c.handle) orelse return;
             const level = if (c.enabled) levelFor(w.options) else NSNormalWindowLevel;
             c.handle.nsWindow().msgSend(void, "setLevel:", .{level});
         }
@@ -139,10 +140,10 @@ pub fn setWindowAlwaysOnTop(handle: WindowHandle, enabled: bool) void {
 /// Move the window with the pointer: AppKit's own window drag, from the
 /// mouse event being handled (the page's mousedown). Anything else as the
 /// current event means the button is already up: no drag.
-pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
     const Ctx = struct {
         handle: WindowHandle,
-        mode: App.DragMode = .unsupported,
+        mode: internal.DragMode = .unsupported,
         fn run(c: *@This()) void {
             if (!alive(c.handle)) return;
             const event = ShellMod.sharedApplication().msgSend(Object, "currentEvent", .{});

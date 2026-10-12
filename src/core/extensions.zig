@@ -24,6 +24,7 @@ const heap = @import("heap.zig");
 const target = @import("target.zig");
 const pending_events = @import("pending_events.zig");
 const App = @import("App.zig");
+const internal = @import("internal.zig");
 const ipc = @import("ipc.zig");
 const registry = @import("oriel_extensions");
 
@@ -565,14 +566,14 @@ fn ZigImpl(comptime M: type) type {
     };
 }
 
-/// The Io the workers wait with, from `App.run`; null before it.
+/// The Io the workers wait with, from `internal.run`; null before it.
 var app_io: ?std.Io = null;
 /// Set once in `begin`, before any worker exists.
 var main_thread: std.Thread.Id = undefined;
 var main_thread_set = std.atomic.Value(bool).init(false);
 var lifecycle_subscribed = std.atomic.Value(bool).init(false);
 
-/// App.run, on the main thread before the loop.
+/// internal.run, on the main thread before the loop.
 pub fn begin(io: std.Io) void {
     app_io = io;
     main_thread = std.Thread.getCurrentId();
@@ -738,7 +739,7 @@ fn emitPage(ev: *const PageEvent) void {
     if (comptime count == 0) return;
     var buf: [10 + spec.max_name_len]u8 = undefined;
     const event = std.fmt.bufPrint(&buf, "extension:{s}", .{runners[ev.index].name}) catch return;
-    App.emit(event, .{ .name = ev.name, .data = ev.data });
+    internal.emit(event, .{ .name = ev.name, .data = ev.data });
 }
 
 fn flushHandler(i: usize) void {

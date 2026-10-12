@@ -458,11 +458,6 @@ fn createHostWindow(title_w: ?[*:0]const win32.WCHAR) !win32.HWND {
         error.CreateWindowFailed;
 }
 
-pub fn setMenu(items: anytype, on_action: anytype) !void {
-    const menu_mod = @import("../../modules/menu.zig");
-    try menu_mod.set(items, on_action);
-}
-
 pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
     const dev_url: ?[]const u8 = if (config.app.dev) |d| d.url else null;
     const local: security.Local = comptime .{ .dev_origin = if (dev_url) |u| blk: {

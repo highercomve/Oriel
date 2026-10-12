@@ -22,6 +22,7 @@ const js_dialogs = @import("js_dialogs.zig");
 const overlay = @import("overlay.zig");
 const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
@@ -197,7 +198,7 @@ fn apply(handle: WindowHandle, op: Op) void {
     const win = handle.nsWindow();
     switch (op) {
         .show => {
-            const w = App.getWindowByHandle(handle);
+            const w = internal.getWindowByHandle(handle);
             if (w == null or w.?.options.focus_on_show) {
                 rememberFrontmost();
                 win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
@@ -212,7 +213,7 @@ fn apply(handle: WindowHandle, op: Op) void {
         },
         .focus => {
             rememberFrontmost();
-            if (App.getWindowByHandle(handle)) |w| {
+            if (internal.getWindowByHandle(handle)) |w| {
                 if (!w.options.focus_on_show) allowOverlayKey(handle.window, true);
             }
             win.msgSend(void, "makeKeyAndOrderFront:", .{cocoa.nil});
@@ -229,10 +230,10 @@ fn apply(handle: WindowHandle, op: Op) void {
             const visible = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isVisible", .{}));
             const key = cocoa.isTrue(win.msgSend(cocoa.c.BOOL, "isKeyWindow", .{}));
             // A window that never takes focus toggles on visibility alone.
-            const takes_focus = if (App.getWindowByHandle(handle)) |w| w.options.focus_on_show else true;
+            const takes_focus = if (internal.getWindowByHandle(handle)) |w| w.options.focus_on_show else true;
             apply(handle, if (visible and (key or !takes_focus)) .hide else .show);
         },
-        .close => if (App.getWindowByHandle(handle)) |w| closeNow(w),
+        .close => if (internal.getWindowByHandle(handle)) |w| closeNow(w),
         .title => |t| {
             const str = cocoa.nsString(t) orelse return;
             defer str.release();
@@ -259,7 +260,7 @@ fn perform(handle: WindowHandle, op: Op) void {
         fn run(ctx: ?*anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(ctx.?));
             defer discard(self);
-            if (App.getWindowByHandle(self.handle) != null) apply(self.handle, self.op);
+            if (internal.getWindowByHandle(self.handle) != null) apply(self.handle, self.op);
         }
 
         fn cleanup(ctx: ?*anyopaque) void {
@@ -290,13 +291,13 @@ fn freeOp(op: Op) void {
 /// Read a window property on the main thread (waiting for it from others).
 fn query(comptime T: type, handle: WindowHandle, comptime get: fn (WindowHandle) T, fallback: T) T {
     // A stale handle (its window closed) must not reach freed state.
-    if (cocoa.isMainThread()) return if (App.getWindowByHandle(handle) != null) get(handle) else fallback;
+    if (cocoa.isMainThread()) return if (internal.getWindowByHandle(handle) != null) get(handle) else fallback;
     const Ctx = struct {
         handle: WindowHandle,
         result: T,
 
         fn run(self: *@This()) void {
-            if (App.getWindowByHandle(self.handle) != null) self.result = get(self.handle);
+            if (internal.getWindowByHandle(self.handle) != null) self.result = get(self.handle);
         }
     };
     var ctx: Ctx = .{ .handle = handle, .result = fallback };
@@ -334,7 +335,7 @@ pub fn postCloseWindow(handle: WindowHandle) void {
         fn run(ctx: ?*anyopaque) void {
             const h: *WindowHandle = @ptrCast(@alignCast(ctx.?));
             defer std.heap.smp_allocator.destroy(h);
-            if (App.getWindowByHandle(h.*)) |w| closeNow(w);
+            if (internal.getWindowByHandle(h.*)) |w| closeNow(w);
         }
 
         fn cleanup(ctx: ?*anyopaque) void {
@@ -444,20 +445,20 @@ fn openExternalNow(uri: [*:0]const u8) void {
 
 pub fn getWindowByView(view: cocoa.id) ?*App.Window {
     if (view == null) return null;
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w.handle.webview == view) return w;
     }
     return null;
 }
 
 fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w.handle.window == nswindow) return w;
     }
     return null;
@@ -512,18 +513,18 @@ fn closeNow(win: *App.Window) void {
     }
 
     win.saveGeometry();
-    App.emit("window:closed", .{ .label = win.label });
+    internal.emit("window:closed", .{ .label = win.label });
 
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    for (App.windows_list.items, 0..) |w, i| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    for (internal.windows_list.items, 0..) |w, i| {
         if (w == win) {
-            _ = App.windows_list.swapRemove(i);
+            _ = internal.windows_list.swapRemove(i);
             break;
         }
     }
-    const remaining = App.windows_list.items.len;
-    App.windows_mutex.unlock();
+    const remaining = internal.windows_list.items.len;
+    internal.windows_mutex.unlock();
 
     teardown(win.handle);
     freeWindow(win);
@@ -546,10 +547,10 @@ pub fn destroyAllWindows() void {
     const pool = objc.AutoreleasePool.init();
     defer pool.deinit();
     while (true) {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        const win = App.windows_list.pop();
-        App.windows_mutex.unlock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        const win = internal.windows_list.pop();
+        internal.windows_mutex.unlock();
         const w = win orelse break;
         teardown(w.handle);
         freeWindow(w);

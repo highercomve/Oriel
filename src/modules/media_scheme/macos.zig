@@ -13,6 +13,7 @@ const cocoa = @import("../../platform/macos/cocoa.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const range = @import("../media/range.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const open = @import("../media/open.zig");
 
@@ -257,7 +258,7 @@ fn sendHead(task: Object, url: Object, status: isize, mime: []const u8, length: 
     if (content_range) |cr| setHeader(headers, "Content-Range", cr);
     setHeader(headers, "X-Content-Type-Options", "nosniff");
     // The app's extra headers (security.headers), as on app:// responses.
-    for (App.current_security.headers) |h| {
+    for (internal.current_security.headers) |h| {
         if (security.headerUsable(h)) setHeader(headers, h.name, h.value);
     }
     const version = cocoa.nsString("HTTP/1.1") orelse {

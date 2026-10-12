@@ -13,6 +13,7 @@ const win32 = @import("win32.zig");
 const webview2 = @import("webview2.zig");
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const isolation = @import("../../core/isolation.zig");
 const csp_mod = @import("../../core/csp.zig");
 
@@ -78,7 +79,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
                 }
             }
 
-            const asset = App.findAsset(config.app.assets, clean_path, config.spa_fallback);
+            const asset = internal.findAsset(config.app.assets, clean_path, config.spa_fallback);
 
             if (asset) |a| {
                 const stream = win32.SHCreateMemStream(a.data.ptr, @intCast(a.data.len)) orelse return false;

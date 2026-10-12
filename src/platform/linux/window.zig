@@ -13,6 +13,7 @@ const webkit = if (build_opts.native_ui) @import("no_webkit.zig") else @import("
 const glib = @import("glib");
 const gio = @import("gio");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const dev_server = @import("dev_server.zig");
@@ -115,20 +116,20 @@ pub fn closeWindow(handle: WindowHandle) void {
 }
 
 pub fn postCloseWindow(handle: WindowHandle) void {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    const label_copy = for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    const label_copy = for (internal.windows_list.items) |w| {
         if (w.handle.eql(handle)) {
             break std.heap.smp_allocator.dupeZ(u8, w.label) catch {
-                App.windows_mutex.unlock();
+                internal.windows_mutex.unlock();
                 return;
             };
         }
     } else {
-        App.windows_mutex.unlock();
+        internal.windows_mutex.unlock();
         return;
     };
-    App.windows_mutex.unlock();
+    internal.windows_mutex.unlock();
 
     if (glib.idleAdd(&idleCloseWindow, label_copy.ptr) == 0) {
         std.heap.smp_allocator.free(label_copy);
@@ -140,12 +141,12 @@ fn idleCloseWindow(data: ?*anyopaque) callconv(.c) c_int {
     const label = std.mem.span(label_ptr);
     defer std.heap.smp_allocator.free(label_ptr[0 .. label.len + 1]);
 
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    const gtk_win = for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    const gtk_win = for (internal.windows_list.items) |w| {
         if (std.mem.eql(u8, w.label, label)) break w.handle.gtk_window;
     } else null;
-    App.windows_mutex.unlock();
+    internal.windows_mutex.unlock();
 
     if (gtk_win) |win| {
         win.close();
@@ -188,15 +189,15 @@ fn freeWindow(win: *App.Window) void {
 /// hidden) at quit, which never got a close request.
 pub fn destroyRemainingWindows() void {
     while (true) {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        const win = App.windows_list.pop();
-        App.windows_mutex.unlock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        const win = internal.windows_list.pop();
+        internal.windows_mutex.unlock();
         const w = win orelse break;
         destroyWindow(w.handle);
         freeWindow(w);
     }
-    App.main_window = null;
+    internal.main_window = null;
 }
 
 pub fn setWindowTitle(handle: WindowHandle, title: [:0]const u8) void {
@@ -246,10 +247,10 @@ pub fn openExternal(uri: [*:0]const u8) void {
 }
 
 pub fn getWindowByView(view: *webkit.WebView) ?*App.Window {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w.handle.web_view == view) return w;
     }
     return null;
@@ -274,7 +275,7 @@ pub fn WindowCreator(
         const DevRetry = dev_server.DevRetryContext(&devUrl);
 
         pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) anyerror!WindowHandle {
-            const app = App.gtk_app orelse return error.AppNotRunning;
+            const app = internal.gtk_app orelse return error.AppNotRunning;
             const gpa = std.heap.smp_allocator;
 
             // Resolve before any GTK object exists: a rejected URL must not
@@ -406,21 +407,21 @@ pub fn WindowCreator(
 
             win.saveGeometry();
 
-            App.emit("window:closed", .{ .label = win.label });
+            internal.emit("window:closed", .{ .label = win.label });
 
-            App.ensureWindowsMutex();
-            App.windows_mutex.lock();
-            for (App.windows_list.items, 0..) |w, i| {
+            internal.ensureWindowsMutex();
+            internal.windows_mutex.lock();
+            for (internal.windows_list.items, 0..) |w, i| {
                 if (w == win) {
-                    _ = App.windows_list.swapRemove(i);
+                    _ = internal.windows_list.swapRemove(i);
                     break;
                 }
             }
-            const remaining = App.windows_list.items.len;
-            App.windows_mutex.unlock();
+            const remaining = internal.windows_list.items.len;
+            internal.windows_mutex.unlock();
 
-            if (App.main_window == window) {
-                App.main_window = null;
+            if (internal.main_window == window) {
+                internal.main_window = null;
             }
 
             // The native page goes with its window (its timers too), once

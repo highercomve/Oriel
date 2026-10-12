@@ -18,6 +18,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 
 /// Keys and values together, in bytes: browsers allow about 5 MB an origin.
 pub const quota = 5 * 1024 * 1024;
@@ -75,7 +76,7 @@ fn dataDir(a: std.mem.Allocator, app_id: []const u8) ?[]u8 {
 fn ensureLoaded() void {
     if (loaded) return;
     loaded = true;
-    const id = App.current_app_id orelse return;
+    const id = internal.current_app_id orelse return;
     dir_path = dataDir(gpa(), id);
     const dir = dir_path orelse return;
     const path = std.fs.path.join(gpa(), &.{ dir, file_name }) catch return;

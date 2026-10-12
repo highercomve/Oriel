@@ -41,6 +41,7 @@ const c = llama.c;
 const ggml_gpu = @import("ggml_gpu.zig");
 const format = @import("chat/format.zig");
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 const model_download = @import("model_download.zig");
 const lifecycle = @import("../core/lifecycle.zig");
 
@@ -117,7 +118,7 @@ pub const Events = struct {
 };
 
 fn emit(comptime name: []const u8, payload: @FieldType(Events, name)) void {
-    App.emit(name, payload);
+    internal.emit(name, payload);
 }
 
 var io: std.Io = undefined;

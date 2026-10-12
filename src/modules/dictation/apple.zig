@@ -22,6 +22,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const heap = @import("../../core/heap.zig");
 const objc = @import("../../platform/apple/objc.zig");
 const blocks = @import("../../platform/apple/blocks.zig");
@@ -404,7 +405,7 @@ fn emitLevel(samples: []const f32) void {
     var sum: f32 = 0;
     for (samples) |s| sum += s * s;
     const rms = if (samples.len > 0) @sqrt(sum / @as(f32, @floatFromInt(samples.len))) else 0;
-    App.emit("dictation:level", .{ .seconds = elapsed(), .level = @min(1, rms * 8) });
+    internal.emit("dictation:level", .{ .seconds = elapsed(), .level = @min(1, rms * 8) });
 }
 
 /// The test hook: `test_audio` at real-time pace, then silence, as a
@@ -469,10 +470,10 @@ fn onResult(block: *blocks.ContextBlock, result: id, err: id) callconv(.c) void 
                 if (finals.items.len > 0) finals.append(heap.gpa, ' ') catch {};
                 finals.appendSlice(heap.gpa, text) catch {};
                 _ = std.c.pthread_mutex_unlock(&lock);
-                App.emit("dictation:final", .{ .text = text, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
+                internal.emit("dictation:final", .{ .text = text, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
             }
             if (current) {
-                App.emit("dictation:partial", .{ .text = "" });
+                internal.emit("dictation:partial", .{ .text = "" });
                 taskEnded();
             }
             return;
@@ -490,7 +491,7 @@ fn onResult(block: *blocks.ContextBlock, result: id, err: id) callconv(.c) void 
             _ = std.c.pthread_mutex_lock(&lock);
             updates += 1;
             _ = std.c.pthread_mutex_unlock(&lock);
-            App.emit("dictation:partial", .{ .text = text });
+            internal.emit("dictation:partial", .{ .text = text });
         }
         return;
     }
@@ -520,7 +521,7 @@ fn fail(message: []const u8) void {
     _ = std.c.pthread_mutex_lock(&lock);
     last_error = message;
     _ = std.c.pthread_mutex_unlock(&lock);
-    App.emit("dictation:error", .{ .message = message });
+    internal.emit("dictation:error", .{ .message = message });
     active.store(false, .release);
     finish();
 }
@@ -561,7 +562,7 @@ fn promotePartial() void {
     _ = std.c.pthread_mutex_unlock(&lock);
     if (text) |t| {
         defer heap.gpa.free(t);
-        App.emit("dictation:final", .{ .text = t, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
+        internal.emit("dictation:final", .{ .text = t, .audio_s = elapsed(), .transcribe_ms = @as(u64, 0), .backend = name, .on_device = on_device_now });
     }
 }
 
@@ -571,7 +572,7 @@ fn finish() void {
     active.store(false, .release);
     cleanup();
     ended.store(true, .release);
-    App.emit("dictation:ended", .{ .engine = "system" });
+    internal.emit("dictation:ended", .{ .engine = "system" });
 }
 
 pub const Result = struct { text: []const u8, audio_s: f32, updates: u32, error_code: ?[]const u8 };

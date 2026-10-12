@@ -49,7 +49,8 @@ pub fn configure(o: dictation.Options) void {
 }
 
 fn emit(state: []const u8, text: []const u8) void {
-    oriel.App.emit("anywhere", State{ .state = state, .text = text });
+    // The `anywhere` field of the app's Events (main.zig).
+    oriel.App.events(struct { anywhere: State }).emit(.anywhere, .{ .state = state, .text = text });
 }
 
 /// Start or stop (any thread; the work runs on a worker).
@@ -65,7 +66,7 @@ fn toggleNow() void {
         // The prompt needs an Activity: bring the app up and ask there.
         oriel.App.runOnMain(@as(u8, 0), struct {
             fn f(_: u8) void {
-                oriel.App.showWindow();
+                if (oriel.App.getWindow("main")) |w| w.show();
                 _ = oriel.permissions.request(.microphone);
             }
         }.f);

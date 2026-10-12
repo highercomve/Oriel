@@ -18,6 +18,7 @@ const bridge_mod = @import("bridge.zig");
 const js_dialogs = @import("js_dialogs.zig");
 const permissions = @import("../../core/permissions.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
@@ -112,7 +113,7 @@ fn apply(handle: WindowHandle, op: Op) void {
     switch (op) {
         .show, .focus => show(handle),
         .hide => hide(handle),
-        .close => if (App.getWindowByHandle(handle)) |w| closeNow(w),
+        .close => if (internal.getWindowByHandle(handle)) |w| closeNow(w),
         .title => |t| {
             const str = apple.nsString(t) orelse return;
             defer str.release();
@@ -145,7 +146,7 @@ fn perform(handle: WindowHandle, op: Op) void {
         fn run(ctx: ?*anyopaque) void {
             const self: *@This() = @ptrCast(@alignCast(ctx.?));
             defer discard(self);
-            if (App.getWindowByHandle(self.handle) != null) apply(self.handle, self.op);
+            if (internal.getWindowByHandle(self.handle) != null) apply(self.handle, self.op);
         }
         fn cleanup(ctx: ?*anyopaque) void {
             discard(@ptrCast(@alignCast(ctx.?)));
@@ -172,12 +173,12 @@ fn freeOp(op: Op) void {
 
 fn query(comptime T: type, handle: WindowHandle, comptime get: fn (WindowHandle) T, fallback: T) T {
     // A stale handle (its window closed) must not reach freed state.
-    if (apple.isMainThread()) return if (App.getWindowByHandle(handle) != null) get(handle) else fallback;
+    if (apple.isMainThread()) return if (internal.getWindowByHandle(handle) != null) get(handle) else fallback;
     const Ctx = struct {
         handle: WindowHandle,
         result: T,
         fn run(self: *@This()) void {
-            if (App.getWindowByHandle(self.handle) != null) self.result = get(self.handle);
+            if (internal.getWindowByHandle(self.handle) != null) self.result = get(self.handle);
         }
     };
     var ctx: Ctx = .{ .handle = handle, .result = fallback };
@@ -188,7 +189,7 @@ fn query(comptime T: type, handle: WindowHandle, comptime get: fn (WindowHandle)
 const UIModalPresentationFullScreen: isize = 0;
 
 fn isMain(handle: WindowHandle) bool {
-    const w = App.getWindowByHandle(handle) orelse return false;
+    const w = internal.getWindowByHandle(handle) orelse return false;
     return std.mem.eql(u8, w.label, "main");
 }
 
@@ -272,7 +273,7 @@ pub fn postCloseWindow(handle: WindowHandle) void {
         fn run(ctx: ?*anyopaque) void {
             const h: *WindowHandle = @ptrCast(@alignCast(ctx.?));
             defer std.heap.smp_allocator.destroy(h);
-            if (App.getWindowByHandle(h.*)) |w| closeNow(w);
+            if (internal.getWindowByHandle(h.*)) |w| closeNow(w);
         }
         fn cleanup(ctx: ?*anyopaque) void {
             std.heap.smp_allocator.destroy(@as(*WindowHandle, @ptrCast(@alignCast(ctx.?))));
@@ -362,7 +363,7 @@ pub fn getWindowWorkArea(handle: WindowHandle) ?App.Rect {
     return query(?App.Rect, handle, workAreaNow, null);
 }
 
-pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
     _ = handle;
     return .unsupported;
 }
@@ -396,20 +397,20 @@ pub fn openExternal(uri: [*:0]const u8) void {
 
 pub fn getWindowByView(view: apple.id) ?*App.Window {
     if (view == null) return null;
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w.handle.webview == view) return w;
     }
     return null;
 }
 
 fn getWindowBySerial(serial: u64) ?*App.Window {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w.handle.serial == serial) return w;
     }
     return null;
@@ -497,16 +498,16 @@ pub fn closeNow(win: *App.Window) void {
         return;
     }
     win.saveGeometry();
-    App.emit("window:closed", .{ .label = win.label });
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    for (App.windows_list.items, 0..) |w, i| {
+    internal.emit("window:closed", .{ .label = win.label });
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    for (internal.windows_list.items, 0..) |w, i| {
         if (w == win) {
-            _ = App.windows_list.swapRemove(i);
+            _ = internal.windows_list.swapRemove(i);
             break;
         }
     }
-    App.windows_mutex.unlock();
+    internal.windows_mutex.unlock();
     teardown(win.handle);
     freeWindow(win);
 }
@@ -523,10 +524,10 @@ pub fn destroyAllWindows() void {
     const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     while (true) {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        const win = App.windows_list.pop();
-        App.windows_mutex.unlock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        const win = internal.windows_list.pop();
+        internal.windows_mutex.unlock();
         const w = win orelse break;
         teardown(w.handle);
         freeWindow(w);
@@ -623,10 +624,10 @@ pub fn WindowCreator(
         }
 
         fn prefersStatusBarHidden(self: apple.id, _: apple.c.SEL) callconv(.c) apple.c.BOOL {
-            App.ensureWindowsMutex();
-            App.windows_mutex.lock();
-            defer App.windows_mutex.unlock();
-            for (App.windows_list.items) |w| {
+            internal.ensureWindowsMutex();
+            internal.windows_mutex.lock();
+            defer internal.windows_mutex.unlock();
+            for (internal.windows_list.items) |w| {
                 if (w.handle.controller == self) return apple.boolean(if (state(w.handle.serial)) |st| st.fullscreen else false);
             }
             return apple.boolean(false);

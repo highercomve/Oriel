@@ -364,7 +364,10 @@ fn onShortcut(id: []const u8) void {
 
 fn onMenu(id: []const u8, _: ?bool) void {
     if (std.mem.eql(u8, id, "quit")) return oriel.App.quit(0);
-    if (std.mem.eql(u8, id, "show")) return oriel.App.toggleWindow();
+    if (std.mem.eql(u8, id, "show")) {
+        if (oriel.App.getWindow("main")) |w| w.toggle();
+        return;
+    }
     onShortcut(id);
 }
 
@@ -429,7 +432,7 @@ fn setup() !void {
         };
     }
     if (oriel.menu.available) {
-        oriel.App.setMenu(&.{
+        oriel.menu.set(&.{
             .{ .submenu = .{ .label = "File", .items = &.{
                 .{ .item = .{ .id = "tab:files", .label = "Open or save a file", .shortcut = "Ctrl+O" } },
                 .separator,
@@ -460,7 +463,7 @@ fn onDeepLink(url: []const u8) void {
     const list = notes.add(arena.allocator(), text) catch |err| return std.log.err("deep link note: {s}", .{@errorName(err)});
     std.log.info("deep link added note: '{s}'", .{text});
     events.emit(.notes, list);
-    oriel.App.showWindow();
+    if (oriel.App.getWindow("main")) |w| w.show();
 }
 
 fn headlessChat(gpa: std.mem.Allocator, message: []const u8) !u8 {

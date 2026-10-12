@@ -321,7 +321,7 @@ pub const Tray = struct {
 
         if (std.mem.eql(u8, iface, item_iface)) {
             if (std.mem.eql(u8, method, "Activate") or std.mem.eql(u8, method, "SecondaryActivate")) {
-                if (self.on_activate) |f| f() else oriel.App.toggleWindow();
+                if (self.on_activate) |f| f() else if (oriel.App.getWindow("main")) |w| w.toggle();
             }
             invocation.returnValue(null); // ContextMenu/Scroll: nothing to do
             return;

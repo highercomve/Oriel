@@ -6,6 +6,7 @@
 const std = @import("std");
 const oriel = @import("../../oriel.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 pub const common = @import("common.zig");
 pub const queue = @import("queue.zig");
 
@@ -64,7 +65,7 @@ pub fn deliver(url: []const u8) void {
 }
 
 fn emitDirect(valid_url: []const u8) void {
-    App.emit("deep-link", .{ .url = valid_url });
+    internal.emit("deep-link", .{ .url = valid_url });
 }
 
 /// Module smoke check for deep links: validates URLs and exercises in-process dispatch.

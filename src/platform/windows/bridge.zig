@@ -14,6 +14,7 @@ const webview2 = @import("webview2.zig");
 const window_mod = @import("window.zig");
 const ShellMod = @import("Shell.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
@@ -52,10 +53,10 @@ const NativeEngines = struct {
 /// read once it's known to be some open window's engine.
 pub fn nativeEngineAlive(e: *native.Engine, serial: u64) bool {
     if (comptime !build_opts.native_ui) return false;
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return e.serial == serial;
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return e.serial == serial;
     return false;
 }
 
@@ -97,7 +98,7 @@ fn viewGetsEvents(view: *webview2.ICoreWebView2, label: []const u8) bool {
     const gpa = std.heap.smp_allocator;
     const src = std.unicode.utf16LeToUtf8Alloc(gpa, std.mem.span(src_w.?)) catch return false;
     defer gpa.free(src);
-    return App.pageGetsEvents(src, label);
+    return internal.pageGetsEvents(src, label);
 }
 
 const bridge = @import("../../core/bridge_js.zig");
@@ -139,31 +140,31 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             if (self.target) |v| {
                 // Handles match by HWND only: use the live window's webview,
                 // not the (possibly stale) copy queued with the task.
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
                 var webview: ?*webview2.ICoreWebView2 = null;
-                for (App.windows_list.items) |win| if (win.handle.eql(v)) {
+                for (internal.windows_list.items) |win| if (win.handle.eql(v)) {
                     if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
                         webview = view;
                     };
                     engines.add(win);
                     break;
                 };
-                App.windows_mutex.unlock();
+                internal.windows_mutex.unlock();
 
                 if (webview) |view| {
                     _ = view.executeScript(script_w.ptr, null);
                 }
             } else {
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
-                for (App.windows_list.items) |win| {
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
+                for (internal.windows_list.items) |win| {
                     if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
                         _ = view.executeScript(script_w.ptr, null);
                     };
                     engines.add(win);
                 }
-                App.windows_mutex.unlock();
+                internal.windows_mutex.unlock();
             }
             engines.eval(self.script);
         }
@@ -188,7 +189,7 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
     const msg = std.fmt.allocPrint(gpa, "{{\"__oriel_event\":{s},\"payload\":{s}}}", .{ name_json, payload_json }) catch return;
     defer gpa.free(msg);
     const msg_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, msg) catch return;
-    // Native pages (-Dnative_ui) get the event as a call, like App.emit's
+    // Native pages (-Dnative_ui) get the event as a call, like internal.emit's
     // script on platforms without web messages.
     const script: ?[:0]u8 = if (comptime build_opts.native_ui)
         (std.fmt.allocPrintSentinel(gpa, "window.oriel?.__emit({s}, {s});", .{ name_json, payload_json }, 0) catch {
@@ -220,9 +221,9 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
             const self: *@This() = @ptrCast(@alignCast(ctx));
             defer discard(self);
             var engines: NativeEngines = .{};
-            App.ensureWindowsMutex();
-            App.windows_mutex.lock();
-            for (App.windows_list.items) |win| {
+            internal.ensureWindowsMutex();
+            internal.windows_mutex.lock();
+            for (internal.windows_list.items) |win| {
                 // Handles match by HWND: the live window's webview, not a stale copy.
                 if (self.target) |t| if (!win.handle.eql(t)) continue;
                 if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
@@ -232,7 +233,7 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
                 };
                 engines.add(win);
             }
-            App.windows_mutex.unlock();
+            internal.windows_mutex.unlock();
             if (self.script) |s| engines.eval(s);
         }
     };
@@ -283,20 +284,20 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.smp_allocator, self.script) catch return;
             defer std.heap.smp_allocator.free(script_w);
 
-            App.ensureWindowsMutex();
-            App.windows_mutex.lock();
+            internal.ensureWindowsMutex();
+            internal.windows_mutex.lock();
             var webview: ?*webview2.ICoreWebView2 = null;
             // A native window (-Dnative_ui) has an engine instead of a web
-            // view: targeted events (App.emitTo) must reach it too.
+            // view: targeted events (internal.emitTo) must reach it too.
             var engines: NativeEngines = .{};
-            for (App.windows_list.items) |win| if (std.mem.eql(u8, win.label, self.label)) {
+            for (internal.windows_list.items) |win| if (std.mem.eql(u8, win.label, self.label)) {
                 if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
                     webview = view;
                 };
                 engines.add(win);
                 break;
             };
-            App.windows_mutex.unlock();
+            internal.windows_mutex.unlock();
 
             if (webview) |view| {
                 _ = view.executeScript(script_w.ptr, null);
@@ -404,11 +405,11 @@ pub fn Bridge(
                 const arena = arena_state.allocator();
 
                 // The window by its engine (it may have closed since the call).
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
                 var label: ?[]const u8 = null;
                 var url: ?[]const u8 = null;
-                for (App.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(self.engine))) {
+                for (internal.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(self.engine))) {
                     // Another window's engine at the same address: not ours
                     // (its label would grant the wrong window's commands).
                     if (self.engine.serial != self.serial) break;
@@ -416,14 +417,14 @@ pub fn Bridge(
                     url = if (win.options.url) |u| arena.dupe(u8, u) catch null else null;
                     break;
                 };
-                App.windows_mutex.unlock();
+                internal.windows_mutex.unlock();
                 const win_label = label orelse return;
 
                 const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "app://localhost/index.html";
                 const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args, .{}) catch .null;
                 const request: ipc.Request = .{ .cmd = self.cmd, .args = args };
-                const pool = App.getWorkerPool();
-                defer if (pool != null) App.releaseWorkerPool();
+                const pool = internal.getWorkerPool();
+                defer if (pool != null) internal.releaseWorkerPool();
 
                 const result: anyerror![]const u8 = blk: {
                     if (window_commands.isWindowCommand(self.cmd))
@@ -578,8 +579,8 @@ pub fn Bridge(
                 return;
             }
 
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
+            const pool = internal.getWorkerPool();
+            defer if (pool != null) internal.releaseWorkerPool();
 
             if (!ipc.isAsync(api.commands, call.cmd)) {
                 // Run sync commands from the message loop, not inside this

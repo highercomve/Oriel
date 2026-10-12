@@ -35,6 +35,7 @@ const std = @import("std");
 const core = @import("system_ai/core.zig");
 const extensions = @import("../core/extensions.zig");
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 
 pub const State = core.State;
 pub const Status = core.Status;
@@ -69,11 +70,11 @@ fn onEvent(event: []const u8, data: []const u8) void {
 }
 
 fn pageToken(text: []const u8) void {
-    App.emit("system_ai:token", .{ .text = text });
+    internal.emit("system_ai:token", .{ .text = text });
 }
 
 fn pageDownload(p: Progress) void {
-    App.emit("system_ai:download", .{ .state = @tagName(p.state), .downloaded = p.downloaded, .total = p.total });
+    internal.emit("system_ai:download", .{ .state = @tagName(p.state), .downloaded = p.downloaded, .total = p.total });
 }
 
 /// The last failure's code and message on this thread ("not_ready:

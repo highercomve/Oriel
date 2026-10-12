@@ -1,7 +1,7 @@
 //! Android application shell: the main-thread task queue, `run` and `quit`.
 //!
 //! Threads: Kotlin's `NativeLib.start` (on the UI thread) starts the app's
-//! `main` on a thread of its own (`entry.zig`). `App.run` reaches `run` here
+//! `main` on a thread of its own (`entry.zig`). `internal.run` reaches `run` here
 //! on that thread, which opens the main window and runs `setup` on the UI
 //! thread, then waits until `quit`. The UI thread is Oriel's "main thread":
 //! windows, sync IPC commands and `App.runOnMain` tasks all run there.
@@ -14,6 +14,7 @@ const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const linux = std.os.linux;
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const build_opts = @import("build_options");
 const jni = @import("jni.zig");
@@ -286,12 +287,6 @@ pub fn createWindow(options: App.WindowOptions, win_inst: *App.Window) !window.W
     return f(options, win_inst);
 }
 
-pub fn setMenu(items: anytype, on_action: anytype) !void {
-    _ = items;
-    _ = on_action;
-    return error.NotSupported; // no menu bar on Android
-}
-
 /// Hook for modules that must clean up at shutdown (UI thread).
 var exit_code: std.atomic.Value(u8) = .init(0);
 var quit_event: Event = .{};
@@ -356,7 +351,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (config.setup) |setup| setup() catch |err| log.err("setup failed: {s}", .{@errorName(err)});
             // The launch intent's arguments (a deep link's URL): like a
             // desktop app's argv.
-            handleArgs(App.process_args, true);
+            handleArgs(internal.process_args, true);
         }
 
         /// A launch's arguments (the first launch, or `onNewIntent` of the
@@ -364,7 +359,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         pub fn handleArgs(args: []const []const u8, first: bool) void {
             if (!first) {
                 if (config.on_second_instance) |h| h(args);
-                App.showWindow();
+                if (App.getWindow("main")) |w| w.show();
             }
             if (build_opts.deep_link) {
                 for (args) |arg| {

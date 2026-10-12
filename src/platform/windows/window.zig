@@ -11,6 +11,7 @@ const bridge_mod = @import("bridge.zig");
 const ShellMod = @import("Shell.zig");
 const dev_server = @import("dev_server.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const permissions = @import("../../core/permissions.zig");
@@ -119,10 +120,10 @@ pub fn showWindow(handle: WindowHandle) void {
     var focus = true;
     {
         const ptr = win32.GetWindowLongPtrW(handle.hwnd, win32.GWLP_USERDATA);
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
-        if (ptr != 0) for (App.windows_list.items) |w| if (@intFromPtr(w) == @as(usize, @bitCast(ptr))) {
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
+        if (ptr != 0) for (internal.windows_list.items) |w| if (@intFromPtr(w) == @as(usize, @bitCast(ptr))) {
             placement = w.options.placement;
             focus = w.options.focus_on_show;
             break;
@@ -416,10 +417,10 @@ pub fn getWindowByView(view: *webview2.ICoreWebView2) ?*App.Window {
     const unk_a_ptr: *webview2.IUnknown = @ptrCast(@alignCast(unk_a.?));
     defer _ = unk_a_ptr.lpVtbl.Release(unk_a_ptr);
 
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         var unk_b: ?*anyopaque = null;
         const wv = w.handle.webview orelse continue;
         if (wv.lpVtbl.QueryInterface(wv, &webview2.IID_IUnknown, &unk_b) < 0 or unk_b == null) continue;
@@ -441,16 +442,16 @@ fn windowFromUserData(hwnd: win32.HWND) ?*App.Window {
 }
 
 /// Like `windowFromUserData`, but only returns windows still in
-/// App.windows_list: for HWNDs that come from elsewhere (bridge handlers).
+/// internal.windows_list: for HWNDs that come from elsewhere (bridge handlers).
 /// Takes windows_mutex; never call it from wndProc.
 pub fn getWindowByHwnd(hwnd: win32.HWND) ?*App.Window {
     const ptr = win32.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
     if (ptr == 0) return null;
     const candidate: *App.Window = @ptrFromInt(@as(usize, @bitCast(ptr)));
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |w| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |w| {
         if (w == candidate) return candidate;
     }
     return null;
@@ -1683,18 +1684,18 @@ pub fn WindowCreator(
 
                         w.saveGeometry();
 
-                        App.emit("window:closed", .{ .label = w.label });
+                        internal.emit("window:closed", .{ .label = w.label });
 
-                        App.ensureWindowsMutex();
-                        App.windows_mutex.lock();
-                        for (App.windows_list.items, 0..) |item, i| {
+                        internal.ensureWindowsMutex();
+                        internal.windows_mutex.lock();
+                        for (internal.windows_list.items, 0..) |item, i| {
                             if (item == w) {
-                                _ = App.windows_list.swapRemove(i);
+                                _ = internal.windows_list.swapRemove(i);
                                 break;
                             }
                         }
-                        const remaining = App.windows_list.items.len;
-                        App.windows_mutex.unlock();
+                        const remaining = internal.windows_list.items.len;
+                        internal.windows_mutex.unlock();
 
                         // Clear GWLP_USERDATA before freeing w or destroying window
                         _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, 0);

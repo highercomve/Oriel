@@ -2,6 +2,7 @@
 //! where there is one). Folders: `selectFolder`; the id is the path.
 
 const std = @import("std");
+const internal = @import("../../core/internal.zig");
 const gtk = @import("gtk");
 const gio = @import("gio");
 const glib = @import("glib");
@@ -69,7 +70,7 @@ const Call = struct {
         dialog.setTitle(self.title.ptr);
         dialog.setModal(@intFromBool(self.modal));
         if (self.filter) |f| setFilter(dialog, f);
-        const parent = if (oriel.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
+        const parent = if (internal.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
         switch (self.kind) {
             .open => dialog.open(parent, null, &finish, self),
             .save => dialog.save(parent, null, &finish, self),
@@ -139,7 +140,7 @@ fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool, filte
     const owner = context.isOwner() != 0;
     // Not the main thread, but no loop running yet (a script, a test): take
     // the context here.
-    const acquired = !owner and oriel.App.main_window == null and context.acquire() != 0;
+    const acquired = !owner and internal.main_window == null and context.acquire() != 0;
     if (owner or acquired) {
         defer if (acquired) context.release();
         const loop = glib.MainLoop.new(null, 0);

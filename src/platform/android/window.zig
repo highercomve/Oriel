@@ -14,6 +14,7 @@
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const runtime = @import("runtime.zig");
@@ -80,7 +81,7 @@ fn apply(handle: WindowHandle, op: Op) void {
         .show => _ = runtime.call(.void, "showWindow", "(I)V", .{id}),
         .hide => _ = runtime.call(.void, "hideWindow", "(I)V", .{id}),
         .focus => _ = runtime.call(.void, "showWindow", "(I)V", .{id}),
-        .close => if (App.getWindowByHandle(handle)) |w| closeNow(w),
+        .close => if (internal.getWindowByHandle(handle)) |w| closeNow(w),
         .title => |t| _ = runtime.call(.void, "setTitle", "(I[B)V", .{ id, @as([]const u8, t) }),
         .theme => |c| {
             // ARGB, alpha first as Android's Color ints; has: a colour at all.
@@ -171,7 +172,7 @@ pub fn postCloseWindow(handle: WindowHandle) void {
     const Task = struct {
         fn run(ctx: ?*anyopaque) void {
             const id: u32 = @intCast(@intFromPtr(ctx));
-            if (App.getWindowByHandle(.{ .id = id })) |w| closeNow(w);
+            if (internal.getWindowByHandle(.{ .id = id })) |w| closeNow(w);
         }
     };
     ShellMod.dispatchToMainThread(&Task.run, @ptrFromInt(handle.id));
@@ -268,7 +269,7 @@ pub fn getWindowWorkArea(handle: WindowHandle) ?App.Rect {
 }
 
 /// The caption bar moves windows in desktop windowing; apps can't.
-pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
     _ = handle;
     return .unsupported;
 }
@@ -299,7 +300,7 @@ pub fn openExternal(uri: [*:0]const u8) void {
 // ---------------------------------------------------------------------------
 
 pub fn getWindowById(id: u32) ?*App.Window {
-    return App.getWindowByHandle(.{ .id = id });
+    return internal.getWindowByHandle(.{ .id = id });
 }
 
 fn teardown(handle: WindowHandle) void {
@@ -321,18 +322,18 @@ pub fn closeNow(win: *App.Window) void {
         return;
     }
     win.saveGeometry();
-    App.emit("window:closed", .{ .label = win.label });
+    internal.emit("window:closed", .{ .label = win.label });
 
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    for (App.windows_list.items, 0..) |w, i| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    for (internal.windows_list.items, 0..) |w, i| {
         if (w == win) {
-            _ = App.windows_list.swapRemove(i);
+            _ = internal.windows_list.swapRemove(i);
             break;
         }
     }
-    const remaining = App.windows_list.items.len;
-    App.windows_mutex.unlock();
+    const remaining = internal.windows_list.items.len;
+    internal.windows_mutex.unlock();
 
     teardown(win.handle);
     freeWindow(win);
@@ -350,10 +351,10 @@ fn freeWindow(win: *App.Window) void {
 /// Shutdown (UI thread): every window still open, without events.
 pub fn destroyAllWindows() void {
     while (true) {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        const win = App.windows_list.pop();
-        App.windows_mutex.unlock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        const win = internal.windows_list.pop();
+        internal.windows_mutex.unlock();
         const w = win orelse break;
         teardown(w.handle);
         freeWindow(w);

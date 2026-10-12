@@ -9,6 +9,7 @@ const gio = @import("gio");
 const gobject = @import("gobject");
 const gtk = @import("gtk");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const lifecycle = @import("../../core/lifecycle.zig");
@@ -97,7 +98,7 @@ pub fn quit(code: u8) void {
 
 fn quitNow() void {
     lifecycle.dispatch(.terminating);
-    if (App.gtk_app) |app| gio.Application.quit(app.as(gio.Application));
+    if (internal.gtk_app) |app| gio.Application.quit(app.as(gio.Application));
 }
 
 /// oriel.lifecycle: memory pressure from GMemoryMonitor (PSI, or the
@@ -154,20 +155,8 @@ fn onQuitSignal(_: ?*anyopaque) callconv(.c) c_int {
 }
 
 pub fn holdApp() void {
-    if (App.gtk_app) |app| {
+    if (internal.gtk_app) |app| {
         gio.Application.hold(app.as(gio.Application));
-    }
-}
-
-pub fn setMenu(items: anytype, on_action: anytype) !void {
-    const app = App.gtk_app orelse return error.AppNotRunning;
-    const menu_mod = @import("../../modules/menu.zig");
-    try menu_mod.set(app, items, on_action);
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| {
-        win.handle.app_window.setShowMenubar(1);
     }
 }
 
@@ -220,8 +209,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 gio.ApplicationFlags{};
             const app = gtk.Application.new(id, app_flags);
             defer app.unref();
-            App.gtk_app = app;
-            defer App.gtk_app = null;
+            internal.gtk_app = app;
+            defer internal.gtk_app = null;
 
             const id_z = (config.app.id ++ "\x00")[0..config.app.id.len :0];
             gtk.Window.setDefaultIconName(id_z);
@@ -256,8 +245,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 for (argv_ptrs.items) |p| if (p) |ptr| gpa.free(std.mem.span(ptr));
                 argv_ptrs.deinit(gpa);
             }
-            if (App.process_args.len > 0) {
-                for (App.process_args) |arg| {
+            if (internal.process_args.len > 0) {
+                for (internal.process_args) |arg| {
                     const arg_z = gpa.dupeZ(u8, arg) catch break;
                     argv_ptrs.append(gpa, arg_z.ptr) catch {
                         gpa.free(arg_z);
@@ -309,7 +298,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 }
             }
 
-            if (App.main_window) |w| {
+            if (internal.main_window) |w| {
                 // A later launch: the running instance handles it.
                 if (config.on_second_instance) |handler| {
                     forwardArgs(handler, argv, n);
@@ -340,7 +329,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
         fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {
             _ = app;
-            if (App.main_window) |w| {
+            if (internal.main_window) |w| {
                 // Second launch of a single-instance app: bring the window back.
                 w.present();
                 return;
@@ -351,7 +340,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 return;
             };
 
-            App.main_window = main_win.handle.gtk_window;
+            internal.main_window = main_win.handle.gtk_window;
 
             if (config.window.hide_on_close or !config.window.visible) {
                 holdApp();

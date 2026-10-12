@@ -14,6 +14,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const App = @import("App.zig");
+const internal = @import("internal.zig");
 const heap = @import("heap.zig");
 
 const log = std.log.scoped(.events);
@@ -85,7 +86,7 @@ pub fn Queue(comptime T: type, comptime event: []const u8, comptime capacity: us
         }
 
         fn emit(value: *const T) void {
-            App.emit(event, value.*);
+            internal.emit(event, value.*);
         }
     };
 }

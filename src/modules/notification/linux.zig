@@ -10,6 +10,7 @@ const glib = @import("glib");
 const gio = @import("gio");
 const oriel = @import("../../oriel.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const common = @import("common.zig");
 
 pub const NotificationOptions = common.NotificationOptions;
@@ -18,7 +19,7 @@ const action_name = "oriel-notification";
 var action_registered: std.atomic.Value(bool) = .init(false);
 
 pub fn notify(options: NotificationOptions) !void {
-    const app = App.gtk_app orelse return error.NoApp;
+    const app = internal.gtk_app orelse return error.NoApp;
     var title_buf: [256]u8 = undefined;
     const title_z = try std.fmt.bufPrintSentinel(&title_buf, "{s}", .{options.title}, 0);
     const notif = gio.Notification.new(title_z.ptr);
@@ -61,7 +62,7 @@ fn target(id: [:0]const u8, action: [:0]const u8) *glib.Variant {
 }
 
 fn registerAction(_: void) void {
-    const app = App.gtk_app orelse {
+    const app = internal.gtk_app orelse {
         action_registered.store(false, .release);
         return;
     };
@@ -75,7 +76,7 @@ fn onActivate(_: *gio.SimpleAction, parameter: ?*glib.Variant, _: ?*anyopaque) c
     const p = parameter orelse return;
     const id = childString(p, 0);
     const action = childString(p, 1);
-    if (action.len == 0) if (App.main_window) |w| w.present();
+    if (action.len == 0) if (internal.main_window) |w| w.present();
     common.dispatch(id, if (action.len == 0) null else action);
 }
 

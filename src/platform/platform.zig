@@ -41,7 +41,6 @@
 //!   - `quit(code: u8) void`: Safely exit the main application loop from any thread.
 //!   - `openExternal(uri: [*:0]const u8) void`: Open a URI using the operating system's default handler.
 //!   - `evalJs(handle: ?WindowHandle, script: [:0]const u8) void`: Evaluate JS in a window (or all if null).
-//!   - `setMenu(items: anytype, on_action: anytype) anyerror!void`: Set native application menubar.
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -82,7 +81,6 @@ comptime {
         "openExternal",
         "evalJs",
         "evalJsByLabel",
-        "setMenu",
         "setWindowPlacement",
         "setWindowClickThrough",
         "setWindowAlwaysOnTop",
@@ -137,7 +135,6 @@ pub const evalJsByLabel = impl.evalJsByLabel;
 /// Without it, App emits through evalJs.
 pub const has_emit_event = @hasDecl(impl, "emitEvent");
 pub const emitEvent = if (has_emit_event) impl.emitEvent else void;
-pub const setMenu = impl.setMenu;
 /// Optional: the page's theme-color for the window's caption
 /// (`setWindowThemeColor(handle: WindowHandle, color: ?[4]u8)`).
 pub const has_window_theme_color = @hasDecl(impl, "setWindowThemeColor");

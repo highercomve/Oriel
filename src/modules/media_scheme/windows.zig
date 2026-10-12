@@ -14,6 +14,7 @@ const webview2 = @import("../../platform/windows/webview2.zig");
 const open = @import("../media/open.zig");
 const range = @import("../media/range.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 
 var root_handle: ?open.Root = null;
@@ -370,7 +371,7 @@ fn serveRange(
         std.unicode.utf8ToUtf16LeStringLiteral("OK");
 
     // The app's extra headers (security.headers), as on app:// responses.
-    const extra = security.headerLines(gpa, App.current_security.headers) catch return;
+    const extra = security.headerLines(gpa, internal.current_security.headers) catch return;
     defer gpa.free(extra);
     var hdr_str: []u8 = undefined;
     if (status_code == 206) {
