@@ -44,8 +44,8 @@
 }
 
 - (BOOL)webView:(WKWebView *)webView
-    decidePolicyForNavigationAction:(WKNavigationAction *)action
-                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    handleNavigationAction:(WKNavigationAction *)action
+           decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = action.request.URL;
     if (![url.host isEqualToString:@"example.com"]) return NO; // Oriel decides
     decisionHandler(WKNavigationActionPolicyCancel);

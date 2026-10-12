@@ -29,7 +29,7 @@ _ = oriel.addApp(b, dep, .{
             .sources = &.{b.path("ios/VisionExtension.m")}, // zig cc -fobjc-arc
             .frameworks = &.{ "Vision", "CoreML" },
             .weak_frameworks = &.{}, // newer than the minimum: weak, and only when the SDK has them
-            .resources = &.{b.path("models/yoloe.mlmodelc")}, // the bundle's root
+            .resources = &.{.{ .from = b.path("models/yoloe.mlmodelc"), .to = "yoloe.mlmodelc" }}, // in the bundle
         },
         .desktop = .{ .zig = b.path("src/vision_desktop.zig") }, // any desktop OS
         // .linux / .macos / .windows override .desktop per OS; .macos can also be

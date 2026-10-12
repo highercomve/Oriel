@@ -47,6 +47,12 @@ Notable changes in Oriel releases.
 
 ### Changed
 
+- **Breaking: `.ios.resources` takes named entries,** like Android's
+  `.assets`: `.{ .from = <LazyPath>, .to = "models/yoloe.mlmodelc" }`, placed
+  at `to` inside the bundle. `from` may now be a dependency's path
+  (`dep.path(...)`, e.g. a hash-pinned, lazy model archive in build.zig.zon),
+  not only a source path; a build step's output is refused. `to` is checked
+  like Android asset paths (relative, no `..`).
 - **Swift sources link the Swift overlays and frameworks they import**
   (iOS and macOS, extensions and hooks): Zig's linker ignores swiftc's
   autolink entries, so `import CoreML`, `Metal`, `Accelerate`, `simd`,

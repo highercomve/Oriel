@@ -234,8 +234,8 @@ extension's `.ios.sources`, say) can be listed without sources.
 }
 
 - (BOOL)webView:(WKWebView *)webView
-    decidePolicyForNavigationAction:(WKNavigationAction *)action
-                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    handleNavigationAction:(WKNavigationAction *)action
+           decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     if (![action.request.URL.host isEqualToString:@"help.example.com"]) return NO; // Oriel decides
     decisionHandler(WKNavigationActionPolicyCancel); // exactly once
     UIViewController *front = self.context.presentingViewController;
@@ -297,8 +297,8 @@ final class PushHooks: NSObject, OrielPlatformHooks {
 | `webViewConfiguration:(WKWebViewConfiguration *) window:(NSString *)` | both | notify | before the `WKWebView` is created; Oriel's scheme handler and bridge are already set (don't replace the `userContentController` or Oriel's handlers) |
 | `webViewCreated:(WKWebView *) window:(NSString *)` | both | notify | after Oriel installs its delegates and bridge, before the first navigation (with `oriel.hooks`' `webview_created` on macOS) |
 | `webViewDestroyed:(WKWebView *) window:(NSString *)` | both | notify | the window is being destroyed |
-| `webView:decidePolicyForNavigationAction:decisionHandler:` | both | intercept | before Oriel's navigation policy |
-| `webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:` | both | intercept | getUserMedia, before Oriel's rule |
+| `webView:handleNavigationAction:decisionHandler:` | both | intercept | before Oriel's navigation policy |
+| `webView:handleMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:` | both | intercept | getUserMedia, before Oriel's rule |
 | `openURL:(NSURL *)` | both | intercept | a URL of the app's schemes (not file URLs); `NO` leaves it to `oriel.deep_link` |
 | `continueUserActivity:(NSUserActivity *)` | both | intercept | universal links, Handoff (iOS: `scene:continueUserActivity:` and a connecting scene's activities; macOS: `application:continueUserActivity:restorationHandler:`) |
 | `didRegisterForRemoteNotificationsWithDeviceToken:(NSData *)` | both | notify | forwarded from Oriel's app delegate |
