@@ -449,8 +449,8 @@ pub fn build(b: *std.Build) void {
         }
     } else {
         const check_oriel = b.addTest(.{ .root_module = oriel });
-        // iOS: the SDK's libc headers for the C code (SQLite), when there is an SDK.
-        if (target.result.os.tag == .ios) ios_build.configure(b, check_oriel);
+        // iOS: libc headers for the C code (SQLite): the SDK's, else Zig's Darwin ones.
+        if (target.result.os.tag == .ios) ios_build.configureCheck(b, check_oriel);
         if (is_android) android_build.configure(b, check_oriel, target);
         check_step.dependOn(&check_oriel.step);
     }
@@ -2463,8 +2463,8 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     // Type-check only: nothing requests the binary.
     const check_exe = addExe(b, oriel, target, dev_optimize, b.fmt("{s}-check", .{options.name}), options.root_source_file, appConfigModule(b, oriel, dev_cfg, null, app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| check_exe.root_module.addImport(imp.name, imp.module);
-    // With an SDK, C dependencies (sql, whisper, ...) type-check too.
-    ios_build.configure(b, check_exe);
+    // C dependencies (sql, whisper, ...) type-check too: against the SDK, else Zig's Darwin headers.
+    ios_build.configureCheck(b, check_exe);
     @import("build/package.zig").getOrCreateStep(b, "check", "Type-check the app (no binaries)").dependOn(&check_exe.step);
 
     if (fe.types_path != null) {

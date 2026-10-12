@@ -3,7 +3,8 @@
 //! Xcode, or the one `xtool setup` extracts from Xcode.xip on Linux), found
 //! from `-Dapple_sdk=<path>`, else `$APPLE_SDK`, else Xcode's (`xcrun`) on a
 //! Mac. Without one, iOS targets can
-//! still be type-checked (`zig build check`), which links nothing.
+//! still be type-checked (`zig build check`), which links nothing: its C
+//! code then sees Zig's own Darwin headers (`configureCheck`).
 
 const std = @import("std");
 
@@ -82,6 +83,28 @@ pub fn libcFile(b: *std.Build, root: []const u8) std.Build.LazyPath {
 /// An iOS executable: the SDK's libc (see `libcFile`) when there is an SDK.
 pub fn configure(b: *std.Build, compile: *std.Build.Step.Compile) void {
     if (sdk(b, compile.rootModuleTarget())) |root| compile.setLibCFile(libcFile(b, root));
+}
+
+/// A type-check (`zig build check`) of an iOS compile: the SDK's libc when
+/// there is an SDK, else Zig's own Darwin headers (`lib/libc/include/
+/// any-darwin-any`, what Zig builds macOS code with) in its place, so C
+/// headers and sources (SQLite, ggml, llama, whisper, espeak) type-check
+/// on a machine without the SDK. Only for a check: nothing is emitted from
+/// it, and an app's binary always comes from the SDK (`requireSdk`).
+pub fn configureCheck(b: *std.Build, compile: *std.Build.Step.Compile) void {
+    if (sdk(b, compile.rootModuleTarget())) |root| return compile.setLibCFile(libcFile(b, root));
+    const lib = b.graph.zig_lib_directory.path orelse ".";
+    const include = b.pathResolve(&.{ lib, "libc", "include", "any-darwin-any" });
+    const files = b.addWriteFiles();
+    compile.setLibCFile(files.add("ios-check-libc.txt", b.fmt(
+        \\include_dir={s}
+        \\sys_include_dir={s}
+        \\crt_dir={s}
+        \\msvc_lib_dir=
+        \\kernel32_lib_dir=
+        \\gcc_dir=
+        \\
+    , .{ include, include, b.pathResolve(&.{ lib, "libc", "darwin" }) })));
 }
 
 /// Fail `compile` when there is no SDK to link with.
