@@ -7,10 +7,8 @@ const oriel = @import("../../oriel.zig");
 
 pub const buffer_align = @alignOf(linux.inotify_event);
 
-pub const Event = struct {
-    kind: enum { created, modified, deleted, other },
-    name: []const u8,
-};
+/// `oriel.fs_watch.Event`, the same type on every platform.
+pub const Event = @import("common.zig").Event;
 
 pub const Watcher = struct {
     fd: i32,

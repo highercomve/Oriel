@@ -77,7 +77,7 @@ pub const notification = if (options.notification) @import("modules/notification
 pub const store = if (options.store) @import("modules/store.zig") else unavailable("store");
 pub const menu = if (options.menu) @import("modules/menu.zig") else unavailable("menu");
 pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") else unavailable("deep_link");
-/// The multicast lock (mDNS on Android) and LAN information.
+/// The multicast lock and mDNS/DNS-SD service registration and browsing.
 pub const network = if (options.network) @import("modules/network.zig") else unavailable("network");
 /// Receiving what other apps share, and the system share sheet.
 pub const share = if (options.share) @import("modules/share.zig") else unavailable("share");
