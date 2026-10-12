@@ -27,7 +27,7 @@ pub const Command = struct {
     pub const summary = "Download and cache WebView2Loader.dll for Windows";
     pub const help = .{
         .version = "Specific NuGet package version (default: latest stable)",
-        .arch = "Architecture to extract: x64, arm64, or all (default: all)",
+        .arch = "Architecture to extract: x64, arm64, or all",
         .out = "Optional directory to copy the extracted DLL(s) to",
     };
     pub const values = .{

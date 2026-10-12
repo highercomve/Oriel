@@ -278,6 +278,10 @@ pub fn writeCommandHelp(comptime Commands: type, comptime program: []const u8, t
             const T = @FieldType(Commands, @tagName(t));
             const name = comptime optionName(@tagName(t));
             const fields = @typeInfo(T).@"struct".fields;
+            if (@hasDecl(T, "forward") and @hasDecl(T, "usage")) {
+                try w.writeAll(T.usage);
+                return;
+            }
             if (@hasDecl(T, "forward")) {
                 try w.writeAll(comptime "Usage: " ++ program ++ " " ++ name ++ " [args...]\n\n" ++ T.summary ++ "\n" ++
                     (if (@hasDecl(T, "details")) "\n" ++ T.details ++ "\n" else ""));

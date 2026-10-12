@@ -16,10 +16,26 @@ const findMatchingClose = @import("deep_link.zig").findMatchingClose;
 pub const Command = struct {
     pub const summary = "Declare the OS permissions the app needs (microphone, camera, ...)";
     pub const forward = "args";
+    pub const usage =
+        \\Usage: oriel permission <command>
+        \\
+        \\Commands:
+        \\  add <kind> ["reason"]  Declare a permission; the reason is what the OS shows
+        \\                         the user (default: a generic text)
+        \\  remove <kind>          Remove a declared permission
+        \\  list                   Show the declared permissions
+        \\
+        \\Kinds: microphone, camera, screen_capture, accessibility, location,
+        \\       notifications, system_audio, bluetooth, local_network
+        \\
+        \\The app requests them at runtime with oriel.permissions.request(kind)
+        \\(Zig) or oriel.permissions.request("kind") (JS); undeclared ones are denied.
+        \\
+    ;
     args: []const []const u8 = &.{},
 };
 
-pub const kinds = [_][]const u8{ "microphone", "camera", "screen_capture", "accessibility", "location", "notifications", "system_audio" };
+pub const kinds = [_][]const u8{ "microphone", "camera", "screen_capture", "accessibility", "location", "notifications", "system_audio", "bluetooth", "local_network" };
 
 pub fn isKind(name: []const u8) bool {
     for (kinds) |k| if (std.mem.eql(u8, k, name)) return true;
@@ -179,22 +195,7 @@ pub fn edit(gpa: std.mem.Allocator, source: []const u8, op: union(enum) { add: E
 pub fn run(ctx: Context, cmd: Command) !u8 {
     const a = cmd.args;
     if (a.len == 0 or std.mem.eql(u8, a[0], "--help") or std.mem.eql(u8, a[0], "-h")) {
-        try ctx.out.writeAll(
-            \\Usage: oriel permission <command>
-            \\
-            \\Commands:
-            \\  add <kind> ["reason"]  Declare a permission; the reason is what the OS shows
-            \\                         the user (default: a generic text)
-            \\  remove <kind>          Remove a declared permission
-            \\  list                   Show the declared permissions
-            \\
-            \\Kinds: microphone, camera, screen_capture, accessibility, location,
-            \\       notifications, system_audio
-            \\
-            \\The app requests them at runtime with oriel.permissions.request(kind)
-            \\(Zig) or oriel.permissions.request("kind") (JS); undeclared ones are denied.
-            \\
-        );
+        try ctx.out.writeAll(Command.usage);
         return 0;
     }
     const sub = a[0];
