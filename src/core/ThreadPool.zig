@@ -1,6 +1,6 @@
 //! Worker thread pool for offloading commands from the main/UI thread.
 //!
-//! Owned by `App.run` and shut down cleanly when the application terminates.
+//! Owned by `internal.run` and shut down cleanly when the application terminates.
 
 const std = @import("std");
 

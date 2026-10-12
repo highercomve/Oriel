@@ -17,6 +17,7 @@ const Object = apple.Object;
 const window_mod = @import("window.zig");
 const ShellMod = @import("Shell.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
@@ -41,7 +42,7 @@ pub const bridge_js = bridge.script(bridge.webkit_transport);
 /// URL during a navigation, so a page being left may miss an event.)
 fn evaluateEvent(view: apple.id, label: []const u8, script: []const u8) void {
     const url = apple.urlString((Object{ .value = view }).msgSend(Object, "URL", .{})) orelse return;
-    if (!App.pageGetsEvents(url, label)) return;
+    if (!internal.pageGetsEvents(url, label)) return;
     const str = apple.nsString(script) orelse return;
     defer str.release();
     (Object{ .value = view }).msgSend(void, "evaluateJavaScript:completionHandler:", .{ str, apple.nil });
@@ -90,12 +91,12 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             defer discard(self);
             var engines: NativeEngines = .{};
             {
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
-                defer App.windows_mutex.unlock();
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
+                defer internal.windows_mutex.unlock();
                 // Handles match by serial: use the live window's webview,
                 // not the (possibly stale) copy queued with the task.
-                for (App.windows_list.items) |win| {
+                for (internal.windows_list.items) |win| {
                     if (self.target != null and !win.handle.eql(self.target.?)) continue;
                     if (win.handle.webview != null) evaluateEvent(win.handle.webview, win.label, self.script) else engines.add(win.handle);
                 }
@@ -143,10 +144,10 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
             defer discard(self);
             var engines: NativeEngines = .{};
             {
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
-                defer App.windows_mutex.unlock();
-                for (App.windows_list.items) |win| {
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
+                defer internal.windows_mutex.unlock();
+                for (internal.windows_list.items) |win| {
                     if (!std.mem.eql(u8, win.label, self.label)) continue;
                     if (win.handle.webview != null) evaluateEvent(win.handle.webview, win.label, self.script) else engines.add(win.handle);
                 }
@@ -236,10 +237,10 @@ pub fn Bridge(
                 var label: []const u8 = "";
                 var url: ?[]const u8 = null;
                 {
-                    App.ensureWindowsMutex();
-                    App.windows_mutex.lock();
-                    defer App.windows_mutex.unlock();
-                    for (App.windows_list.items) |w| if (w.handle.native == @as(?*anyopaque, surface)) {
+                    internal.ensureWindowsMutex();
+                    internal.windows_mutex.lock();
+                    defer internal.windows_mutex.unlock();
+                    for (internal.windows_list.items) |w| if (w.handle.native == @as(?*anyopaque, surface)) {
                         label = arena.dupe(u8, w.label) catch return;
                         url = if (w.options.url) |u| (arena.dupe(u8, u) catch return) else null;
                         break;
@@ -249,8 +250,8 @@ pub fn Bridge(
                 const page_url = security.resolveWindowUrl(arena, config.security, local, null, url, config.start) catch "app://localhost/index.html";
                 const args = std.json.parseFromSliceLeaky(std.json.Value, arena, self.args_json, .{}) catch .null;
                 const request: ipc.Request = .{ .cmd = self.cmd, .args = args };
-                const pool = App.getWorkerPool();
-                defer if (pool != null) App.releaseWorkerPool();
+                const pool = internal.getWorkerPool();
+                defer if (pool != null) internal.releaseWorkerPool();
                 const result: anyerror![]const u8 = blk: {
                     if (window_commands.isWindowCommand(self.cmd))
                         break :blk window_commands.dispatch(config.security, local, arena, page_url, label, self.cmd, args);
@@ -423,8 +424,8 @@ pub fn Bridge(
                 return;
             }
 
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
+            const pool = internal.getWorkerPool();
+            defer if (pool != null) internal.releaseWorkerPool();
             if (window_commands.isWindowCommand(request.cmd) or ipc.isBuiltinCommand(request.cmd) or !ipc.isAsync(api.commands, request.cmd)) {
                 SyncCall.queue(reply, request, page_url, win_label, if (pool) |p| p.io else null);
                 return;

@@ -14,6 +14,7 @@
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const notification_common = @import("../../modules/notification/common.zig");
 const lifecycle = @import("../../core/lifecycle.zig");
 const log = std.log.scoped(.oriel);
@@ -58,7 +59,6 @@ pub const evalJs = bridge.evalJs;
 pub const evalJsByLabel = bridge.evalJsByLabel;
 pub const emitEvent = bridge.emitEvent;
 pub const quit = ShellMod.quit;
-pub const setMenu = ShellMod.setMenu;
 pub const createWindow = ShellMod.createWindow;
 
 pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
@@ -132,7 +132,7 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
         return;
     }
     if (system_event_handler) |h| h(name, data);
-    App.emit("android:event", .{ .name = name, .data = data });
+    internal.emit("android:event", .{ .name = name, .data = data });
 }
 
 /// OrielRuntime's started-Activity count (main thread): 0 background, 1

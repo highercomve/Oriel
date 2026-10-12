@@ -120,7 +120,9 @@ pub const features = @import("core/features.zig");
 
 pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 
-/// Standard entry point for a oriel app:
+const internal = @import("core/internal.zig");
+
+/// The entry point of every Oriel app:
 ///
 ///     pub fn main(init: std.process.Init) !u8 {
 ///         return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
@@ -129,8 +131,12 @@ pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 ///         });
 ///     }
 ///
-/// Besides running the app, it handles `--emit-types <path>`, used by the
-/// build to write the frontend's TypeScript bindings for the API.
+/// It starts the updater (with -Dupdater), handles `--emit-types <path>`
+/// (the build writes the frontend's TypeScript bindings with it), hands the
+/// process arguments to the platform shell (deep links, second launches),
+/// then runs the app on the calling (main) thread until it quits. An app
+/// that parses its own arguments does so before calling it; any config
+/// chosen at runtime is a `comptime` choice between two calls.
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
     if (options.updater) {
         try updater.init(init.io, init.gpa, init.environ_map);
@@ -161,9 +167,9 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
         errdefer init.gpa.free(dup);
         try args_list.append(init.gpa, dup);
     }
-    App.setProcessArgs(args_list.items);
+    internal.process_args = args_list.items;
 
-    return App.run(init.io, api, config);
+    return internal.run(init.io, api, config);
 }
 
 /// Write the TypeScript bindings for `api` to `path`, leaving the file
@@ -287,6 +293,8 @@ test {
     std.testing.refAllDecls(@import("core/pending_events.zig"));
     std.testing.refAllDecls(@import("core/file_handles.zig"));
     std.testing.refAllDecls(@import("core/window_commands.zig"));
+    _ = @import("core/internal.zig");
+    _ = App;
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);
     std.testing.refAllDecls(@import("core/ThreadPool.zig"));

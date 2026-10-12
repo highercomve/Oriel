@@ -12,6 +12,7 @@ const webkit = @import("webkit");
 const soup = @import("soup");
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const isolation = @import("../../core/isolation.zig");
 const csp_mod = @import("../../core/csp.zig");
 
@@ -41,7 +42,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             if (@import("../../oriel.zig").options.media_server and std.mem.startsWith(u8, path, "/media/")) {
                 return @import("../../modules/media_scheme.zig").handle(request, path["/media/".len..]);
             }
-            const asset = App.findAsset(config.app.assets, path, config.spa_fallback);
+            const asset = internal.findAsset(config.app.assets, path, config.spa_fallback);
             if (asset) |a| {
                 const stream = gio.MemoryInputStream.newFromData(@constCast(a.data.ptr), @intCast(a.data.len), null);
                 defer stream.unref();

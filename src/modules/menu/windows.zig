@@ -4,6 +4,7 @@ const std = @import("std");
 const win32 = @import("../../platform/windows/win32.zig");
 const ShellMod = @import("../../platform/windows/Shell.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const common = @import("common.zig");
 
 pub const MenuItem = common.MenuItem;
@@ -151,7 +152,7 @@ fn buildMenuTree(
     return hmenu;
 }
 
-pub fn attachMenuToWindow(hwnd: win32.HWND) void {
+fn attachMenuToWindow(hwnd: win32.HWND) void {
     if (saved_items.len == 0) return;
 
     var temp_arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
@@ -178,10 +179,10 @@ fn handleMenuCommand(cmd_id: usize) void {
 
     if (node.kind == .check) {
         node.checked = !node.checked;
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
-        for (App.windows_list.items) |win| {
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
+        for (internal.windows_list.items) |win| {
             if (win32.GetMenu(win.handle.hwnd)) |hm| {
                 _ = win32.CheckMenuItem(hm, @intCast(cmd_id), if (node.checked) win32.MF_CHECKED else win32.MF_UNCHECKED);
             }
@@ -255,25 +256,22 @@ fn setMenuDirect(items: []const MenuItem, on_action: ActionCallback) !void {
     }
 
     // Attach menu to all currently open windows
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |win| {
         attachMenuToWindow(win.handle.hwnd);
     }
 }
 
-pub fn setMenu(items: []const MenuItem, on_action: ActionCallback) !void {
+/// Set the menu bar of every window, and of windows opened later (any thread).
+pub fn set(items: []const MenuItem, on_action: ActionCallback) !void {
     var params = SetMenuParams{
         .items = items,
         .on_action = on_action,
     };
     try ShellMod.runOnMainThread(SetMenuParams, &params, runSetMenuAction);
     if (params.err) |err| return err;
-}
-
-pub fn set(items: []const MenuItem, on_action: ActionCallback) !void {
-    return setMenu(items, on_action);
 }
 
 pub fn check(_: std.mem.Allocator, _: @import("../../oriel.zig").CheckContext) !@import("../../oriel.zig").Check {

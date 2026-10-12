@@ -252,7 +252,7 @@ fn handleTrayCallback(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
             if (self.on_activate) |act| {
                 act();
             } else {
-                App.toggleWindow();
+                if (App.getWindow("main")) |w| w.toggle();
             }
         },
         win32.WM_RBUTTONUP, win32.WM_CONTEXTMENU => {

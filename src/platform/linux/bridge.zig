@@ -12,6 +12,7 @@ const build_opts = @import("build_options");
 const webkit = if (build_opts.native_ui) @import("no_webkit.zig") else @import("webkit");
 const jsc = if (build_opts.native_ui) struct {} else @import("jsc");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
@@ -37,7 +38,7 @@ extern fn webkit_web_view_get_uri(view: *webkit.WebView) ?[*:0]const u8;
 fn viewGetsEvents(view: *webkit.WebView, label: []const u8) bool {
     if (comptime build_opts.native_ui) return false; // links no WebKit
     const uri = webkit_web_view_get_uri(view) orelse return false;
-    return App.pageGetsEvents(std.mem.span(uri), label);
+    return internal.pageGetsEvents(std.mem.span(uri), label);
 }
 
 /// One type for the producer and the idle callback (it's cast back from
@@ -74,27 +75,27 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
         std.heap.smp_allocator.destroy(task);
     }
     if (task.target) |v| {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
         var allowed = false;
-        const web_view: ?*webkit.WebView = for (App.windows_list.items) |win| {
+        const web_view: ?*webkit.WebView = for (internal.windows_list.items) |win| {
             if (win.handle.eql(v)) {
                 if (win.handle.web_view) |view| allowed = viewGetsEvents(view, win.label);
                 break win.handle.web_view;
             }
         } else null;
-        App.windows_mutex.unlock();
+        internal.windows_mutex.unlock();
         if (web_view) |view| {
             if (allowed) view.evaluateJavascript(task.script, -1, null, null, null, null, null);
         } else if (comptime build_opts.native_ui) {
             if (nativeEngine(v)) |e| e.evalScript(task.script);
         }
     } else {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
         var engines: [16]*anyopaque = undefined;
         var n_engines: usize = 0;
-        for (App.windows_list.items) |win| {
+        for (internal.windows_list.items) |win| {
             // Only to pages the bridge serves (any other could read it).
             if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
                 view.evaluateJavascript(task.script, -1, null, null, null, null, null);
@@ -104,7 +105,7 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
                 n_engines += 1;
             };
         }
-        App.windows_mutex.unlock();
+        internal.windows_mutex.unlock();
         // Outside the lock: the page may open or close windows.
         // Each still open: a page's script may close another window.
         if (comptime build_opts.native_ui) for (engines[0..n_engines]) |e| {
@@ -116,10 +117,10 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
 
 /// Whether an open window has this native engine.
 fn engineListed(e: *anyopaque) bool {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| if (win.handle.native == e) return true;
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |win| if (win.handle.native == e) return true;
     return false;
 }
 
@@ -159,13 +160,13 @@ fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
         std.heap.smp_allocator.free(task.script);
         std.heap.smp_allocator.destroy(task);
     }
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
     var web_view: ?*webkit.WebView = null;
     // A native window (-Dnative_ui) has an engine instead of a web view:
-    // targeted events (App.emitTo) must reach it too.
+    // targeted events (internal.emitTo) must reach it too.
     var engine: ?*anyopaque = null;
-    for (App.windows_list.items) |win| {
+    for (internal.windows_list.items) |win| {
         if (!std.mem.eql(u8, win.label, task.label)) continue;
         if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
             web_view = view;
@@ -173,7 +174,7 @@ fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
         if (comptime build_opts.native_ui) engine = win.handle.native;
         break;
     }
-    App.windows_mutex.unlock();
+    internal.windows_mutex.unlock();
 
     if (web_view) |view| {
         view.evaluateJavascript(task.script, -1, null, null, null, null, null);
@@ -235,8 +236,8 @@ pub fn Bridge(
             const page_url = security.resolveWindowUrl(arena, config.security, local, null, win.options.url, config.start) catch "app://localhost/index.html";
             const args = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch .null;
             const request: ipc.Request = .{ .cmd = cmd, .args = args };
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
+            const pool = internal.getWorkerPool();
+            defer if (pool != null) internal.releaseWorkerPool();
 
             const result: anyerror![]const u8 = blk: {
                 if (window_commands.isWindowCommand(cmd))
@@ -316,10 +317,10 @@ pub fn Bridge(
             /// serial, read only once the pointer is found among live windows).
             /// Main thread, where windows close and engines are freed.
             fn engineAlive(engine: *native.Engine, serial: u64) bool {
-                App.ensureWindowsMutex();
-                App.windows_mutex.lock();
-                defer App.windows_mutex.unlock();
-                for (App.windows_list.items) |win| {
+                internal.ensureWindowsMutex();
+                internal.windows_mutex.lock();
+                defer internal.windows_mutex.unlock();
+                for (internal.windows_list.items) |win| {
                     const e = win.handle.native orelse continue;
                     if (e == @as(*anyopaque, @ptrCast(engine))) return engine.serial == serial;
                 }
@@ -394,8 +395,8 @@ pub fn Bridge(
                 return 1;
             }
 
-            const pool = App.getWorkerPool();
-            defer if (pool != null) App.releaseWorkerPool();
+            const pool = internal.getWorkerPool();
+            defer if (pool != null) internal.releaseWorkerPool();
 
             if (ipc.isBuiltinCommand(request.cmd)) {
                 const result = ipc.dispatchBuiltin(config.security, temp_alloc, request) catch |err| {
@@ -499,10 +500,10 @@ pub fn Bridge(
 }
 
 fn nativeEngine(handle: @import("window.zig").WindowHandle) ?*native.Engine {
-    App.ensureWindowsMutex();
-    App.windows_mutex.lock();
-    defer App.windows_mutex.unlock();
-    for (App.windows_list.items) |win| {
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |win| {
         if (win.handle.eql(handle)) return @ptrCast(@alignCast(win.handle.native orelse return null));
     }
     return null;

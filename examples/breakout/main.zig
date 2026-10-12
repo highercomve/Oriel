@@ -90,7 +90,7 @@ fn zigSettings(s: ZigSettings) if (native) zig.Settings else void {
     return .{ .balls = s.balls, .rows = s.rows, .particles = s.particles, .autoplay = s.autoplay, .demo = s.demo, .hint = s.hint };
 }
 
-pub const Events = struct {};
+pub const Events = @import("game.zig").Events;
 
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;

@@ -40,7 +40,6 @@ pub const openExternal = window.openExternal;
 pub const evalJs = bridge.evalJs;
 pub const evalJsByLabel = bridge.evalJsByLabel;
 pub const quit = ShellMod.quit;
-pub const setMenu = ShellMod.setMenu;
 pub const createWindow = ShellMod.createWindow;
 
 pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
@@ -48,7 +47,7 @@ pub fn run(io: std.Io, comptime api: anytype, comptime config: anytype) u8 {
     return S.run(io);
 }
 
-// GTK types behind `App.gtk_app` / `App.main_window` (used by dialog, notification)
+// GTK types behind `internal.gtk_app` / `internal.main_window` (used by dialog, notification)
 pub const GtkApp = @import("gtk").Application;
 pub const GtkWindow = @import("gtk").Window;
 

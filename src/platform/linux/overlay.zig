@@ -23,6 +23,7 @@ const build_options = @import("build_options");
 /// -Dnative_ui links no WebKitGTK (no_webkit.zig names the null web view).
 const webkit = if (build_options.native_ui) @import("no_webkit.zig") else @import("webkit");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -432,7 +433,7 @@ fn windowSize(window: *gtk.Window) struct { w: c_int, h: c_int } {
 }
 
 /// Move `window` with the pointer while the primary button is down.
-pub fn startWindowDrag(handle: anytype) App.DragMode {
+pub fn startWindowDrag(handle: anytype) internal.DragMode {
     const window: *gtk.Window = handle.gtk_window;
     const surface = gtk_native_get_surface(window) orelse return .unsupported;
     const display = gdk_surface_get_display(surface);

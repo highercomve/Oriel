@@ -4,7 +4,7 @@
 //! supporting the same `MenuItem` shape as the system tray.
 //!
 //! Example:
-//!     try oriel.menu.set(app, &.{
+//!     try oriel.menu.set(&.{
 //!         .{ .submenu = .{
 //!             .label = "File",
 //!             .items = &.{
@@ -21,6 +21,7 @@ const gobject = @import("gobject");
 const gio = @import("gio");
 const gtk = @import("gtk");
 const common = @import("common.zig");
+const internal = @import("../../core/internal.zig");
 
 pub const MenuItem = common.MenuItem;
 pub const ActionCallback = common.ActionCallback;
@@ -131,7 +132,7 @@ test gtkAccelerator {
 }
 
 /// Returns a new reference: the caller unrefs it once handed off.
-pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const MenuItem, on_action: ActionCallback) !*gio.Menu {
+fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const MenuItem, on_action: ActionCallback) !*gio.Menu {
     const menu = gio.Menu.new();
     errdefer menu.unref();
     for (items) |item| {
@@ -199,11 +200,18 @@ pub fn buildMenu(gpa: std.mem.Allocator, app: *gtk.Application, items: []const M
     return menu;
 }
 
-/// Set the application menubar.
-pub fn set(app: *gtk.Application, items: []const MenuItem, on_action: ActionCallback) !void {
+/// Set the application menubar and show it on every window (main thread).
+pub fn set(items: []const MenuItem, on_action: ActionCallback) !void {
+    const app = internal.gtk_app orelse return error.AppNotRunning;
     const root_menu = try buildMenu(std.heap.smp_allocator, app, items, on_action);
     defer root_menu.unref(); // the application keeps its own reference
     gtk.Application.setMenubar(app, root_menu.as(gio.MenuModel));
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    for (internal.windows_list.items) |win| {
+        win.handle.app_window.setShowMenubar(1);
+    }
 }
 
 pub fn check(_: std.mem.Allocator, _: anytype) !@import("../../oriel.zig").Check {

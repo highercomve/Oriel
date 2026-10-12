@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const heap = @import("../../core/heap.zig");
 const ShellMod = @import("../../platform/android/Shell.zig");
 const runtime = @import("../../platform/android/runtime.zig");
@@ -146,7 +147,7 @@ fn errorName(code: i32) []const u8 {
 /// NativeLib.onSpeech (UI thread).
 fn nativeSpeech(env: *jni.Env, _: jni.jclass, kind: jni.jint, text_arr: jni.jobject) callconv(.c) void {
     // The app is going away (Shell teardown): drop the result instead of
-    // using the stale `io` (elapsed(), App.emit from it).
+    // using the stale `io` (elapsed(), internal.emit from it).
     if (shut.load(.acquire)) return;
     const text = (env.bytesAlloc(heap.gpa, text_arr) catch return) orelse &.{};
     defer if (text.len > 0) heap.gpa.free(text);
@@ -156,19 +157,19 @@ fn nativeSpeech(env: *jni.Env, _: jni.jclass, kind: jni.jint, text_arr: jni.jobj
             mutex.lock();
             updates += 1;
             mutex.unlock();
-            App.emit("dictation:partial", .{ .text = text });
+            internal.emit("dictation:partial", .{ .text = text });
         },
         1 => {
             mutex.lock();
             if (finals.items.len > 0) finals.append(heap.gpa, ' ') catch {};
             finals.appendSlice(heap.gpa, text) catch {};
             mutex.unlock();
-            App.emit("dictation:final", .{ .text = text, .audio_s = seconds, .transcribe_ms = @as(u64, 0), .backend = name });
-            App.emit("dictation:partial", .{ .text = "" });
+            internal.emit("dictation:final", .{ .text = text, .audio_s = seconds, .transcribe_ms = @as(u64, 0), .backend = name });
+            internal.emit("dictation:partial", .{ .text = "" });
         },
         2 => {
             const level = std.fmt.parseInt(u8, text, 10) catch 0;
-            App.emit("dictation:level", .{ .seconds = seconds, .level = @as(f32, @floatFromInt(level)) / 100 });
+            internal.emit("dictation:level", .{ .seconds = seconds, .level = @as(f32, @floatFromInt(level)) / 100 });
         },
         3 => {
             // "download": the language pack is being fetched (Android 13+).
@@ -177,12 +178,12 @@ fn nativeSpeech(env: *jni.Env, _: jni.jclass, kind: jni.jint, text_arr: jni.jobj
             mutex.lock();
             last_error = e;
             mutex.unlock();
-            App.emit("dictation:error", .{ .message = e });
+            internal.emit("dictation:error", .{ .message = e });
         },
         4 => {
             active.store(false, .release);
             ended.store(true, .release);
-            App.emit("dictation:ended", .{ .engine = "system" });
+            internal.emit("dictation:ended", .{ .engine = "system" });
         },
         else => {},
     }

@@ -18,6 +18,10 @@ const backend = switch (target.os) {
     .android, .ios, .other => @compileError("menu is not available on " ++ target.name),
 };
 
+/// Install `items` as the app's menu bar, replacing the previous one:
+/// every window's on Linux and Windows (and windows opened later), the
+/// global menu bar on macOS. `on_action(id, checked)` runs on the main
+/// thread. `error.AppNotRunning` before the app started (Linux).
 pub const set = backend.set;
 pub const check = backend.check;
 

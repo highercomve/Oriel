@@ -442,6 +442,13 @@ pub const Settings = struct {
     hint: []const u8 = "",
 };
 
+/// What Zig tells the page (main.zig's `Events`).
+pub const Events = struct {
+    @"breakout:state": struct { score: u32, lives: i32, level: u32, over: bool },
+    @"breakout:stats": struct { fps: f64, frame: f64, phys: f64, draw: f64, balls: usize, particles: usize },
+};
+const events = oriel.App.events(Events);
+
 pub const Game = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -544,7 +551,7 @@ pub const Game = struct {
         const w = &g.world;
         if (g.shown.score == w.score and g.shown.lives == w.lives and g.shown.level == w.level and g.shown.over == w.over) return;
         g.shown = .{ .score = w.score, .lives = w.lives, .level = w.level, .over = w.over };
-        g.window.emit("breakout:state", .{ .score = w.score, .lives = w.lives, .level = w.level, .over = w.over });
+        events.emitTo(g.window.label, .@"breakout:state", .{ .score = w.score, .lives = w.lives, .level = w.level, .over = w.over }) catch {};
     }
 
     fn stats(g: *Game, t: f64) void {
@@ -553,14 +560,14 @@ pub const Game = struct {
         const frame_ms = g.acc_dt * 1000 / n;
         const phys = g.acc_phys / n;
         const drw = g.acc_draw / n;
-        g.window.emit("breakout:stats", .{
+        events.emitTo(g.window.label, .@"breakout:stats", .{
             .fps = fps,
             .frame = frame_ms,
             .phys = phys,
             .draw = drw,
             .balls = g.world.balls.items.len,
             .particles = g.world.particles.items.len,
-        });
+        }) catch {};
         if (g.settings.demo > 0) {
             g.demo_log += t - g.acc_since;
             if (g.demo_log >= 2000) {

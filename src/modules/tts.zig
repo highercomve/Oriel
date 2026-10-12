@@ -47,6 +47,7 @@ const kokoro = @import("kokoro.zig");
 const audio_play = @import("audio_play.zig");
 const ggml_gpu = @import("ggml_gpu.zig");
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 const model_download = @import("model_download.zig");
 const lifecycle = @import("../core/lifecycle.zig");
 const espeak_data = @import("tts/espeak_data.zig");
@@ -166,7 +167,7 @@ const Phase = enum { loading, generating, playing, idle, @"error" };
 
 fn emit(comptime name: []const u8, payload: @FieldType(Events, name)) void {
     if (builtin.is_test) return; // no window to reach
-    App.emit(name, payload);
+    internal.emit(name, payload);
 }
 
 /// Miniaudio context for playback (null: the default device). Tests and
@@ -536,7 +537,7 @@ fn freeEngine() void {
 }
 
 /// Release the Kokoro context, after the current utterance (stopped)
-/// returns. App.run calls it after draining its command pool. Safe before
+/// returns. internal.run calls it after draining its command pool. Safe before
 /// `init` and twice.
 pub fn deinit() void {
     if (!ever_init.load(.acquire)) return;

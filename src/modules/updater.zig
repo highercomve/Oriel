@@ -2,13 +2,14 @@
 //! (raw executable/AppImage or gzip-compressed payload).
 //! Re-exports the GTK-free core updater engine and provides:
 //! - Webview IPC Commands for JS integration (updater_check, updater_install, updater_restart)
-//! - Throttled updater://progress events sent via oriel.App.emit
+//! - Throttled updater://progress events sent via internal.emit
 //! - Module smoke check for examples/smoke and `oriel doctor`
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;
 
 const std = @import("std");
+const internal = @import("../core/internal.zig");
 const builtin = @import("builtin");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
@@ -100,9 +101,9 @@ fn getAllocator(config_allocator: ?std.mem.Allocator) std.mem.Allocator {
     return module_allocator orelse std.heap.smp_allocator;
 }
 
-/// Helper progress callback that emits an `updater://progress` event to JS via `oriel.App.emit`.
+/// Helper progress callback that emits an `updater://progress` event to JS via `internal.emit`.
 pub fn emitProgress(downloaded: u64, total: ?u64) void {
-    oriel.App.emit("updater://progress", .{ .downloaded = downloaded, .total = total });
+    internal.emit("updater://progress", .{ .downloaded = downloaded, .total = total });
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ const webkit = @import("webkit");
 const soup = @import("soup");
 const range = @import("../media/range.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const security = @import("../../core/security.zig");
 const open = @import("../media/open.zig");
 
@@ -192,7 +193,7 @@ pub fn handle(request: *webkit.URISchemeRequest, rel_path: []const u8) void {
 /// (names are from a fixed list, values at most 2047 bytes).
 fn appendAppHeaders(headers: *soup.MessageHeaders) void {
     headers.append("X-Content-Type-Options", "nosniff");
-    for (App.current_security.headers) |h| {
+    for (internal.current_security.headers) |h| {
         if (!security.headerUsable(h)) continue;
         var name_buf: [128]u8 = undefined;
         var value_buf: [security.max_header_value + 1]u8 = undefined;

@@ -105,7 +105,7 @@ pub fn dispatch(event: Event) void {
     page.deliver(.of(event));
 }
 
-/// App.run, once the main loop has returned (main thread): `terminating`
+/// internal.run, once the main loop has returned (main thread): `terminating`
 /// for the subscribers if no backend sent it; the pages are gone.
 pub fn terminateAfterLoop() void {
     if (terminated) return;
@@ -119,7 +119,7 @@ pub fn post(event: Event) void {
     App.runOnMain(event, dispatch);
 }
 
-/// App.run: a new run may terminate again (Android restarts the app's main
+/// internal.run: a new run may terminate again (Android restarts the app's main
 /// in the same process).
 pub fn beginRun() void {
     terminated = false;

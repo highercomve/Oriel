@@ -10,6 +10,7 @@ const std = @import("std");
 const win32 = @import("win32.zig");
 const webview2 = @import("webview2.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const WindowHandle = @import("window.zig").WindowHandle;
 
 const log = std.log.scoped(.oriel);
@@ -111,7 +112,7 @@ pub fn setWindowAlwaysOnTop(handle: WindowHandle, enabled: bool) void {
 /// Move the window with the pointer: the page's mousedown gave the webview
 /// the mouse capture; handing it back and "pressing" the caption starts the
 /// system's own move loop, as a title bar drag does.
-pub fn startWindowDrag(handle: WindowHandle) App.DragMode {
+pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
     var pt: win32.POINT = undefined;
     if (win32.GetCursorPos(&pt) == win32.FALSE) return .unsupported;
     _ = win32.ReleaseCapture();

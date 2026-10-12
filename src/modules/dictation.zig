@@ -40,6 +40,7 @@ const whisper = @import("whisper.zig");
 const ggml_gpu = @import("ggml_gpu.zig");
 const audio_capture = @import("audio_capture.zig");
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 pub const wav = @import("dictation/wav.zig");
 const model_download = @import("model_download.zig");
 const lifecycle = @import("../core/lifecycle.zig");
@@ -137,7 +138,7 @@ pub const Final = struct {
 };
 
 fn emit(comptime name: []const u8, payload: @FieldType(Events, name)) void {
-    App.emit(name, payload);
+    internal.emit(name, payload);
 }
 
 const rate = whisper.sample_rate;
@@ -786,7 +787,7 @@ fn joinWorkers() void {
 }
 
 /// Release recording workers, models and buffers before the app's Io goes
-/// away. App.run calls this after draining the command pool. Other callers
+/// away. internal.run calls this after draining the command pool. Other callers
 /// must finish commands first; system capture must already be shut down on
 /// its UI thread (Android: the Shell hook registered in `init`). Safe when
 /// init was never called or teardown already ran.

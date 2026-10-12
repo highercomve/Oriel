@@ -2,7 +2,7 @@
 //! scene delegate defined at run time, main-thread dispatch (tasks drained
 //! from the GCD main queue), scene requests for extra windows and quitting.
 //!
-//! The app's `main` calls `oriel.App.run`, which never returns on iOS
+//! The app's `main` calls `oriel.main`, which never returns on iOS
 //! (UIApplicationMain doesn't): launching opens the main window and runs
 //! `setup`; the first scene the system connects shows it. `quit` cleans up
 //! and exits the process, which Apple discourages outside of fatal errors.
@@ -234,12 +234,6 @@ fn didReceiveMemoryWarning(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c
 // (the app delegate's own background methods are no longer called).
 extern const UIApplicationDidEnterBackgroundNotification: apple.id;
 extern const UIApplicationWillEnterForegroundNotification: apple.id;
-
-pub fn setMenu(items: anytype, on_action: anytype) !void {
-    _ = items;
-    _ = on_action;
-    return error.Unsupported;
-}
 
 /// The main window's view controller (to present other windows over).
 pub fn mainController() ?Object {
@@ -561,7 +555,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                         log.warn("deep link rejected: {s}", .{@errorName(err)});
                         return;
                     };
-                    if (is_cold) deep_link.setColdStartUrl(url) else App.showWindow();
+                    if (is_cold) deep_link.setColdStartUrl(url) else if (App.getWindow("main")) |w| w.show();
                     deep_link.deliver(url);
                 }
             };
@@ -581,7 +575,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 paths.append(std.heap.smp_allocator, path) catch return;
             }
             if (paths.items.len == 0) return;
-            if (!cold) App.showWindow();
+            if (!cold) if (App.getWindow("main")) |w| w.show();
             share.receivePaths(paths.items, .open_with, true);
         }
 

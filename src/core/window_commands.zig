@@ -2,7 +2,7 @@
 //!
 //! Provides backend command dispatch for `oriel.window` API from JavaScript:
 //!   - open: create and show a new window (App.openWindow)
-//!   - close: request window closure (App.postCloseWindow)
+//!   - close: request window closure (queued to the main loop)
 //!   - show/hide/focus: manipulate window visibility and focus (show creates
 //!     a window declared with App.registerWindow)
 //!   - setTitle/setSize/maximize/fullscreen: update window geometry & state
@@ -17,20 +17,20 @@
 
 const std = @import("std");
 const App = @import("App.zig");
+const internal = @import("internal.zig");
 const security = @import("security.zig");
+const platform = @import("../platform/platform.zig");
 
 const log = std.log.scoped(.oriel);
 
+/// The page's `oriel.window.open` options: camelCase, like the rest of the
+/// page API (the TypeScript `WindowOptions`).
 pub const OpenArgs = struct {
     label: []const u8,
     url: ?[]const u8 = null,
     title: ?[]const u8 = null,
     width: ?c_int = null,
     height: ?c_int = null,
-    min_width: ?c_int = null,
-    min_height: ?c_int = null,
-    max_width: ?c_int = null,
-    max_height: ?c_int = null,
     minWidth: ?c_int = null,
     minHeight: ?c_int = null,
     maxWidth: ?c_int = null,
@@ -131,7 +131,7 @@ pub fn dispatch(
         });
         try security.validateLabel(args.label);
         try security.validateWindowUrl(sec, local, args.url);
-        try security.validateWindowCount(sec, App.getWindowCount());
+        try security.validateWindowCount(sec, internal.getWindowCount());
 
         const label_z = try arena.dupeZ(u8, args.label);
         const title_z = if (args.title) |t| try arena.dupeZ(u8, t) else try arena.dupeZ(u8, "");
@@ -143,10 +143,10 @@ pub fn dispatch(
             .url = url_z,
             .width = try dim(args.width orelse 800),
             .height = try dim(args.height orelse 600),
-            .min_width = try optDim(args.min_width orelse args.minWidth),
-            .min_height = try optDim(args.min_height orelse args.minHeight),
-            .max_width = try optDim(args.max_width orelse args.maxWidth),
-            .max_height = try optDim(args.max_height orelse args.maxHeight),
+            .min_width = try optDim(args.minWidth),
+            .min_height = try optDim(args.minHeight),
+            .max_width = try optDim(args.maxWidth),
+            .max_height = try optDim(args.maxHeight),
             .resizable = args.resizable orelse true,
             .decorations = args.decorations orelse true,
             .fullscreen = args.fullscreen orelse false,
@@ -160,7 +160,10 @@ pub fn dispatch(
         });
         try security.validateLabel(args.label);
         try security.validateWindowModification(sec, caller_win_label, args.label);
-        try App.postCloseWindow(args.label);
+        // Queued to the main loop: the page may close its own window from
+        // this call.
+        const win = App.getWindow(args.label) orelse return error.WindowNotFound;
+        platform.postCloseWindow(win.handle);
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "show")) {
         const args = try std.json.parseFromValueLeaky(struct { label: []const u8 }, arena, args_val, .{
@@ -208,7 +211,7 @@ pub fn dispatch(
         try security.validateWindowModification(sec, caller_win_label, args.label);
         const win = App.getWindow(args.label) orelse {
             // The native renderer's page sends it while its window is being made.
-            App.setPendingThemeColor(args.label, args.color);
+            internal.setPendingThemeColor(args.label, args.color);
             return arena.dupe(u8, "null");
         };
         win.setThemeColor(args.color);
@@ -254,30 +257,30 @@ pub fn dispatch(
             .ignore_unknown_fields = true,
         });
         try security.validateLabel(args.label);
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
-        for (App.windows_list.items) |w| {
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
+        for (internal.windows_list.items) |w| {
             if (std.mem.eql(u8, w.label, args.label)) {
                 return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = w.label, .title = w.options.title }, .{});
             }
         }
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, action, "all")) {
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
         var list: std.ArrayList(WindowInfo) = .empty;
-        for (App.windows_list.items) |w| {
+        for (internal.windows_list.items) |w| {
             try list.append(arena, .{ .label = w.label, .title = w.options.title });
         }
         return std.json.Stringify.valueAlloc(arena, list.items, .{});
     } else if (std.mem.eql(u8, action, "current")) {
         const label = caller_win_label orelse "main";
-        App.ensureWindowsMutex();
-        App.windows_mutex.lock();
-        defer App.windows_mutex.unlock();
-        for (App.windows_list.items) |w| {
+        internal.ensureWindowsMutex();
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
+        for (internal.windows_list.items) |w| {
             if (std.mem.eql(u8, w.label, label)) {
                 return std.json.Stringify.valueAlloc(arena, WindowInfo{ .label = w.label, .title = w.options.title }, .{});
             }
@@ -289,7 +292,7 @@ pub fn dispatch(
         });
         try security.validateLabel(args.label);
         try security.validateWindowModification(sec, caller_win_label, args.label);
-        try App.emitTo(args.label, args.event, args.payload);
+        try internal.emitTo(args.label, args.event, args.payload);
         return arena.dupe(u8, "null");
     }
 

@@ -9,6 +9,7 @@
 //! AXIsProcessTrusted, ...).
 
 const std = @import("std");
+const internal = @import("internal.zig");
 const builtin = @import("builtin");
 const target = @import("target.zig");
 pub const common = @import("permissions/common.zig");
@@ -38,7 +39,7 @@ pub const impl = switch (target.os) {
 var declared_set: Declared = .{};
 var on_change: ?*const fn (Kind, Status) void = null;
 
-/// Set by App.run from the app's config.
+/// Set by internal.run from the app's config.
 pub fn setDeclared(d: Declared) void {
     declared_set = d;
 }
@@ -87,8 +88,7 @@ pub fn openSettings(kind: Kind) bool {
 
 fn resolved(kind: Kind, s: Status) void {
     if (on_change) |cb| cb(kind, s);
-    const App = @import("App.zig");
-    App.emit("permission-changed", .{ .name = @tagName(kind), .status = @tagName(s) });
+    internal.emit("permission-changed", .{ .name = @tagName(kind), .status = @tagName(s) });
 }
 
 /// Whether the webview may grant a page's request for `kind`: the app
@@ -99,9 +99,8 @@ pub fn allowForPage(kind: Kind, local: @import("security.zig").Local, page_url: 
         log.warn("page {s} asked for '{s}', which the app doesn't declare: denied", .{ page_url, @tagName(kind) });
         return false;
     }
-    const App = @import("App.zig");
     const security = @import("security.zig");
-    if (!security.commandAllowed(App.current_security, local, page_url, "permissions:webview")) {
+    if (!security.commandAllowed(internal.current_security, local, page_url, "permissions:webview")) {
         log.warn("page {s} asked for '{s}' but its origin is not allowed: denied", .{ page_url, @tagName(kind) });
         return false;
     }
@@ -132,12 +131,11 @@ test "undeclared permissions are denied" {
 
 test allowForPage {
     const security = @import("security.zig");
-    const App = @import("App.zig");
     setDeclared(.{ .microphone = "" });
     defer setDeclared(.{});
-    const saved = App.current_security;
-    defer App.current_security = saved;
-    App.current_security = .{ .capabilities = &.{.{ .origin = "https://partner.example" }} };
+    const saved = internal.current_security;
+    defer internal.current_security = saved;
+    internal.current_security = .{ .capabilities = &.{.{ .origin = "https://partner.example" }} };
     const local: security.Local = .{};
     try std.testing.expect(allowForPage(.microphone, local, security.app_origin ++ "/index.html"));
     try std.testing.expect(allowForPage(.microphone, local, "https://partner.example/call"));

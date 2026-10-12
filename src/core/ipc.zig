@@ -22,6 +22,7 @@ pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 const security = @import("security.zig");
 const isolation = @import("isolation.zig");
 const App = @import("App.zig");
+const internal = @import("internal.zig");
 const extensions = @import("extensions.zig");
 const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
 const camera_page = @import("../modules/camera/page.zig");
@@ -57,7 +58,7 @@ var token_key: [32]u8 = undefined;
 var token_ready = false;
 const token_len = 64; // hex of HMAC-SHA256
 
-/// Make the key (once, before any window exists: App.run). Without secure
+/// Make the key (once, before any window exists: internal.run). Without secure
 /// randomness there is no key, and every call is refused.
 pub fn initToken(io: std.Io) void {
     if (token_ready) return;
@@ -379,7 +380,7 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         }
         try share.send(.{ .title = args.title, .text = args.text, .url = args.url, .files = files }, args.anchor, &struct {
             fn done(result: share.Result) void {
-                App.emit("share:sent", result);
+                internal.emit("share:sent", result);
             }
         }.done);
         return arena.dupe(u8, "null");
@@ -624,6 +625,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             events = events ++ "  \"permission-changed\": { name: PermissionName; status: PermissionStatus };\n";
         }
         if (!@hasField(Events, "lifecycle")) events = events ++ "  lifecycle: LifecycleEvent;\n";
+        if (!@hasField(Events, "window:created")) events = events ++ "  \"window:created\": { label: string };\n";
+        if (!@hasField(Events, "window:closed")) events = events ++ "  \"window:closed\": { label: string };\n";
         var permission_names: []const u8 = "";
         for (std.enums.values(@import("permissions/common.zig").Kind), 0..) |k, i| {
             permission_names = permission_names ++ (if (i == 0) "" else " | ") ++ "\"" ++ @tagName(k) ++ "\"";
@@ -649,10 +652,10 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  title?: string;
             \\  width?: number;
             \\  height?: number;
-            \\  min_width?: number;
-            \\  min_height?: number;
-            \\  max_width?: number;
-            \\  max_height?: number;
+            \\  minWidth?: number;
+            \\  minHeight?: number;
+            \\  maxWidth?: number;
+            \\  maxHeight?: number;
             \\  resizable?: boolean;
             \\  decorations?: boolean;
             \\  fullscreen?: boolean;
@@ -669,6 +672,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  setSize(width: number, height: number): Promise<void>;
             \\  maximize(maximized?: boolean): Promise<void>;
             \\  fullscreen(fullscreen?: boolean): Promise<void>;
+            \\  /** Move the window with the pointer: call on a `mousedown` (primary button). */
+            \\  startDragging(): Promise<void>;
             \\  emit(event: string, payload?: unknown): Promise<void>;
             \\}
             \\
@@ -1052,6 +1057,10 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "extensions: ExtensionsApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "camera: CameraApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:created\": { label: string };\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:closed\": { label: string };\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  startDragging(): Promise<void>;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "  minWidth?: number;\n") != null);
 
     const ts_disabled = comptime typescriptWithOptions(Commands, Events, false);
     try std.testing.expect(std.mem.indexOf(u8, ts_disabled, "\"deep-link\": { url: string };") == null);

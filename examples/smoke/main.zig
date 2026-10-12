@@ -56,6 +56,16 @@ const probe_html =
     \\</script>
 ;
 
+/// What Zig emits to the page.
+pub const Events = struct {
+    main_hop: struct { n: u32, main_window: bool },
+    ping: struct { n: i64 },
+    order: struct { i: usize },
+    @"second-instance": struct { args: []const []const u8 },
+    test_event: struct { ok: bool },
+};
+const events = oriel.App.events(Events);
+
 var servers_gpa: std.mem.Allocator = undefined;
 var media_running = false;
 
@@ -239,7 +249,7 @@ const Commands = struct {
         oriel.App.runOnMain(args.n, struct {
             fn onMain(n: u32) void {
                 const has_main = oriel.App.getWindow("main") != null;
-                oriel.App.emit("main_hop", .{ .n = n, .main_window = has_main });
+                events.emit(.main_hop, .{ .n = n, .main_window = has_main });
             }
         }.onMain);
     }
@@ -279,13 +289,13 @@ const Commands = struct {
 
     /// Round-trip for the events check: Zig -> JS `ping` event.
     pub fn emit_ping(_: std.mem.Allocator, args: struct { n: i64 }) void {
-        oriel.App.emit("ping", .{ .n = args.n });
+        events.emit(.ping, .{ .n = args.n });
     }
 
     /// Event order: a (sync) command's events must reach the page before its
     /// reply, so a listener removed when the call resolves still sees them.
     pub fn emit_then_return(_: std.mem.Allocator, args: struct { count: u32 }) u32 {
-        for (0..args.count) |i| oriel.App.emit("order", .{ .i = i });
+        for (0..args.count) |i| events.emit(.order, .{ .i = i });
         return args.count;
     }
 
@@ -306,7 +316,7 @@ const Commands = struct {
             const Handler = struct {
                 fn onAction(_: []const u8, _: ?bool) void {}
             };
-            try oriel.App.setMenu(&menu_items, Handler.onAction);
+            try oriel.menu.set(&menu_items, Handler.onAction);
         }
 
         const win = try oriel.App.openWindow(.{
@@ -328,9 +338,9 @@ const Commands = struct {
             return .{ .ok = false, .detail = "window size mismatch" };
         }
 
-        win.emit("test_event", .{ .ok = true });
+        try events.emitTo(win.label, .test_event, .{ .ok = true });
 
-        oriel.App.closeWindow("test-sec");
+        win.close();
         if (oriel.App.getWindow("test-sec") != null) {
             return .{ .ok = false, .detail = "window still exists after close" };
         }
@@ -374,7 +384,7 @@ const Commands = struct {
         win.setClickThrough(false);
         win.setAlwaysOnTop(false);
         win.setAlwaysOnTop(true);
-        oriel.App.closeWindow("test-overlay");
+        win.close();
         if (oriel.App.getWindow("test-overlay") == null) return .{ .ok = false, .detail = "hide_on_close window was destroyed" };
         win.hide();
         return .{
@@ -453,7 +463,7 @@ var second_instance_len = std.atomic.Value(usize).init(0);
 /// (kept for the `second instance` check, logged, and sent to the page).
 fn onSecondInstance(args: []const []const u8) void {
     std.log.info("second instance: {d} argument(s): {f}", .{ args.len, std.json.fmt(args, .{}) });
-    oriel.App.emit("second-instance", .{ .args = args });
+    events.emit(.@"second-instance", .{ .args = args });
     var w: std.Io.Writer = .fixed(&second_instance_buf);
     std.json.Stringify.value(args, .{}, &w) catch return;
     second_instance_len.store(w.end, .release);
@@ -485,10 +495,6 @@ pub fn main(init: std.process.Init) !u8 {
             return 2;
         }
     }
-
-    // App.run (unlike oriel.main) doesn't see argv: hand it over, so a second
-    // launch forwards its arguments and deep links reach the shell.
-    oriel.App.setProcessArgs(try init.minimal.args.toSlice(init.arena.allocator()));
 
     servers_gpa = init.gpa;
     defer stopServers();
@@ -537,7 +543,7 @@ pub fn main(init: std.process.Init) !u8 {
                 .{ .name = "Permissions-Policy", .value = "geolocation=()" },
             },
         },
-        // Servers start after App.run's single-instance check: a second
+        // Servers start after oriel.main's single-instance check: a second
         // launch forwards its arguments and exits before binding any port.
         .setup = &setupGui,
         // Single instance: a later launch's arguments land here (the
@@ -546,12 +552,12 @@ pub fn main(init: std.process.Init) !u8 {
     };
     comptime var config_auto = config_gui;
     config_auto.start = "index.html?auto-quit";
-    const api: oriel.App.Api = .{ .commands = Commands };
+    const api: oriel.App.Api = .{ .commands = Commands, .events = Events };
     if (auto_quit) {
         // A page that never reports (e.g. no window.oriel: the bridge didn't
         // load) must fail the run, not hang it.
         const watchdog = try std.Thread.spawn(.{}, Watchdog.run, .{});
         watchdog.detach();
     }
-    return if (auto_quit) oriel.App.run(init.io, api, config_auto) else oriel.App.run(init.io, api, config_gui);
+    return if (auto_quit) try oriel.main(init, api, config_auto) else try oriel.main(init, api, config_gui);
 }

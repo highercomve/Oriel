@@ -11,6 +11,7 @@ const cocoa = @import("cocoa.zig");
 const Object = cocoa.Object;
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");
+const internal = @import("../../core/internal.zig");
 const isolation = @import("../../core/isolation.zig");
 const csp_mod = @import("../../core/csp.zig");
 
@@ -46,7 +47,7 @@ pub fn Scheme(comptime config: App.Config, comptime local: security.Local, compt
             }
             // `path` is percent-decoded and excludes the query and fragment.
             const path = cocoa.utf8(url.msgSend(Object, "path", .{})) orelse "";
-            if (App.findAsset(config.app.assets, path, config.spa_fallback)) |asset| {
+            if (internal.findAsset(config.app.assets, path, config.spa_fallback)) |asset| {
                 // The page's own inline scripts (and styles) are allowed by hash.
                 const gpa = std.heap.smp_allocator;
                 const page_csp: ?[:0]u8 = if (csp_z) |c| csp_mod.withHashes(gpa, c, asset.script_hashes, asset.style_hashes) catch null else null;

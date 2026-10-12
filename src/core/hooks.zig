@@ -84,7 +84,7 @@ pub const max_subscribers = 16;
 
 var table: Table(max_subscribers) = .{};
 
-/// Add `handlers` (any thread). Subscribe before `oriel.main` / `App.run`
+/// Add `handlers` (any thread). Subscribe before `oriel.main`
 /// to see the main window too (`App.Config.setup` runs after it opened);
 /// windows that already exist are not replayed. Up to `max_subscribers`;
 /// there is no unsubscribe.

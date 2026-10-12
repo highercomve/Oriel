@@ -273,7 +273,10 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     const tray_globals = if (use_tray) "var tray: ?*oriel.tray.Tray = null;\n" else "";
     const tray_funcs = if (use_tray) try std.fmt.allocPrint(arena,
         \\fn onMenu(id: []const u8, _: ?bool) void {{
-        \\    if (std.mem.eql(u8, id, "toggle")) return oriel.App.toggleWindow();
+        \\    if (std.mem.eql(u8, id, "toggle")) {{
+        \\        if (oriel.App.getWindow("main")) |w| w.toggle();
+        \\        return;
+        \\    }}
         \\    if (std.mem.eql(u8, id, "quit")) return oriel.App.quit(0);
         \\}}
         \\

@@ -102,7 +102,7 @@ pub fn evalRefusal(buf: []u8, csp: ?[]const u8) ?[:0]const u8 {
 /// A page's checks run in an engine under the app's CSP `csp`: true when
 /// the script's value is.
 fn underCsp(csp: ?[]const u8, script: []const u8) !bool {
-    const app = @import("../core/App.zig");
+    const app = @import("../core/internal.zig");
     const saved = app.current_security;
     defer app.current_security = saved;
     page_errors_expected = true;
@@ -385,6 +385,7 @@ extern fn oqjs_run_gc(h: *anyopaque) void;
 extern fn oqjs_free(h: *anyopaque) void;
 
 const App = @import("../core/App.zig");
+const internal = @import("../core/internal.zig");
 pub const Asset = App.Asset;
 
 /// What a platform provides.
@@ -586,7 +587,7 @@ pub const Engine = struct {
         e.start_url = try gpa.dupeZ(u8, url);
         errdefer gpa.free(e.start_url);
         // The app's CSP: eval and new Function refused, as its WebView would.
-        const csp = @import("../core/App.zig").current_security.csp;
+        const csp = @import("../core/internal.zig").current_security.csp;
         var refusal_buf: [1024]u8 = undefined;
         if (evalRefusal(&refusal_buf, csp)) |r| e.csp_eval = try gpa.dupeZ(u8, r);
         errdefer if (e.csp_eval) |r| gpa.free(r);
@@ -721,7 +722,7 @@ pub const Engine = struct {
         }
     }
 
-    /// Evaluate a script in the page (App.emit's `window.oriel.__emit(...)`).
+    /// Evaluate a script in the page (internal.emit's `window.oriel.__emit(...)`).
     pub fn evalScript(e: *Engine, script: [:0]const u8) void {
         if (std.c.getenv("ORIEL_NUI_TRACE") != null) log.info("native ui: eval {s}", .{script[0..@min(script.len, 120)]});
         _ = e.call(script);
@@ -1075,7 +1076,7 @@ pub const Engine = struct {
 
     /// The bytes of an app asset ("assets/x.png"), or null.
     pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
-        const a = App.findAsset(e.assets, path, false) orelse return null;
+        const a = internal.findAsset(e.assets, path, false) orelse return null;
         return a.data;
     }
 
@@ -1132,7 +1133,7 @@ export fn oriel_nui_asset(p: *anyopaque, path: [*]const u8, len: usize, out: *[*
         out_len.* = page.len;
         return 1;
     }
-    const a = App.findAsset(e.assets, path[0..len], false) orelse return 0;
+    const a = internal.findAsset(e.assets, path[0..len], false) orelse return 0;
     out.* = a.data.ptr;
     out_len.* = a.data.len;
     return 1;

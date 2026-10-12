@@ -43,7 +43,6 @@ pub const openExternal = window.openExternal;
 pub const evalJs = bridge.evalJs;
 pub const evalJsByLabel = bridge.evalJsByLabel;
 pub const quit = ShellMod.quit;
-pub const setMenu = ShellMod.setMenu;
 pub const createWindow = ShellMod.createWindow;
 pub const dispatchToMainThread = ShellMod.dispatchToMainThread;
 pub const runOnMainThread = ShellMod.runOnMainThread;

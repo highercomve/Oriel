@@ -22,6 +22,7 @@
 //! from the `.app` (`open zig-out/<Name>.app`).
 
 const std = @import("std");
+const internal = @import("../internal.zig");
 const common = @import("common.zig");
 const cocoa = @import("../../platform/macos/cocoa.zig");
 const bluetooth = @import("bluetooth_apple.zig").Bluetooth(cocoa);

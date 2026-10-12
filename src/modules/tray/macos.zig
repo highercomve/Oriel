@@ -277,7 +277,7 @@ fn statusItemClicked(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void
     const secondary = event.value != null and (event.msgSend(c_ulong, "type", .{}) == NSEventTypeRightMouseUp or
         event.msgSend(c_ulong, "modifierFlags", .{}) & NSEventModifierFlagControl != 0);
     if (!secondary) {
-        if (tray.on_activate) |act| act() else App.toggleWindow();
+        if (tray.on_activate) |act| act() else if (App.getWindow("main")) |w| w.toggle();
         return;
     }
     const pool = cocoa.objc.AutoreleasePool.init();
