@@ -512,7 +512,6 @@ flag says ([Modules]($link.page('docs/modules')) has the platform table).
 | `ggml_metal` | bool | on for macOS and iOS devices, off for the simulator | ggml's Metal backend; kernels are embedded, compiled when a model loads. |
 | `ggml_arm` | `baseline`, `dotprod`, `i8mm` | `dotprod` on Android arm64 | ARM extensions for ggml's CPU kernels; `i8mm` only runs on Armv8.6/v9 CPUs. |
 | `tts_languages` | string | espeak-ng's default set | With `kokoro`: espeak-ng dictionaries compiled into the shipped data, comma-separated. |
-| `native_dom` | bool | `true` | With `native_ui`: the native DOM, or linkedom when `false`. |
 | `native_ui_prof` | bool | `false` | Log the native renderer's stage timings. |
 
 At runtime CUDA is tried first, then Vulkan, then the CPU: a library that

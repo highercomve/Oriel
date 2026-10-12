@@ -151,8 +151,10 @@ their options and the page's `oriel.window` API are on
 ## The bridge
 
 Every page the app trusts gets one script before its own scripts run:
-`window.oriel`, built from `src/core/bridge_js.zig`. It is the same script
-on every platform; each platform only supplies how a message travels:
+`window.oriel`, built from `src/core/bridge_js.zig` around the page API in
+`src/core/bridge_api.js` (which the [native renderer](native-renderer.md)
+bundles too). It is the same script on every platform; each platform only
+supplies how a message travels:
 
 | Platform | Page to Zig | Zig to page |
 |---|---|---|
@@ -339,7 +341,7 @@ Generated into `oriel_app.build`; an app doesn't write it by hand.
 | `src/core/App.zig` | `Config`, `Build`, `WindowOptions`, windows, `emit`, `spawn`, `runOnMain`, `run` |
 | `src/core/ipc.zig` | Command dispatch, async dispatch, built-in commands, IPC tokens, TypeScript generation |
 | `src/core/window_commands.zig` | The page's `oriel.window` commands |
-| `src/core/bridge_js.zig` | The `window.oriel` script |
+| `src/core/bridge_js.zig`, `bridge_api.js` | The `window.oriel` script; the page API itself, shared with the native renderer |
 | `src/core/security.zig`, `csp.zig`, `isolation.zig` | The security policy |
 | `src/core/ThreadPool.zig` | The worker pool |
 | `src/platform/platform.zig` | The backend contract and selection |

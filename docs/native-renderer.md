@@ -146,17 +146,25 @@ app's own JavaScript modules (`qjs_modules`), so nothing is parsed at
 startup. The page's scripts run as `<script>` tags would, in order, then
 `DOMContentLoaded` and `load` fire.
 
-**The DOM** is the native DOM by default: the document lives in a Zig store
+**The DOM** is the native DOM: the document lives in a Zig store
 (`src/native_ui/dom/store.zig`) as records in slabs, names interned as
 QuickJS atoms, `innerHTML` parsed and serialized in Zig, selectors compiled
 and matched in Zig (`selector.zig`). JavaScript holds one thin wrapper per
 node it touches (`dom_qjs.c`, `js/src/dom/native.js`); the long tail of the
 DOM API (events, `MutationObserver`, `style`, `dataset`, forms) is
-JavaScript on top. `-Dnative_dom=false` builds the same renderer on
-[linkedom](https://github.com/WebReflection/linkedom), a DOM written in
-JavaScript, vendored in `js/vendor/linkedom`: kept to compare the two and as
-a fallback. The runtime reaches either through one module, so pages can't
-tell them apart.
+JavaScript on top. The runtime reaches it through one module (`#dom`);
+its Node tests swap in [linkedom](https://github.com/WebReflection/linkedom),
+a DOM written in JavaScript (vendored in `js/vendor/linkedom`), to run
+without the Zig store. Apps never contain linkedom.
+
+**`window.oriel`** is the web view's own: one file, `src/core/bridge_api.js`,
+defines the page API, and the runtime bundles it with the engine's
+transport (`__host.invoke`) where the web view's bridge script
+(`src/core/bridge_js.zig`) splices it in with WebKit's or the message
+channel's. A native page's commands go through
+`src/core/native_commands.zig`, the same on every platform: window
+commands, the window's command policy, `drop:path`, Oriel's built-ins, then
+the app's commands.
 
 **The style engine** (`js/src/css.js`) parses each sheet once, at build
 time for the app's own (the parsed sheets are embedded), and indexes rules
@@ -247,9 +255,10 @@ page can't get around it by replacing globals.
 | Part | Source | What it does |
 |---|---|---|
 | JavaScript engine | `src/native_ui/vendor/quickjs-ng`, `qjs_shim.c` | QuickJS-ng and the `__host` functions the runtime calls (`ops`, `text`, `leaf`, `stamp`, `frame`, `invoke`, `timer`, `focus`, `scrollTo`, `fileRead`, ...) |
-| Runtime | `src/native_ui/js/src/main.js` | Timers, `requestAnimationFrame`, events and their default actions, forms, focus and Tab order, `location.hash`, `matchMedia`, storage, `window.oriel` |
+| Runtime | `src/native_ui/js/src/main.js`, bundled into `src/native_ui/runtime.js` | Timers, `requestAnimationFrame`, events and their default actions, forms, focus and Tab order, `location.hash`, `matchMedia`, storage |
+| Page API | `src/core/bridge_api.js` | `window.oriel`, shared with the web view's bridge |
 | Native DOM | `src/native_ui/dom` (`store.zig`, `html.zig`, `selector.zig`, `serialize.zig`, `dom_qjs.c`), `js/src/dom/native.js` | The document in a Zig store; design in `docs/design/native-dom.md` |
-| linkedom | `js/vendor/linkedom`, `js/src/dom/linkedom.js` | The JavaScript DOM, with `-Dnative_dom=false` |
+| Test DOM | `js/vendor/linkedom`, `js/src/dom/linkedom.js`, `js/test/runtime-linkedom.js` | The runtime on linkedom, for its Node tests (`npm test`); not in apps |
 | Style engine | `js/src/css.js` | Sheets, the cascade, custom properties, `@media`, `@keyframes` |
 | Flattener | `js/src/render.js`, `html.js`, `icons.js` | Styled DOM to native nodes, incrementally; inline SVG as vector shapes |
 | Transitions, animations | `js/src/transitions.js`, `animations.js` | CSS transitions and `@keyframes`, only the animated nodes each frame |
@@ -258,6 +267,7 @@ page can't get around it by replacing globals.
 | Drag and drop | `js/src/dnd.js`, `blob.js`, `drop.zig` | `DragEvent`, `DataTransfer`, `File` for drops into the page |
 | Web storage | `src/native_ui/web_storage.zig` | `localStorage`, shared by the app's windows |
 | Engine | `src/native_ui/engine.zig` | One per window: QuickJS, the tree and the backend; commands, timers, frames |
+| Commands | `src/core/native_commands.zig` | A native page's command, dispatched the same way by every platform's bridge |
 | Node tree | `tree.zig`, `dom_stamp.zig`, `slab_pool.zig` | Yoga layout, paint order, sticky, tables, scrolling, hit testing, stamped rows |
 | Backends | `gtk.zig`, `win32.zig`, `appkit.zig`, `uikit.zig` with `apple_draw.zig`, `android.zig` with `OrielNative.kt` | One view draws the page; platform widgets for the fields |
 | Canvas from Zig | `zig_canvas.zig` | `oriel.canvas`: the app's Zig code draws into a page's canvas |
@@ -395,7 +405,6 @@ adb logcat -s OrielNui oriel
 | Option | Default | Meaning |
 |---|---|---|
 | `-Dnative_ui` (`.native_ui`) | `false` | Draw every window with the native renderer. Linux, Windows, macOS, Android, iOS; any other target is a build error. Compiles QuickJS-ng, Yoga, the runtime and the platform's backend in, and the app's JavaScript modules to bytecode. Windows builds also embed `src/native_ui/win32.manifest` (Common Controls 6 for the fields). |
-| `-Dnative_dom` (`.native_dom`) | `true` | With `-Dnative_ui`: the native DOM; `false` builds on linkedom. Ignored without `-Dnative_ui`. |
 | `-Dnative_ui_prof` (`.native_ui_prof`) | `false` | Log each stage's time (render, layout, paint) from `src/native_ui/prof.zig`; compiled out without it. |
 
 An app forwards each one it wants from its `build.zig` to the Oriel
@@ -403,12 +412,14 @@ dependency, as in the [quick start](#quick-start).
 
 ### Page API
 
-The page's `window.oriel` is the web view's, with these differences:
+The page's `window.oriel` is the web view's, the same object from the same
+source (`src/core/bridge_api.js`). What differs is what the renderers give
+it:
 
 | Member | Native renderer | Web view |
 |---|---|---|
 | `oriel.features.nativeUi` | `true` | `false` |
-| `oriel.drop.path(file)` | Where a dropped file lives: [Drag and drop](drag-and-drop.md#drop-path) | Absent |
+| `oriel.drop.path(file)` | A dropped file's path: [Drag and drop](drag-and-drop.md#drop-path) | `null`: a web view's dropped files have no handle |
 | IPC token, isolation hook | None: the page is the app's own code | As configured ([Security](security.md)) |
 
 Everything the page can use from the web platform (elements, CSS, events,
@@ -481,9 +492,6 @@ Recording never fails: running out of memory marks the program and
 `commit` refuses it. Build a program on any thread (a simulation on a
 worker can hand a built program to the UI thread with `App.runOnMain`);
 `open`, `commit`, `onFrame` and `stopFrames` run on the UI thread.
-`Engine`, `Cmd` and `Font` and the `openIn` / `onFrameIn` / `engineOf`
-functions are lower-level forms of the same calls, by engine instead of
-window.
 
 ### Environment variables
 
@@ -551,6 +559,16 @@ every page. Text updates are where the web view and plain platform views
 still lead: changing 1000 texts goes through JavaScript and the DOM.
 `docs/internal/native-renderer-performance.md` keeps the full tables and the
 later diagnostics.
+
+### Migrating from 0.11
+
+- `window.oriel.native` is gone: use `window.oriel.features.nativeUi`.
+- `-Dnative_dom` (`.native_dom`) is gone: apps always run on the native
+  DOM. Remove the option from `build.zig`.
+- `oriel.canvas.openIn`, `onFrameIn`, `engineOf` and the `Engine`, `Cmd`
+  and `Font` re-exports are gone: use `Canvas.open` and `onFrame` with the
+  window.
+- `oriel.drop.path` resolves the path as a string (it was `{ path }`).
 
 ### Limits
 

@@ -173,9 +173,9 @@ front again with no target chosen, Oriel reports `completed: false`.
 The page's `oriel.share.send` is the built-in `share:send` command
 (`src/core/ipc.zig`): `File`/`Blob` contents travel base64 in the request,
 and the result comes back as the `share:sent` event, which the bridge
-(`src/core/bridge_js.zig`) turns into the promise's value. The
+(`src/core/bridge_api.js`) turns into the promise's value. The
 [native renderer]($link.page('docs/native-renderer')) has the same
-`window.oriel.share`.
+`window.oriel.share`, from the same file.
 
 # [Examples]($heading.id('examples'))
 
