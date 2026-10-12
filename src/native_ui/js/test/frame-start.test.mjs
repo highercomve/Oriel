@@ -35,7 +35,7 @@ const host = {
   evalScript: (name, code) => vm.runInContext(code, ctx, { filename: name }),
 };
 const ctx = vm.createContext({ __host: host, __opsCalls: 0 });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 const tick = () => new Promise((r) => setTimeout(r, 0));
 // The engine's own (paced) frames never come here: only the page's timers

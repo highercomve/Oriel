@@ -428,11 +428,11 @@ globalThis.btoa ??= (s) => {
         }
       };
     };
-    const listeners2 = ownSlot2("listeners");
+    const listeners = ownSlot2("listeners");
     const CAPTURE = "";
     const isCapture = (opts) => opts === true || !!(opts && typeof opts === "object" && opts.capture);
     function invoke2(event, node, target, capture, phase) {
-      const list = listeners2.get(node)?.get(capture ? CAPTURE + event.type : event.type);
+      const list = listeners.get(node)?.get(capture ? CAPTURE + event.type : event.type);
       if (!list) return event.cancelBubble;
       event.eventPhase = phase;
       event.currentTarget = node;
@@ -451,15 +451,15 @@ globalThis.btoa ??= (s) => {
     const eventTarget = {
       addEventListener(type, fn, opts) {
         if (!fn) return;
-        let map = listeners2.get(this);
-        if (!map) listeners2.set(this, map = /* @__PURE__ */ new Map());
+        let map = listeners.get(this);
+        if (!map) listeners.set(this, map = /* @__PURE__ */ new Map());
         const key = isCapture(opts) ? CAPTURE + type : type;
         let list = map.get(key);
         if (!list) map.set(key, list = /* @__PURE__ */ new Map());
         if (!list.has(fn)) list.set(fn, opts);
       },
       removeEventListener(type, fn, opts) {
-        const map = listeners2.get(this);
+        const map = listeners.get(this);
         const key = isCapture(opts) ? CAPTURE + type : type;
         const list = map?.get(key);
         if (list && list.delete(fn) && !list.size) map.delete(key);
@@ -7561,7 +7561,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       return segs;
     }
     const sizeOf = (segs) => segs.reduce((n2, s) => n2 + (s.bytes ? s.bytes.length : s.length), 0);
-    class Blob {
+    class Blob2 {
       constructor(parts, options = {}) {
         const segs = parts?.[internal] ? parts.segs : segmentsOf(parts);
         state.set(this, { segs, size: sizeOf(segs), type: cleanType(options?.type) });
@@ -7591,7 +7591,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           at += len;
           if (at >= to) break;
         }
-        return new Blob({ [internal]: true, segs: out }, { type });
+        return new Blob2({ [internal]: true, segs: out }, { type });
       }
       arrayBuffer() {
         return readAll(this).then((b) => b.buffer);
@@ -7606,7 +7606,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         return "Blob";
       }
     }
-    class File extends Blob {
+    class File2 extends Blob2 {
       constructor(bits, name, options = {}) {
         if (arguments.length < 2) throw new TypeError("File: a name is required");
         super(bits, options);
@@ -7624,7 +7624,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       released.register(ref, handle);
       const length2 = Math.max(0, Math.trunc(+size) || 0);
       const segs = length2 ? [{ ref, offset: 0, length: length2 }] : [];
-      const f = new File({ [internal]: true, segs }, name, { type, lastModified });
+      const f = new File2({ [internal]: true, segs }, name, { type, lastModified });
       if (!length2) state.get(f).ref = ref;
       f.handle = handle;
       return f;
@@ -7779,8 +7779,8 @@ input[type="range"] { height: 20px; margin: 2px; }
         configurable: true
       });
     }
-    g2.Blob ??= Blob;
-    g2.File ??= File;
+    g2.Blob ??= Blob2;
+    g2.File ??= File2;
     g2.FileList ??= FileList;
     g2.FileReader ??= FileReader;
     return { fileData, droppedFile, fileList, isBlob: (b) => state.has(b) };
@@ -8308,6 +8308,269 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (ops.length) this.host.ops(`[${ops.join(",")}]`);
     }
   };
+
+  // ../../core/bridge_api.js
+  function orielApi({ invoke: invoke2, listeners, pendingEvents, platform: platform2, features: features2, label }) {
+    function listen(event, callback) {
+      let set = listeners.get(event);
+      if (!set) listeners.set(event, set = /* @__PURE__ */ new Set());
+      set.add(callback);
+      const queued = pendingEvents.get(event);
+      if (queued && queued.length > 0) {
+        pendingEvents.delete(event);
+        for (const payload of queued) {
+          try {
+            callback(payload);
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
+      if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) {
+        try {
+          Promise.resolve(invoke2("events:ready", { event })).catch(() => {
+          });
+        } catch (_) {
+        }
+      }
+      return () => set.delete(callback);
+    }
+    const toBase64 = (bytes) => {
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+      return btoa(bin);
+    };
+    class WindowHandle {
+      constructor(label2) {
+        this.label = label2;
+      }
+      close() {
+        return invoke2("oriel:window:close", { label: this.label });
+      }
+      show() {
+        return invoke2("oriel:window:show", { label: this.label });
+      }
+      hide() {
+        return invoke2("oriel:window:hide", { label: this.label });
+      }
+      focus() {
+        return invoke2("oriel:window:focus", { label: this.label });
+      }
+      setTitle(title) {
+        return invoke2("oriel:window:setTitle", { label: this.label, title });
+      }
+      setSize(width, height) {
+        return invoke2("oriel:window:setSize", { label: this.label, width, height });
+      }
+      maximize(maximized = true) {
+        return invoke2("oriel:window:maximize", { label: this.label, maximized });
+      }
+      fullscreen(fullscreen = true) {
+        return invoke2("oriel:window:fullscreen", { label: this.label, fullscreen });
+      }
+      startDragging() {
+        return invoke2("oriel:window:startDragging", { label: this.label });
+      }
+      emit(event, payload) {
+        return windowApi.emitTo(this.label, event, payload);
+      }
+    }
+    const windowApi = {
+      async open(options) {
+        const res = await invoke2("oriel:window:open", options);
+        return new WindowHandle(res.label);
+      },
+      current() {
+        return new WindowHandle(label() || "main");
+      },
+      async get(label2) {
+        const res = await invoke2("oriel:window:get", { label: label2 });
+        return res ? new WindowHandle(res.label) : null;
+      },
+      async all() {
+        const list = await invoke2("oriel:window:all", {});
+        return (list || []).map((w) => new WindowHandle(w.label));
+      },
+      emitTo(label2, event, payload) {
+        return invoke2("oriel:window:emitTo", { label: label2, event, payload: payload ?? null });
+      }
+    };
+    return Object.freeze({
+      platform: platform2,
+      features: features2,
+      invoke: invoke2,
+      listen,
+      openExternal(url) {
+        return invoke2("open_external", { url });
+      },
+      permissions: Object.freeze({
+        query(name) {
+          return invoke2("permissions:query", { name });
+        },
+        // Resolves the status once the user answered (a "permission-changed"
+        // event), or at once when there was nothing to ask.
+        request(name) {
+          return new Promise((resolve2, reject) => {
+            const off = listen("permission-changed", (e) => {
+              if (e && e.name === name) {
+                off();
+                resolve2(e.status);
+              }
+            });
+            Promise.resolve(invoke2("permissions:request", { name })).then((s) => {
+              if (s !== "prompt") {
+                off();
+                resolve2(s);
+              }
+            }, (err) => {
+              off();
+              reject(err);
+            });
+          });
+        },
+        openSettings(name) {
+          return invoke2("permissions:open_settings", { name });
+        }
+      }),
+      // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
+      // "resume" | "terminating", level: "moderate" | "critical" | null }.
+      lifecycle: Object.freeze({
+        on(callback) {
+          return listen("lifecycle", callback);
+        }
+      }),
+      // The app's extensions, as far as Zig exposes them
+      // (oriel.extensions.expose): JSON in, JSON out. Native events come as
+      // `extension:<name>` with { name, data }.
+      extensions: Object.freeze({
+        call(name, method, payload) {
+          return invoke2("extensions:call", { name, method, payload: payload === void 0 ? null : payload });
+        },
+        on(name, callback) {
+          return listen("extension:" + name, callback);
+        }
+      }),
+      // The device's own model (oriel.system_ai): Gemini Nano on Android,
+      // Foundation Models on iOS 26+. Tokens stream as "system_ai:token"
+      // ({ text }), download progress as "system_ai:download".
+      systemAi: Object.freeze({
+        status() {
+          return invoke2("system_ai:status", {});
+        },
+        capabilities() {
+          return invoke2("system_ai:capabilities", {});
+        },
+        download(onProgress) {
+          const off = onProgress ? listen("system_ai:download", onProgress) : null;
+          return Promise.resolve(invoke2("system_ai:download", {})).finally(() => off && off());
+        },
+        async generate(request, onToken) {
+          const b64 = async (data) => {
+            if (typeof data === "string") return data;
+            return toBase64(data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          };
+          const images = [];
+          for (const img of request.images || []) images.push({ data: await b64(img.data), mime: img.mime || img.data && img.data.type || "image/jpeg" });
+          const schema = request.schema == null || typeof request.schema === "string" ? request.schema : JSON.stringify(request.schema);
+          const off = onToken ? listen("system_ai:token", (e) => onToken(e.text)) : null;
+          try {
+            return await invoke2("system_ai:generate", { system: request.system || "", prompt: request.prompt, images, temperature: request.temperature, maxTokens: request.maxTokens, schema });
+          } finally {
+            if (off) off();
+          }
+        },
+        cancel() {
+          return invoke2("system_ai:cancel", {});
+        }
+      }),
+      // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
+      camera: Object.freeze({
+        capturePhoto(options) {
+          return invoke2("camera:capture", options || {});
+        }
+      }),
+      deepLink: Object.freeze({
+        current() {
+          return invoke2("deep_link:current", {});
+        }
+      }),
+      // Where a dropped file lives now, for a trusted app that sends it on
+      // (docs/drag-and-drop.md): a path string, or null when the file is
+      // gone or changed, or has no drop handle (only the native renderer's
+      // dropped Files carry `handle`; a WebView's never do).
+      drop: Object.freeze({
+        async path(f) {
+          const handle = typeof f === "number" ? f : f && f.handle;
+          if (typeof handle !== "number") return null;
+          return invoke2("drop:path", { handle });
+        }
+      }),
+      share: Object.freeze({
+        // A received file (from share:received's files, or its handle) as a File.
+        async file(f) {
+          const info = typeof f === "number" ? { handle: f } : f;
+          const chunk = 4 << 20, parts = [];
+          for (let offset = 0; ; ) {
+            const bin = atob(await invoke2("share:read", { handle: info.handle, offset, length: chunk }));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            parts.push(bytes);
+            offset += bytes.length;
+            if (bytes.length < chunk) break;
+          }
+          return new File(parts, info.name || "file", { type: info.mime || "" });
+        },
+        // Opens the system share sheet: { title, text, url, files: [File | Blob |
+        // a received file | its handle], anchor }. Resolves { completed, target }.
+        async send(item = {}) {
+          const files = [];
+          for (const f of item.files || []) {
+            if (typeof f === "number") {
+              files.push({ handle: f });
+              continue;
+            }
+            if (!(f instanceof Blob)) {
+              files.push({ handle: f.handle });
+              continue;
+            }
+            files.push({ name: f.name || "file", data: toBase64(new Uint8Array(await f.arrayBuffer())) });
+          }
+          return new Promise((resolve2, reject) => {
+            const off = listen("share:sent", (r) => {
+              off();
+              resolve2(r);
+            });
+            Promise.resolve(invoke2("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor })).catch((err) => {
+              off();
+              reject(err);
+            });
+          });
+        },
+        capabilities() {
+          return invoke2("share:capabilities", {});
+        }
+      }),
+      // The transport's way in: an event from Zig for the page's listeners.
+      __emit(event, payload) {
+        const set = listeners.get(event);
+        if (set && set.size > 0) {
+          for (const cb of set) {
+            try {
+              cb(payload);
+            } catch (e) {
+              console.error(e);
+            }
+          }
+        } else if (event === "deep-link") {
+          let queued = pendingEvents.get(event);
+          if (!queued) pendingEvents.set(event, queued = []);
+          queued.push(payload);
+          if (queued.length > 16) queued.shift();
+        }
+      },
+      window: Object.freeze(windowApi)
+    });
+  }
 
   // src/main.js
   var internalWeak4 = (m) => (globalThis.__nuiDom?.internal?.(m), m);
@@ -9374,261 +9637,14 @@ ${a.stack || ""}`;
       host.invoke(id, String(cmd), JSON.stringify(args ?? null));
     });
   }
-  var listeners = /* @__PURE__ */ new Map();
-  var pendingEvents = /* @__PURE__ */ new Map();
-  var WindowHandle = class {
-    constructor(label) {
-      this.label = label;
-    }
-    close() {
-      return invoke("oriel:window:close", { label: this.label });
-    }
-    show() {
-      return invoke("oriel:window:show", { label: this.label });
-    }
-    hide() {
-      return invoke("oriel:window:hide", { label: this.label });
-    }
-    focus() {
-      return invoke("oriel:window:focus", { label: this.label });
-    }
-    setTitle(title) {
-      return invoke("oriel:window:setTitle", { label: this.label, title });
-    }
-    setSize(width, height) {
-      return invoke("oriel:window:setSize", { label: this.label, width, height });
-    }
-    maximize(maximized = true) {
-      return invoke("oriel:window:maximize", { label: this.label, maximized });
-    }
-    fullscreen(fullscreen = true) {
-      return invoke("oriel:window:fullscreen", { label: this.label, fullscreen });
-    }
-    startDragging() {
-      return invoke("oriel:window:startDragging", { label: this.label });
-    }
-    emit(event, payload) {
-      return windowApi.emitTo(this.label, event, payload);
-    }
-  };
-  var windowApi = {
-    async open(options) {
-      const res = await invoke("oriel:window:open", options);
-      return new WindowHandle(res.label);
-    },
-    current() {
-      return new WindowHandle(host.label || "main");
-    },
-    async get(label) {
-      const res = await invoke("oriel:window:get", { label });
-      return res ? new WindowHandle(res.label) : null;
-    },
-    async all() {
-      const list = await invoke("oriel:window:all", {});
-      return (list || []).map((w) => new WindowHandle(w.label));
-    },
-    emitTo(label, event, payload) {
-      return invoke("oriel:window:emitTo", { label, event, payload: payload ?? null });
-    }
-  };
-  g.oriel = Object.freeze({
-    platform: Object.freeze(platform),
-    features,
-    native: true,
+  Object.defineProperty(g, "oriel", { value: orielApi({
     invoke,
-    listen(event, callback) {
-      let set = listeners.get(event);
-      if (!set) listeners.set(event, set = /* @__PURE__ */ new Set());
-      set.add(callback);
-      const queued = pendingEvents.get(event);
-      if (queued?.length) {
-        pendingEvents.delete(event);
-        for (const p of queued) {
-          try {
-            callback(p);
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      }
-      if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {
-      });
-      return () => set.delete(callback);
-    },
-    openExternal(url) {
-      return invoke("open_external", { url });
-    },
-    drop: Object.freeze({
-      // Where a dropped file lives now, for a handler that sends it on. The
-      // handle came in the drop's File (`f.handle`); only the native
-      // renderer has one. Answers a path string, or null when the file is
-      // gone or changed, the handle is unknown, or the platform can't
-      // resolve paths (docs/drag-and-drop-design.md §3, open question #1,
-      // resolved: Electron's webUtils.getPathForFile is the precedent).
-      async path(f) {
-        const handle = f && typeof f.handle === "number" ? f.handle : f;
-        if (typeof handle !== "number") throw new TypeError("drop.path: a dropped file (or its handle)");
-        return invoke("drop:path", { handle });
-      }
-    }),
-    permissions: Object.freeze({
-      query(name) {
-        return invoke("permissions:query", { name });
-      },
-      request(name) {
-        return new Promise((resolve2, reject) => {
-          let set = listeners.get("permission-changed");
-          if (!set) listeners.set("permission-changed", set = /* @__PURE__ */ new Set());
-          const cb = (e) => {
-            if (e && e.name === name) {
-              set.delete(cb);
-              resolve2(e.status);
-            }
-          };
-          set.add(cb);
-          invoke("permissions:request", { name }).then((s) => {
-            if (s !== "prompt") {
-              set.delete(cb);
-              resolve2(s);
-            }
-          }, (err) => {
-            set.delete(cb);
-            reject(err);
-          });
-        });
-      },
-      openSettings(name) {
-        return invoke("permissions:open_settings", { name });
-      }
-    }),
-    // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
-    // "resume" | "terminating", level: "moderate" | "critical" | null }.
-    lifecycle: Object.freeze({ on(callback) {
-      return g.oriel.listen("lifecycle", callback);
-    } }),
-    // The app's extensions, as far as Zig exposes them (oriel.extensions.expose):
-    // JSON in, JSON out; native events come as `extension:<name>`.
-    extensions: Object.freeze({
-      call(name, method, payload) {
-        return invoke("extensions:call", { name, method, payload: payload === void 0 ? null : payload });
-      },
-      on(name, callback) {
-        return g.oriel.listen("extension:" + name, callback);
-      }
-    }),
-    // The device's own model (oriel.system_ai, features.systemAi), as in the
-    // webview bridges (src/modules/system_ai/bridge.zig). Tokens stream as
-    // "system_ai:token" ({ text }), download progress as "system_ai:download".
-    systemAi: Object.freeze({
-      status() {
-        return invoke("system_ai:status", {});
-      },
-      capabilities() {
-        return invoke("system_ai:capabilities", {});
-      },
-      download(onProgress) {
-        const off = onProgress ? g.oriel.listen("system_ai:download", onProgress) : null;
-        return Promise.resolve(invoke("system_ai:download", {})).finally(() => off && off());
-      },
-      async generate(request, onToken) {
-        const b64 = async (data) => {
-          if (typeof data === "string") return data;
-          const bytes = data instanceof g.Blob ? new Uint8Array(await data.arrayBuffer()) : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-          let bin = "";
-          for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
-          return btoa(bin);
-        };
-        const images = [];
-        for (const img of request.images || []) images.push({ data: await b64(img.data), mime: img.mime || img.data && img.data.type || "image/jpeg" });
-        const schema = request.schema == null || typeof request.schema === "string" ? request.schema : JSON.stringify(request.schema);
-        const off = onToken ? g.oriel.listen("system_ai:token", (e) => onToken(e.text)) : null;
-        try {
-          return await invoke("system_ai:generate", { system: request.system || "", prompt: request.prompt, images, temperature: request.temperature, maxTokens: request.maxTokens, schema });
-        } finally {
-          if (off) off();
-        }
-      },
-      cancel() {
-        return invoke("system_ai:cancel", {});
-      }
-    }),
-    // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
-    camera: Object.freeze({ capturePhoto(options) {
-      return invoke("camera:capture", options || {});
-    } }),
-    deepLink: Object.freeze({ current() {
-      return invoke("deep_link:current", {});
-    } }),
-    share: Object.freeze({
-      // A received file (from share:received's files, or its handle) as a File.
-      async file(f) {
-        const info = typeof f === "number" ? { handle: f } : f;
-        const chunk = 4 << 20, parts = [];
-        for (let offset = 0; ; ) {
-          const bin = atob(await invoke("share:read", { handle: info.handle, offset, length: chunk }));
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          parts.push(bytes);
-          offset += bytes.length;
-          if (bytes.length < chunk) break;
-        }
-        return new g.File(parts, info.name || "file", { type: info.mime || "" });
-      },
-      // Opens the system share sheet: { title, text, url, files: [File | Blob |
-      // a received file | its handle], anchor }. Resolves { completed, target }.
-      async send(item = {}) {
-        const files = [];
-        for (const f of item.files || []) {
-          if (typeof f === "number") {
-            files.push({ handle: f });
-            continue;
-          }
-          if (!(f instanceof g.Blob)) {
-            files.push({ handle: f.handle });
-            continue;
-          }
-          const u = new Uint8Array(await f.arrayBuffer());
-          let bin = "";
-          for (let i = 0; i < u.length; i += 32768) bin += String.fromCharCode.apply(null, u.subarray(i, i + 32768));
-          files.push({ name: f.name || "file", data: btoa(bin) });
-        }
-        return new Promise((resolve2, reject) => {
-          let set = listeners.get("share:sent");
-          if (!set) listeners.set("share:sent", set = /* @__PURE__ */ new Set());
-          const cb = (r) => {
-            set.delete(cb);
-            resolve2(r);
-          };
-          set.add(cb);
-          invoke("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor }).catch((err) => {
-            set.delete(cb);
-            reject(err);
-          });
-        });
-      },
-      capabilities() {
-        return invoke("share:capabilities", {});
-      }
-    }),
-    __emit(event, payload) {
-      const set = listeners.get(event);
-      if (set?.size) {
-        for (const cb of set) {
-          try {
-            cb(payload);
-          } catch (e) {
-            console.error(e);
-          }
-        }
-      } else if (event === "deep-link") {
-        let q = pendingEvents.get(event);
-        if (!q) pendingEvents.set(event, q = []);
-        q.push(payload);
-        if (q.length > 16) q.shift();
-      }
-    },
-    window: Object.freeze(windowApi)
-  });
+    listeners: /* @__PURE__ */ new Map(),
+    pendingEvents: /* @__PURE__ */ new Map(),
+    platform: Object.freeze({ os: platform.os, arch: platform.arch }),
+    features,
+    label: () => host.label
+  }) });
   var isCheckable = (n2) => n2?.localName === "input" && /^(checkbox|radio)$/.test(n2.type);
   function buttonType(el) {
     if (el.localName === "button") {

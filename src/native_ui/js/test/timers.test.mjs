@@ -13,7 +13,7 @@ const host = {
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main",
 };
 const ctx = vm.createContext({ __host: host, advance: (ms) => { clock += ms; } });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx);
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx);
 ctx.__oriel.boot(400, 600, false, false);
 scheduled.length = 0;
 

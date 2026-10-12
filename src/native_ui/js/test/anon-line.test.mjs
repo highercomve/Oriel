@@ -22,7 +22,7 @@ const host = {
   platform: JSON.stringify({ os: "linux" }), label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
 const text = (id) => nodes.get(id)?.props.runs?.map((r) => r.t).join("").trim();

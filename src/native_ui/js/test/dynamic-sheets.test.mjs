@@ -20,7 +20,7 @@ const host = {
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
 const run = (code) => vm.runInContext(code, ctx);

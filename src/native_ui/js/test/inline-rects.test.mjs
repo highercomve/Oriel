@@ -20,7 +20,7 @@ function run(withRects) {
   };
   if (withRects) host.runRects = (id, first, last) => { asked.push([nodes.get(id).props.runs.slice(first, last + 1).map((r) => r.t).join("")]); return [[50, 20, 100, 17], [10, 37, 40, 17]]; };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, false, false);
   ctx.__oriel.render();
   const q = (js) => vm.runInContext(js, ctx);
