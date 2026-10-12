@@ -6,7 +6,7 @@ import android.content.Intent
 /** Generated registration only. Implementations belong to the app's sources. */
 internal object OrielAppExtensions {
     val registered: List<OrielAndroidExtension> by lazy {
-        listOf<OrielAndroidExtension>().also { extensions ->
+        listOf<OrielAndroidExtension>(dev.oriel.showcase.ShowcaseHooks(),).also { extensions ->
             extensions.forEachIndexed { index, extension -> extension.onRegistered(OrielAndroidExtensionContext(index)) }
         }
     }

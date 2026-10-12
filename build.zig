@@ -1175,9 +1175,14 @@ pub const AppOptions = struct {
         /// `app/src/main/java/<path of the file's package line>/`; a file
         /// dropped from the list is removed from there.
         sources: []const std.Build.LazyPath = &.{},
-        /// Fully qualified Kotlin/Java classes implementing OrielAndroidExtension
-        /// with a public zero-argument constructor. Sources are app-owned;
-        /// registration is regenerated on every Android build, in this order.
+        /// Android platform hooks: fully qualified Kotlin/Java classes
+        /// implementing `OrielAndroidHooks` (the same interface as
+        /// `OrielAndroidExtension`) with a public zero-argument constructor.
+        /// Sources are app-owned; registration is regenerated on every
+        /// Android build, in this order (docs/android-extensions.md).
+        hooks: []const []const u8 = &.{},
+        /// Deprecated: the old name of `hooks`. Still registered, after the
+        /// `hooks` classes; a class in both lists is registered once.
         extensions: []const []const u8 = &.{},
         /// Maven coordinates (group:artifact:version), regenerated on every build.
         dependencies: []const []const u8 = &.{},
@@ -2256,14 +2261,16 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     const assets = b.pathJoin(&.{ b.install_prefix, android_assets_dir });
     const assets_dir = std.fs.path.relative(b.allocator, b.build_root.path orelse "/", null, app_dir, assets) catch assets;
 
+    // Platform hooks: `.android.hooks`, then the deprecated `.android.extensions`.
     var extensions: std.ArrayList(u8) = .empty;
-    if (options.android.extensions.len > 64) @panic("android.extensions: at most 64 extensions are supported");
-    for (options.android.extensions, 0..) |class_name, index| {
-        for (options.android.extensions[0..index]) |previous| {
-            if (std.mem.eql(u8, previous, class_name)) @panic(b.fmt("android.extensions: duplicate class '{s}'", .{class_name}));
-        }
-        if (!android_manifest.extensionClassValid(class_name))
-            @panic(b.fmt("android.extensions: invalid class name '{s}'", .{class_name}));
+    var bad_hook: []const u8 = "";
+    const hook_classes = android_manifest.hookClasses(b.allocator, options.android.hooks, options.android.extensions, &bad_hook) catch |err| switch (err) {
+        error.TooManyHooks => @panic("android.hooks: at most 64 classes are supported (.hooks and .extensions together)"),
+        error.DuplicateHook => @panic(b.fmt("android.hooks: duplicate class '{s}'", .{bad_hook})),
+        error.InvalidHookClass => @panic(b.fmt("android.hooks: invalid class name '{s}'", .{bad_hook})),
+        error.OutOfMemory => @panic("OOM"),
+    };
+    for (hook_classes) |class_name| {
         extensions.appendSlice(b.allocator, b.fmt("{s}(),", .{class_name})) catch @panic("OOM");
     }
 
