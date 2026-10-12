@@ -18,6 +18,7 @@ Commands in these guides run from your app directory unless a guide explicitly s
 - [WebView and native rendering](renderers.md)
 - [Android](android.md) and [iOS](ios.md)
 - [App-owned Android extensions](android-extensions.md)
+- [App extensions](extensions.md): your own Kotlin, Objective-C/Swift or Zig code, called by name
 
 ## Framework development
 
