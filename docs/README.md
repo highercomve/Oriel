@@ -31,7 +31,7 @@ The same pages as the website, https://highercomve.github.io/Oriel/docs/.
 - [Notifications](notifications.md): System notifications from Zig, with buttons, and the clicks reported back to Zig and the page.
 - [Files](files.md): How the user's files reach an Oriel app and its page: dropped, picked, shared from other apps, or kept in a folder the user chose, and what crosses the bridge for each.
 - [Settings store](store.md): A thread-safe JSON key-value file for the app's settings, written atomically, in the app's config directory on every platform.
-- [App directories](paths.md): The app's private data and cache directories on every platform, from one call: oriel.paths.appData and appCache.
+- [App directories](paths.md): The app's own directories on every platform, from one call each: oriel.paths.appData, appCache, appConfig and appExternal.
 - [Logging](logging.md): std.log to stderr (logcat on Android) and to a per-app log file on every platform, plus where the page's console output goes.
 - [SQL](sql.md): SQLite compiled into the app, with sqlite-vec for nearest-neighbour vector search, on every platform.
 - [File watching](fs-watch.md): Know when files are created, changed or deleted in a directory: inotify on Linux and Android, ReadDirectoryChangesW on Windows, FSEvents on macOS.

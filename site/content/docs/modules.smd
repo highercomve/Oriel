@@ -130,8 +130,9 @@ flowchart LR
    `available = false`. A test keeps the shim's declarations equal to the
    module's.
 3. **Choosing the backend.** The module's facade (`src/modules/tray.zig`)
-   holds the shared types (`tray/common.zig`) and picks its implementation
-   with a `switch` on `target.os`: `tray/linux.zig`, `tray/windows.zig`,
+   re-exports the documented API, holds the shared types
+   (`tray/common.zig`) and picks its implementation with a `switch` on
+   `target.os` (kept private: `oriel.tray.` shows only the API): `tray/linux.zig`, `tray/windows.zig`,
    `tray/macos.zig`. Some backends serve several platforms (`fs_watch`
    uses inotify on Linux and Android; `store` shares its Apple backend
    between macOS and iOS); a module that doesn't exist on a platform has a
