@@ -35,7 +35,7 @@ import java.util.concurrent.Executors
  *   into the capture provider; without, the system photo picker
  *   (`ACTION_PICK_IMAGES` on 13+, `ACTION_GET_CONTENT` before; several with
  *   `multiple`). Picks the WebView can't decode (HEIC, AVIF) are transcoded
- *   to JPEG off the UI thread. App extensions see the chooser first.
+ *   to JPEG off the UI thread. Platform hooks (`OrielAndroidHooks`) see the chooser first.
  * - `capturePhoto` (Zig): the same intents; the photo is decoded, scaled to
  *   fit `maxSide` (orientation applied) and encoded on a worker, then
  *   answered once through NativeLib.onCameraResult.
@@ -117,7 +117,7 @@ internal object OrielCamera {
         return list.isNotEmpty() && list.all { it.startsWith("image/") || it in imageExtensions }
     }
 
-    /** Handle an image chooser (after the app's extensions passed); false leaves it to the default picker. */
+    /** Handle an image chooser (after the platform hooks passed); false leaves it to the default picker. */
     fun onShowFileChooser(activity: OrielActivity, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
         if (!config.enabled || !imagesOnly(params.acceptTypes)) return false
         cancelPending()
