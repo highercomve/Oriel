@@ -220,7 +220,8 @@ fn Unwrapped(comptime T: type) type {
     // Anything else must cross the C ABI as is (a slice would compile and
     // crash at run time).
     switch (@typeInfo(T)) {
-        .int, .float, .bool, .@"enum", .pointer => {},
+        .int, .float, .bool, .@"enum" => {},
+        .pointer => |p| if (p.size == .slice) @compileError("msgSend: " ++ @typeName(T) ++ ": pass a slice's .ptr (and its length)"),
         .optional => |o| if (@typeInfo(o.child) != .pointer) @compileError("msgSend: " ++ @typeName(T) ++ ": an optional must wrap a pointer"),
         .@"struct" => |s| if (s.layout != .@"extern" and s.layout != .@"packed") @compileError("msgSend: " ++ @typeName(T) ++ ": a struct must be extern or packed"),
         .@"union" => |u| if (u.layout != .@"extern") @compileError("msgSend: " ++ @typeName(T) ++ ": a union must be extern"),
