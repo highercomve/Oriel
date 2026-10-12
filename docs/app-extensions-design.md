@@ -70,23 +70,31 @@ writing `unloadIdle` glue (as the showcase does today, and GhostPantry's `local.
 
 ---
 
-## 2. Module flags on phones: requested means "where available"
+## 2. Module flags: say it once, comptime decides per target
 
 Today:
-- Android builds a stub for a desktop-only module (same API, `error.Unsupported`).
+- Android builds a stub for a desktop-only module (same API, `error.Unsupported` at run time).
 - iOS fails the build.
 
-Apps must branch per target, and the same `build.zig` can't target both. Decision 4 already
-says modules follow the app's configuration.
+Apps branch per target (`.tray = !is_android`), and a stub only fails when it's called.
 
-**Change:**
-- iOS behaves like Android. A desktop-only module the app enables (`tray`, `menu`, `global_shortcut`, `input`, `updater`, `media_server`, `fs_watch`, `layer_shell`) builds as a stub on iOS too.
-- The build prints one note per module ("tray: not available on iOS, built as a stub"). Missing stubs (iOS backends for `fs_watch`, `layer_shell`) are added.
-- Every module gets `pub const available: bool` (comptime), so apps can branch in Zig without `@hasDecl` or `builtin.abi` checks.
-- The page gets `oriel.features` (`{ tray: false, camera: true, systemAi: true, … }`), so UIs hide what isn't there. GhostPantry shows "System AI" and "Fast local" on desktop, where they always fail.
-
-**Kept:** `-Dtray=true` on the command line for an iOS target is still an error. That is a
-person asking explicitly; only the app's dependency defaults become "where available".
+**Change (decided):** the app states what it uses, once, for every target. Each module
+resolves per target to a comptime fact:
+```zig
+// oriel.<module>.available: comptime bool for this build's target.
+if (oriel.tray.available) {
+    try oriel.tray.create(.{ .icon = icon, .menu = &items });
+}
+```
+- **Where the module exists:** `available = true` and the full API is there.
+- **Where it doesn't** (tray, menu, global_shortcut, input, updater, media_server, fs_watch and layer_shell on phones; system_ai on Linux…): `available = false`, and the namespace holds only `available`.
+  - Code under `if (oriel.tray.available)` is never analyzed, so it costs nothing and needs no stub.
+  - An unguarded call is a **compile error**, with a message naming the module and the guard (`@compileError("oriel.tray is not available on ios: guard with `if (oriel.tray.available)`")`), raised from a small generated shim type.
+- **The app's flags stay intent:** `.tray = true` in `b.dependency` means "used where it exists". No per-target branching, no build-time fatal, and no runtime `Unsupported` from a stub.
+  - Android's current stubs are replaced by the same comptime mechanism.
+  - Runtime-dependent availability (a device without Gemini Nano, a desktop without a tray host) stays a runtime status, from the module's own `status()`.
+- **The page:** `oriel.features` (`{ tray: false, camera: true, systemAi: true, … }`) mirrors the comptime table, so UIs hide what this build can't do.
+- **Explicit `-Dtray=true` on the command line** for a target without it is still a build error: a person asked for something impossible.
 
 ---
 
@@ -127,10 +135,16 @@ if (!vision.available()) return error.Unavailable;           // no implementatio
 const reply = try vision.call(arena, "detect", request_json, .{ .timeout_ms = 30_000, .cancel = &token });
 // Native code can emit progress: delivered to `vision.onEvent(handler)` and to the page.
 ```
+Page access always goes through Zig (decided). The app either writes its own command that
+calls the extension, or exposes chosen methods in one declaration:
+```zig
+// In setup: the page may call these methods; `filter` (optional) sees each call first
+// (validate, rate-limit, rewrite) and can refuse it.
+try oriel.extensions.expose("pantry.vision", .{ .methods = &.{ "detect", "status" }, .filter = checkVisionCall });
+```
 ```js
-// JS: the same, without a Zig command written per method.
-// Opt-in per extension: `.page = true` in build.zig.
 const r = await oriel.extensions.call("pantry.vision", "detect", { image, threshold: 0.25 });
+// Methods that weren't exposed fail with "not exposed", as unknown commands do.
 ```
 
 ### The contract (every platform)
@@ -168,7 +182,7 @@ interface OrielAppExtension {
 ```
 - App sources are compiled by `zig cc -fobjc-arc` (as ggml's Metal `.m` already is). Frameworks are added to the link line, resources are copied into the bundle, and the class is found with `objc_getClass` at startup.
 - No Xcode project.
-- **Swift (`.ios.swift_sources`, phase 4):** an `@objc` class conforming to the protocol, compiled with `swiftc` from the SDK (`xcrun swiftc` on a Mac; xtool's toolchain on Linux) into an object file linked into the executable. It's needed only for Swift-only Apple frameworks (FoundationModels). It's opt-in, so Oriel's "no Swift" stays true for apps that don't ask.
+- **Swift (`.ios.swift_sources`, decided; phase 2):** an `@objc` class conforming to the protocol, compiled with `swiftc` from the SDK (`xcrun swiftc` on a Mac; xtool's toolchain on Linux) into an object file linked into the executable. It's needed only for Swift-only Apple frameworks (FoundationModels). It's opt-in, so Oriel's "no Swift" stays true for apps that don't ask.
 
 ### Desktop
 - `.desktop = .{ .zig = path }`: a Zig module exporting `pub fn call(ctx, method, input) ![]u8` (plus the optional lifecycle hooks), linked in at comptime. It runs on the same worker, with the same limits.
@@ -234,7 +248,7 @@ pub fn cancel() void;
 | Platform | Backend | Notes |
 |---|---|---|
 | Android | ML Kit GenAI Prompt API (Gemini Nano via AICore) in Oriel's template; the Maven dependency is added only with `-Dsystem_ai` | Text and image input; streaming; download states with progress; supported devices only (Pixel 9+, recent Galaxy S…) |
-| iOS 26+, macOS 26+ | Apple Foundation Models (`LanguageModelSession`) | Swift-only: needs section 3's Swift support. Apple Intelligence devices only. Image input isn't in the first release (`capabilities().images = false`); structured output maps to `@Generable` only partly (JSON schema as instructions) |
+| iOS 26+, macOS 26+ | Apple Foundation Models (`LanguageModelSession`), in an Oriel Swift source (section 3) wrapped in `#if canImport(FoundationModels)` and weak-linked | With an older SDK (the Mac's Xcode 16.3) it compiles to `unavailable`. With Xcode 26 it compiles the real backend, and at run time it checks for iOS 26 and Apple Intelligence. CI's macOS 26 runner compile-checks the real path; running it needs an iOS 26 Apple Intelligence device. Apple Intelligence devices only. Image input isn't in the first release (`capabilities().images = false`); structured output maps to `@Generable` only partly (JSON schema as instructions) |
 | Windows | Windows AI APIs (Phi Silica) on Copilot+ PCs | later |
 | Linux, older OS versions | `unavailable` | apps fall back to `chat` (llama.cpp) or a server |
 
@@ -254,9 +268,9 @@ GhostPantry's YOLOE detector and EmbeddingGemma matching are app-specific models
 | Phase | Oriel work | Verified on |
 |---|---|---|
 | 1 (0.9.17) | `oriel.lifecycle` (Android, iOS; desktop backends as available), module flags as "where available" + `available`/`oriel.features`, app extensions (Android Kotlin, iOS Objective-C, desktop Zig), JS `oriel.extensions`, docs, a showcase extension implemented on all three, unit tests | Linux; Android (Poco X3, adb); iOS simulator (osx); macOS (osx) |
-| 2 (0.9.18) | `oriel.camera` (input handling + `capturePhoto`), `oriel.system_ai` Android backend, chat/dictation/tts `unload_on` | Android device for camera and system AI (a Gemini Nano device is needed: the Poco X3 reports unavailable); iOS simulator for library picks |
+| 2 (0.9.18) | `oriel.camera` (input handling + `capturePhoto`), Swift sources for iOS extensions, `oriel.system_ai` Android and iOS/macOS backends (Foundation Models, compile-checked on CI's Xcode 26), chat/dictation/tts `unload_on` | Android device for camera and system AI (a Gemini Nano device is needed: the Poco X3 reports unavailable); iOS simulator for library picks |
 | 3 | GhostPantry on Oriel 0.9.18: drop `android_ai_bridge.zig`, `PantryAndroidExtension`, the provider and its manifest edit; move System AI to `oriel.system_ai`; vision/matching as app extensions; hide unavailable providers; build and run on the iOS simulator; Android regression pass, then release | Android device, osx simulator |
-| 4 | Swift sources for iOS extensions; `system_ai` on iOS/macOS 26 (Foundation Models); desktop lifecycle backends not done in 1; iOS Vision/Core ML ports of GhostPantry's detector; Windows AI | needs macOS 26 + Xcode 26 on the Mac, an Apple Intelligence device |
+| 4 | Running System AI on an iOS 26 Apple Intelligence device; desktop lifecycle backends not done in 1; iOS Vision/Core ML ports of GhostPantry's detector; Windows AI | needs macOS 26 + Xcode 26 on the Mac, an Apple Intelligence device |
 
 ---
 
@@ -271,10 +285,10 @@ GhostPantry's YOLOE detector and EmbeddingGemma matching are app-specific models
 - **Android System AI** needs a supported device. The Poco X3 test device will report `unavailable`, which tests that path. The Galaxy S25 Ultra tester can check the available path.
 - **GhostPantry's Android build must keep working identically through phase 3.** Each step is checked on the device before release.
 
-## 7. Questions for review
+## 7. Decisions (user, 2026-10-11)
 
-1. **Names:** `oriel.extensions` / `OrielAppExtension` (next to the existing `OrielAndroidExtension`), `oriel.lifecycle`, `oriel.camera`, `oriel.system_ai`. Any preferences?
-2. **Swift:** allow opt-in `.ios.swift_sources` (phase 4), or keep Oriel strictly Objective-C and leave Foundation Models out?
-3. **Module flags:** OK to drop the iOS build error for app-enabled desktop modules (keeping it for an explicit `-D` on the command line)?
-4. **Page access to extensions:** opt-in per extension (`.page = true`) as proposed, or Zig-only, so every page-facing method goes through a reviewed Zig command?
-5. **Phase 4 Mac upgrade:** System AI on iOS can't be built until the Mac runs macOS 26 / Xcode 26. Upgrade it then, or treat iOS System AI as out of scope for now?
+1. The names stay: `oriel.extensions` / `OrielAppExtension`, `oriel.lifecycle`, `oriel.camera`, `oriel.system_ai`.
+2. Swift is allowed as opt-in sources for iOS extensions (and Oriel's own Foundation Models backend).
+3. Module flags are resolved elegantly: a comptime `available` per module per target, guarded code is never analyzed, and an unguarded call is a compile error (section 2). No stubs, no per-target flags.
+4. Extensions are always reachable from Zig. The page reaches them only through Zig: an app command, or `oriel.extensions.expose` with an optional filter.
+5. The Mac isn't upgraded for now, but System AI on iOS is wanted: it's built behind `canImport(FoundationModels)`, compile-checked on CI with Xcode 26, and run on a device when one is available.
