@@ -52,13 +52,6 @@ pub fn dispatch(id: []const u8, action: ?[]const u8) void {
     clicks.deliver(.{ .id = id, .action = action });
 }
 
-/// The page listens for `notification:action` (the bridges' listen() sends
-/// `notification:ready`, an alias of `events:ready`): from now on clicks are
-/// emitted, and one that came earlier is emitted now.
-pub fn pageReady() void {
-    _ = pending_events.pageReady("notification:action");
-}
-
 /// Pack a notification id and action into one string for platforms that
 /// carry a single value back (`<action>\x1f<id>`; no action = empty).
 pub fn packTarget(buf: []u8, id: []const u8, action: ?[]const u8) ![]u8 {
