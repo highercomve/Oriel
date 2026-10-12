@@ -45,6 +45,8 @@ jobs:
         run: |
           zig build check -Dtarget=aarch64-ios -Dsql=false
           zig build check -Dtarget=aarch64-ios-simulator -Dsql=false
+      - name: Module availability per target
+        run: scripts/test-availability.sh
       - name: Type-check the showcase for macOS (dictation's Apple engine there)
         working-directory: examples/showcase
         run: zig build check

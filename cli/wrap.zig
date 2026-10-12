@@ -280,19 +280,21 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\}}
         \\
         \\fn setup() !void {{
-        \\    const gpa = std.heap.smp_allocator;
-        \\    tray = try oriel.tray.Tray.create(gpa, .{{
-        \\        .id = "{f}",
-        \\        .title = "{f}",
-        \\        .tooltip = "{f}",
-        \\        .icon = .{{ .png = app.icon_bytes }},
-        \\        .menu = &.{{
-        \\            .{{ .item = .{{ .id = "toggle", .label = "Show / Hide" }} }},
-        \\            .separator,
-        \\            .{{ .item = .{{ .id = "quit", .label = "Quit" }} }},
-        \\        }},
-        \\        .on_menu = onMenu,
-        \\    }});
+        \\    // Phones have no tray: there this block isn't even built.
+        \\    if (oriel.tray.available) {{
+        \\        tray = try oriel.tray.Tray.create(std.heap.smp_allocator, .{{
+        \\            .id = "{f}",
+        \\            .title = "{f}",
+        \\            .tooltip = "{f}",
+        \\            .icon = .{{ .png = app.icon_bytes }},
+        \\            .menu = &.{{
+        \\                .{{ .item = .{{ .id = "toggle", .label = "Show / Hide" }} }},
+        \\                .separator,
+        \\                .{{ .item = .{{ .id = "quit", .label = "Quit" }} }},
+        \\            }},
+        \\            .on_menu = onMenu,
+        \\        }});
+        \\    }}
         \\}}
         \\
     , .{ std.zig.fmtString(app_id), std.zig.fmtString(app_title), std.zig.fmtString(app_title) }) else "";

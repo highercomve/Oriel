@@ -80,9 +80,9 @@ pub const Commands = struct {
             .arch = @tagName(builtin.cpu.arch),
             .android = oriel.target.is_android,
             .data_dir = oriel.store.dataDir(gpa, app_id) catch "",
-            .tray = oriel.options.tray,
-            .menu = oriel.options.menu,
-            .hotkeys = oriel.options.global_shortcut,
+            .tray = oriel.tray.available,
+            .menu = oriel.menu.available,
+            .hotkeys = oriel.global_shortcut.available,
             .anywhere = anywhere.available,
             .hotkey = anywhere.hotkey,
         };
@@ -359,11 +359,11 @@ fn onMenu(id: []const u8, _: ?bool) void {
     onShortcut(id);
 }
 
-var tray: if (oriel.options.tray) ?*oriel.tray.Tray else void = if (oriel.options.tray) null else {};
+var tray: if (oriel.tray.available) ?*oriel.tray.Tray else void = if (oriel.tray.available) null else {};
 
 fn setup() !void {
     const gpa = std.heap.smp_allocator;
-    if (oriel.options.deep_link) oriel.deep_link.onOpen(onDeepLink);
+    if (oriel.deep_link.available) oriel.deep_link.onOpen(onDeepLink);
     if (oriel.target.is_android) {
         // In-app shortcuts, shown in the system's Meta+/ list.
         try oriel.global_shortcut.register(gpa, .{ .id = "dictate", .description = "Start or stop dictation", .trigger = "ctrl+shift+D" }, onShortcut);
@@ -374,6 +374,8 @@ fn setup() !void {
         // System-wide: dictate into any app.
         oriel.global_shortcut.register(gpa, .{ .id = "anywhere", .description = "Dictate into the focused app", .trigger = anywhere.hotkey }, onShortcut) catch |err|
             std.log.warn("hotkey {s}: {s}", .{ anywhere.hotkey, @errorName(err) });
+    }
+    if (oriel.tray.available) {
         tray = oriel.tray.Tray.create(gpa, .{
             .id = app_id,
             .title = "Oriel Showcase",
@@ -390,6 +392,8 @@ fn setup() !void {
             std.log.warn("tray: {s}", .{@errorName(err)});
             break :blk null;
         };
+    }
+    if (oriel.menu.available) {
         oriel.App.setMenu(&.{
             .{ .submenu = .{ .label = "File", .items = &.{
                 .{ .item = .{ .id = "tab:files", .label = "Open or save a file", .shortcut = "Ctrl+O" } },

@@ -22,19 +22,18 @@ const ArmLevel = enum { baseline, dotprod, i8mm };
 pub fn build(b: *std.Build) void {
     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
-    const android = target.result.abi.isAndroid();
-    const ios = target.result.os.tag == .ios;
-    const desktop = !android and !ios;
     const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
-        // Desktop only: a tray icon, the window menu, typing into other apps.
-        .tray = desktop,
-        .menu = desktop,
-        .input = desktop,
-        // System-wide hotkeys on the desktop, in-app shortcuts on Android
-        // (Meta+/ lists them); iOS has neither.
-        .global_shortcut = !ios,
+        // What the app uses, for every target: where a module doesn't exist
+        // (a tray, the window menu or typing into other apps on phones),
+        // `oriel.<module>.available` is false and the code under it isn't
+        // built. global_shortcut: system-wide hotkeys on the desktop,
+        // in-app shortcuts on Android (Meta+/ lists them), none on iOS.
+        .tray = true,
+        .menu = true,
+        .input = true,
+        .global_shortcut = true,
         .updater = false,
         .media_server = false,
         .fs_watch = false,
