@@ -9,7 +9,7 @@ pub const available = true;
 
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
-pub const common = @import("notification/common.zig");
+const common = @import("notification/common.zig");
 
 pub const NotificationOptions = common.NotificationOptions;
 pub const Action = common.Action;
@@ -18,7 +18,7 @@ pub const onAction = common.onAction;
 pub const notify = impl.notify;
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("notification/linux.zig"),
     .windows => @import("notification/windows.zig"),
     .macos => @import("notification/macos.zig"),
