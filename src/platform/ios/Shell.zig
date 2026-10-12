@@ -14,10 +14,10 @@ const window = @import("window.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
-const lifecycle = @import("../../core/lifecycle.zig");
+const lifecycle = @import("../../core/lifecycle/backend.zig");
 const apple_hooks = @import("../apple/hooks.zig");
 const build_opts = @import("build_options");
-const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
+const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link/delivery.zig") else struct {};
 const share = if (build_opts.share) @import("../../modules/share/apple.zig") else struct {};
 
 const log = std.log.scoped(.oriel);

@@ -139,12 +139,15 @@ data, scene URL context) that validates, records it for `current()`, opens
 the main window, runs `setup`, then delivers it. Setting `onOpen` in
 `setup` therefore sees the launch link on every platform.
 
-**Delivery** (`src/modules/deep_link/`): on the main thread, `deliver`
-validates the URL, calls the `onOpen` handler with it, and emits
-`deep-link` with `{ url }` to every window, or queues it (up to 16, the
-oldest dropped) until a page listens. The bridge's `listen("deep-link")`
-sends `events:ready`, which flushes the queue in order. Every delivered URL
-also becomes the latest, which `current()` returns.
+**Delivery** (`src/modules/deep_link/delivery.zig`, one implementation
+for every platform): on the main thread, `deliver` validates the URL, makes
+it the latest (what `current()` returns), calls the `onOpen` handler with
+it and emits `deep-link` with `{ url }` to every window. Each audience that
+isn't there yet is served later through Oriel's queue for early events
+(`src/core/pending_events.zig`, up to 16 each, the oldest dropped): links
+before `onOpen` is set reach the handler when it is, and links before the
+page listens reach it when the bridge's `listen("deep-link")` sends
+`events:ready`, in order.
 
 **Platform hooks first.** On iOS and macOS an `openURL:` hook sees a URL
 before Oriel and may take it (answer `YES`); on Android a hook's
@@ -228,6 +231,7 @@ pub const available: bool; // false when built without .deep_link
 pub fn onOpen(handler: *const fn (url: []const u8) void) void;
 pub fn current() ?[]const u8;
 pub fn deliver(url: []const u8) void;
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
 
 pub fn validate(url: []const u8, declared_schemes: []const []const u8) ValidationError![]const u8;
 pub const ValidationError = error{ UrlTooLong, ContainsControlChar, InvalidScheme, DisallowedScheme, InvalidUri };
@@ -237,17 +241,14 @@ pub const max_url_len: usize = 2048;
 | Declaration | Meaning |
 |---|---|
 | `available` | Whether the module is built. Without `.deep_link = true`, `oriel.deep_link` is a stub: test `available` (comptime) before calling it. |
-| `onOpen(handler)` | Sets the handler (one; a later call replaces it). Called on the main thread for every delivered URL, before the page's event; the slice is valid only during the call (copy it to keep it). Not replayed: set it in `setup` or before `oriel.main`. |
+| `onOpen(handler)` | Sets the handler (one; a later call replaces it; any thread). Called on the main thread for every delivered URL, before the page's event; the slice is valid only during the call (copy it to keep it). Links delivered before it is set (the launch link) reach it once it is, in order. |
 | `current()` | The most recent URL: the one that launched the app, or the latest delivered since; null if none. Main thread; the slice is overwritten by the next link. |
 | `deliver(url)` | Delivers `url` as if the OS had opened it (validated against the declared schemes; dropped if invalid). Main thread. Oriel's shells call it; an app can use it to feed a URL it got elsewhere (a hook, a notification). |
 | `validate(url, schemes)` | Checks `url` (see below) and returns it. |
 | `ValidationError` | Why a URL was rejected. |
 | `max_url_len` | 2048 bytes. |
 
-Oriel's shells and bridge also use `setColdStartUrl`, `setDeclaredSchemes`,
-`setReady`, `isReady`, `validateUrl` (the same function as `validate`),
-`check` (the module's smoke check), `Queue` / `queue`, `common` and `impl`;
-apps don't need them.
+`check` is the module's smoke check (`oriel.checkAll`).
 
 **Validation.** Every URL, whatever its source, must:
 
@@ -300,6 +301,10 @@ schemes ([CLI]($link.page('docs/cli'))).
   plain slice (`&.{}` by default).
 - The `deep_link:ready` IPC command is gone: the bridge's `listen()` sends
   `events:ready`.
+- `validateUrl` is gone: it was `validate`.
+- `setColdStartUrl`, `setDeclaredSchemes`, `setReady`, `isReady`, `Queue`,
+  `queue`, `common` and `impl` are no longer public (the shells').
+- `onOpen` now gets the links that came before it was set.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

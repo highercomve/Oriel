@@ -185,7 +185,8 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
 Calls are blocking and run on the calling thread; any thread works.
 
 **Keys.** Windows and macOS accept every key of the trigger syntax. Linux
-X11 accepts X keysym names (`keyComboX11`). Under Wayland's virtual
+under XTest (X11, or Wayland without a virtual keyboard) accepts X keysym
+names. Under Wayland's virtual
 keyboard, `keyCombo` knows letters, digits, `space`, `enter`/`return`,
 `tab`, `backspace`, `escape`/`esc`, `insert`, `delete`/`del` and the
 arrows; anything else is `error.UnknownKey`.
@@ -212,13 +213,6 @@ For anything beyond plain ASCII on Linux, use the clipboard and `paste()`.
 | `error.NoVirtualKeyboardManager`, `error.NoSeat`, `error.KeymapWriteFailed`, `error.RoundtripFailed`, `error.XkbContext`, `error.XkbKeymap` | Linux (Wayland) | the virtual keyboard couldn't be set up and XTest isn't available either |
 | `error.XOpenDisplay`, `error.KeycodeNotFound` | Linux (X11) | no X display, or the key isn't on the keyboard |
 
-## [Linux helpers]($heading.id('linux-helpers'))
-
-On Linux the module also exposes its backend pieces: `keyComboX11`,
-`typeTextX11` (force XTest), `xtestAvailable()`, `defaultKeymap(gpa)`,
-`evdevForKey(name)`, `WaylandInput`, and the `xkb`, `x11` and `EVDEV` C
-imports. They are `void` on other platforms. Apps don't need them.
-
 ## [Android: the Oriel keyboard]($heading.id('android'))
 
 Android lets only the active input method type into other apps. With
@@ -228,6 +222,14 @@ ships a keyboard the user can pick in the system settings, and
 while it is the active keyboard (`error.NoKeyboard` otherwise;
 `oriel.android.keyboardActive()` tells). See
 [Android]($link.page('docs/android')).
+
+## [Migrating from 0.11]($heading.id('migrating'))
+
+- `oriel.input.keyComboX11` and `typeTextX11` are gone: `keyCombo` and
+  `typeText` use XTest by themselves when there is no virtual keyboard.
+- The Linux backend pieces (`xtestAvailable`, `defaultKeymap`,
+  `evdevForKey`, `WaylandInput`, the `xkb`, `x11` and `EVDEV` C imports)
+  and `common` / `impl` are no longer public.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

@@ -258,7 +258,6 @@ pub fn onReceive(handler: ?ReceiveHandler) void;
 pub fn send(item: Outgoing, anchor: ?Rect, done: ?DoneHandler) SendError!void;
 pub fn capabilities() Capabilities;
 pub fn open(handle: u32) OpenError!std.Io.File;
-pub fn read(handle: u32, offset: u64, len: u64, out: *std.ArrayList(u8)) !void;
 pub fn release(id: u32) void;
 ```
 
@@ -268,7 +267,6 @@ pub fn release(id: u32) void;
 | `send(item, anchor, done)` | any thread (runs on the main thread) | Open the share sheet. Returns when it shows; `done` runs on the main thread when it closes. `anchor`: where it points from (iPad popover, macOS picker); Windows ignores it. |
 | `capabilities()` | any | What this platform receives and sends. |
 | `open(handle)` | any | A new read-only descriptor for a received file; the caller closes it. `error.InvalidHandle` once released. `error.Unsupported` on Linux and Android. |
-| `read(handle, offset, len, out)` | any | Up to `len` bytes from `offset`, appended to `out` (what the page's `share.file` uses). `error.InvalidHandle` for an unknown handle. |
 | `release(id)` | main thread | Let a share go: its files' handles close, and iOS Inbox copies with them. Shares not released stay open until the app exits. |
 
 #### Types
@@ -373,6 +371,12 @@ Built-in commands: `share:send` (`{ title, text, url, files: [{ handle } |
 { name, data }], anchor }`, answers `null`, result as the `share:sent`
 event), `share:read` (`{ handle, offset = 0, length = 4 MiB }`, at most
 16 MiB per call, answers base64), `share:capabilities`.
+
+### Migrating from 0.11
+
+- `oriel.share.read` is gone: read a received file in Zig through
+  `open(handle)` (a `std.Io.File`). The page's `share.file` is unchanged.
+- `oriel.share.common` and `impl` are no longer public.
 
 ## Troubleshooting
 

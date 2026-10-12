@@ -88,7 +88,8 @@ flowchart LR
 ```
 
 `Store.open(gpa, app_id, name)` resolves the app's config directory
-(`configDir`, created if missing), reads `<name>.json` and parses it into a
+([`oriel.paths.appConfig`](paths.md), created if missing;
+on Android its `<app id>` folder), reads `<name>.json` and parses it into a
 `std.json.ObjectMap` whose keys and values live in the store's arena. A
 missing or empty file is an empty store. A file that doesn't parse is
 copied to `<name>.json.corrupt` before anything else, a warning is logged,
@@ -114,12 +115,11 @@ file and keep it, or open, change and close it in one go as the quick start
 does.
 
 The code is `src/modules/store.zig` (the facade),
-`src/modules/store/common.zig` (`GenericStore`, the JSON logic and the app
-id rules) and one backend per platform: `linux.zig` (GLib),
-`windows.zig` (Known Folders, Win32 files), `macos.zig` (macOS and iOS,
-`$HOME/Library/...`), `android.zig` (the directories the Kotlin runtime
-hands over before `main`), with `posix.zig` holding the file and mutex code
-macOS, iOS and Android share.
+`src/modules/store/common.zig` (`GenericStore`, the JSON logic, and the
+store's folder from `oriel.paths`) and one backend per platform for the
+file and lock: `linux.zig` (GLib), `windows.zig` (Win32 files),
+`macos.zig` (macOS and iOS) and `android.zig`, with `posix.zig` holding
+the file and mutex code macOS, iOS and Android share.
 
 ## Examples
 
@@ -209,22 +209,16 @@ The showcase counts its launches with the store
 ```zig
 pub const available: bool;
 
-pub const Store; // GenericStore(<this platform's backend>)
-
-pub fn configDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
-pub fn dataDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
-pub fn cacheDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
+pub const Store; // the JSON store on this platform's file and lock code
 
 pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
-pub const impl; // this platform's backend
-pub const common; // GenericStore, validateAppId, buildAppPath
 ```
 
 ### `Store`
 
 | Declaration | Meaning |
 |---|---|
-| `open(gpa, app_id: []const u8, name: []const u8) !*Store` | Opens (or starts) `<configDir(app_id)>/<name>.json`; `.json` is added unless `name` already ends with it. Creates the directory. |
+| `open(gpa, app_id: []const u8, name: []const u8) !*Store` | Opens (or starts) `<name>.json` in the app's config directory (the Availability table); `.json` is added unless `name` already ends with it. Creates the directory. |
 | `openPath(gpa, path: []const u8) !*Store` | Opens a store at any path. The directory must exist; the file needn't. |
 | `deinit(self) void` | Saves (when `auto_save` is on, errors ignored) and frees the store. Every value `get` returned becomes invalid. |
 | `get(self, key) ?std.json.Value` | The raw value, or null. |
@@ -247,10 +241,10 @@ exactly; the order in the file is insertion order, with deletes moving the
 last key into the hole.
 
 **Errors.** `open` and `openPath`: allocation failures; the directory's
-errors (Windows `error.KnownFolderNotFound`, `error.CreateDirectoryFailed`;
+errors (`error.CreateDirectoryFailed`; Windows `error.KnownFolderNotFound`;
 macOS and iOS `error.HomeNotSet`; Android `error.AppNotRunning` before the
 runtime started); `error.InvalidAppId` / `error.EmptyAppId` from the app id
-check; on macOS, iOS and Android `error.OpenFailed`, `error.ReadFailed` and
+check (the [`oriel.paths` name rules](paths.md#zig-api)); on macOS, iOS and Android `error.OpenFailed`, `error.ReadFailed` and
 `error.StoreTooLarge` (over 16 MiB). Saving: `error.SaveFailed` (Linux,
 Windows; Linux logs GLib's message), or on macOS, iOS and Android
 `error.CreateTempFailed`, `error.WriteFailed`, `error.SyncFailed`,
@@ -259,32 +253,22 @@ Windows; Linux logs GLib's message), or on macOS, iOS and Android
 **Threads.** Every method locks the store; a `*Store` may be used from any
 thread. Opening the same file twice gives two independent stores.
 
-### Directories
+### Directory
 
-`configDir`, `dataDir` and `cacheDir` return `<base>/<app_id>`, created if
-missing; the caller frees the path.
+The store's files live in `oriel.paths.appConfig(.{ .name = app_id })`
+(the Availability table); on Android in an `<app id>` folder inside it,
+`<filesDir>/<app id>`, where apps' settings have always been. Every other
+folder the app needs comes from [`oriel.paths`](paths.md).
 
-| | `configDir` (the store's files) | `dataDir` | `cacheDir` |
-|---|---|---|---|
-| Linux | `$XDG_CONFIG_HOME/<id>` (`~/.config/<id>`) | `$XDG_DATA_HOME/<id>` (`~/.local/share/<id>`) | `$XDG_CACHE_HOME/<id>` (`~/.cache/<id>`) |
-| Windows | `%APPDATA%\<id>` (roams with the profile) | `%LOCALAPPDATA%\<id>` | `%LOCALAPPDATA%\<id>\cache` |
-| macOS | `~/Library/Application Support/<id>` | the same as `configDir` | `~/Library/Caches/<id>` |
-| iOS | `<container>/Library/Application Support/<id>` | the same as `configDir` | `<container>/Library/Caches/<id>` |
-| Android | `<filesDir>/<id>` | the same as `configDir` | `<cacheDir>/<id>` |
-
-For an app's own data and cache folders, use
-[`oriel.paths`](paths.md), which is always built and is
-the same folder as `dataDir` / `cacheDir` everywhere but Android.
-
-**App id rules** (`common.validateAppId`): not empty (`error.EmptyAppId`);
-no `/`, `\`, `:`, `..`, NUL or control characters (`error.InvalidAppId`).
-The id becomes a directory name.
+**App id rules**: those of `oriel.paths`' `name`: not empty
+(`error.EmptyAppId`); no `/`, `\`, `:`, `..`, NUL or control characters
+(`error.InvalidAppId`). The id becomes a directory name.
 
 ### Window geometry
 
 A window with `.remember_geometry = true` (in `WindowOptions`) saves its
 size and maximized state to the `window_geometry` store
-(`<configDir>/window_geometry.json`, keys `<label>_width`,
+(`window_geometry.json` in the config directory, keys `<label>_width`,
 `<label>_height`, `<label>_maximized`) and restores them when it is
 created. With the store off, `remember_geometry` does nothing.
 
@@ -293,6 +277,17 @@ created. With the store off, `remember_geometry` does nothing.
 `check` writes, rereads and deletes a temporary store (in `/tmp`, the temp
 directory, or the Android cache directory). `oriel.checkAll` runs it with
 every enabled module's check.
+
+### Migrating from 0.11
+
+- `oriel.store.configDir`, `dataDir` and `cacheDir` are gone: use
+  `oriel.paths.appConfig`, `appData` and `appCache`. They are the same
+  folders except on Android, where the store's were an `<app id>`
+  subfolder (`<filesDir>/<app id>`): the store still keeps its own files
+  there, but other files move to `appData` (the files dir itself).
+- `oriel.store.impl.externalDataDir` is gone: use `oriel.paths.appExternal`
+  (the external files dir itself, no `<app id>` folder).
+- `oriel.store.impl` and `oriel.store.common` are no longer public.
 
 ## Troubleshooting
 

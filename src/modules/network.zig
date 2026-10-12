@@ -20,7 +20,7 @@ pub const available = true;
 
 const std = @import("std");
 const target = @import("../core/target.zig");
-pub const common = @import("network/common.zig");
+const common = @import("network/common.zig");
 
 pub const MulticastLock = common.MulticastLock;
 pub const MulticastError = common.MulticastError;
@@ -37,18 +37,13 @@ pub fn acquireMulticast() MulticastError!MulticastLock {
 
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
-    .linux => @import("network/linux.zig"),
-    .windows => @import("network/windows.zig"),
-    .macos, .ios => @import("network/apple.zig"),
-    .android => @import("network/android.zig"),
-    .other => @compileError("network is not supported on " ++ target.name),
-};
+const impl = @import("network/backend.zig").os;
 
 test {
     std.testing.refAllDecls(common);
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(impl);
     std.testing.refAllDecls(mdns);
+    std.testing.refAllDecls(@import("network/mdns_wire.zig"));
     std.testing.refAllDecls(@import("network/mdns_c.zig"));
 }

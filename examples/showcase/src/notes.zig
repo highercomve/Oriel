@@ -30,7 +30,7 @@ fn database() !sql.Db {
     if (db) |d| return d;
     const gpa = std.heap.smp_allocator;
     const d = open: {
-        const dir = oriel.store.dataDir(gpa, app_id) catch |err| {
+        const dir = oriel.paths.appData(gpa, .{ .name = app_id }) catch |err| {
             log.warn("no data dir ({s}): notes are kept in memory", .{@errorName(err)});
             break :open try sql.Db.open(":memory:");
         };

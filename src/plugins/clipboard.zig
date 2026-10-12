@@ -11,7 +11,7 @@ const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 const std = @import("std");
 
-pub const common = @import("clipboard/common.zig");
+const common = @import("clipboard/common.zig");
 
 pub const TextCallback = impl.TextCallback;
 pub const ImageCallback = impl.ImageCallback;
@@ -24,7 +24,7 @@ pub const writeText = impl.writeText;
 pub const writeImage = impl.writeImage;
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("clipboard/linux.zig"),
     .windows => @import("clipboard/windows.zig"),
     .macos => @import("clipboard/macos.zig"),

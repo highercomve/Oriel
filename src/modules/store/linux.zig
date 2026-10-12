@@ -1,49 +1,9 @@
-//! App data paths and persistent settings store (XDG-compliant).
-//!
-//! Provides standard XDG directory helpers (`configDir`, `dataDir`, `cacheDir`)
-//! and a lightweight thread-safe JSON settings store (`Store`, Tauri `plugin-store` equivalent).
+//! The settings store on Linux: GLib file I/O and mutex (the folder is
+//! `oriel.paths.appConfig`, `$XDG_CONFIG_HOME/<app_id>`).
 
 const std = @import("std");
 const glib = @import("glib");
 const common = @import("common.zig");
-
-fn getConfigDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8 {
-    const base = std.mem.span(glib.getUserConfigDir());
-    const path = try common.buildAppPath(gpa, base, app_id, null);
-    const path_z = try gpa.dupeZ(u8, path);
-    defer gpa.free(path_z);
-    _ = glib.mkdirWithParents(path_z, 0o755);
-    return path;
-}
-
-/// Return the application config directory (creates it if missing).
-///
-/// Follows `$XDG_CONFIG_HOME/<app_id>`, defaulting to `~/.config/<app_id>`.
-pub const configDir = getConfigDir;
-
-/// Return the application data directory (creates it if missing).
-///
-/// Follows `$XDG_DATA_HOME/<app_id>`, defaulting to `~/.local/share/<app_id>`.
-pub fn dataDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8 {
-    const base = std.mem.span(glib.getUserDataDir());
-    const path = try common.buildAppPath(gpa, base, app_id, null);
-    const path_z = try gpa.dupeZ(u8, path);
-    defer gpa.free(path_z);
-    _ = glib.mkdirWithParents(path_z, 0o755);
-    return path;
-}
-
-/// Return the application cache directory (creates it if missing).
-///
-/// Follows `$XDG_CACHE_HOME/<app_id>`, defaulting to `~/.cache/<app_id>`.
-pub fn cacheDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8 {
-    const base = std.mem.span(glib.getUserCacheDir());
-    const path = try common.buildAppPath(gpa, base, app_id, null);
-    const path_z = try gpa.dupeZ(u8, path);
-    defer gpa.free(path_z);
-    _ = glib.mkdirWithParents(path_z, 0o755);
-    return path;
-}
 
 const LinuxMutex = struct {
     inner: glib.Mutex = undefined,
@@ -94,7 +54,7 @@ pub const Backend = struct {
     pub const Mutex = LinuxMutex;
     pub const readFile = linuxReadFile;
     pub const writeFileAtomic = linuxWriteFileAtomic;
-    pub const configDir = getConfigDir;
+    pub const configDir = common.configDir;
 };
 
 pub const Store = common.GenericStore(Backend);
@@ -124,7 +84,7 @@ pub fn check(gpa: std.mem.Allocator, _: anytype) !@import("../../oriel.zig").Che
     return .{
         .module = "store",
         .ok = true,
-        .detail = "XDG dirs + JSON store roundtrip ok",
+        .detail = "JSON store roundtrip ok",
     };
 }
 

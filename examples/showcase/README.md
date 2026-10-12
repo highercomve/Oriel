@@ -39,7 +39,7 @@ Where the files live:
 | Linux | `~/.local/share/dev.oriel.Showcase/models/` | `espeak-ng-data/` next to the executable (`zig-out/bin/`, the deb/rpm's `/usr/lib/<app>/`, the AppImage) |
 | Windows | `%LOCALAPPDATA%\dev.oriel.Showcase\models\` | `espeak-ng-data\` next to the `.exe` (the installer copies it) |
 | macOS | `~/Library/Application Support/dev.oriel.Showcase/models/` | `Oriel Showcase.app/Contents/Resources/espeak-ng-data` |
-| Android | `/sdcard/Android/data/dev.oriel.Showcase/files/dev.oriel.Showcase/models/` (adb can write there) | APK assets (`zig-out/android-assets`), extracted to the app's files dir on first start |
+| Android | `/sdcard/Android/data/dev.oriel.Showcase/files/models/` (adb can write there) | APK assets (`zig-out/android-assets`), extracted to the app's files dir on first start |
 | iOS | the app's data directory, `models/` | `Oriel Showcase.app/espeak-ng-data` |
 
 The models are named as in the catalog: `kokoro-82m-q8_0.gguf`,

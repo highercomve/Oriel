@@ -1,6 +1,6 @@
 ---
 .title = "App directories",
-.description = "The app's private data and cache directories on every platform, from one call: oriel.paths.appData and appCache.",
+.description = "The app's own directories on every platform, from one call each: oriel.paths.appData, appCache, appConfig and appExternal.",
 .date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
@@ -8,15 +8,16 @@
 
 `oriel.paths` answers "where does this app keep its files?" on every
 platform with one call and no `if (android)`: `appData` for what the app
-must not lose (databases, downloaded models, documents it manages), and
-`appCache` for what it can fetch or rebuild (thumbnails, responses). Both
-folders are private to the app, kept across updates, and on phones removed
-with the app.
+must not lose (databases, documents it manages), `appCache` for what it can
+fetch or rebuild (thumbnails, responses), `appConfig` for settings files,
+and `appExternal` for large files the user (or `adb`) should reach, such as
+downloaded models. It is the one place Oriel and apps get these folders
+from: the [settings store]($link.page('docs/store')) keeps its JSON files
+in `appConfig`.
 
-Use `appData` for files; small settings fit the
-[settings store]($link.page('docs/store')), which keeps its own JSON files
-in the config directory. Files the user picks or saves elsewhere go through
-[dialogs]($link.page('docs/dialogs')) and [files]($link.page('docs/files')).
+Use `appData` for files; small settings fit the store. Files the user picks
+or saves elsewhere go through [dialogs]($link.page('docs/dialogs')) and
+[files]($link.page('docs/files')).
 
 # [Availability]($heading.id('availability'))
 
@@ -27,6 +28,14 @@ in the config directory. Files the user picks or saves elsewhere go through
 | macOS | `~/Library/Application Support/<name>` | `~/Library/Caches/<name>` |
 | iOS | `<container>/Library/Application Support/<name>` | `<container>/Library/Caches/<name>` |
 | Android | the files dir itself (`Context.getFilesDir()`, `/data/user/0/<package>/files`) | the cache dir itself (`Context.getCacheDir()`) |
+
+| Platform | `appConfig` (settings) | `appExternal` (large files the user can reach) |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/<name>` (`~/.config/<name>`) | the same as `appData` |
+| Windows | `%APPDATA%\<name>` (roams with the profile) | the same as `appData` |
+| macOS | the same as `appData` | the same as `appData` |
+| iOS | the same as `appData` | the same as `appData` |
+| Android | the same as `appData` | the app-specific external storage itself (`Context.getExternalFilesDir(null)`, `/storage/emulated/0/Android/data/<package>/files`), or the files dir when there is none |
 
 `oriel.paths` is part of Oriel's core: always built, no flag, no
 permission.
@@ -65,9 +74,9 @@ changing it moves the app's data to a new, empty folder.
 >[]($block.attrs("mermaid"))
 ```
 flowchart LR
-  App["appData / appCache<br/>(name)"] -->|"validate name"| Check{"target"}
-  Check -->|"Linux"| GLib["GLib: g_get_user_data_dir /<br/>g_get_user_cache_dir"]
-  Check -->|"Windows"| KF["SHGetKnownFolderPath<br/>(FOLDERID_LocalAppData)"]
+  App["appData / appCache /<br/>appConfig / appExternal<br/>(name)"] -->|"validate name"| Check{"target"}
+  Check -->|"Linux"| GLib["GLib: g_get_user_data_dir /<br/>cache_dir / config_dir"]
+  Check -->|"Windows"| KF["SHGetKnownFolderPath<br/>(LocalAppData, RoamingAppData)"]
   Check -->|"macOS, iOS"| Home["$HOME/Library/..."]
   Check -->|"Android"| Rt["dirs the Kotlin runtime<br/>handed over before main"]
   GLib -->|"append /name, mkdir -p"| Out["path (caller frees)"]
@@ -76,27 +85,31 @@ flowchart LR
   Rt -->|"as is, mkdir -p"| Out
 ```
 
-`src/core/paths.zig` checks `name` with the store's app id rules, then
-asks the platform for its base directory:
+`src/core/paths.zig` checks `name`, then asks the platform for its base
+directory:
 
-- **Linux** and **Windows**, **macOS** and **iOS** reuse the store's
-  backends (`src/modules/store/linux.zig`, `windows.zig`, `macos.zig`):
-  `appData` is exactly `oriel.store.dataDir(name)` and `appCache` is
-  `oriel.store.cacheDir(name)`. They are compiled in even when the store
-  module is off. On iOS `$HOME` is the app's sandbox container.
+- **Linux** (`src/core/paths/linux.zig`): GLib's XDG base directories,
+  which follow `$XDG_DATA_HOME`, `$XDG_CACHE_HOME` and `$XDG_CONFIG_HOME`.
+- **Windows** (`paths/windows.zig`): the known folders Local AppData and,
+  for `appConfig`, Roaming AppData.
+- **macOS** and **iOS** (`paths/apple.zig`): `$HOME/Library/Application
+  Support` and `$HOME/Library/Caches`. On iOS `$HOME` is the app's sandbox
+  container.
 - **Android** uses the directories the Kotlin runtime passes to native code
   at start, before the app's `main` (`src/platform/android/paths.zig`). The
   sandbox is already the app's own, so `name` adds no folder: the files sit
   in `filesDir` like a plain Android app's. `name` is still checked, so a
   bad name fails on every platform.
 
-The directory is created if missing (`mkdir -p` on POSIX, each level with
+The directory is created if missing (GLib's `g_mkdir_with_parents` on
+Linux, `mkdir -p` on the other POSIX targets, each level with
 `CreateDirectoryW` on Windows). The call does file system work: call it
 once, at start or in `setup`, and keep the path.
 
-**Windows** uses Local AppData, not Roaming: databases and models are large
-and machine-local and shouldn't roam with the profile. Settings meant to
-roam belong in the store, whose config directory is `%APPDATA%`.
+**Windows** uses Local AppData, not Roaming, for `appData`: databases and
+models are large and machine-local and shouldn't roam with the profile.
+Settings meant to roam belong in `appConfig` (`%APPDATA%`), where the store
+keeps its files.
 
 # [Examples]($heading.id('examples'))
 
@@ -141,37 +154,48 @@ pub const Commands = struct {
 The page gets paths only through commands like this one; `oriel.paths` has
 no page API.
 
+## [Downloaded models adb can reach]($heading.id('example-external'))
+
+```zig
+const dir = try oriel.paths.appExternal(gpa, .{ .name = app.build.id });
+defer gpa.free(dir);
+const models = try std.fs.path.join(gpa, &.{ dir, "models" });
+defer gpa.free(models);
+```
+
+On Android that is `/sdcard/Android/data/<package>/files/models`, which
+`adb push` can write to; elsewhere it is under `appData`. The showcase keeps
+its whisper, LLM and voice models there (`examples/showcase/src/main.zig`).
+
 # [Reference]($heading.id('reference'))
 
 ## [`oriel.paths`]($heading.id('zig-api'))
 
 ```zig
-pub const Kind = enum { data, cache };
-
 pub const Options = struct {
     name: []const u8,
 };
 
 pub fn appData(gpa: std.mem.Allocator, options: Options) ![]const u8;
 pub fn appCache(gpa: std.mem.Allocator, options: Options) ![]const u8;
-pub fn appDir(gpa: std.mem.Allocator, kind: Kind, options: Options) ![]const u8;
+pub fn appConfig(gpa: std.mem.Allocator, options: Options) ![]const u8;
+pub fn appExternal(gpa: std.mem.Allocator, options: Options) ![]const u8;
 ```
 
 | Declaration | Meaning |
 |---|---|
-| `appData(gpa, .{ .name })` | The private data directory (the Availability table), created if missing. Caller frees. |
+| `appData(gpa, .{ .name })` | The private data directory (the Availability tables), created if missing. Caller frees. |
 | `appCache(gpa, .{ .name })` | The private cache directory, created if missing. Caller frees. |
-| `appDir(gpa, kind, .{ .name })` | `appData` for `.data`, `appCache` for `.cache`. |
+| `appConfig(gpa, .{ .name })` | The settings directory (the store's files), created if missing. Caller frees. |
+| `appExternal(gpa, .{ .name })` | The directory for large files the user can reach, created if missing. Caller frees. |
 | `Options.name` | The folder name off Android. Checked everywhere: not empty (`error.EmptyAppId`); no `/`, `\`, `:`, `..`, NUL or control characters (`error.InvalidAppId`). |
 
 **Errors.** `error.EmptyAppId`, `error.InvalidAppId`; allocation failures;
 Android `error.AppNotRunning` before the runtime handed over its
 directories (it does so before `main`, so this happens only in code that
-runs before the runtime starts, such as tests); Android, macOS and iOS
-`error.CreateDirectoryFailed`; macOS and iOS `error.HomeNotSet`; Windows
-`error.KnownFolderNotFound` and `error.CreateDirectoryFailed`. Linux
-ignores a failure to create the directory: it shows when the app opens a
-file there.
+runs before the runtime starts, such as tests);
+`error.CreateDirectoryFailed` everywhere; macOS and iOS
+`error.HomeNotSet`; Windows `error.KnownFolderNotFound`.
 
 **Threads.** Any thread. Nothing is cached: each call queries the platform
 and creates the directory.
@@ -180,16 +204,21 @@ and creates the directory.
 
 | Folder | Where |
 |---|---|
-| Settings files | the store's `configDir` ([Settings store]($link.page('docs/store').ref('directories'))) |
+| The store's settings files | `appConfig`; on Android its `<app id>` folder ([Settings store]($link.page('docs/store').ref('directories'))) |
 | Log file | [Logging]($link.page('docs/logging')) |
-| Android: app-specific external storage, for large downloads | `oriel.store.impl.externalDataDir(gpa, app_id)`: `/storage/emulated/0/Android/data/<package>/files/<app_id>`, else `<filesDir>/<app_id>`; Android only |
 
-**On Android the store's directories differ.** `oriel.store.dataDir` and
-`configDir` are `<filesDir>/<app id>` there (and `cacheDir` is
-`<cacheDir>/<app id>`), a subfolder of `appData`, because existing apps'
-data lives there. An app that keeps data with the store's functions keeps
-calling them; an app that kept files in `filesDir` itself moves to
-`appData` without moving anything.
+## [Migrating from 0.11]($heading.id('migrating'))
+
+- `appDir(gpa, kind, options)` and `Kind` are gone: call `appData` or
+  `appCache`.
+- `oriel.store.configDir` / `dataDir` / `cacheDir` are gone: use
+  `appConfig` / `appData` / `appCache`. On Android the store's were
+  `<filesDir>/<app id>` and `<cacheDir>/<app id>`; `appData` and
+  `appCache` are the files and cache dirs themselves, so move files kept
+  in the `<app id>` folder (or keep joining it yourself).
+- `oriel.store.impl.externalDataDir` and `oriel.android.paths` are gone:
+  use `appExternal` (the external files dir itself, no `<app id>` folder),
+  `appData` and `appCache`.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 
@@ -202,8 +231,8 @@ calling them; an app that kept files in `filesDir` itself moves to
 
 # [Related]($heading.id('related'))
 
-- [Settings store]($link.page('docs/store')): settings by key, in the config
-  directory.
+- [Settings store]($link.page('docs/store')): settings by key, in
+  `appConfig`.
 - [SQL]($link.page('docs/sql')): databases in `appData`.
 - [Logging]($link.page('docs/logging')): where the log file goes.
 - [Files]($link.page('docs/files')): files the user picks.

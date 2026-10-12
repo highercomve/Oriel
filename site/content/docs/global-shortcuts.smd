@@ -224,7 +224,6 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
 pub const Modifiers = struct { ctrl: bool = false, alt: bool = false, shift: bool = false, super: bool = false };
 pub const ParsedTrigger = struct { modifiers: Modifiers, key: []const u8 };
 pub fn parseTrigger(trigger_str: []const u8) !ParsedTrigger;
-pub fn vkFor(name: []const u8) ?u16;
 ```
 
 | Declaration | Meaning |
@@ -237,7 +236,7 @@ pub fn vkFor(name: []const u8) ?u16;
 | `trigger` | Calls the shortcut's callback as if pressed, on the calling thread. `false` when no such id. For tests and dev tools. |
 | `deinit` | Releases every shortcut, the portal session (Wayland) and the X connection (X11). Oriel doesn't call it; call it at shutdown if you need the keys released before the process exits. |
 | `check` | Smoke check (`oriel.checkAll`): Wayland creates and closes a portal session for `ctx.app_id` (no bind, so no prompt); X11 grabs and releases Ctrl+F12; Windows checks the key mapping; macOS registers and removes an unusual combination; Android checks the key mapping. |
-| `parseTrigger`, `vkFor` | The parser and the key-name to Win32 virtual-key mapping every backend uses; exposed for apps that validate a trigger before registering. |
+| `parseTrigger` | The parser every backend uses; for apps that validate a trigger before registering. |
 
 **Threads.** Callbacks always run on the main thread (UI thread on
 Android). Call `register` and `unregister` on the main thread on Linux
@@ -259,7 +258,7 @@ spaces around parts ignored: `"ctrl+alt+G"`, `"super+shift+Space"`,
 | `shift` | `shift` | Shift | Shift | Shift |
 | `super` | `super`, `meta`, `win`, `cmd` | Win | Command | Super (Mod4; `LOGO` on the portal) |
 
-Keys on Windows, macOS and Android (`vkFor`): letters `A`–`Z`, digits
+Keys on Windows, macOS and Android: letters `A`–`Z`, digits
 `0`–`9`, `F1`–`F24` (Android: `F1`–`F12`), `space`, `enter`/`return`,
 `tab`, `escape`/`esc`, `backspace`, `up`, `down`, `left`, `right`, `home`,
 `end`, `pageup`/`prior`, `pagedown`/`next`, `insert`/`ins`,
@@ -298,13 +297,12 @@ A failed or refused Wayland bind isn't an error from `register` (it
 happens later): it is logged as `GlobalShortcuts.BindShortcuts: portal
 response 1 (cancelled by the user)` or `... (failed)`.
 
-## [Linux helpers]($heading.id('linux-helpers'))
+## [Migrating from 0.11]($heading.id('migrating'))
 
-On Linux the module also exposes the pieces its backends and tests use:
-`keysymFor(name)`, `triggerToPortal(buf, trigger)`, `portalVersion()`,
-`createSession(gpa, conn)`, `handlePath(...)`,
-`buildBindShortcutsParams(...)`, `x11Available()` and the `x11` C
-import. They are `void` on other platforms. Apps don't need them.
+- The Linux backend pieces (`keysymFor`, `triggerToPortal`,
+  `portalVersion`, `createSession`, `handlePath`,
+  `buildBindShortcutsParams`, `x11Available`, the `x11` C import), the
+  Win32 key mapping `vkFor`, and `common` / `impl` are no longer public.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 
