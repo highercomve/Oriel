@@ -2,7 +2,7 @@
 //!
 //! Linux backend: GdkClipboard on the main thread + Wayland ext-data-control on workers.
 //! Windows backend: Win32 OpenClipboard/CF_UNICODETEXT/CF_DIB/PNG via main thread.
-//! macOS backend: NSPasteboard (text, PNG/TIFF) via main thread.
+//! macOS and iOS backend: NSPasteboard (text, PNG/TIFF) / UIPasteboard via main thread.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;
@@ -27,9 +27,8 @@ pub const check = impl.check;
 const impl = switch (target.os) {
     .linux => @import("clipboard/linux.zig"),
     .windows => @import("clipboard/windows.zig"),
-    .macos => @import("clipboard/macos.zig"),
+    .macos, .ios => @import("clipboard/apple.zig"),
     .android => @import("clipboard/android.zig"),
-    .ios => @import("clipboard/ios.zig"),
     .other => @compileError("clipboard is not supported on " ++ target.name),
 };
 
