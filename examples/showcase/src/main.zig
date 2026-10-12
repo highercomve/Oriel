@@ -308,32 +308,22 @@ pub const Commands = struct {
 
 var ui_test_name: ?[]const u8 = null;
 
-/// iOS: in the background (or warned about memory), free the models; the
-/// next dictation or reply loads them again. On the main thread, before
-/// the handler returns: iOS suspends the app right after (both return at
-/// once while a model is in use).
-fn onIosEvent(name: []const u8, _: []const u8) void {
-    if (std.mem.eql(u8, name, "background") or std.mem.eql(u8, name, "memory-warning")) {
-        dictation.unloadIdle();
-        chat.unloadIdle();
-        tts.unloadIdle();
-    }
+/// Android's dictate-anywhere entry points (tile, keyboard, headset,
+/// notification). Memory pressure comes through oriel.lifecycle.
+fn onSystemEvent(name: []const u8, data: []const u8) void {
+    anywhere.onSystemEvent(name, data);
 }
 
-/// Android's system events: memory pressure, and the dictate-anywhere
-/// entry points (tile, keyboard, headset, notification).
-fn onSystemEvent(name: []const u8, data: []const u8) void {
-    if (std.mem.eql(u8, name, "trim-memory")) {
-        // TRIM_MEMORY_BACKGROUND and worse: free the whisper models.
-        const level = std.fmt.parseInt(i32, data, 10) catch return;
-        if (level >= 40) {
-            oriel.App.spawn(dictation.unloadIdle, .{}) catch {};
-            oriel.App.spawn(chat.unloadIdle, .{}) catch {};
-            oriel.App.spawn(tts.unloadIdle, .{}) catch {};
-        }
-        return;
-    }
-    anywhere.onSystemEvent(name, data);
+/// iOS: the models also go in the background (on top of critical memory
+/// pressure, the modules' default): iOS suspends the app right after, and
+/// a large model is what gets a suspended app ended. Android keeps them
+/// until memory runs low: dictate-anywhere records with no Activity in
+/// front. The next dictation, reply or utterance loads them again.
+fn unloadModelsInBackground() void {
+    const unload_on: oriel.lifecycle.UnloadOn = .{ .background = true };
+    dictation.unload_on = unload_on;
+    chat.unload_on = unload_on;
+    tts.unload_on = unload_on;
 }
 
 /// Tabs by shortcut (Android: in-app, listed by Meta+/) and by the window
@@ -525,7 +515,7 @@ pub fn main(init: std.process.Init) !u8 {
     notes.init(init.io, app_id);
     anywhere.init(init.io);
     if (oriel.target.is_android) oriel.android.onSystemEvent(onSystemEvent);
-    if (oriel.target.is_ios) oriel.ios.onSystemEvent(onIosEvent);
+    if (oriel.target.is_ios) unloadModelsInBackground();
 
     // Headless checks (desktop): `--chat "<message>"` answers it and a
     // follow-up (the second turn reuses the KV cache), `--transcribe <wav>`

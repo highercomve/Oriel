@@ -74,7 +74,7 @@ Phones have no tray, no menu bar and no system-wide hotkeys. An app still asks f
 | Running in the background | A foreground service (`oriel.android.setForegroundService`), for example to keep recording | Background audio (`.ios = .{ .background_audio = true }`) |
 | Updater | The stores | The App Store |
 
-Android also sends *system events* (`oriel.android.onSystemEvent`): a tile tap, a notification action, the headset button, the keyboard's mic button, and `trim-memory`, the cue to free large models when the app goes to the background.
+Android also sends *system events* (`oriel.android.onSystemEvent`): a tile tap, a notification action, the headset button, the keyboard's mic button, and `trim-memory`. Going to the background and memory pressure, the cues to free large models, come on both phones (and the desktop) through [`oriel.lifecycle`]($link.page('docs/modules')).
 
 # [Voice to text on phones]($heading.id('voice-to-text-on-phones'))
 

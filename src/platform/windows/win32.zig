@@ -100,6 +100,7 @@ pub const WM_COMMAND: UINT = 0x0111;
 pub const WM_HOTKEY: UINT = 0x0312;
 pub const WM_QUERYENDSESSION: UINT = 0x0011;
 pub const WM_ENDSESSION: UINT = 0x0016;
+pub const WM_POWERBROADCAST: UINT = 0x0218;
 pub const WM_TIMER: UINT = 0x0113;
 pub const WM_DPICHANGED: UINT = 0x02E0;
 pub const WM_RBUTTONUP: UINT = 0x0205;
@@ -758,6 +759,9 @@ pub const MOVEFILE_WRITE_THROUGH: DWORD = 0x00000008;
 
 pub extern "kernel32" fn CreateEventW(lpEventAttributes: ?*anyopaque, bManualReset: BOOL, bInitialState: BOOL, lpName: ?LPCWSTR) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+pub const LowMemoryResourceNotification: c_int = 0;
+pub extern "kernel32" fn CreateMemoryResourceNotification(NotificationType: c_int) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn QueryMemoryResourceNotification(ResourceNotificationHandle: HANDLE, ResourceState: *BOOL) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn LeaveCriticalSection(lpCriticalSection: *CRITICAL_SECTION) callconv(.winapi) void;
 pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;

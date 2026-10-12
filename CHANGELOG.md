@@ -4,8 +4,40 @@ Notable changes in Oriel releases.
 
 ## [Unreleased]
 
+### Added
+
+- `oriel.lifecycle`: the app's lifecycle with one API on every platform
+  (core, always on). `subscribe(handler)` (up to 16, called on the main
+  thread in order) gets `background` / `foreground` (Android: the last
+  Activity stopped / one started again; iOS: didEnterBackground /
+  willEnterForeground), `memory_pressure` (`moderate` or `critical`:
+  Android's onTrimMemory, iOS memory warnings, macOS's memory-pressure
+  source, Windows' low-memory notification, Linux's GMemoryMonitor),
+  `suspend_` / `resume_` (macOS NSWorkspace sleep and wake, Windows
+  WM_POWERBROADCAST, logind PrepareForSleep) and `terminating` (quit,
+  SIGTERM, iOS applicationWillTerminate, Windows WM_ENDSESSION). The page
+  gets them with `oriel.lifecycle.on((e) => …)` as `{ type, level }`,
+  queued until it listens; the TypeScript bindings declare
+  `LifecycleEvent` and `LifecycleApi`.
+- `oriel.chat`, `oriel.dictation` and `oriel.tts` unload their models on
+  critical memory pressure by themselves; `unload_on` changes when
+  (`.{ .background = true }`, or `.{ .memory_pressure = null }` for never).
+- `window.oriel.features` in every page (and the native renderer), with
+  the build's resolved flags in camelCase (`{ tray: false, fsWatch: true,
+  ... }`), typed as `Features` in the generated `oriel.ts`.
+- `zig build --verbose` prints one line listing the flags resolved to
+  unavailable for the target.
+
 ### Changed
 
+- Android: `background` / `foreground` come from OrielActivity's
+  onStart/onStop (a new `NativeLib.onLifecycle` native, in the runtime
+  synced into apps). The malloc purge on trim-memory is now a lifecycle
+  subscriber, and also runs when the app goes to the background (it used
+  to on TRIM_MEMORY_UI_HIDDEN). `oriel.android.onSystemEvent` still gets
+  "trim-memory" and the Android-only events.
+- The showcase frees its models through `unload_on` instead of
+  `onSystemEvent` glue.
 - Module flags are said once, for every target. An app's `.tray = true` in
   `b.dependency("oriel", ...)` means "where it exists": on a target without
   the module it resolves to off instead of failing the build (iOS) or
@@ -25,13 +57,14 @@ Notable changes in Oriel releases.
 - `-Dlayer_shell` is unavailable outside desktop Linux (it was ignored on
   Windows and macOS).
 
-### Added
+### Deprecated
 
-- `window.oriel.features` in every page (and the native renderer), with
-  the build's resolved flags in camelCase (`{ tray: false, fsWatch: true,
-  ... }`), typed as `Features` in the generated `oriel.ts`.
-- `zig build --verbose` prints one line listing the flags resolved to
-  unavailable for the target.
+- `oriel.ios.onSystemEvent`: now a lifecycle subscriber under the old
+  names ("background", "foreground", "memory-warning"); use
+  `oriel.lifecycle`.
+- `App.Config.on_session_end`: still called on Windows at session end,
+  after `terminating`; subscribe to `oriel.lifecycle` instead.
+
 
 ## [0.9.16] — 2026-10-11
 

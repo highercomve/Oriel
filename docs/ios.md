@@ -99,7 +99,7 @@ options:
 | JS `alert` / `confirm` / `prompt` | `UIAlertController`. |
 | Deep links | `scene:willConnectToSession:options:` (cold start) and `scene:openURLContexts:`; also a link among the launch arguments (`xcrun simctl launch <device> <id> myapp://...`), since `simctl openurl` makes iOS ask before opening the app. |
 | Quitting | `quit` cleans up and calls `exit` (Apple discourages quitting outside fatal errors). |
-| Lifecycle | `oriel.ios.onSystemEvent(handler)`: "background" (every window left the screen), "foreground" and "memory-warning", on the main thread. The showcase frees its whisper and llama models on the first and the last (`dictation.unloadIdle`, `chat.unloadIdle`) and its Kokoro voice (`tts.unloadIdle`), as it does on Android's trim-memory. |
+| Lifecycle | `oriel.lifecycle` (every platform): `background` (every window left the screen), `foreground`, `memory_pressure` (`critical`: the memory warning) and `terminating` (applicationWillTerminate), on the main thread. Chat, dictation and tts unload their models on critical pressure by themselves; the showcase also unloads them in the background (`unload_on = .{ .background = true }`). `oriel.ios.onSystemEvent` ("background", "foreground", "memory-warning") still works and is deprecated. |
 | Logs | stderr (Xcode's console, `xcrun simctl launch --console-pty`) and, as on macOS, `Library/Logs/<id>/` in the app's sandbox. |
 
 ## Modules

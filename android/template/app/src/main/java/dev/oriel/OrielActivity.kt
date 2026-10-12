@@ -71,12 +71,14 @@ open class OrielActivity : Activity() {
     override fun onStart() {
         super.onStart()
         started = true
+        OrielRuntime.onActivityStarted()
         OrielAppExtensions.registered.forEach { it.onActivityStarted(this) }
     }
 
     override fun onStop() {
         started = false
         OrielAppExtensions.registered.forEach { it.onActivityStopped(this) }
+        OrielRuntime.onActivityStopped(this)
         super.onStop()
     }
 

@@ -51,8 +51,8 @@ pub const createWindow = ShellMod.createWindow;
 pub const dispatchToMainThread = ShellMod.dispatchToMainThread;
 pub const runOnMainThread = ShellMod.runOnMainThread;
 
-/// The app's lifecycle: "background", "foreground", "memory-warning" (main
-/// thread). See `Shell.SystemEventHandler`.
+/// Deprecated, use `oriel.lifecycle`: "background", "foreground",
+/// "memory-warning" (main thread). See `Shell.SystemEventHandler`.
 pub const SystemEventHandler = ShellMod.SystemEventHandler;
 pub const onSystemEvent = ShellMod.onSystemEvent;
 

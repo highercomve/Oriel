@@ -169,6 +169,26 @@ pub fn processExitSource(pid: std.c.pid_t, handler: DispatchFn) ?*anyopaque {
     return source;
 }
 
+extern var _dispatch_source_type_memorypressure: u8;
+extern "c" fn dispatch_source_get_data(source: *anyopaque) usize;
+const DISPATCH_MEMORYPRESSURE_WARN: usize = 0x2;
+const DISPATCH_MEMORYPRESSURE_CRITICAL: usize = 0x4;
+
+/// Run `handler(null)` on the main queue when the system's memory pressure
+/// rises to warn or critical (`sourceData` says which). Null if the source
+/// can't be created; `cancelSource` it.
+pub fn memoryPressureSource(handler: DispatchFn) ?*anyopaque {
+    const source = dispatch_source_create(@ptrCast(&_dispatch_source_type_memorypressure), 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL, mainQueue()) orelse return null;
+    dispatch_source_set_event_handler_f(source, handler);
+    dispatch_resume(source);
+    return source;
+}
+
+/// The pending data of `source` (in its event handler).
+pub fn sourceData(source: *anyopaque) usize {
+    return dispatch_source_get_data(source);
+}
+
 pub fn cancelSource(source: *anyopaque) void {
     dispatch_source_cancel(source);
     dispatch_release(source);

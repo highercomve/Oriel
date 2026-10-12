@@ -328,6 +328,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             exit_code.store(0, .monotonic);
             quit_event.reset();
+            @import("android.zig").subscribeMallocPurge();
             Creator.init();
 
             task_mutex.lock();

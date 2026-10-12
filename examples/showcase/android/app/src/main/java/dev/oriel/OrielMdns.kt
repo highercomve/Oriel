@@ -37,6 +37,13 @@ import java.util.concurrent.Executor
 internal object OrielMdns {
     private const val TAG = "OrielMdns"
     private const val MAX_RESOLVE_ATTEMPTS = 6
+    // A resolve the system never answers (seen on older Androids) is given
+    // up after this long, so it can't hold up the services queued behind it.
+    private const val RESOLVE_TIMEOUT_MS = 10_000L
+    // A service whose resolve failed (other than busy) is tried again after
+    // 1, 2, 4... seconds, up to this many times while it is still listed.
+    private const val MAX_RESOLVE_RETRIES = 8
+    private const val MAX_RETRY_DELAY_MS = 30_000L
 
     private val thread = HandlerThread("oriel-mdns").apply { start() }
     private val handler = Handler(thread.looper)
@@ -142,6 +149,7 @@ internal object OrielMdns {
         var reported = false
         var callback: NsdManager.ServiceInfoCallback? = null
         var attempts = 0
+        var retries = 0
     }
 
     private class Browser(val id: Int, val type: String) {
@@ -266,47 +274,83 @@ internal object OrielMdns {
 
     /** [thread] */
     private val queue = ArrayDeque<Pair<Browser, Entry>>()
-    private var resolving = false
+    // The resolve in flight (null: none). Answers and the timeout act only
+    // while theirs is the current one; a late answer to one given up on is
+    // dropped.
+    private var current: Any? = null
 
     private fun enqueue(b: Browser, e: Entry) {
         queue.addLast(b to e)
         pump()
     }
 
+    private fun live(b: Browser, e: Entry) = !b.stopped && b.entries[e.info.serviceName] === e
+
+    /** [thread] A failed or unanswered resolve: tried again later, the queue goes on. */
+    private fun retryLater(b: Browser, e: Entry, why: String) {
+        if (++e.retries > MAX_RESOLVE_RETRIES) {
+            Log.w(TAG, "resolve ${e.info.serviceName}: $why, giving up")
+            return
+        }
+        val delay = minOf(1000L shl (e.retries - 1), MAX_RETRY_DELAY_MS)
+        Log.w(TAG, "resolve ${e.info.serviceName}: $why, again in ${delay} ms")
+        e.attempts = 0
+        handler.postDelayed({ if (live(b, e) && !e.reported) enqueue(b, e) }, delay)
+    }
+
     @Suppress("DEPRECATION")
     private fun pump() {
-        if (resolving) return
+        if (current != null) return
         val (b, e) = queue.pollFirst() ?: return
-        if (b.stopped || b.entries[e.info.serviceName] !== e) return pump()
-        resolving = true
+        if (!live(b, e)) return pump()
+        val token = Any()
+        current = token
         val listener = object : NsdManager.ResolveListener {
             override fun onServiceResolved(si: NsdServiceInfo) {
                 handler.post {
-                    resolving = false
-                    if (!b.stopped && b.entries[e.info.serviceName] === e) deliver(b, e, si)
+                    if (current !== token) return@post
+                    current = null
+                    if (live(b, e)) deliver(b, e, si)
                     pump()
                 }
             }
 
             override fun onResolveFailed(si: NsdServiceInfo, code: Int) {
                 handler.post {
-                    resolving = false
+                    if (current !== token) return@post
+                    current = null
                     val busy = code == NsdManager.FAILURE_ALREADY_ACTIVE || code == NsdManager.FAILURE_MAX_LIMIT
                     if (busy && ++e.attempts < MAX_RESOLVE_ATTEMPTS) {
                         queue.addFirst(b to e)
                         handler.postDelayed({ pump() }, 200L * e.attempts)
                     } else {
-                        Log.w(TAG, "resolve ${e.info.serviceName}: failed ($code)")
+                        if (live(b, e)) retryLater(b, e, "failed ($code)")
                         pump()
                     }
                 }
             }
         }
+        handler.postDelayed({
+            if (current !== token) return@postDelayed
+            current = null
+            // API 34+ can cancel it; before, the system may still answer
+            // the next resolve with FAILURE_ALREADY_ACTIVE (retried above).
+            if (Build.VERSION.SDK_INT >= 34) {
+                try {
+                    nsd.stopServiceResolution(listener)
+                } catch (ex: IllegalArgumentException) {
+                    // Already answered or not registered.
+                }
+            }
+            if (live(b, e)) retryLater(b, e, "no answer in ${RESOLVE_TIMEOUT_MS} ms")
+            pump()
+        }, RESOLVE_TIMEOUT_MS)
         try {
             nsd.resolveService(e.info, listener)
         } catch (ex: Exception) {
             Log.w(TAG, "resolveService", ex)
-            resolving = false
+            current = null
+            if (live(b, e)) retryLater(b, e, "threw ${ex.javaClass.simpleName}")
             pump()
         }
     }
