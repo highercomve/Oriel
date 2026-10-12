@@ -88,6 +88,8 @@ pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml
 pub const chat = if (options.llama) @import("modules/chat.zig") else unavailable("chat");
 /// Voice to text out of the box: live dictation and transcription, on whisper or the platform's recognizer.
 pub const dictation = if (options.whisper and options.audio_capture) @import("modules/dictation.zig") else unavailable("dictation");
+/// The device's own model: Gemini Nano (Android), Foundation Models (iOS 26+): `-Dsystem_ai`.
+pub const system_ai = if (options.system_ai) @import("modules/system_ai.zig") else unavailable("system_ai");
 
 // App-specific plugins.
 pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else unavailable("global_shortcut");
@@ -317,5 +319,9 @@ test {
     // target (whisper's C sources need the SDK even to type-check).
     if (target.is_ios or target.os == .macos) std.testing.refAllDecls(@import("modules/dictation/apple.zig"));
     std.testing.refAllDecls(@import("modules/model_download.zig"));
+    // system_ai's platform-independent half runs everywhere (a fake backend).
+    std.testing.refAllDecls(@import("modules/system_ai/core.zig"));
+    std.testing.refAllDecls(@import("modules/system_ai/bridge.zig"));
+    if (options.system_ai) std.testing.refAllDecls(system_ai);
     if (target.is_ios) std.testing.refAllDecls(@import("modules/model_download/ios.zig"));
 }

@@ -180,6 +180,7 @@ pub const bridge_js =
     \\        return window.oriel.listen("extension:" + name, callback);
     \\      },
     \\    }),
+    ++ @import("../../modules/system_ai/bridge.zig").js ++
     \\    deepLink: Object.freeze({
     \\      current() {
     \\        return invoke("deep_link:current", {});

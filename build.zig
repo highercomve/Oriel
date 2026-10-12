@@ -69,6 +69,9 @@ const Features = struct {
     /// Experimental: draw the page with native views instead of a WebView
     /// (QuickJS-ng + Yoga; Linux, Windows and Android so far). docs/native-renderer.md
     native_ui: bool,
+    /// The phone's own model (`oriel.system_ai`): Gemini Nano through ML Kit
+    /// on Android, Apple Foundation Models on iOS 26+. Android and iOS only.
+    system_ai: bool,
 
     /// Resolve the flags for `target`. A module asked for where it doesn't
     /// exist (src/core/module_table.zig) resolves to off, and
@@ -94,6 +97,7 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
                 std.mem.eql(u8, field.name, "native_ui") or
+                std.mem.eql(u8, field.name, "system_ai") or
                 std.mem.eql(u8, field.name, "deep_link"));
             // The updater is opt-in on Android: the store updates apps there.
             const android_opt_in = comptime std.mem.eql(u8, field.name, "updater");
@@ -694,10 +698,11 @@ fn addOrielModule(
         module_shims.addFileArg(b.path(n.path));
     }
     oriel.addImport("module_shims", b.createModule(.{ .root_source_file = module_shims_zig }));
-    // The app's extensions (`oriel.extensions`): none until addApp sets
-    // the table it generates from AppOptions.extensions.
+    // The app's extensions (`oriel.extensions`): only Oriel's own (its
+    // modules built on them, `orielExtensions`) until addApp sets the table
+    // it generates from AppOptions.extensions.
     oriel.addImport("oriel_extensions", b.createModule(.{
-        .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", "//! No app extensions (Oriel's own build).\npub const list = .{};\n"),
+        .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", extensionTableText(b, "Oriel's own build", orielExtensions(b, features), module_table.platformOf(&target.result), null)),
     }));
 
     // gtk4-layer-shell (-Dlayer_shell) isn't linked: it's loaded at runtime
@@ -1075,6 +1080,10 @@ pub const AppOptions = struct {
         swift_sources: []const std.Build.LazyPath = &.{},
         /// SDK frameworks to link ("Vision", "CoreML").
         frameworks: []const []const u8 = &.{},
+        /// Frameworks newer than the app's minimum iOS: weak-linked, and
+        /// only when the SDK has them (Swift sees them through
+        /// `#if canImport(...)`; check the OS version before use).
+        weak_frameworks: []const []const u8 = &.{},
         /// Files or directories copied to the bundle's root.
         resources: []const std.Build.LazyPath = &.{},
     };
@@ -1421,6 +1430,7 @@ fn checkExtensions(b: *std.Build, options: AppOptions) void {
     if (exts.len > extension_spec.max_extensions) @panic("AppOptions.extensions: at most 64 extensions");
     for (exts, 0..) |e, i| {
         if (!extension_spec.validName(e.name)) @panic(b.fmt("AppOptions.extensions: invalid name \"{s}\" (lowercase dotted words, [a-z][a-z0-9_]* joined by dots, up to 64 characters)", .{e.name}));
+        if (extension_spec.reserved(e.name)) @panic(b.fmt("AppOptions.extensions: \"{s}\": names starting with \"oriel.\" are Oriel's own", .{e.name}));
         for (exts[0..i]) |prev| if (std.mem.eql(u8, prev.name, e.name)) @panic(b.fmt("AppOptions.extensions: \"{s}\" is declared twice", .{e.name}));
         if (e.max_bytes == 0 or e.max_bytes > extension_spec.max_bytes_limit) @panic(b.fmt("AppOptions.extensions: {s}: max_bytes must be 1..{d}", .{ e.name, extension_spec.max_bytes_limit }));
         if (e.concurrency == 0 or e.concurrency > extension_spec.max_concurrency) @panic(b.fmt("AppOptions.extensions: {s}: concurrency must be 1..{d}", .{ e.name, extension_spec.max_concurrency }));
@@ -1433,6 +1443,7 @@ fn checkExtensions(b: *std.Build, options: AppOptions) void {
         if (e.ios) |x| {
             if (!extension_spec.validObjcClass(x.class)) @panic(b.fmt("AppOptions.extensions: {s}: invalid iOS class \"{s}\" (an Objective-C class name)", .{ e.name, x.class }));
             for (x.frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
+            for (x.weak_frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
         }
     }
 }
@@ -1480,6 +1491,76 @@ fn extensionBackend(e: AppOptions.Extension, platform: module_table.Platform) Ex
     };
 }
 
+const ZigExtension = struct { name: []const u8, path: std.Build.LazyPath };
+
+/// The source of an `oriel_extensions` table: each extension's name, limits
+/// and backend on `platform`, and an import per desktop Zig module (listed
+/// in `zig_modules`; Oriel's own extensions have none).
+fn extensionTableText(b: *std.Build, label: []const u8, list: []const AppOptions.Extension, platform: module_table.Platform, zig_modules: ?*std.ArrayList(ZigExtension)) []const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    text.appendSlice(b.allocator, b.fmt("//! Generated from AppOptions.extensions and Oriel's own ({s}).\npub const list = .{{\n", .{label})) catch @panic("OOM");
+    for (list, 0..) |e, i| {
+        const backend = extensionBackend(e, platform);
+        const class: []const u8 = switch (backend) {
+            .android => e.android.?.class,
+            .objc => e.ios.?.class,
+            else => "",
+        };
+        var impl: []const u8 = "void";
+        if (backend == .zig) {
+            const import_name = b.fmt("oriel_extension_{d}", .{i});
+            const out = zig_modules orelse @panic("an Oriel extension with a Zig backend");
+            out.append(b.allocator, .{ .name = import_name, .path = backend.zig }) catch @panic("OOM");
+            impl = b.fmt("@import(\"{s}\")", .{import_name});
+        }
+        // Names and classes were validated: no quotes or backslashes.
+        text.appendSlice(b.allocator, b.fmt("    .{{ .name = \"{s}\", .max_bytes = {d}, .concurrency = {d}, .backend = .{s}, .class = \"{s}\", .impl = {s} }},\n", .{
+            e.name, e.max_bytes, e.concurrency, @tagName(backend), class, impl,
+        })) catch @panic("OOM");
+    }
+    text.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    return text.items;
+}
+
+/// Oriel's own modules built on app extensions (dogfooding the primitive):
+/// named `oriel.*`, a prefix apps can't use, and merged before the app's
+/// (`withOrielExtensions`). Their sources live in Oriel (`owner` is
+/// Oriel's builder) and are built only when the module is on.
+fn orielExtensions(owner: *std.Build, features: Features) []const AppOptions.Extension {
+    const gpa = owner.allocator;
+    var list: std.ArrayList(AppOptions.Extension) = .empty;
+    // -Dsystem_ai (Android and iOS only: module_table): Gemini Nano through
+    // ML Kit in Kotlin, Foundation Models in Swift (weak-linked, so the app
+    // still runs before iOS 26). Two workers: status() answers during a
+    // generate. The input carries up to 4 images of 8 MiB.
+    if (features.system_ai) list.append(gpa, .{
+        .name = "oriel.system_ai",
+        .android = .{
+            .class = "dev.oriel.OrielSystemAi",
+            .sources = gpa.dupe(std.Build.LazyPath, &.{owner.path("src/modules/system_ai/OrielSystemAi.kt")}) catch @panic("OOM"),
+            .dependencies = &.{"com.google.mlkit:genai-prompt:1.0.0-beta4"},
+        },
+        .ios = .{
+            .class = "OrielSystemAiExtension",
+            .swift_sources = gpa.dupe(std.Build.LazyPath, &.{owner.path("src/modules/system_ai/SystemAi.swift")}) catch @panic("OOM"),
+            .weak_frameworks = &.{"FoundationModels"},
+        },
+        .max_bytes = 40 << 20,
+        .concurrency = 2,
+    }) catch @panic("OOM");
+    return list.items;
+}
+
+/// `options` with Oriel's own extensions before the app's: what the
+/// Android project and the iOS link see.
+fn withOrielExtensions(ob: *const OrielBuild, options: AppOptions) AppOptions {
+    const own = orielExtensions(ob.builder, ob.features);
+    if (own.len == 0) return options;
+    var out = options;
+    out.extensions = std.mem.concat(ob.builder.allocator, AppOptions.Extension, &.{ own, options.extensions }) catch @panic("OOM");
+    return out;
+}
+
 /// The `oriel_extensions` table of the app's `oriel` module (src/core/
 /// extensions.zig): every declared name (so `get` checks it at build time)
 /// with this target's backend, and an import per desktop Zig module.
@@ -1497,30 +1578,10 @@ fn setExtensionTable(b: *std.Build, oriel_dep: *std.Build.Dependency, options: A
     if (options.extensions.len == 0) return;
 
     const platform = module_table.platformOf(&ob.target.result);
-    var text: std.ArrayList(u8) = .empty;
-    text.appendSlice(b.allocator, b.fmt("//! Generated by addApp from AppOptions.extensions ({s}: {s}).\npub const list = .{{\n", .{ options.name, @tagName(platform) })) catch @panic("OOM");
-    const Zig = struct { name: []const u8, path: std.Build.LazyPath };
-    var zig_modules: std.ArrayList(Zig) = .empty;
-    for (options.extensions, 0..) |e, i| {
-        const backend = extensionBackend(e, platform);
-        const class: []const u8 = switch (backend) {
-            .android => e.android.?.class,
-            .objc => e.ios.?.class,
-            else => "",
-        };
-        var impl: []const u8 = "void";
-        if (backend == .zig) {
-            const import_name = b.fmt("oriel_extension_{d}", .{i});
-            zig_modules.append(b.allocator, .{ .name = import_name, .path = backend.zig }) catch @panic("OOM");
-            impl = b.fmt("@import(\"{s}\")", .{import_name});
-        }
-        // Names and classes were validated: no quotes or backslashes.
-        text.appendSlice(b.allocator, b.fmt("    .{{ .name = \"{s}\", .max_bytes = {d}, .concurrency = {d}, .backend = .{s}, .class = \"{s}\", .impl = {s} }},\n", .{
-            e.name, e.max_bytes, e.concurrency, @tagName(backend), class, impl,
-        })) catch @panic("OOM");
-    }
-    text.appendSlice(b.allocator, "};\n") catch @panic("OOM");
-    const table = b.createModule(.{ .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", text.items) });
+    var zig_modules: std.ArrayList(ZigExtension) = .empty;
+    const all = withOrielExtensions(ob, options).extensions;
+    const text = extensionTableText(b, b.fmt("{s}: {s}", .{ options.name, @tagName(platform) }), all, platform, &zig_modules);
+    const table = b.createModule(.{ .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", text) });
     for (zig_modules.items) |z| {
         const m = b.createModule(.{
             .root_source_file = z.path,
@@ -1538,8 +1599,8 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     checkPlatformExtras(b, options);
     checkExtensions(b, options);
     setExtensionTable(b, oriel_dep, options);
-    if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, options);
-    if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, options);
+    if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
+    if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
     const oriel = oriel_dep.module("oriel");
@@ -2385,6 +2446,8 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
     return .{ .exe = exe, .dev_exe = dev_exe };
 }
 
+/// `options` comes with Oriel's own extensions (`withOrielExtensions`), so
+/// -Dsystem_ai's Swift backend counts too.
 fn hasSwift(options: AppOptions) bool {
     for (options.extensions) |e| if (e.ios) |x| if (x.swift_sources.len > 0) return true;
     return false;
@@ -2399,7 +2462,7 @@ fn iosTarget(b: *std.Build, target: std.Build.ResolvedTarget, options: AppOption
     const min = resolved.result.os.version_range.semver.min;
     if (min.order(swift_build.min_ios) != .lt) return resolved;
     if (target.query.os_version_min != null)
-        fatal("iOS {d}.{d} is below what Swift extensions support: with .ios.swift_sources the minimum is iOS {d}.{d} (docs/extensions.md)", .{ min.major, min.minor, swift_build.min_ios.major, swift_build.min_ios.minor });
+        fatal("iOS {d}.{d} is below what Swift extensions support: with .ios.swift_sources (or -Dsystem_ai, Oriel's Swift backend) the minimum is iOS {d}.{d} (docs/extensions.md)", .{ min.major, min.minor, swift_build.min_ios.major, swift_build.min_ios.minor });
     var query = target.query;
     query.os_version_min = .{ .semver = swift_build.min_ios };
     return b.resolveTargetQuery(query);
@@ -2417,23 +2480,34 @@ fn addIosExtensions(b: *std.Build, oriel_dep: *std.Build.Dependency, options: Ap
         if (x.sources.len > 0 or x.swift_sources.len > 0) compile.root_module.addIncludePath(include);
         for (x.sources) |src| compile.root_module.addCSourceFile(.{ .file = src, .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" } });
         for (x.frameworks) |f| compile.root_module.linkFramework(f, .{});
+        // Weak and only where the SDK has them; Swift doesn't autolink them
+        // (that link would be strong).
+        var no_autolink: std.ArrayList([]const u8) = .empty;
+        if (sdk) |root| for (x.weak_frameworks) |f| {
+            const dir = b.pathJoin(&.{ root, "System/Library/Frameworks", b.fmt("{s}.framework", .{f}) });
+            std.Io.Dir.cwd().access(b.graph.io, dir, .{}) catch continue;
+            compile.root_module.linkFramework(f, .{ .weak = true });
+            no_autolink.appendSlice(b.allocator, &.{ "-Xfrontend", "-disable-autolink-framework", "-Xfrontend", f }) catch @panic("OOM");
+        };
         if (x.swift_sources.len == 0) continue;
+        // Oriel's own (oriel.system_ai): name the flag that asked for Swift.
+        const who = if (extension_spec.reserved(e.name)) b.fmt("{s}: -D{s}'s Swift sources (Oriel's backend)", .{ e.name, e.name["oriel.".len..] }) else b.fmt("{s}: .ios.swift_sources", .{e.name});
         const root = sdk orelse {
-            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need the iOS SDK and its Swift modules: on Linux, `oriel ios setup` with Xcode.xip " ++
-                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{e.name})).step);
+            compile.step.dependOn(&b.addFail(b.fmt("{s} need the iOS SDK and its Swift modules, and there is no Apple SDK: on Linux, `oriel ios setup` with Xcode.xip " ++
+                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{who})).step);
             continue;
         };
         const swiftc = swift_build.findSwiftc(b) orelse {
-            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{e.name})).step);
+            compile.step.dependOn(&b.addFail(b.fmt("{s} need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{who})).step);
             continue;
         };
         if (b.graph.host.result.os.tag != .macos and swift_build.resourceDir(b, root, compile.rootModuleTarget()) == null) {
-            compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{e.name})).step);
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{who})).step);
             continue;
         }
         const module_name = b.dupe(b.fmt("OrielExtension_{s}", .{e.name}));
         std.mem.replaceScalar(u8, module_name, '.', '_');
-        const obj = swift_build.compile(b, swiftc, x.swift_sources, module_name, compile.rootModuleTarget(), root, include.path(b, "oriel_extension.h"), compile.root_module.optimize orelse .Debug);
+        const obj = swift_build.compile(b, swiftc, x.swift_sources, module_name, compile.rootModuleTarget(), root, include.path(b, "oriel_extension.h"), compile.root_module.optimize orelse .Debug, no_autolink.items);
         compile.root_module.addObjectFile(obj);
         swift = true;
     }

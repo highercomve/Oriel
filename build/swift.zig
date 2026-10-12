@@ -163,7 +163,8 @@ fn fromSwiftSdkJson(b: *std.Build, bundle: []const u8, key: []const u8) ?[]const
 }
 
 /// One object from `sources` (module `module_name`), with `header` as the
-/// bridging header (oriel_extension.h).
+/// bridging header (oriel_extension.h); `extra` goes before the sources
+/// (frameworks it must not autolink, for weak links).
 pub fn compile(
     b: *std.Build,
     swiftc: []const u8,
@@ -173,6 +174,7 @@ pub fn compile(
     sdk: []const u8,
     header: std.Build.LazyPath,
     optimize: std.builtin.OptimizeMode,
+    extra: []const []const u8,
 ) std.Build.LazyPath {
     const run = b.addSystemCommand(&.{swiftc});
     run.addArgs(flags(b.allocator, .{
@@ -182,6 +184,7 @@ pub fn compile(
         .resource_dir = resourceDir(b, sdk, target),
         .optimize = optimize,
     }) catch @panic("OOM"));
+    run.addArgs(extra);
     run.addArg("-import-objc-header");
     run.addFileArg(header);
     run.addArg("-o");
@@ -197,11 +200,12 @@ pub fn compile(
 pub const min_ios: std.SemanticVersion = .{ .major = 18, .minor = 0, .patch = 0 };
 
 /// Link the Swift runtime libraries an extension's object needs: the SDK's
-/// stubs, the OS's libraries at run time.
+/// stubs, the OS's libraries at run time (Concurrency is in the OS from
+/// iOS 15).
 pub fn linkRuntime(module: *std.Build.Module, sdk: []const u8) void {
     const b = module.owner;
     module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib/swift" }) });
-    for ([_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation", "swiftXPC" }) |lib|
+    for ([_][]const u8{ "swiftCore", "swiftFoundation", "swiftObjectiveC", "swiftDarwin", "swiftDispatch", "swiftCoreFoundation", "swiftXPC", "swift_Concurrency" }) |lib|
         module.linkSystemLibrary(lib, .{});
     module.addRPathSpecial("/usr/lib/swift");
 }
