@@ -96,7 +96,7 @@ pub const Commands = struct {
             .os = oriel.target.name,
             .arch = @tagName(builtin.cpu.arch),
             .android = oriel.target.is_android,
-            .data_dir = oriel.store.dataDir(gpa, app_id) catch "",
+            .data_dir = oriel.paths.appData(gpa, .{ .name = app_id }) catch "",
             .tray = oriel.tray.available,
             .menu = oriel.menu.available,
             .hotkeys = oriel.global_shortcut.available,
@@ -547,10 +547,7 @@ fn printUsage() void {
 pub fn main(init: std.process.Init) !u8 {
     // Whisper models: large, so on Android in the external files directory
     // (/sdcard/Android/data/<id>/files/...), which adb can write to.
-    const data_dir = if (oriel.target.is_android)
-        try oriel.store.impl.externalDataDir(init.gpa, app_id)
-    else
-        try oriel.store.dataDir(init.gpa, app_id);
+    const data_dir = try oriel.paths.appExternal(init.gpa, .{ .name = app_id });
     defer init.gpa.free(data_dir);
     const models_dir = try std.fs.path.join(init.gpa, &.{ data_dir, "models" });
     defer init.gpa.free(models_dir);

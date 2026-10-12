@@ -234,7 +234,7 @@ const Engine = struct {
 var engine: ?Engine = null;
 
 /// Call once at startup. `dir`: where the models and voices live (created
-/// when needed; e.g. `store.dataDir` + "tts"); must outlive the app.
+/// when needed; e.g. `oriel.paths.appData` + "tts"); must outlive the app.
 pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     io = app_io;
     gpa = app_gpa;

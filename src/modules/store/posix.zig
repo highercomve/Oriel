@@ -1,5 +1,5 @@
-//! POSIX file primitives for the JSON store (macOS and Android): `mkdir -p`,
-//! a pthread mutex, whole-file reads and atomic replacement.
+//! POSIX file primitives for the JSON store (macOS, iOS and Android): a
+//! pthread mutex, whole-file reads and atomic replacement.
 //!
 //! Atomic replacement: a sibling temp file created exclusively (O_EXCL,
 //! mode 0600, no symlink following), written, fsync'ed, renamed over the
@@ -11,26 +11,6 @@ const heap = @import("../../core/heap.zig");
 const c = std.c;
 
 var temp_counter: std.atomic.Value(u32) = .init(1);
-
-/// `mkdir -p` with mode 0755.
-pub fn makePath(gpa: std.mem.Allocator, path: []const u8) !void {
-    const z = try gpa.dupeZ(u8, path);
-    defer gpa.free(z);
-    var i: usize = 1;
-    while (i <= z.len) : (i += 1) {
-        if (i < z.len and z[i] != '/') continue;
-        const saved = z[i];
-        z[i] = 0;
-        defer z[i] = saved;
-        const rc = c.mkdir(z.ptr, 0o755);
-        if (rc != 0) {
-            switch (std.posix.errno(rc)) {
-                .EXIST => {},
-                else => return error.CreateDirectoryFailed,
-            }
-        }
-    }
-}
 
 pub const Mutex = struct {
     inner: c.pthread_mutex_t = .{},
