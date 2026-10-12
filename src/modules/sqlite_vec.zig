@@ -3,6 +3,9 @@
 //! Exposes version info and vector serialization helpers, and registers
 //! the extension automatically on every SQLite connection.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const oriel = @import("../oriel.zig");
 

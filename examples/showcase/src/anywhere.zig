@@ -16,7 +16,8 @@ const dictation = oriel.dictation;
 const log = std.log.scoped(.anywhere);
 const is_android = oriel.target.is_android;
 
-pub const available = oriel.options.global_shortcut and !oriel.target.is_ios or is_android;
+/// The desktop's hotkey, or Android's notification and input method.
+pub const available = oriel.global_shortcut.available;
 pub const hotkey = "ctrl+alt+D";
 
 pub const State = struct { state: []const u8, text: []const u8 = "" };
@@ -115,7 +116,7 @@ fn stopAndDeliver() void {
 fn deliver(text: []const u8) void {
     if (is_android) {
         if (oriel.android.commitText(text)) |_| return emit("inserted", text) else |_| {}
-    } else if (oriel.options.input) {
+    } else if (oriel.input.available) {
         // Into the focused app: the clipboard, then the paste shortcut.
         oriel.clipboard.writeText(text) catch |err| return emit("error", @errorName(err));
         if (oriel.input.paste()) |_| return emit("inserted", text) else |err| log.warn("paste: {s}", .{@errorName(err)});

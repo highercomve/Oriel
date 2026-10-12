@@ -4,6 +4,9 @@
 //! Windows backend: Win32 OpenClipboard/CF_UNICODETEXT/CF_DIB/PNG via main thread.
 //! macOS backend: NSPasteboard (text, PNG/TIFF) via main thread.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 const std = @import("std");

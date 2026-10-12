@@ -6,6 +6,9 @@
 //! them). The PCM buffer the synthesis hands out belongs to the C allocator
 //! inside kokoro.cpp: the caller frees it through `freePcm`.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const oriel = @import("../oriel.zig");
 

@@ -1,5 +1,8 @@
 //! SQLite, compiled from the amalgamation in build.zig.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const oriel = @import("../oriel.zig");
 pub const c = @cImport(@cInclude("sqlite3.h"));

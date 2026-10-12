@@ -7,6 +7,9 @@
 //! resampled here. macOS backend: CoreAudio + AudioQueue (system audio through
 //! a loopback device such as BlackHole).
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("audio_capture/common.zig");

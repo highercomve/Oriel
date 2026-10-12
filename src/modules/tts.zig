@@ -38,6 +38,9 @@
 //! The building blocks stay public: `oriel.kokoro` (contexts, synthesis),
 //! `oriel.audio_play` (one-shot and streaming playback). Needs `-Dkokoro`.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const kokoro = @import("kokoro.zig");

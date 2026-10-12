@@ -30,6 +30,9 @@
 //! Needs `-Dwhisper -Daudio_capture`, and the microphone permission
 //! (`.permissions = .{ .microphone = "..." }` + `permissions.request`).
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const oriel = @import("../oriel.zig");
