@@ -34,7 +34,7 @@ const host = {
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
 
@@ -77,7 +77,7 @@ function bootPage(html, platform) {
     platform: JSON.stringify(platform), label: "main", url: "index.html",
   };
   const c = vm.createContext({ __host: h });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), c, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), c, { filename: "runtime.js" });
   c.__oriel.boot(400, 600, false, false);
   c.__oriel.render();
   const tabs = (n) => {
@@ -114,7 +114,7 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   const winHost = { ...host, asset: (p) => (p === "index.html" ? winPage : undefined), platform: JSON.stringify({ os, arch: "x86_64" }),
     ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
   const wctx = vm.createContext({ __host: winHost });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), wctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), wctx, { filename: "runtime.js" });
   wctx.__oriel.boot(400, 600, false, false);
   wctx.__oriel.render();
   const rings = {};
@@ -136,7 +136,7 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   const macHost = { ...host, asset: (p) => (p === "index.html" ? macPage : undefined), platform: JSON.stringify({ os: "macos", arch: "aarch64", fullKeyboardAccess: true }),
     ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
   const mctx = vm.createContext({ __host: macHost });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), mctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), mctx, { filename: "runtime.js" });
   mctx.__oriel.boot(400, 600, false, false);
   mctx.__oriel.render();
   const rings = {};

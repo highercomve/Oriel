@@ -26,7 +26,7 @@ const host = {
 };
 const ctx = vm.createContext({ __host: host });
 host.evalScript = (name, code) => vm.runInContext(code, ctx, { filename: name });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 900, false, false);
 const run = (code) => vm.runInContext(code, ctx);
 run(`globalThis.seen = []; const f = document.getElementById("f");

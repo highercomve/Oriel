@@ -431,7 +431,7 @@ natively.
 | `oriel.ipc.fail` message | 2047 bytes | `ipc.fail` |
 | Worker threads | CPU count, clamped to 2..16 | `ThreadPool.init` |
 | Waiting async tasks | 1024 (`ThreadPool.default_max_queued`) | `ThreadPool.submit` |
-| Queued `deep-link` events in the page | 16 (oldest dropped) | `bridge_js.zig` |
+| Queued `deep-link` events in the page | 16 (oldest dropped) | `bridge_api.js` |
 | Files in `oriel.share.send` from the page | 16 MiB in all | `share:send` |
 
 ### Built-in commands
@@ -453,7 +453,7 @@ policy governs.
 | `system_ai:*` | `oriel.systemAi` (all but `system_ai:cancel` run on a worker) | see [System AI](system-ai.md) |
 | `oriel:window:open`, `close`, `show`, `hide`, `focus`, `setTitle`, `setSize`, `maximize`, `fullscreen`, `startDragging`, `setThemeColor`, `get`, `all`, `current`, `emitTo` | `oriel.window` | see [Windows](windows.md#window-commands) |
 | `oriel:isolated` | The isolation pattern's signed calls | the inner call's result |
-| `drop:path` | Native renderer pages only | see [Drag and drop](drag-and-drop.md) |
+| `drop:path` | `oriel.drop.path`; native renderer pages only (the path, or `null`) | see [Drag and drop](drag-and-drop.md#drop-path) |
 
 ### Migrating from 0.11
 

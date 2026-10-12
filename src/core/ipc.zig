@@ -743,6 +743,11 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  capturePhoto(options?: CapturePhotoOptions): Promise<CapturedPhoto>;
             \\}
             \\
+            \\export interface DropApi {
+            \\  /** Where a dropped file lives now (native renderer: its File's `handle`); null when it's gone or changed, or has no handle (a WebView's). */
+            \\  path(file: File | number): Promise<string | null>;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -765,6 +770,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      systemAi: SystemAiApi;
             \\      camera: CameraApi;
             \\      permissions: PermissionsApi;
+            \\      drop: DropApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
             \\  }
@@ -799,6 +805,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const camera: CameraApi = (globalThis as any).oriel?.camera;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
+            \\/** Dropped files' paths (oriel.drop.path; native renderer). */
+            \\export const drop: DropApi = (globalThis as any).oriel?.drop;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
             \\export const platform: Platform = (globalThis as any).oriel?.platform;
             \\/** What this build has: `if (features.tray) ...` (camelCase module names). */

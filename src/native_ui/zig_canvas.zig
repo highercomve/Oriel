@@ -31,9 +31,7 @@ const engine_mod = @import("engine.zig");
 const target = @import("../core/target.zig");
 const App = @import("../core/App.zig");
 
-pub const Engine = engine_mod.Engine;
-pub const Cmd = tree_mod.CanvasCmd;
-pub const Font = tree_mod.CanvasFont;
+const Engine = engine_mod.Engine;
 /// r, g, b 0–255, alpha 0–1 (as the page's colors).
 pub const Color = tree_mod.Color;
 
@@ -54,7 +52,7 @@ pub const Baseline = enum(u3) { alphabetic, top, hanging, middle, bottom };
 /// marks the program, and commit refuses it).
 pub const Program = struct {
     arena: std.heap.ArenaAllocator,
-    cmds: std.ArrayList(Cmd) = .empty,
+    cmds: std.ArrayList(tree_mod.CanvasCmd) = .empty,
     next_gradient: u16 = 0,
     failed: bool = false,
     /// The last frame's length: the next begin() reserves as much.
@@ -84,7 +82,7 @@ pub const Program = struct {
         return p.cmds.items.len;
     }
 
-    fn add(p: *Program, c: Cmd) void {
+    fn add(p: *Program, c: tree_mod.CanvasCmd) void {
         p.cmds.append(p.arena.allocator(), c) catch {
             p.failed = true;
         };
@@ -235,10 +233,7 @@ pub const Canvas = struct {
     /// not a native window, or no such canvas (yet: the page renders it
     /// after it loads).
     pub fn open(window: *App.Window, element_id: []const u8) ?Canvas {
-        return openIn(engineOf(window) orelse return null, element_id);
-    }
-
-    pub fn openIn(e: *Engine, element_id: []const u8) ?Canvas {
+        const e = engineOf(window) orelse return null;
         if (element_id.len > 64) return null;
         const n = e.tree.canvasByEid(element_id) orelse return null;
         var c: Canvas = .{ .serial = e.serial, .node = n.id, .eid_len = @intCast(element_id.len) };
@@ -303,10 +298,6 @@ pub const Frame = struct {
 /// callback (and no requestAnimationFrame) wants one.
 pub fn onFrame(window: *App.Window, ctx: anytype, comptime func: fn (@TypeOf(ctx), Frame) bool) !void {
     const e = engineOf(window) orelse return error.NotNative;
-    try onFrameIn(e, ctx, func);
-}
-
-pub fn onFrameIn(e: *Engine, ctx: anytype, comptime func: fn (@TypeOf(ctx), Frame) bool) !void {
     const Ctx = @TypeOf(ctx);
     if (@typeInfo(Ctx) != .pointer) @compileError("onFrame: ctx must be a pointer");
     const Thunk = struct {
@@ -324,7 +315,7 @@ pub fn stopFrames(window: *App.Window, ctx: anytype) void {
 }
 
 /// The native renderer's engine of `window`, or null (a WebView window).
-pub fn engineOf(window: *App.Window) ?*Engine {
+fn engineOf(window: *App.Window) ?*Engine {
     const h = window.handle;
     return switch (target.os) {
         .linux, .windows => @ptrCast(@alignCast(h.native orelse return null)),

@@ -1,4 +1,4 @@
-// Runs runtime.js against a page's files with a fake host, prints the native
+// Runs the runtime (test/runtime-linkedom.js) against a page's files with a fake host, prints the native
 // tree: `node test/harness.mjs <web dir> [width] [height]`.
 import fs from "node:fs";
 import path from "node:path";
@@ -36,7 +36,7 @@ process.on("unhandledRejection", (e) => console.log("page: unhandled rejection:"
 let opsCount = 0;
 const ctx = vm.createContext({ __host: host });
 const t0 = performance.now();
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 const t1 = performance.now();
 ctx.__oriel.boot(w, h, true, false);
 await new Promise((r) => setTimeout(r, 0));

@@ -15,7 +15,7 @@ function fields(dark, css) {
     platform: JSON.stringify({ os: "android" }), label: "main", url: "index.html",
   };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, dark, false);
   ctx.__oriel.render();
   return out;
@@ -40,7 +40,7 @@ assert.deepEqual(own.col, [200, 0, 0, 1], "and its color");
     platform: JSON.stringify({ os: "android" }), label: "main", url: "index.html",
   };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, true, false);
   ctx.__oriel.render();
   assert.deepEqual(props.get(0).bg.color, [18, 18, 18, 1], "a dark canvas");

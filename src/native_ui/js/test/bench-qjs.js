@@ -1,7 +1,7 @@
 // The native runtime in plain qjs with a fake host: times the render-bench
 // steps (DOM work, render = style+flatten+emit) without GTK.
 // From the repository root:
-// qjs src/native_ui/js/test/bench-qjs.js src/native_ui/runtime.js examples/render-bench/web
+// qjs src/native_ui/js/test/bench-qjs.js src/native_ui/js/test/runtime-linkedom.js examples/render-bench/web
 import * as std from "qjs:std";
 const [runtimePath, dir] = scriptArgs.slice(1);
 const now = () => performance.now();

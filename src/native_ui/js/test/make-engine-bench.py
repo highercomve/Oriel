@@ -25,7 +25,7 @@ source = source.replace("const now = () => performance.now();",
                         "const clock = globalThis.performance?.now?.bind(globalThis.performance)"
                         " ?? Date.now.bind(Date);\nconst now = () => clock();")
 source = source.replace("(0, eval)(std.loadFile(runtimePath));",
-                        (root / "src/native_ui/runtime.js").read_text())
+                        (root / "src/native_ui/js/test/runtime-linkedom.js").read_text())
 if args.trace:
     source = source.replace("let opsBytes = 0, opsCalls = 0;",
                             "let opsBytes = 0, opsCalls = 0; const trace = [];")

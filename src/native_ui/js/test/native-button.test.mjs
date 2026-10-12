@@ -24,7 +24,7 @@ function render(controls) {
     platform: JSON.stringify({ os: "linux", controls }), label: "main", url: "index.html",
   };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(800, 600, false, false);
   ctx.__oriel.render();
   const out = new Map();

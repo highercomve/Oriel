@@ -1,7 +1,7 @@
 {
   "name": "oriel-native-ui-runtime",
   "private": true,
-  "description": "The JavaScript side of Oriel's experimental native renderer (docs/native-renderer.md): bundled into ../runtime.js, which the Zig build embeds.",
+  "description": "The JavaScript side of Oriel's experimental native renderer (docs/native-renderer.md): bundled into ../runtime.js, which the Zig build embeds (and into test/runtime-linkedom.js, on linkedom, for the Node tests).",
   "type": "module",
   "imports": {
     "#dom": "./src/dom/linkedom.js"
