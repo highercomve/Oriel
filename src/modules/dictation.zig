@@ -188,12 +188,6 @@ pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
     ever_init.store(true, .release);
     whisper.silenceLogs();
     subscribeLifecycle();
-    // Android's system recognizer must be cancelled while the UI thread's
-    // dispatch queue still runs; deinit() itself is past that point.
-    if (comptime is_android) {
-        const ShellMod = @import("../platform/android/Shell.zig");
-        if (ShellMod.on_shutdown_fn == null) ShellMod.on_shutdown_fn = &system.shutDown;
-    }
 }
 
 /// Load the GPU backend once (a Vulkan instance and a self-test: not at
@@ -351,6 +345,10 @@ fn subscribeLifecycle() void {
 }
 
 fn onLifecycle(event: lifecycle.Event) void {
+    // Android's system recognizer must be cancelled while the UI thread's
+    // dispatch queue still runs (the shell sends `terminating` then);
+    // deinit() itself is past that point.
+    if (comptime is_android) if (event == .terminating) system.shutDown();
     if (unload_on.wants(event)) unloadIdle();
 }
 

@@ -256,10 +256,7 @@ pub fn handleNotifyMessage(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 }
 
 // Shell shutdown hook
-pub var on_shutdown_fn: ?*const fn () void = null;
 
-/// `App.Config.on_session_end`, set by Shell.run.
-var on_session_end_fn: ?*const fn () void = null;
 var session_ended = false;
 
 /// oriel.lifecycle's memory_pressure: Windows has no levels, only "low"
@@ -336,7 +333,6 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
                 session_ended = true;
                 log.info("session ending: running the app's session-end cleanup", .{});
                 lifecycle.dispatch(.terminating);
-                if (on_session_end_fn) |f| f();
             }
             return 0;
         },
@@ -609,8 +605,6 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             }
             on_second_instance_fn = &onSecondInstance;
             defer on_second_instance_fn = null;
-            on_session_end_fn = config.on_session_end;
-            defer on_session_end_fn = null;
             MemoryWatch.start();
 
             var cold_url: ?[]const u8 = null;
@@ -677,7 +671,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             shutting_down = false;
             win32.ReleaseSRWLockExclusive(&task_mutex);
             defer {
-                if (on_shutdown_fn) |f| f();
+                lifecycle.dispatch(.terminating);
                 win32.AcquireSRWLockExclusive(&task_mutex);
                 host_hwnd = null;
                 shutting_down = true; // later tasks are cleaned up, not queued
