@@ -314,6 +314,8 @@ pub fn setTile(active: bool, label: []const u8) void {
 comptime {
     // The JNI natives must be in every Android build.
     _ = @import("exports.zig");
+    // OrielCall's natives (oriel.extensions).
+    _ = @import("extensions.zig");
 }
 
 test {
