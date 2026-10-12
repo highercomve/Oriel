@@ -887,6 +887,15 @@ object OrielRuntime {
         }
 
     // ---------------------------------------------------------------------
+    // oriel.camera (src/modules/camera/android.zig, OrielCamera): answered
+    // once through NativeLib.onCameraResult; false means it won't be.
+    // ---------------------------------------------------------------------
+
+    @JvmStatic
+    fun capturePhoto(request: Long, source: Int, maxSide: Int, format: Int, quality: Int): Boolean =
+        OrielCamera.capturePhoto(request, source, maxSide, format, quality)
+
+    // ---------------------------------------------------------------------
     // Audio (src/modules/audio_capture/android.zig) and the foreground service
     // ---------------------------------------------------------------------
 

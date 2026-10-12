@@ -1032,6 +1032,9 @@ pub const AppOptions = struct {
     /// turns on the share module. Each platform's declaration (Android intent
     /// filters, document types, ...) comes with its receive support.
     share_target: ?ShareTarget = null,
+    /// oriel.camera's settings (the module is on when `.permissions.camera`
+    /// is declared, or with `.camera = true` on the dependency).
+    camera: Camera = .{},
     /// The app's own native code, by name, with an implementation per
     /// platform (or none): Kotlin on Android, Objective-C or Swift on iOS,
     /// Zig on the desktop. Zig calls it with `oriel.extensions.get(name)`;
@@ -1096,6 +1099,13 @@ pub const AppOptions = struct {
     pub const Asset = struct {
         from: std.Build.LazyPath,
         to: []const u8,
+    };
+
+    pub const Camera = struct {
+        /// Android: images picked for `<input type="file" accept="image/*">`
+        /// that the WebView can't decode (HEIC, AVIF) are transcoded to
+        /// JPEG (quality 90, the long side kept or halved down to 1600 px).
+        transcode: bool = true,
     };
 
     pub const ShareTarget = struct {
@@ -1934,7 +1944,7 @@ fn addAndroidApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOp
     // from Oriel's template (`-Dandroid_force` rewrites edited files); every
     // build refreshes its copy of the Kotlin runtime, which must match this
     // library.
-    const android_vars = androidProjectVars(b, options, permissions, url_schemes);
+    const android_vars = androidProjectVars(b, options, permissions, url_schemes, orielBuild(oriel_dep).features.camera);
     const package_tool = oriel_dep.artifact("package_tool");
     const run_icons = b.addRunArtifact(package_tool);
     run_icons.addArgs(&.{ "resize-icons", "--input" });
@@ -2099,7 +2109,7 @@ test androidTemplateTextValid {
 }
 
 /// `--var key=value` arguments for the Android template (android/template).
-fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissions, url_schemes: []const []const u8) []const []const u8 {
+fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissions, url_schemes: []const []const u8, camera: bool) []const []const u8 {
     const pkg = options.package orelse PackageOptions{};
     const app_id = pkg.id orelse b.fmt("dev.oriel.{s}", .{options.name});
     const name = pkg.name orelse options.name;
@@ -2169,6 +2179,10 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\        </service>
         \\
     , .{xmlEscape(b, label)})) catch @panic("OOM");
+
+    // oriel.camera: the camera app writes into this provider, and OrielCamera
+    // treats its presence as "the module is on".
+    if (camera) components.appendSlice(b.allocator, android_manifest.captureProviderXml(options.camera.transcode)) catch @panic("OOM");
 
     const native_libraries_xml = android_manifest.nativeLibrariesXml(b.allocator, options.android.native_libraries) catch |err|
         @panic(b.fmt("android.native_libraries: {s}", .{@errorName(err)}));
