@@ -25,6 +25,8 @@ on:
       - "src/modules/chat.zig"
       - "src/modules/llama.zig"
       - "scripts/ios-ui-test.sh"
+      - "src/modules/system_ai/**"
+      - "build/swift.zig"
       - ".github/workflows/ios.yml"
 
 permissions:
@@ -207,3 +209,31 @@ jobs:
       - name: Compare the GPU (Metal) and the CPU
         working-directory: examples/showcase
         run: ./zig-out/bin/oriel-showcase --compare qwen2.5-0.5b
+
+  # oriel.system_ai's Apple backend (src/modules/system_ai/SystemAi.swift)
+  # compiles its Foundation Models code only against the iOS 26 SDK; older
+  # Xcodes build the "needs the iOS 26 SDK" stub. This runner's Xcode 26
+  # checks the real path compiles and links (FoundationModels weak-linked).
+  # Running it needs an Apple Intelligence device.
+  system-ai-xcode26:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Xcode and the iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          ls "$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks" | grep FoundationModels
+      - name: Build the showcase with -Dsystem_ai (device and simulator)
+        working-directory: examples/showcase
+        run: |
+          zig build -Dtarget=aarch64-ios -Dsystem_ai --summary all
+          rm -rf zig-out
+          zig build -Dtarget=aarch64-ios-simulator -Dsystem_ai --summary all
+          app="zig-out/ios/Oriel Showcase.app"
+          bin="$app/$(plutil -extract CFBundleExecutable raw "$app/Info.plist")"
+          otool -L "$bin" | grep FoundationModels | grep -q weak || { otool -L "$bin"; echo "FoundationModels isn't weak-linked" >&2; exit 1; }
