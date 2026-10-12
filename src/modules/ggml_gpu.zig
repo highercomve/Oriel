@@ -14,6 +14,9 @@
 //! `$ORIEL_GGML_BLOCKLIST` (comma-separated substrings) is skipped, and
 //! `ORIEL_GGML_CPU=1` keeps everything on the CPU.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const options = @import("build_options");
 

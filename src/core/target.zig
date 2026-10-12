@@ -15,15 +15,9 @@ pub const is_desktop_linux = builtin.os.tag == .linux and !is_android;
 /// iOS and iPadOS (UIKit, WKWebView): `aarch64-ios`, `aarch64-ios-simulator`.
 pub const is_ios = builtin.os.tag == .ios;
 
-pub const Os = enum { linux, android, windows, macos, ios, other };
+pub const Os = @import("module_table.zig").Platform;
 
-pub const os: Os = if (is_android) .android else switch (builtin.os.tag) {
-    .linux => .linux,
-    .windows => .windows,
-    .macos => .macos,
-    .ios => .ios,
-    else => .other,
-};
+pub const os: Os = @import("module_table.zig").platformOf(&builtin.target);
 
 /// For error messages: "linux", "android", "windows", "macos", "ios" or the Zig OS tag.
 pub const name: []const u8 = if (os == .other) @tagName(builtin.os.tag) else @tagName(os);

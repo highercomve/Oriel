@@ -5,6 +5,9 @@
 //! - Throttled updater://progress events sent via oriel.App.emit
 //! - Module smoke check for examples/smoke and `oriel doctor`
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const Ed25519 = std.crypto.sign.Ed25519;

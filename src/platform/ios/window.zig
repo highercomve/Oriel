@@ -709,7 +709,7 @@ pub fn WindowCreator(
             const surface = try native.create(
                 gpa,
                 config.assets,
-                build_target.platform_json,
+                @import("../../core/features.zig").platform_json,
                 options.label,
                 options.url orelse "index.html",
                 @floatCast(screen.size.width),

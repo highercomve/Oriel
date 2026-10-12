@@ -30,6 +30,9 @@
 //! The building blocks stay public: `oriel.llama` (the C API, JSON-schema
 //! grammars) and `oriel.ggml_gpu`. Needs `-Dllama`.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const oriel = @import("../oriel.zig");

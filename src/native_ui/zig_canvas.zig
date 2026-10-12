@@ -22,6 +22,9 @@
 //! context) is ignored until release(). The WebView has no such canvas:
 //! open() returns null there, and the page draws with JavaScript.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const tree_mod = @import("tree.zig");
 const engine_mod = @import("engine.zig");

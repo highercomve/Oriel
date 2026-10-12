@@ -3,6 +3,9 @@
 //! Provides backend initialization, system info reporting, default model parameters,
 //! and model loading with error handling.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const oriel = @import("../oriel.zig");
 
