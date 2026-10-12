@@ -4,6 +4,9 @@
 //! Windows backend: Win32 Shell_NotifyIconW balloon.
 //! macOS backend: UNUserNotificationCenter (bundled apps) or osascript.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("notification/common.zig");

@@ -18,6 +18,7 @@ const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
 const android_manifest = @import("build/android_manifest.zig");
 const espeak_data = @import("build/espeak_data.zig");
+const module_table = @import("src/core/module_table.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -67,42 +68,44 @@ const Features = struct {
     /// (QuickJS-ng + Yoga; Linux, Windows and Android so far). docs/native-renderer.md
     native_ui: bool,
 
-    /// Modules that have no Android backend: off by default for Android
-    /// targets. Enabled, they build as stubs with the same API (their
-    /// selectors explain why), so one app source builds for every platform.
-    const unavailable_on_android = [_][]const u8{ "tray", "updater", "menu", "input", "media_server", "layer_shell" };
-    /// The same for iOS (docs/ios.md).
-    const unavailable_on_ios = [_][]const u8{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch" };
-
+    /// Resolve the flags for `target`. A module asked for where it doesn't
+    /// exist (src/core/module_table.zig) resolves to off, and
+    /// `oriel.<module>.available` is false: an app's flags say what it uses,
+    /// once, for every target. Only on Oriel's own command line
+    /// (`zig build check -Dtarget=aarch64-ios -Dtray=true`) is it an error:
+    /// someone asked for something impossible.
     fn fromOptions(b: *std.Build, target: std.Build.ResolvedTarget) Features {
-        // Every module and plugin builds for Linux, Windows and macOS; the
-        // native dependencies are opt-in everywhere.
-        const android = target.result.abi.isAndroid();
-        const ios = target.result.os.tag == .ios;
+        const platform = module_table.platformOf(&target.result);
+        // The root builder's options come from the command line; a
+        // dependency's come from the app's b.dependency("oriel", .{...}).
+        const command_line = b.dep_prefix.len == 0;
         var f: Features = undefined;
+        var missing: std.ArrayList(u8) = .empty;
         inline for (@typeInfo(Features).@"struct".fields) |field| {
-            const is_native = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
+            // Every module and plugin builds for Linux, Windows and macOS;
+            // the native dependencies and deep_link are opt-in everywhere.
+            const opt_in = comptime (std.mem.eql(u8, field.name, "sqlite_vec") or
                 std.mem.eql(u8, field.name, "llama") or
                 std.mem.eql(u8, field.name, "llama_mtmd") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "kokoro") or
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
-                std.mem.eql(u8, field.name, "native_ui"));
-            // deep_link is opt-in (default off), like the native dependencies.
-            const is_deep_link = comptime std.mem.eql(u8, field.name, "deep_link");
+                std.mem.eql(u8, field.name, "native_ui") or
+                std.mem.eql(u8, field.name, "deep_link"));
+            // The updater is opt-in on Android: the store updates apps there.
+            const android_opt_in = comptime std.mem.eql(u8, field.name, "updater");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            const android_off = comptime for (unavailable_on_android) |n| {
-                if (std.mem.eql(u8, n, field.name)) break true;
-            } else false;
-            const ios_off = comptime for (unavailable_on_ios) |n| {
-                if (std.mem.eql(u8, n, field.name)) break true;
-            } else false;
-            if (ios and ios_off and opt == true) fatal("-D" ++ field.name ++ " is not available on iOS (see docs/ios.md)", .{});
-            @field(f, field.name) = opt orelse (!is_native and !is_deep_link and !(android and android_off) and !(ios and ios_off));
+            const supported = module_table.supported(field.name, platform);
+            if (!supported and opt == true) {
+                if (command_line) fatal("-D" ++ field.name ++ " is not available on {s} (docs/modules.md, \"Availability\")", .{@tagName(platform)});
+                missing.print(b.allocator, "{s}{s}", .{ if (missing.items.len > 0) ", " else "", field.name }) catch @panic("OOM");
+            }
+            @field(f, field.name) = supported and (opt orelse (!opt_in and !(android_opt_in and platform == .android)));
         }
-        // gtk4-layer-shell is a Wayland thing: asked for on Android, it's off.
-        if (android) f.layer_shell = false;
+        // One line, and only with --verbose: an unguarded use is a build
+        // error naming the module anyway.
+        if (missing.items.len > 0 and b.verbose) std.log.info("oriel: not available on {s}, so oriel.<module>.available = false: {s}", .{ @tagName(platform), missing.items });
 
         if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows or target.result.os.tag == .macos or target.result.os.tag == .ios)) {
             fatal("-Dnative_ui is experimental: Linux, Windows, macOS, Android and iOS only so far (docs/native-renderer.md)", .{});
@@ -366,6 +369,16 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(patch_httpz_tests).step);
 
+    const module_shims_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/module_shims.zig"),
+            .target = b.graph.host,
+        }),
+        .use_llvm = true,
+        .use_lld = useLld(b.graph.host),
+    });
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(module_shims_tests).step);
+
     // The deep-link queue and URL validation are pure: tested even when the
     // opt-in deep_link module is off in `oriel`.
     const deep_link_queue_tests = b.addTest(.{
@@ -431,6 +444,7 @@ pub fn build(b: *std.Build) void {
     const update_manifest_target = b.createModule(.{ .root_source_file = b.path("src/modules/update_manifest.zig") });
     const host_tools = [_]struct { []const u8, []const std.Build.Module.Import }{
         .{ "tools/dev_runner.zig", &.{} },
+        .{ "tools/module_shims.zig", &.{} },
         .{ "tools/embed_assets.zig", &.{.{ .name = "csp", .module = b.createModule(.{ .root_source_file = b.path("src/core/csp.zig") }) }} },
         .{ "tools/package/main.zig", &.{
             .{ .name = "zigimg", .module = zigimg_target.module("zigimg") },
@@ -623,9 +637,13 @@ fn addOrielModule(
     features: Features,
 ) *std.Build.Module {
     const options = b.addOptions();
-    inline for (@typeInfo(Features).@"struct".fields) |field| {
+    var feature_names: [@typeInfo(Features).@"struct".fields.len][]const u8 = undefined;
+    inline for (@typeInfo(Features).@"struct".fields, 0..) |field, i| {
         options.addOption(bool, field.name, @field(features, field.name));
+        feature_names[i] = field.name;
     }
+    // `oriel.features` in the page lists them all (src/core/features.zig).
+    options.addOption([]const []const u8, "feature_names", &feature_names);
     // -Dnative_ui_prof: the native renderer logs each stage's time
     // (src/native_ui/prof.zig); compiled out without it.
     const native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings (src/native_ui/prof.zig)") orelse false;
@@ -650,6 +668,22 @@ fn addOrielModule(
         .pic = if (is_android) true else null,
     });
     oriel.addOptions("build_options", options);
+    // The stand-in namespaces of modules that are off or missing on the
+    // target (`oriel.<module>.available = false`), from the facades' pub
+    // decls (tools/module_shims.zig).
+    const module_shims = b.addRunArtifact(b.addExecutable(.{
+        .name = "module_shims",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/module_shims.zig"),
+            .target = b.graph.host,
+        }),
+    }));
+    const module_shims_zig = module_shims.addOutputFileArg("module_shims.zig");
+    inline for (module_table.namespaces) |n| {
+        module_shims.addArg(n.name);
+        module_shims.addFileArg(b.path(n.path));
+    }
+    oriel.addImport("module_shims", b.createModule(.{ .root_source_file = module_shims_zig }));
 
     // gtk4-layer-shell (-Dlayer_shell) isn't linked: it's loaded at runtime
     // when installed (src/platform/linux/overlay.zig, preloadLayerShell), so
@@ -1184,10 +1218,7 @@ fn followCapability(oriel_dep: *std.Build.Dependency, ob: *OrielBuild, options: 
         std.log.warn("{s}: `{s}` is declared, but the oriel dependency has {s} = false: oriel.{s} stays off", .{ options.name, cm.capability, cm.module, cm.module });
         return;
     }
-    const ios_off = comptime for (Features.unavailable_on_ios) |n| {
-        if (std.mem.eql(u8, n, cm.module)) break true;
-    } else false;
-    if (ios_off and ob.target.result.os.tag == .ios) return;
+    if (!module_table.supported(cm.module, module_table.platformOf(&ob.target.result))) return;
     enableFeature(ob, cm.module);
 }
 

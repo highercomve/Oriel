@@ -1,6 +1,9 @@
 //! Local HTTP server (http.zig) for streaming large local media to the
 //! webview with HTTP range requests (RFC 9110 §14). Binds to 127.0.0.1 only.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const httpz = @import("httpz");
 const oriel = @import("../oriel.zig");

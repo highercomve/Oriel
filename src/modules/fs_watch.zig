@@ -1,6 +1,9 @@
 //! File-system watching: Linux (inotify), Windows (ReadDirectoryChangesW),
 //! macOS (FSEvents).
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 const std = @import("std");
@@ -17,8 +20,8 @@ pub const impl = switch (target.os) {
     .windows => @import("fs_watch/windows.zig"),
     .macos => @import("fs_watch/macos.zig"),
     .android => @import("fs_watch/linux.zig"),
-    .ios => @compileError("fs_watch is not available on iOS: not ported yet (see docs/ios.md)"),
-    .other => @compileError("fs_watch is not supported on " ++ target.name),
+    // Not ported yet: never built there (src/core/module_table.zig).
+    .ios, .other => @compileError("fs_watch is not available on " ++ target.name),
 };
 
 test {

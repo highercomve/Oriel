@@ -7,6 +7,9 @@
 //! Windows backend: Named mutex single-instance + WM_COPYDATA message forwarding.
 //! macOS backend: Launch Services `kAEGetURL` Apple Events; schemes declared in Info.plist.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("deep_link/common.zig");

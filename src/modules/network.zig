@@ -16,6 +16,9 @@
 //! - `mdns` (service registration and browsing, network/mdns.zig): Android
 //!   (NsdManager) and Windows (dnsapi); `error.Unsupported` elsewhere for now.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const target = @import("../core/target.zig");
 pub const common = @import("network/common.zig");

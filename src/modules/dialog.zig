@@ -17,6 +17,9 @@
 //! persisted grant) on Android, and will be a security-scoped bookmark on
 //! iOS (not written yet: error.Unsupported).
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");

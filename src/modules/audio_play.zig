@@ -5,6 +5,9 @@
 //! Lifecycle operations are serialized separately from the audio callback:
 //! never wait for a device thread while holding its sample-state lock.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 pub const c = @cImport({
     // Zig defines _FORTIFY_SOURCE in optimized builds; translate-c can't

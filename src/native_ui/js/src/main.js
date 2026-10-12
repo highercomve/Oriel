@@ -894,6 +894,9 @@ const persistentStore = () => {
 g.localStorage = typeof host.storageGet === "function" ? persistentStore() : store("local");
 g.sessionStorage = store("session");
 const platform = JSON.parse(host.platform || "{}");
+// The build's feature flags ride along (src/core/features.zig): oriel.features.
+const features = Object.freeze(platform.features ?? {});
+delete platform.features;
 // Forced colors (the system's high contrast theme): platform.forcedColors,
 // { dark, colors: { Canvas: [r, g, b], CanvasText, ... } }, null when off,
 // as viewport.forced: names lowercased, colors as rgb() strings.
@@ -965,6 +968,7 @@ const windowApi = {
 };
 g.oriel = Object.freeze({
   platform: Object.freeze(platform),
+  features,
   native: true,
   invoke,
   listen(event, callback) {

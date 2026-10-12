@@ -42,45 +42,59 @@ pub const permissions = @import("core/permissions.zig");
 pub const system = @import("core/system.zig");
 /// -Dnative_ui: the app's Zig code draws into a page's <canvas>
 /// (native_ui/zig_canvas.zig; docs/native-renderer.md, "Canvas from Zig").
-/// Without it there is no native canvas: check `oriel.options.native_ui`.
-pub const canvas = if (options.native_ui) @import("native_ui/zig_canvas.zig") else struct {};
+/// Without it there is no native canvas: check `oriel.canvas.available`.
+pub const canvas = if (options.native_ui) @import("native_ui/zig_canvas.zig") else unavailable("canvas");
 
-// Built-in modules.
-pub const tray = if (options.tray) @import("modules/tray.zig") else struct {};
-pub const updater = if (options.updater) @import("modules/updater.zig") else struct {};
-pub const media_server = if (options.media_server) @import("modules/media_server.zig") else struct {};
-pub const sql = if (options.sql) @import("modules/sql.zig") else struct {};
-pub const fs_watch = if (options.fs_watch) @import("modules/fs_watch.zig") else struct {};
-pub const dialog = if (options.dialog) @import("modules/dialog.zig") else struct {};
-pub const notification = if (options.notification) @import("modules/notification.zig") else struct {};
-pub const store = if (options.store) @import("modules/store.zig") else struct {};
-pub const menu = if (options.menu) @import("modules/menu.zig") else struct {};
-pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") else struct {};
+// Built-in modules. Each has `available`: a comptime fact for this build.
+// Off, or missing on the target, the namespace holds only `available =
+// false`, and every other decl is a build error naming the module and the
+// guard (`if (oriel.tray.available)`): code under the guard is never
+// analyzed (docs/modules.md, "Availability").
+pub const tray = if (options.tray) @import("modules/tray.zig") else unavailable("tray");
+pub const updater = if (options.updater) @import("modules/updater.zig") else unavailable("updater");
+pub const media_server = if (options.media_server) @import("modules/media_server.zig") else unavailable("media_server");
+pub const sql = if (options.sql) @import("modules/sql.zig") else unavailable("sql");
+pub const fs_watch = if (options.fs_watch) @import("modules/fs_watch.zig") else unavailable("fs_watch");
+pub const dialog = if (options.dialog) @import("modules/dialog.zig") else unavailable("dialog");
+pub const notification = if (options.notification) @import("modules/notification.zig") else unavailable("notification");
+pub const store = if (options.store) @import("modules/store.zig") else unavailable("store");
+pub const menu = if (options.menu) @import("modules/menu.zig") else unavailable("menu");
+pub const deep_link = if (options.deep_link) @import("modules/deep_link.zig") else unavailable("deep_link");
 /// The multicast lock (mDNS on Android) and LAN information.
-pub const network = if (options.network) @import("modules/network.zig") else struct {};
+pub const network = if (options.network) @import("modules/network.zig") else unavailable("network");
 /// Receiving what other apps share, and the system share sheet.
-pub const share = if (options.share) @import("modules/share.zig") else struct {};
-pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else struct {};
-pub const llama = if (options.llama) @import("modules/llama.zig") else struct {};
-pub const whisper = if (options.whisper) @import("modules/whisper.zig") else struct {};
+pub const share = if (options.share) @import("modules/share.zig") else unavailable("share");
+pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else unavailable("sqlite_vec");
+pub const llama = if (options.llama) @import("modules/llama.zig") else unavailable("llama");
+pub const whisper = if (options.whisper) @import("modules/whisper.zig") else unavailable("whisper");
 /// Text to speech with the built-in Kokoro voice (src/modules/kokoro.zig): `-Dkokoro`.
-pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else struct {};
+pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else unavailable("kokoro");
 /// Playback of the built-in voice (miniaudio; see modules/audio_play.zig).
-pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else struct {};
+pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else unavailable("audio_play");
 /// Text to speech out of the box: voices, downloads, streaming playback (Kokoro): `-Dkokoro`.
-pub const tts = if (options.kokoro) @import("modules/tts.zig") else struct {};
-pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else struct {};
+pub const tts = if (options.kokoro) @import("modules/tts.zig") else unavailable("tts");
+pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else unavailable("audio_capture");
 /// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
-pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else struct {};
+pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else unavailable("ggml_gpu");
 /// Chat with a local LLM out of the box: models, templates, streaming, KV reuse, CPU or GPU (llama.cpp).
-pub const chat = if (options.llama) @import("modules/chat.zig") else struct {};
+pub const chat = if (options.llama) @import("modules/chat.zig") else unavailable("chat");
 /// Voice to text out of the box: live dictation and transcription, on whisper or the platform's recognizer.
-pub const dictation = if (options.whisper and options.audio_capture) @import("modules/dictation.zig") else struct {};
+pub const dictation = if (options.whisper and options.audio_capture) @import("modules/dictation.zig") else unavailable("dictation");
 
 // App-specific plugins.
-pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else struct {};
-pub const input = if (options.input) @import("plugins/input.zig") else struct {};
-pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") else struct {};
+pub const global_shortcut = if (options.global_shortcut) @import("plugins/global_shortcut.zig") else unavailable("global_shortcut");
+pub const input = if (options.input) @import("plugins/input.zig") else unavailable("input");
+pub const clipboard = if (options.clipboard) @import("plugins/clipboard.zig") else unavailable("clipboard");
+
+fn unavailable(comptime name: []const u8) type {
+    return @field(module_shims, name)(module_table.reason(name, target.os));
+}
+const module_shims = @import("module_shims");
+const module_table = @import("core/module_table.zig");
+
+/// Every feature flag as this build resolved it, camelCase (`oriel.features`
+/// in the page: `{ tray: false, fsWatch: true, ... }`).
+pub const features = @import("core/features.zig");
 
 pub const ThreadPool = @import("core/ThreadPool.zig").ThreadPool;
 
@@ -201,7 +215,38 @@ pub fn checkAll(gpa: std.mem.Allocator, ctx: CheckContext) ![]Check {
     return checks.toOwnedSlice(gpa);
 }
 
+test "an unavailable module's stand-in has exactly the module's pub decls" {
+    // The modules this build has: importing the others would analyze their
+    // tests (C headers and libraries this build doesn't have).
+    inline for (module_table.namespaces) |n| {
+        const Real = @field(@This(), n.name);
+        const Shim = unavailable(n.name);
+        try std.testing.expect(!Shim.available);
+        if (Real.available) {
+            inline for (@typeInfo(Real).@"struct".decls) |d| {
+                if (!@hasDecl(Shim, d.name)) {
+                    std.debug.print("module_shims: oriel.{s}.{s} has no stand-in\n", .{ n.name, d.name });
+                    return error.TestUnexpectedResult;
+                }
+            }
+            try std.testing.expectEqual(@typeInfo(Real).@"struct".decls.len, @typeInfo(Shim).@"struct".decls.len);
+        }
+    }
+}
+
+test "oriel.<module>.available follows the resolved flags" {
+    inline for (module_table.namespaces) |n| {
+        if (comptime std.mem.eql(u8, n.name, n.feature)) {
+            try std.testing.expectEqual(@field(options, n.feature), @field(@This(), n.name).available);
+        }
+    }
+    try std.testing.expectEqual(options.kokoro, tts.available);
+    try std.testing.expectEqual(options.whisper and options.audio_capture, dictation.available);
+}
+
 test {
+    std.testing.refAllDecls(module_table);
+    std.testing.refAllDecls(features);
     std.testing.refAllDecls(ipc);
     std.testing.refAllDecls(security);
     std.testing.refAllDecls(@import("core/isolation.zig"));
