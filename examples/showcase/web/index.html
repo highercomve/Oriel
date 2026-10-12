@@ -26,6 +26,7 @@
     <symbol id="i-scale" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-note" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 9h8M8 12h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12 20 4l-6 16-3-7z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
@@ -273,6 +274,21 @@
         <button id="file-open" class="btn filled"><svg><use href="#i-folder"/></svg><span>Open…</span></button>
         <p id="file-info" class="result"></p>
         <pre id="file-preview" class="code" hidden></pre>
+      </div>
+      <!-- Camera (oriel.camera): image inputs and capturePhoto. -->
+      <div id="camera-card" class="card">
+        <h2>Camera</h2>
+        <p class="hint">Image inputs: the camera app or the system photo picker on Android, Take Photo / Photo Library on iOS, the file chooser on the desktop. <code>oriel.camera.capturePhoto</code> returns the photo scaled to 1600 px.</p>
+        <div class="inline">
+          <label class="btn filled"><svg><use href="#i-camera"/></svg><span>Take a photo</span><input id="cam-take" type="file" accept="image/*" capture="environment" hidden></label>
+          <label class="btn tonal"><svg><use href="#i-folder"/></svg><span>Choose a photo</span><input id="cam-pick" type="file" accept="image/*" hidden></label>
+        </div>
+        <div class="inline">
+          <button id="cam-capture" class="btn tonal"><span>capturePhoto: camera</span></button>
+          <button id="cam-library" class="btn tonal"><span>capturePhoto: library</span></button>
+        </div>
+        <p id="cam-out" class="result"></p>
+        <img id="cam-preview" class="photo" alt="The last photo" hidden>
       </div>
       <div class="card">
         <h2>Transcribe a recording</h2>

@@ -10,9 +10,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- oriel:permissions end -->
     <!-- oriel:features begin -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- oriel:features end -->
     <!-- oriel:queries begin -->
     <!-- oriel.dictation's system engine: Android 11+ only lets apps see the
@@ -119,6 +121,13 @@
             </intent-filter>
             <meta-data android:name="android.view.im" android:resource="@xml/oriel_input_method" />
         </service>
+        <provider
+            android:name="dev.oriel.OrielCaptureProvider"
+            android:authorities="${applicationId}.oriel.capture"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="dev.oriel.camera.transcode" android:value="true" />
+        </provider>
         <!-- oriel:components end -->
 
         <receiver

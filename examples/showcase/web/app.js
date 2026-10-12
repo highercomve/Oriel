@@ -114,6 +114,36 @@ $("file-open").addEventListener("click", async () => {
 $("file-save").addEventListener("click", () => show("file-out", async () =>
   (await invoke("save_file", { text: $("file-text").value })) ? "✓ Saved" : "Cancelled"));
 
+// Camera (oriel.camera, on because build.zig declares .permissions.camera):
+// image inputs open the camera or the photo picker; capturePhoto returns
+// the photo scaled, as a data URL.
+$("camera-card").hidden = !window.oriel.features.camera;
+function showPhoto(src, text) {
+  $("cam-preview").src = src;
+  $("cam-preview").hidden = false;
+  setResult("cam-out", text, "ok");
+}
+for (const id of ["cam-take", "cam-pick"]) {
+  $(id).addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return setResult("cam-out", "Cancelled");
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => showPhoto(url, `✓ <input>: ${f.type || "?"}, ${img.naturalWidth}×${img.naturalHeight}, ${Math.round(f.size / 1024)} KB`);
+    img.onerror = () => setResult("cam-out", `Error: ${f.type || "?"} (${f.size} bytes) can't be shown`, "err");
+    img.src = url;
+  });
+}
+async function capturePhoto(source) {
+  try {
+    const p = await window.oriel.camera.capturePhoto({ source, maxSide: 1600, quality: 85 });
+    showPhoto(p.dataUrl, `✓ capturePhoto(${source}): ${p.mime}, ${p.width}×${p.height}, ${Math.round(p.dataUrl.length * 0.75 / 1024)} KB`);
+  } catch (e) { setResult("cam-out", "Error: " + (e.message || e), "err"); }
+}
+$("cam-capture").addEventListener("click", () => capturePhoto("camera"));
+$("cam-library").addEventListener("click", () => capturePhoto("library"));
+
 // ---------------------------------------------------------------------------
 // System: clipboard, notifications, dictate anywhere, keyboard shortcuts.
 
