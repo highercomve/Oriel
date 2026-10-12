@@ -26,6 +26,7 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
+const hooks = @import("../apple/hooks.zig");
 /// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/appkit.zig") else struct {};
 
@@ -451,6 +452,9 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// release is deferred to the enclosing autorelease pool so a window can be
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
+    // Platform hooks first, while everything is still in place.
+    if (handle.webview != null) hooks.webViewDestroyed(@ptrCast(handle.webview));
+    hooks.windowWillClose(@ptrCast(handle.window));
     allowOverlayKey(handle.window, false);
     if (comptime build_opts.native_ui) if (handle.native) |p| {
         // The window must not keep pointing at the view (its initial first
@@ -682,6 +686,7 @@ pub fn WindowCreator(
             wk_config.msgSend(void, "setURLSchemeHandler:forURLScheme:", .{ scheme_handler, scheme_name });
             const content = wk_config.msgSend(Object, "userContentController", .{});
             try BridgeImpl.setupUserContent(content, message_handler, options.label);
+            hooks.webViewConfiguration(@ptrCast(wk_config.value), options.label);
             // getUserMedia: WKWebView only exposes navigator.mediaDevices with
             // this (private, long-standing) preference on. Enabled only for
             // apps that declare the microphone or camera; every request still
@@ -709,6 +714,10 @@ pub fn WindowCreator(
             _ = win.msgSend(cocoa.c.BOOL, "makeFirstResponder:", .{view});
             win.msgSend(void, "setDelegate:", .{window_delegate});
             overlay.setup(win, view, options);
+            hooks.windowCreated(@ptrCast(win.value), options.label);
+            errdefer hooks.windowWillClose(@ptrCast(win.value));
+            hooks.webViewCreated(@ptrCast(view.value), options.label);
+            errdefer hooks.webViewDestroyed(@ptrCast(view.value));
 
             const target_uri = try security.resolveWindowUrl(
                 gpa,
@@ -752,6 +761,7 @@ pub fn WindowCreator(
             // Transparency and overlay placement (always on top, placement),
             // as for a web view window.
             overlay.setup(win, cocoa.nil, options);
+            hooks.windowCreated(@ptrCast(win.value), options.label);
             return .{ .window = win.value, .webview = null, .serial = next_serial.fetchAdd(1, .monotonic), .native = surface };
         }
 
@@ -787,7 +797,9 @@ pub fn WindowCreator(
         /// getUserMedia (WKUIDelegate, macOS 12+): granted only when the app
         /// declares every requested device and the page's origin is trusted
         /// (permissions.allowForPage); TCC then asks the user on first use.
-        fn requestMediaCapture(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, origin_id: cocoa.id, frame_id: cocoa.id, capture_type: i64, handler: cocoa.id) callconv(.c) void {
+        fn requestMediaCapture(_: cocoa.id, _: cocoa.c.SEL, webview: cocoa.id, origin_id: cocoa.id, frame_id: cocoa.id, capture_type: i64, handler: cocoa.id) callconv(.c) void {
+            // A platform hook that returns YES owns the decision.
+            if (hooks.intercept(.media_capture, .{ @as(hooks.id, @ptrCast(webview)), @as(hooks.id, @ptrCast(origin_id)), @as(hooks.id, @ptrCast(frame_id)), @as(isize, @intCast(capture_type)), @as(hooks.id, @ptrCast(handler)) })) return;
             const pool = objc.AutoreleasePool.init();
             defer pool.deinit();
             // WKMediaCaptureType: camera 0, microphone 1, camera and microphone 2.
@@ -830,7 +842,9 @@ pub fn WindowCreator(
                 std.fmt.bufPrint(buf, "{s}://{s}/", .{ scheme, host })) catch "";
         }
 
-        fn decidePolicy(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, action_id: cocoa.id, handler: cocoa.id) callconv(.c) void {
+        fn decidePolicy(_: cocoa.id, _: cocoa.c.SEL, webview: cocoa.id, action_id: cocoa.id, handler: cocoa.id) callconv(.c) void {
+            // A platform hook that returns YES owns the decision.
+            if (hooks.intercept(.decide_policy, .{ @as(hooks.id, @ptrCast(webview)), @as(hooks.id, @ptrCast(action_id)), @as(hooks.id, @ptrCast(handler)) })) return;
             const action: Object = .{ .value = action_id };
             const uri = actionUrl(action) orelse {
                 cocoa.callBlock(handler, struct { isize }, .{policy_cancel});

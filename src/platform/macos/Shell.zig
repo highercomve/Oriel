@@ -13,6 +13,7 @@ const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const lifecycle = @import("../../core/lifecycle.zig");
+const hooks = @import("../apple/hooks.zig");
 const build_opts = @import("build_options");
 const single_instance = @import("single_instance.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
@@ -247,9 +248,37 @@ fn applicationShouldTerminate(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv
 /// launched the app before that; later URLs are for the running app.
 var finished_launching = false;
 
-fn applicationDidFinishLaunching(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
+fn applicationDidFinishLaunching(_: cocoa.id, _: cocoa.c.SEL, notification: cocoa.id) callconv(.c) void {
     finished_launching = true;
     if (build_opts.notification) @import("../../modules/notification/macos.zig").installAtLaunch();
+    hooks.notify(.did_finish_launching, .{raw(notification)});
+}
+
+/// A zig-objc `id` as the platform hooks take it.
+fn raw(obj: cocoa.id) ?*anyopaque {
+    return @ptrCast(obj);
+}
+
+// Platform hooks (src/platform/apple/hooks.zig): activities and remote
+// notification registration, which Oriel itself doesn't use.
+fn continueUserActivity(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, activity: cocoa.id, _: cocoa.id) callconv(.c) cocoa.c.BOOL {
+    return cocoa.boolean(hooks.intercept(.continue_user_activity, .{raw(activity)}));
+}
+
+fn didRegisterForRemoteNotifications(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, token: cocoa.id) callconv(.c) void {
+    hooks.notify(.did_register_push, .{raw(token)});
+}
+
+fn didFailToRegisterForRemoteNotifications(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, err: cocoa.id) callconv(.c) void {
+    hooks.notify(.did_fail_push, .{raw(err)});
+}
+
+/// OrielHooksContext.keyWindow: the key window, else the main one.
+fn hooksFront() ?*anyopaque {
+    const key = sharedApplication().msgSend(Object, "keyWindow", .{});
+    if (key.value != null) return raw(key.value);
+    const w = App.getWindow("main") orelse return null;
+    return raw(w.handle.window);
 }
 
 // ---------------------------------------------------------------------------
@@ -312,15 +341,21 @@ extern "c" fn _NSGetArgv() *[*][*:0]u8;
 /// URLs of the app's schemes come as kAEGetURL instead). With the share
 /// module they are a share from `open_with`; a running app's window comes
 /// forward.
+/// Other URLs come here only without a GetURL handler (no deep_link
+/// module): for the platform hooks' openURL:.
 fn applicationOpenURLs(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, urls: cocoa.id) callconv(.c) void {
-    if (!build_opts.share) return;
+    if (!build_opts.share and !hooks.active()) return;
     const arr: Object = .{ .value = urls };
     const n = arr.msgSend(c_ulong, "count", .{});
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(std.heap.smp_allocator);
     for (0..n) |i| {
         const url = arr.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
-        if (!cocoa.isTrue(url.msgSend(cocoa.c.BOOL, "isFileURL", .{}))) continue;
+        if (!cocoa.isTrue(url.msgSend(cocoa.c.BOOL, "isFileURL", .{}))) {
+            _ = hooks.intercept(.open_url, .{raw(url.value)});
+            continue;
+        }
+        if (!build_opts.share) continue;
         const path = cocoa.utf8(url.msgSend(Object, "path", .{})) orelse continue;
         paths.append(std.heap.smp_allocator, path) catch return;
     }
@@ -342,7 +377,9 @@ fn orielShareService(_: cocoa.id, _: cocoa.c.SEL, pboard: cocoa.id, _: cocoa.id,
 /// brings the main window back. With `on_second_instance`, a reopen (a Dock
 /// click, or the app launched again through Launch Services, e.g. from
 /// Finder) also calls the handler, with no arguments.
-fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
+fn applicationShouldHandleReopen(_: cocoa.id, _: cocoa.c.SEL, app: cocoa.id, has_visible_windows: cocoa.c.BOOL) callconv(.c) cocoa.c.BOOL {
+    // A platform hook that returns YES handled it.
+    if (hooks.intercept(.should_handle_reopen, .{ raw(app), hooks.boolean(cocoa.isTrue(has_visible_windows)) })) return cocoa.boolean(true);
     if (reopen_handler) |h| h(&.{});
     if (!cocoa.isTrue(has_visible_windows)) App.showWindow();
     return cocoa.boolean(true);
@@ -517,7 +554,13 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             if (!build_opts.deep_link) return;
             const desc = (Object{ .value = event }).msgSend(Object, "paramDescriptorForKeyword:", .{keyDirectObject});
             if (desc.value == null) return;
-            const url = cocoa.utf8(desc.msgSend(Object, "stringValue", .{})) orelse return;
+            const text = desc.msgSend(Object, "stringValue", .{});
+            const url = cocoa.utf8(text) orelse return;
+            // A platform hook may consume it (openURL:).
+            if (hooks.active()) {
+                const ns_url = cocoa.class("NSURL").msgSend(Object, "URLWithString:", .{text});
+                if (ns_url.value != null and hooks.intercept(.open_url, .{raw(ns_url.value)})) return;
+            }
             _ = deep_link.validate(url, config.deep_link_schemes) catch |err| {
                 log.warn("deep link rejected: {s}", .{@errorName(err)});
                 return;
@@ -621,6 +664,9 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .{ "orielShare:userData:error:", orielShareService },
                 .{ "orielWillSleep:", workspaceWillSleep },
                 .{ "orielDidWake:", workspaceDidWake },
+                .{ "application:continueUserActivity:restorationHandler:", continueUserActivity },
+                .{ "application:didRegisterForRemoteNotificationsWithDeviceToken:", didRegisterForRemoteNotifications },
+                .{ "application:didFailToRegisterForRemoteNotificationsWithError:", didFailToRegisterForRemoteNotifications },
             });
             // NSApp's delegate is a weak reference: keep ours for the whole run.
             const delegate = cocoa.new(delegate_class);
@@ -663,6 +709,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             const runner_watch = watchDevRunner();
             defer if (runner_watch) |w| cocoa.cancelSource(w);
 
+            // Platform hooks: constructed before the first window.
+            hooks.start(&hooksFront);
             Creator.init();
             defer Creator.deinit();
             active_create_window_fn = &Creator.createWindow;

@@ -22,6 +22,7 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
+const hooks = @import("../apple/hooks.zig");
 /// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/uikit.zig") else struct {};
 
@@ -461,6 +462,7 @@ pub fn detachFromScene(ui_window: apple.id) void {
 fn teardown(handle: WindowHandle) void {
     if (comptime build_opts.native_ui) if (handle.native) |p| native.destroy(@ptrCast(@alignCast(p)));
     _ = close_buttons.remove(handle.serial);
+    hooks.webViewDestroyed(handle.webview);
     isolation.forget(@intFromPtr(handle.webview));
     const view: Object = .{ .value = handle.webview };
     view.msgSend(void, "setNavigationDelegate:", .{apple.nil});
@@ -650,6 +652,7 @@ pub fn WindowCreator(
             wk_config.msgSend(void, "setMediaTypesRequiringUserActionForPlayback:", .{@as(c_ulong, 0)});
             const content = wk_config.msgSend(Object, "userContentController", .{});
             try BridgeImpl.setupUserContent(content, message_handler, options.label);
+            hooks.webViewConfiguration(wk_config.value, options.label);
 
             const zero: apple.CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
             const view = apple.class("WKWebView").msgSend(Object, "alloc", .{})
@@ -688,6 +691,8 @@ pub fn WindowCreator(
 
             const target_uri = try security.resolveWindowUrl(gpa, config.security, local, if (config.dev) |d| d.url else null, options.url, config.start);
             defer gpa.free(target_uri);
+            hooks.webViewCreated(view.value, options.label);
+            errdefer hooks.webViewDestroyed(view.value);
             try load(view, target_uri);
 
             const serial = next_serial.fetchAdd(1, .monotonic);
@@ -767,7 +772,9 @@ pub fn WindowCreator(
             return kind == nav_link_activated or kind == nav_form_submitted;
         }
 
-        fn decidePolicy(_: apple.id, _: apple.c.SEL, _: apple.id, action_id: apple.id, handler: apple.id) callconv(.c) void {
+        fn decidePolicy(_: apple.id, _: apple.c.SEL, webview: apple.id, action_id: apple.id, handler: apple.id) callconv(.c) void {
+            // A platform hook that returns YES owns the decision.
+            if (hooks.intercept(.decide_policy, .{ webview, action_id, handler })) return;
             const action: Object = .{ .value = action_id };
             const uri = actionUrl(action) orelse return apple.callBlock(handler, &.{isize}, .{policy_cancel});
             if (comptime config.security.isolation != null) {
@@ -827,7 +834,8 @@ pub fn WindowCreator(
         }
 
         /// getUserMedia (iOS 15+): declared devices, trusted pages only.
-        fn requestMediaCapture(_: apple.id, _: apple.c.SEL, _: apple.id, origin_id: apple.id, _: apple.id, capture_type: i64, handler: apple.id) callconv(.c) void {
+        fn requestMediaCapture(_: apple.id, _: apple.c.SEL, webview: apple.id, origin_id: apple.id, frame_id: apple.id, capture_type: i64, handler: apple.id) callconv(.c) void {
+            if (hooks.intercept(.media_capture, .{ webview, origin_id, frame_id, @as(isize, @intCast(capture_type)), handler })) return;
             const kinds: []const permissions.Kind = switch (capture_type) {
                 0 => &.{.camera},
                 1 => &.{.microphone},

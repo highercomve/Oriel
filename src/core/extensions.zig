@@ -533,7 +533,7 @@ fn implOf(comptime i: usize) Impl {
         .none => .{ .call = unavailableCall },
         .zig => ZigImpl(entries[i].impl).impl,
         .android => if (target.is_android) @import("../platform/android/extensions.zig").impl else @compileError("android backend off Android"),
-        .objc => if (target.is_ios) @import("../platform/apple/extensions.zig").impl else @compileError("Objective-C backend off iOS"),
+        .objc => if (target.is_ios or target.os == .macos) @import("../platform/apple/extensions.zig").impl else @compileError("Objective-C backend off iOS and macOS"),
     };
 }
 
