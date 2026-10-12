@@ -14,6 +14,7 @@ const window = @import("window.zig");
 const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 const build_opts = @import("build_options");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
 const share = if (build_opts.share) @import("../../modules/share/apple.zig") else struct {};
@@ -201,6 +202,7 @@ fn quitTask(_: ?*anyopaque) void {
 }
 
 fn quitNow() void {
+    lifecycle.dispatch(.terminating);
     if (shutdown_fn) |f| f();
     std.c.exit(exit_code.load(.monotonic));
 }
@@ -211,7 +213,7 @@ pub fn sharedApplication() Object {
 
 pub var on_shutdown_fn: ?*const fn () void = null;
 
-/// The app's lifecycle, for apps to react to (`oriel.ios.onSystemEvent`):
+/// Deprecated: `oriel.lifecycle` has these events on every platform.
 /// "background" (every window left the screen), "foreground" (back), and
 /// "memory-warning" (iOS may end the app next: drop caches and models).
 /// Called on the main thread. Do "background" work right there, not on
@@ -219,26 +221,36 @@ pub var on_shutdown_fn: ?*const fn () void = null;
 /// and a worker it froze mid-way finishes only when the app comes back.
 pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
 var system_event_handler: ?SystemEventHandler = null;
+var system_event_subscribed = false;
 
+/// Deprecated: a lifecycle subscriber under the old names.
 pub fn onSystemEvent(handler: ?SystemEventHandler) void {
     system_event_handler = handler;
+    if (handler == null or system_event_subscribed) return;
+    system_event_subscribed = true;
+    lifecycle.subscribe(&legacySystemEvent) catch log.warn("onSystemEvent: lifecycle has no room for it", .{});
 }
 
-fn systemEvent(name: []const u8) void {
-    log.info("app {s}", .{name});
-    if (system_event_handler) |h| h(name, "");
+fn legacySystemEvent(event: lifecycle.Event) void {
+    const h = system_event_handler orelse return;
+    switch (event) {
+        .background => h("background", ""),
+        .foreground => h("foreground", ""),
+        .memory_pressure => h("memory-warning", ""),
+        else => {},
+    }
 }
 
 fn didEnterBackground(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
-    systemEvent("background");
+    lifecycle.dispatch(.background);
 }
 
 fn willEnterForeground(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
-    systemEvent("foreground");
+    lifecycle.dispatch(.foreground);
 }
 
 fn didReceiveMemoryWarning(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
-    systemEvent("memory-warning");
+    lifecycle.dispatch(.{ .memory_pressure = .critical });
 }
 
 // With scenes, UIKit posts these when the app as a whole changes state
@@ -439,6 +451,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
         }
 
         fn willTerminate(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
+            lifecycle.dispatch(.terminating);
             shutdown();
         }
 

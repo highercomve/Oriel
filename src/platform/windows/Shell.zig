@@ -13,6 +13,7 @@ const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -220,6 +221,7 @@ pub fn quit(code: u8) void {
 /// TrackPopupMenu, a dialog's) may take the WM_QUIT and drop it instead of
 /// posting it again: QUIT_TIMER_ID posts it again until the main loop has it.
 fn quitHere(code: u8) void {
+    lifecycle.dispatch(.terminating);
     // A menu still tracking (a field's context menu, the tray's) ends: its
     // loop would otherwise keep the app up until it's dismissed.
     _ = win32.EndMenu();
@@ -260,6 +262,44 @@ pub var on_shutdown_fn: ?*const fn () void = null;
 var on_session_end_fn: ?*const fn () void = null;
 var session_ended = false;
 
+/// oriel.lifecycle's memory_pressure: Windows has no levels, only "low"
+/// (the low-memory resource notification), which is critical. A thread
+/// waits on it, posts one event, then polls until memory is no longer low
+/// before it waits again: the object stays signaled for as long as the
+/// condition lasts, and waiting on it again would spin.
+const MemoryWatch = struct {
+    var started = std.atomic.Value(bool).init(false);
+    const poll_ms = 5000;
+
+    fn start() void {
+        if (started.swap(true, .monotonic)) return;
+        const handle = win32.CreateMemoryResourceNotification(win32.LowMemoryResourceNotification) orelse {
+            log.warn("could not watch memory pressure ({d})", .{win32.GetLastError()});
+            return;
+        };
+        // Lives with the process: blocked in a wait, with nothing to clean up.
+        const thread = std.Thread.spawn(.{}, run, .{handle}) catch |err| {
+            log.warn("could not watch memory pressure: {s}", .{@errorName(err)});
+            _ = win32.CloseHandle(handle);
+            return;
+        };
+        thread.detach();
+    }
+
+    fn run(handle: win32.HANDLE) void {
+        while (true) {
+            if (win32.WaitForSingleObject(handle, win32.INFINITE) != win32.WAIT_OBJECT_0) return;
+            lifecycle.post(.{ .memory_pressure = .critical });
+            while (true) {
+                win32.Sleep(poll_ms);
+                var low: win32.BOOL = win32.FALSE;
+                if (win32.QueryMemoryResourceNotification(handle, &low) == win32.FALSE) return;
+                if (low == win32.FALSE) break;
+            }
+        }
+    }
+};
+
 fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
     switch (uMsg) {
         WM_DISPATCH => {
@@ -295,9 +335,15 @@ fn hostWndProc(hwnd: win32.HWND, uMsg: win32.UINT, wParam: win32.WPARAM, lParam:
             if (wParam != 0 and !session_ended) {
                 session_ended = true;
                 log.info("session ending: running the app's session-end cleanup", .{});
+                lifecycle.dispatch(.terminating);
                 if (on_session_end_fn) |f| f();
             }
             return 0;
+        },
+        // Sleep and wake (the host window is top-level: broadcasts reach it).
+        win32.WM_POWERBROADCAST => {
+            if (lifecycle.fromPowerBroadcast(wParam)) |event| lifecycle.dispatch(event);
+            return 1;
         },
         win32.WM_COPYDATA => {
             if (lParam == 0) return 0;
@@ -565,6 +611,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             defer on_second_instance_fn = null;
             on_session_end_fn = config.on_session_end;
             defer on_session_end_fn = null;
+            MemoryWatch.start();
 
             var cold_url: ?[]const u8 = null;
             defer {
