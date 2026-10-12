@@ -1,7 +1,7 @@
 //! `oriel deep-link`: manage deep link URL schemes and registration.
 //!
 //! Subcommands:
-//! - `add <scheme>`: enable deep_link in build.zig and register scheme in package url_schemes
+//! - `add <scheme>`: enable deep_link in build.zig and register scheme in AppOptions.url_schemes
 //! - `register`: register local dev build in OS (XDG desktop on Linux, HKCU on Windows,
 //!   Launch Services for the `zig-out/<Name>.app` bundle on macOS)
 //! - `unregister`: remove local dev registration
@@ -81,7 +81,7 @@ pub fn findMatchingClose(source: []const u8, open_idx: usize, open_char: u8, clo
 
 /// Edit build.zig content to:
 /// 1. Set `.deep_link = true` in `b.dependency("oriel", .{ ... })`.
-/// 2. Add `scheme` to `.package = .{ .url_schemes = &.{ ... } }` in `addApp`.
+/// 2. Add `scheme` to the `addApp` options' `.url_schemes = &.{ ... }`.
 /// Idempotent.
 pub fn editBuildZig(allocator: std.mem.Allocator, source: []const u8, scheme: []const u8) EditError![]u8 {
     if (!validateScheme(scheme)) return error.InvalidScheme;
@@ -168,68 +168,65 @@ pub fn editBuildZig(allocator: std.mem.Allocator, source: []const u8, scheme: []
 
     const opts_open = app_opts_open orelse return error.MalformedAddAppOptions;
     const opts_close = findMatchingClose(stage1, opts_open, '{', '}') orelse return error.MalformedAddAppOptions;
-    const app_opts_text = stage1[opts_open .. opts_close + 1];
 
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 
-    // Look for `.package = ` inside app_opts_text
-    if (std.mem.indexOf(u8, app_opts_text, ".package =")) |pkg_rel_idx| {
-        const pkg_abs_start = opts_open + pkg_rel_idx;
-        var pkg_brace_open = pkg_abs_start;
-        while (pkg_brace_open < opts_close and stage1[pkg_brace_open] != '{') : (pkg_brace_open += 1) {}
-        if (pkg_brace_open >= opts_close) return error.MalformedAddAppOptions;
+    // `.url_schemes = ` directly in the addApp options (AppOptions.url_schemes).
+    if (topLevelField(stage1, opts_open, opts_close, ".url_schemes =")) |schemes_abs_start| {
+        var array_brace_open = schemes_abs_start;
+        while (array_brace_open < opts_close and stage1[array_brace_open] != '{') : (array_brace_open += 1) {}
+        if (array_brace_open >= opts_close) return error.MalformedAddAppOptions;
 
-        const pkg_brace_close = findMatchingClose(stage1, pkg_brace_open, '{', '}') orelse return error.MalformedAddAppOptions;
-        const pkg_text = stage1[pkg_brace_open .. pkg_brace_close + 1];
+        const array_brace_close = findMatchingClose(stage1, array_brace_open, '{', '}') orelse return error.MalformedAddAppOptions;
+        const schemes_text = stage1[array_brace_open .. array_brace_close + 1];
 
-        // Inside package, check for .url_schemes
-        if (std.mem.indexOf(u8, pkg_text, ".url_schemes =")) |schemes_rel_idx| {
-            const schemes_abs_start = pkg_brace_open + schemes_rel_idx;
-            var array_brace_open = schemes_abs_start;
-            while (array_brace_open < pkg_brace_close and stage1[array_brace_open] != '{') : (array_brace_open += 1) {}
-            if (array_brace_open >= pkg_brace_close) return error.MalformedAddAppOptions;
-
-            const array_brace_close = findMatchingClose(stage1, array_brace_open, '{', '}') orelse return error.MalformedAddAppOptions;
-            const schemes_text = stage1[array_brace_open .. array_brace_close + 1];
-
-            // Check if scheme is already in schemes_text
-            const target_str = try std.fmt.allocPrint(allocator, "\"{s}\"", .{scheme});
-            defer allocator.free(target_str);
-            if (std.mem.indexOf(u8, schemes_text, target_str) != null) {
-                // Already present!
-                return try allocator.dupe(u8, stage1);
-            }
-
-            // Insert into .url_schemes = &.{ ... }
-            try result.appendSlice(allocator, stage1[0..array_brace_close]);
-            if (array_brace_close > array_brace_open + 1 and stage1[array_brace_close - 1] != '{' and stage1[array_brace_close - 1] != ' ' and stage1[array_brace_close - 1] != '\n') {
-                try result.appendSlice(allocator, ", ");
-            } else if (array_brace_close > array_brace_open + 1 and stage1[array_brace_close - 1] == ' ') {
-                // leave spacing
-            }
-            try result.append(allocator, '"');
-            try result.appendSlice(allocator, scheme);
-            try result.append(allocator, '"');
-            try result.appendSlice(allocator, stage1[array_brace_close..]);
-        } else {
-            // package exists, but url_schemes does not
-            try result.appendSlice(allocator, stage1[0 .. pkg_brace_open + 1]);
-            try result.appendSlice(allocator, "\n            .url_schemes = &.{\"");
-            try result.appendSlice(allocator, scheme);
-            try result.appendSlice(allocator, "\"},");
-            try result.appendSlice(allocator, stage1[pkg_brace_open + 1 ..]);
+        const target_str = try std.fmt.allocPrint(allocator, "\"{s}\"", .{scheme});
+        defer allocator.free(target_str);
+        if (std.mem.indexOf(u8, schemes_text, target_str) != null) {
+            // Already present.
+            return try allocator.dupe(u8, stage1);
         }
-    } else {
-        // No .package in addApp options, insert .package = .{ .url_schemes = &.{"<scheme>"} },
-        try result.appendSlice(allocator, stage1[0 .. opts_open + 1]);
-        try result.appendSlice(allocator, "\n        .package = .{\n            .url_schemes = &.{\"");
+
+        try result.appendSlice(allocator, stage1[0..array_brace_close]);
+        if (array_brace_close > array_brace_open + 1 and stage1[array_brace_close - 1] != '{' and stage1[array_brace_close - 1] != ' ' and stage1[array_brace_close - 1] != '\n') {
+            try result.appendSlice(allocator, ", ");
+        }
+        try result.append(allocator, '"');
         try result.appendSlice(allocator, scheme);
-        try result.appendSlice(allocator, "\"},\n        },");
+        try result.append(allocator, '"');
+        try result.appendSlice(allocator, stage1[array_brace_close..]);
+    } else {
+        try result.appendSlice(allocator, stage1[0 .. opts_open + 1]);
+        try result.appendSlice(allocator, "\n        .url_schemes = &.{\"");
+        try result.appendSlice(allocator, scheme);
+        try result.appendSlice(allocator, "\"},");
         try result.appendSlice(allocator, stage1[opts_open + 1 ..]);
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+/// Where `needle` starts directly inside the braces at `open`..`close`
+/// (depth 1: not inside a nested struct, array or string), or null.
+fn topLevelField(text: []const u8, open: usize, close: usize, needle: []const u8) ?usize {
+    var depth: usize = 0;
+    var in_string = false;
+    var i = open;
+    while (i < close) : (i += 1) {
+        const c = text[i];
+        if (in_string) {
+            if (c == '\\') i += 1 else if (c == '"') in_string = false;
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            '{', '(', '[' => depth += 1,
+            '}', ')', ']' => depth -|= 1,
+            else => if (depth == 1 and std.mem.startsWith(u8, text[i..close], needle)) return i,
+        }
+    }
+    return null;
 }
 
 /// Parse declared schemes from build.zig
@@ -311,7 +308,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
             \\Usage: oriel deep-link <command> [args...]
             \\
             \\Commands:
-            \\  add <scheme>    Enable deep_link in build.zig and register scheme in package url_schemes
+            \\  add <scheme>    Enable deep_link in build.zig and register scheme in AppOptions.url_schemes
             \\  register        Register the built dev app locally for deep link handling
             \\  unregister      Remove local dev registration for deep link handling
             \\
@@ -779,7 +776,7 @@ test "editBuildZig adds scheme and enables deep_link on clean fixture" {
     try std.testing.expectEqualStrings(res, res2);
 }
 
-test "editBuildZig modifies existing package and flips false deep_link" {
+test "editBuildZig adds to the existing url_schemes and flips false deep_link" {
     const fixture =
         \\const std = @import("std");
         \\const oriel = @import("oriel");
@@ -793,9 +790,9 @@ test "editBuildZig modifies existing package and flips false deep_link" {
         \\    _ = oriel.addApp(b, dep, .{
         \\        .name = "notes",
         \\        .root_source_file = b.path("src/main.zig"),
+        \\        .url_schemes = &.{"existing"},
         \\        .package = .{
         \\            .id = "dev.oriel.Notes",
-        \\            .url_schemes = &.{"existing"},
         \\        },
         \\    });
         \\}
@@ -808,6 +805,7 @@ test "editBuildZig modifies existing package and flips false deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, res, ".deep_link = false") == null);
     try std.testing.expect(std.mem.indexOf(u8, res, "\"existing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, res, "\"new-scheme\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res, ".url_schemes = &.{\"existing\", \"new-scheme\"}") != null);
 
     // Idempotent
     const res2 = try editBuildZig(std.testing.allocator, res, "new-scheme");
@@ -896,9 +894,7 @@ test "parseSchemesFromBuildZig parses valid schemes" {
     const fixture =
         \\pub fn build(b: *std.Build) void {
         \\    _ = oriel.addApp(b, dep, .{
-        \\        .package = .{
-        \\            .url_schemes = &.{ "myapp", "custom-scheme", "123bad", "good.one" },
-        \\        },
+        \\        .url_schemes = &.{ "myapp", "custom-scheme", "123bad", "good.one" },
         \\    });
         \\}
     ;
