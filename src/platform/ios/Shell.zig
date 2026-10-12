@@ -241,11 +241,17 @@ fn legacySystemEvent(event: lifecycle.Event) void {
     }
 }
 
+/// Set by the first background: UIKit also sends willEnterForeground while
+/// launching, and, as on Android, `foreground` means "back from background".
+var was_background = false;
+
 fn didEnterBackground(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
+    was_background = true;
     lifecycle.dispatch(.background);
 }
 
 fn willEnterForeground(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
+    if (!was_background) return;
     lifecycle.dispatch(.foreground);
 }
 
