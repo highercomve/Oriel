@@ -977,11 +977,10 @@ g.oriel = Object.freeze({
     set.add(callback);
     const queued = pendingEvents.get(event);
     if (queued?.length) { pendingEvents.delete(event); for (const p of queued) { try { callback(p); } catch (e) { console.error(e); } } }
-    if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {});
-    // Notification clicks and shares that came before the page listened (one
-    // that launched the app); lifecycle events (oriel.lifecycle) and app
-    // extension events from before it loaded.
-    if (event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {});
+    // Deep links, notification clicks and shares that came before the page
+    // listened (one that launched the app); lifecycle events (oriel.lifecycle)
+    // and app extension events from before it loaded.
+    if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {});
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
