@@ -36,6 +36,8 @@ pub const c = struct {
     pub extern "objc" fn sel_registerName(name: [*:0]const u8) SEL;
     pub extern "objc" fn objc_autoreleasePoolPush() ?*anyopaque;
     pub extern "objc" fn objc_autoreleasePoolPop(pool: ?*anyopaque) void;
+    pub extern "objc" fn class_createInstance(cls: RawClass, extra_bytes: usize) id;
+    pub extern "objc" fn object_getIndexedIvars(obj: id) ?*anyopaque;
     pub extern "objc" fn objc_retain(obj: id) id;
     pub extern "objc" fn objc_release(obj: id) void;
 };

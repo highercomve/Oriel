@@ -949,6 +949,7 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
     }
 
     lifecycle.beginRun();
+    @import("extensions.zig").begin(io);
     const code = platform.run(io, api, config);
     // The loop returned on the main thread (desktop): a quit the backend
     // didn't announce (the last window closed) still sends `terminating`.

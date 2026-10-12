@@ -44,6 +44,10 @@ pub const system = @import("core/system.zig");
 /// pressure, sleep/wake, terminating (`lifecycle.subscribe`; the page's
 /// `oriel.lifecycle.on`).
 pub const lifecycle = @import("core/lifecycle.zig");
+/// The app's own native code (`AppOptions.extensions` in build.zig):
+/// Kotlin, Objective-C/Swift or Zig per platform, called by name
+/// (`extensions.get("name").call(...)`); the page through `expose`.
+pub const extensions = @import("core/extensions.zig");
 /// -Dnative_ui: the app's Zig code draws into a page's <canvas>
 /// (native_ui/zig_canvas.zig; docs/native-renderer.md, "Canvas from Zig").
 /// Without it there is no native canvas: check `oriel.canvas.available`.
@@ -258,6 +262,8 @@ test {
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(system);
     std.testing.refAllDecls(lifecycle);
+    std.testing.refAllDecls(extensions);
+    std.testing.refAllDecls(@import("core/extension_spec.zig"));
     std.testing.refAllDecls(@import("core/pending_events.zig"));
     std.testing.refAllDecls(@import("core/file_handles.zig"));
     std.testing.refAllDecls(@import("core/window_commands.zig"));
