@@ -6,7 +6,7 @@ import { draw } from "./draw.js";
 
 const $ = (id) => document.getElementById(id);
 const oriel = window.oriel;
-const native = !!oriel?.native;
+const native = !!oriel?.features?.nativeUi;
 const os = oriel?.platform?.os || navigator.platform || "";
 const coarse = window.matchMedia?.("(pointer: coarse)")?.matches || navigator.maxTouchPoints > 0;
 

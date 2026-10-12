@@ -95,12 +95,12 @@ test "parse mixes iOS options with forwarded Zig options" {
     const ctx: Context = .{ .gpa = gpa, .io = std.testing.io, .environ = &env, .out = &discard.writer, .err = &discard.writer };
     var forwarded: std.ArrayList([]const u8) = .empty;
     defer forwarded.deinit(gpa);
-    const o = (try parse(ctx, &.{ "-Dnative_ui", "--simulator", "--url", "http://host:5173/", "-Dnative_dom=false", "--yes" }, &.{ "--simulator", "--url" }, &forwarded)).?;
+    const o = (try parse(ctx, &.{ "-Dnative_ui", "--simulator", "--url", "http://host:5173/", "-Dnative_ui_prof", "--yes" }, &.{ "--simulator", "--url" }, &forwarded)).?;
     try std.testing.expect(o.simulator and o.yes);
     try std.testing.expectEqualStrings("http://host:5173/", o.url.?);
     try std.testing.expectEqual(@as(usize, 2), forwarded.items.len);
     try std.testing.expectEqualStrings("-Dnative_ui", forwarded.items[0]);
-    try std.testing.expectEqualStrings("-Dnative_dom=false", forwarded.items[1]);
+    try std.testing.expectEqualStrings("-Dnative_ui_prof", forwarded.items[1]);
     // Installation and setup do not build anything and still reject -D options.
     try std.testing.expectEqual(null, try parse(ctx, &.{"-Dnative_ui"}, &.{}, null));
     try std.testing.expectEqual(null, try parse(ctx, &.{"--unknown"}, &.{}, &forwarded));

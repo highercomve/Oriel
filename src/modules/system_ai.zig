@@ -22,7 +22,7 @@
 //! - Pieces of the reply go to `on_token` (on the platform's thread) and to
 //!   the page as "system_ai:token" `{ text }`; download progress to
 //!   `on_progress` and "system_ai:download". The page has the same API as
-//!   `oriel.systemAi` (src/modules/system_ai/bridge.zig).
+//!   `oriel.systemAi` (src/core/bridge_api.js).
 //!
 //! The backends are Oriel's own app extension "oriel.system_ai"
 //! (docs/extensions.md): src/modules/system_ai/OrielSystemAi.kt and

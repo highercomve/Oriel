@@ -26,7 +26,7 @@ const host = {
   evalScript: (name, code) => vm.runInContext(code, ctx, { filename: name }),
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, true, true);
 async function settle() {
   for (let i = 0; i < 6; i++) {

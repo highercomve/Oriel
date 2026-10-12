@@ -1,7 +1,9 @@
 //! The page bridge script: the `window.oriel` API injected into every
-//! WebView, one script for every platform. A platform supplies only its
-//! transport (`script`'s argument): `webkit_transport` (Linux, macOS, iOS)
-//! or a `channelTransport` (Windows, Android).
+//! WebView, one script for every platform. The API itself is
+//! src/core/bridge_api.js, which the native renderer bundles too (with its
+//! own transport, src/native_ui/js/src/main.js). A platform supplies only
+//! its transport (`script`'s argument): `webkit_transport` (Linux, macOS,
+//! iOS) or a `channelTransport` (Windows, Android).
 
 const std = @import("std");
 const target = @import("target.zig");
@@ -105,194 +107,26 @@ const head =
     \\
 ++ token_placeholder ++ "\n";
 
+/// `window.oriel` itself: the file the native renderer bundles too
+/// (src/core/bridge_api.js), less its `export` line.
+const api_js = blk: {
+    @setEvalBranchQuota(100_000);
+    const src = @embedFile("bridge_api.js");
+    const export_line = "export { orielApi };";
+    const at = std.mem.lastIndexOf(u8, src, export_line) orelse @compileError("bridge_api.js: no export line");
+    if (std.mem.trim(u8, src[at + export_line.len ..], " \r\n").len != 0) @compileError("bridge_api.js: the export line must come last");
+    break :blk src[0..at];
+};
+
 /// Everything after the transport and the isolation script (`invoke`).
-const body =
-    \\  class WindowHandle {
-    \\    constructor(label) {
-    \\      this.label = label;
-    \\    }
-    \\    close() {
-    \\      return invoke("oriel:window:close", { label: this.label });
-    \\    }
-    \\    show() {
-    \\      return invoke("oriel:window:show", { label: this.label });
-    \\    }
-    \\    hide() {
-    \\      return invoke("oriel:window:hide", { label: this.label });
-    \\    }
-    \\    focus() {
-    \\      return invoke("oriel:window:focus", { label: this.label });
-    \\    }
-    \\    setTitle(title) {
-    \\      return invoke("oriel:window:setTitle", { label: this.label, title });
-    \\    }
-    \\    setSize(width, height) {
-    \\      return invoke("oriel:window:setSize", { label: this.label, width, height });
-    \\    }
-    \\    maximize(maximized = true) {
-    \\      return invoke("oriel:window:maximize", { label: this.label, maximized });
-    \\    }
-    \\    fullscreen(fullscreen = true) {
-    \\      return invoke("oriel:window:fullscreen", { label: this.label, fullscreen });
-    \\    }
-    \\    startDragging() {
-    \\      return invoke("oriel:window:startDragging", { label: this.label });
-    \\    }
-    \\    emit(event, payload) {
-    \\      return windowApi.emitTo(this.label, event, payload);
-    \\    }
-    \\  }
-    \\  const windowApi = {
-    \\    async open(options) {
-    \\      const res = await invoke("oriel:window:open", options);
-    \\      return new WindowHandle(res.label);
-    \\    },
-    \\    current() {
-    \\      return new WindowHandle(window.__oriel_window_label || "main");
-    \\    },
-    \\    async get(label) {
-    \\      const res = await invoke("oriel:window:get", { label });
-    \\      return res ? new WindowHandle(res.label) : null;
-    \\    },
-    \\    async all() {
-    \\      const list = await invoke("oriel:window:all", {});
-    \\      return (list || []).map(w => new WindowHandle(w.label));
-    \\    },
-    \\    emitTo(label, event, payload) {
-    \\      return invoke("oriel:window:emitTo", { label, event, payload: payload ?? null });
-    \\    }
-    \\  };
-    \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
+const body = api_js ++
+    \\  Object.defineProperty(window, "oriel", { value: orielApi({
+    \\    invoke,
+    \\    listeners,
+    \\    pendingEvents,
     \\    platform:
 ++ " " ++ target.platform_js ++ ",\n    features: " ++ features.js ++ ",\n" ++
-    \\    invoke,
-    \\    listen(event, callback) {
-    \\      let set = listeners.get(event);
-    \\      if (!set) listeners.set(event, (set = new Set()));
-    \\      set.add(callback);
-    \\      const queued = pendingEvents.get(event);
-    \\      if (queued && queued.length > 0) {
-    \\        pendingEvents.delete(event);
-    \\        for (const payload of queued) {
-    \\          try { callback(payload); } catch (e) { console.error(e); }
-    \\        }
-    \\      }
-    \\      if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) {
-    \\        // Deep links, notification clicks and shares that came before the
-    \\        // page listened (one that launched the app); lifecycle and app
-    \\        // extension events from before it loaded.
-    \\        try { Promise.resolve(invoke("events:ready", { event })).catch(() => {}); } catch (_) {}
-    \\      }
-    \\      return () => set.delete(callback);
-    \\    },
-    \\    openExternal(url) {
-    \\      return invoke("open_external", { url });
-    \\    },
-    \\    permissions: Object.freeze({
-    \\      query(name) {
-    \\        return invoke("permissions:query", { name });
-    \\      },
-    \\      request(name) {
-    \\        return new Promise((resolve, reject) => {
-    \\          let set = listeners.get("permission-changed");
-    \\          if (!set) listeners.set("permission-changed", (set = new Set()));
-    \\          const cb = (e) => { if (e && e.name === name) { set.delete(cb); resolve(e.status); } };
-    \\          set.add(cb);
-    \\          Promise.resolve(invoke("permissions:request", { name })).then((s) => {
-    \\            if (s !== "prompt") { set.delete(cb); resolve(s); }
-    \\          }, (err) => { set.delete(cb); reject(err); });
-    \\        });
-    \\      },
-    \\      openSettings(name) {
-    \\        return invoke("permissions:open_settings", { name });
-    \\      },
-    \\    }),
-    \\    // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
-    \\    // "resume" | "terminating", level: "moderate" | "critical" | null }.
-    \\    lifecycle: Object.freeze({
-    \\      on(callback) {
-    \\        return window.oriel.listen("lifecycle", callback);
-    \\      },
-    \\    }),
-    \\    // The app's extensions, as far as Zig exposes them
-    \\    // (oriel.extensions.expose): JSON in, JSON out. Native events come as
-    \\    // `extension:<name>` with { name, data }.
-    \\    extensions: Object.freeze({
-    \\      call(name, method, payload) {
-    \\        return invoke("extensions:call", { name, method, payload: payload === undefined ? null : payload });
-    \\      },
-    \\      on(name, callback) {
-    \\        return window.oriel.listen("extension:" + name, callback);
-    \\      },
-    \\    }),
-    \\    // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
-    \\    camera: Object.freeze({
-    \\      capturePhoto(options) {
-    \\        return invoke("camera:capture", options || {});
-    \\      },
-    \\    }),
-++ @import("../modules/system_ai/bridge.zig").js ++
-    \\    deepLink: Object.freeze({
-    \\      current() {
-    \\        return invoke("deep_link:current", {});
-    \\      },
-    \\    }),
-    \\    share: Object.freeze({
-    \\      // A received file (from share:received's files, or its handle) as a File.
-    \\      async file(f) {
-    \\        const info = typeof f === "number" ? { handle: f } : f;
-    \\        const chunk = 4 << 20, parts = [];
-    \\        for (let offset = 0; ; ) {
-    \\          const bin = atob(await invoke("share:read", { handle: info.handle, offset, length: chunk }));
-    \\          const bytes = new Uint8Array(bin.length);
-    \\          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    \\          parts.push(bytes);
-    \\          offset += bytes.length;
-    \\          if (bytes.length < chunk) break;
-    \\        }
-    \\        return new File(parts, info.name || "file", { type: info.mime || "" });
-    \\      },
-    \\      // Opens the system share sheet: { title, text, url, files: [File | Blob |
-    \\      // a received file | its handle], anchor }. Resolves { completed, target }.
-    \\      async send(item = {}) {
-    \\        const files = [];
-    \\        for (const f of item.files || []) {
-    \\          if (typeof f === "number") { files.push({ handle: f }); continue; }
-    \\          if (!(f instanceof Blob)) { files.push({ handle: f.handle }); continue; }
-    \\          const u = new Uint8Array(await f.arrayBuffer());
-    \\          let bin = "";
-    \\          for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
-    \\          files.push({ name: f.name || "file", data: btoa(bin) });
-    \\        }
-    \\        return new Promise((resolve, reject) => {
-    \\          let set = listeners.get("share:sent");
-    \\          if (!set) listeners.set("share:sent", (set = new Set()));
-    \\          const cb = (r) => { set.delete(cb); resolve(r); };
-    \\          set.add(cb);
-    \\          Promise.resolve(invoke("share:send", { title: item.title, text: item.text, url: item.url, files, anchor: item.anchor }))
-    \\            .catch((err) => { set.delete(cb); reject(err); });
-    \\        });
-    \\      },
-    \\      capabilities() {
-    \\        return invoke("share:capabilities", {});
-    \\      },
-    \\    }),
-    \\    __emit(event, payload) {
-    \\      const set = listeners.get(event);
-    \\      if (set && set.size > 0) {
-    \\        for (const cb of set) {
-    \\          try { cb(payload); } catch (e) { console.error(e); }
-    \\        }
-    \\      } else if (event === "deep-link") {
-    \\        // Only deep links wait for a listener (e.g. across a reload); the
-    \\        // native side queues them until the first listen(). Capped.
-    \\        let queued = pendingEvents.get(event);
-    \\        if (!queued) pendingEvents.set(event, (queued = []));
-    \\        queued.push(payload);
-    \\        if (queued.length > 16) queued.shift();
-    \\      }
-    \\    },
-    \\    window: Object.freeze(windowApi),
+    \\    label: () => window.__oriel_window_label,
     \\  }) });
     \\  // <div data-oriel-drag-region> moves the window when pressed (its buttons,
     \\  // fields and links, and anything under data-oriel-no-drag, keep their clicks).
@@ -301,7 +135,7 @@ const body =
     \\    if (!e.target.closest("[data-oriel-drag-region]")) return;
     \\    if (e.target.closest("button, input, textarea, select, a, [contenteditable], [data-oriel-no-drag]")) return;
     \\    e.preventDefault();
-    \\    Promise.resolve(windowApi.current().startDragging()).catch(() => {});
+    \\    Promise.resolve(window.oriel.window.current().startDragging()).catch(() => {});
     \\  }, true);
     \\
 ++ @import("window_commands.zig").theme_color_js ++
@@ -322,5 +156,8 @@ test "bridge script: each transport, one of each placeholder" {
         // Methods call the closure's invoke, so destructured ones work
         // (`const { openExternal } = oriel`).
         try std.testing.expect(std.mem.indexOf(u8, s, "this.invoke") == null);
+        // bridge_api.js, spliced in without its module syntax.
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, s, "function orielApi("));
+        try std.testing.expect(std.mem.indexOf(u8, s, "export {") == null);
     }
 }

@@ -1,6 +1,7 @@
-// The runtime's DOM as linkedom (the default build). The native DOM
-// (./native-backend.js, -Dnative_dom) has the same exports; build.mjs
-// resolves "#dom" to one or the other.
+// The runtime's DOM as linkedom, for the Node tests (test/runtime-linkedom.js,
+// and the tests that import src/ directly): they run without the Zig store.
+// The app's DOM is the native one (./native-backend.js, same exports);
+// build.mjs resolves "#dom" to one or the other.
 import { parseHTML } from "../../vendor/linkedom/esm/index.js";
 import { NEXT } from "../../vendor/linkedom/esm/shared/symbols.js";
 import { prepareMatch } from "../../vendor/linkedom/esm/shared/matches.js";

@@ -25,8 +25,8 @@ test "forward build options and replace defaults" {
     const gpa = std.testing.allocator;
     var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(gpa);
-    try append(gpa, &argv, &.{ "android-dev", "-Dtarget=aarch64-linux-android", "-Doptimize=ReleaseSafe" }, &.{ "-Dnative_ui", "-Dnative_dom=false", "-Doptimize=ReleaseFast", "-Dmodel_path=/tmp/my models" });
-    const expected = [_][]const u8{ "android-dev", "-Dtarget=aarch64-linux-android", "-Dnative_ui", "-Dnative_dom=false", "-Doptimize=ReleaseFast", "-Dmodel_path=/tmp/my models" };
+    try append(gpa, &argv, &.{ "android-dev", "-Dtarget=aarch64-linux-android", "-Doptimize=ReleaseSafe" }, &.{ "-Dnative_ui", "-Dnative_ui_prof", "-Doptimize=ReleaseFast", "-Dmodel_path=/tmp/my models" });
+    const expected = [_][]const u8{ "android-dev", "-Dtarget=aarch64-linux-android", "-Dnative_ui", "-Dnative_ui_prof", "-Doptimize=ReleaseFast", "-Dmodel_path=/tmp/my models" };
     try std.testing.expectEqual(expected.len, argv.items.len);
     for (expected, argv.items) |want, got| try std.testing.expectEqualStrings(want, got);
     try std.testing.expect(!isOption("-D"));

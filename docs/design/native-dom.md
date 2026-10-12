@@ -202,7 +202,7 @@ Phase 0 decides whether the rest is worth it: if a native DOM isn't clearly
 faster through QuickJS's C calls, we stop there.
 
 **Status (2026-10-02):** phases 0 and 1 are in. With `-Dnative_ui` the native
-DOM is the default; `-Dnative_dom=false` builds on linkedom. On the desktop
+DOM is the default (0.12 removed the linkedom build, `-Dnative_dom=false`; linkedom remains the DOM the runtime's Node tests run on). On the desktop
 the render bench builds 1000 rows in 39.7 ms (linkedom: 84.5 ms) and updates
 them in 5.6 ms (9.8 ms), and memory after two rounds stays at 127 MB (152 MB).
 Linux is verified (tests, showcase, GhostPen, the bench); Windows, macOS/iOS

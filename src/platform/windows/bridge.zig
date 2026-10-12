@@ -321,6 +321,7 @@ pub fn Bridge(
     comptime local: security.Local,
 ) type {
     const window_commands = @import("../../core/window_commands.zig");
+    const native_commands = @import("../../core/native_commands.zig");
     return struct {
         const Self = @This();
 
@@ -427,18 +428,7 @@ pub fn Bridge(
                 defer if (pool != null) internal.releaseWorkerPool();
 
                 const result: anyerror![]const u8 = blk: {
-                    if (window_commands.isWindowCommand(self.cmd))
-                        break :blk window_commands.dispatch(config.security, local, arena, page_url, win_label, self.cmd, args);
-                    if (!security.commandAllowedForWindow(config.security, local, page_url, self.cmd, win_label)) {
-                        log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(self.cmd[0..@min(self.cmd.len, 64)]), win_label });
-                        break :blk error.Forbidden;
-                    }
-                    // A dropped file's handle back to a path (native pages
-                    // only: only they hold drop handles).
-                    if (std.mem.eql(u8, self.cmd, "drop:path"))
-                        break :blk self.engine.dropPathCommand(arena, self.args);
-                    if (ipc.isBuiltinCommand(self.cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
-                    if (!ipc.isAsync(api.commands, self.cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                    if (native_commands.dispatch(api, config, local, self.engine, arena, page_url, win_label, request, self.args, if (pool) |p| p.io else null)) |answer| break :blk answer;
                     // Async: on the worker pool, answered from the message loop.
                     const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                     const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(self.cmd, .{}), if (self.args.len > 0) self.args else "null" }) catch break :blk error.OutOfMemory;

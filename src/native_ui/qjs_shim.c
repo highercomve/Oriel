@@ -62,11 +62,9 @@ extern int oriel_nui_font_metrics(void *opaque, double size, int mono, const cha
 extern int oriel_nui_run_rects(void *opaque, double id, double first, double last, double *out, size_t max);
 extern int oriel_nui_canvas(void *opaque, double id, const double *nums, size_t len, const char *const *strs, const size_t *lens, size_t count);
 extern uint32_t oriel_nui_stamp_plan(void *opaque, const double *v, size_t len);
-#if defined(ORIEL_NATIVE_DOM)
 extern int oriel_nui_stamp(void *opaque, double row_id, void *dom, uint32_t row, uint32_t plan);
 extern int oriel_nui_stamp_list(void *opaque, double list_id, void *dom, uint32_t list, double row_style, uint32_t plan,
                                 uint32_t template_row, const uint32_t *kept, size_t kept_len);
-#endif
 extern int oriel_nui_leaf_style(void *opaque, double id, const char *json, size_t len);
 extern int oriel_nui_leaf(void *opaque, double id, double style_id, const char *text, size_t len, int is_text);
 extern int oriel_nui_frame(void *opaque, double id, double *out9);
@@ -78,17 +76,13 @@ extern void oriel_nui_scroll_to(void *opaque, double id, double y, double x);
 extern void oriel_nui_file_read(void *opaque, uint32_t req_id, uint32_t handle, double offset, double length);
 extern void oriel_nui_file_release(void *opaque, uint32_t handle);
 
-#if defined(ORIEL_NATIVE_DOM)
 #include "dom_qjs.h"
-#endif
 
 typedef struct {
     JSRuntime *rt;
     JSContext *ctx;
     void *opaque;
-#if defined(ORIEL_NATIVE_DOM)
     DomCtx *dom; // the native DOM (docs/native-dom.md)
-#endif
     // Calls from Zig in progress (eval and jobs nest when a host function
     // calls back into the page).
     int depth;
@@ -283,7 +277,6 @@ static JSValue h_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     return JS_NewBool(ctx, ok);
 }
 
-#if defined(ORIEL_NATIVE_DOM)
 // host.stampPlan([n, (text style, box style, transform) x n, order x n]):
 // a row plan's id for host.stamp, 0 when not kept (tree.zig).
 static JSValue h_stamp_plan(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -300,9 +293,7 @@ static JSValue h_stamp_plan(JSContext *ctx, JSValueConst this_val, int argc, JSV
     }
     return JS_NewUint32(ctx, oriel_nui_stamp_plan(opaque_of(ctx), v, (size_t)len));
 }
-#endif
 
-#if defined(ORIEL_NATIVE_DOM)
 // host.stamp(rowId, rowElement, plan): the tree makes the row's leaves from
 // the native DOM itself (dom_stamp.zig); false when the row doesn't have
 // the plan's shape now.
@@ -343,7 +334,6 @@ static JSValue h_stamp_list(JSContext *ctx, JSValueConst this_val, int argc, JSV
     }
     return JS_NewBool(ctx, oriel_nui_stamp_list(opaque_of(ctx), list_id, dom, list, row_style, plan, template_row, kept, (size_t)kept_len));
 }
-#endif
 
 // host.canvas(id, Float64Array, [strings]): a canvas node's program as
 // numbers (canvas.js encodeProgram), read in place: no JSON either way.
@@ -1078,13 +1068,11 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "canvas", h_canvas, 3);
     set_fn(ctx, host, "sheetCache", h_sheet_cache, 2);
     set_fn(ctx, host, "sheetKeep", h_sheet_keep, 2);
-#if defined(ORIEL_NATIVE_DOM)
     // Rows stamped from the native DOM (Android learns of the nodes the
     // tree makes through Backend.leaf).
     set_fn(ctx, host, "stampPlan", h_stamp_plan, 1);
     set_fn(ctx, host, "stamp", h_stamp, 3);
     set_fn(ctx, host, "stampList", h_stamp_list, 6);
-#endif
     set_fn(ctx, host, "focus", h_focus, 1);
     set_fn(ctx, host, "selection", h_selection, 1);
     set_fn(ctx, host, "setSelection", h_set_selection, 3);
@@ -1101,9 +1089,8 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
 #if defined(ORIEL_NUI_PROF)
     JS_SetPropertyStr(ctx, host, "prof", JS_TRUE);
 #endif
-#if defined(ORIEL_NATIVE_DOM)
     // The native DOM: its interfaces and __nuiDom as globals, the document
-    // as __host.document (runtime-native.js).
+    // as __host.document (runtime.js).
     self->dom = nui_dom_install(ctx);
     if (!self->dom) {
         JS_FreeValue(ctx, host);
@@ -1114,7 +1101,6 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
         return NULL;
     }
     JS_SetPropertyStr(ctx, host, "document", nui_dom_document_object(self->dom));
-#endif
     JS_SetPropertyStr(ctx, global, "__host", host);
     JS_FreeValue(ctx, global);
     return self;
@@ -1243,10 +1229,8 @@ void oqjs_free(void *p) {
     oqjs *self = p;
     JSRuntime *rt = self->rt;
     JSContext *ctx = self->ctx;
-#if defined(ORIEL_NATIVE_DOM)
     // Before the context: the store holds values of it.
     nui_dom_uninstall(self->dom);
-#endif
     js_free(ctx, self);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

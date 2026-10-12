@@ -28,7 +28,7 @@ const host = {
   platform: JSON.stringify({ os: "macos" }), label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
 assert.equal(ops.length, 0, "nothing before an assistive technology asks");
