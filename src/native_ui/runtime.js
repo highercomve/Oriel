@@ -20592,6 +20592,42 @@ ${a.stack || ""}`;
         return g.oriel.listen("extension:" + name, callback);
       }
     }),
+    // The device's own model (oriel.system_ai, features.systemAi), as in the
+    // webview bridges (src/modules/system_ai/bridge.zig). Tokens stream as
+    // "system_ai:token" ({ text }), download progress as "system_ai:download".
+    systemAi: Object.freeze({
+      status() {
+        return invoke("system_ai:status", {});
+      },
+      capabilities() {
+        return invoke("system_ai:capabilities", {});
+      },
+      download(onProgress) {
+        const off = onProgress ? g.oriel.listen("system_ai:download", onProgress) : null;
+        return Promise.resolve(invoke("system_ai:download", {})).finally(() => off && off());
+      },
+      async generate(request, onToken) {
+        const b64 = async (data) => {
+          if (typeof data === "string") return data;
+          const bytes = data instanceof g.Blob ? new Uint8Array(await data.arrayBuffer()) : data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+          return btoa(bin);
+        };
+        const images = [];
+        for (const img of request.images || []) images.push({ data: await b64(img.data), mime: img.mime || img.data && img.data.type || "image/jpeg" });
+        const schema = request.schema == null || typeof request.schema === "string" ? request.schema : JSON.stringify(request.schema);
+        const off = onToken ? g.oriel.listen("system_ai:token", (e) => onToken(e.text)) : null;
+        try {
+          return await invoke("system_ai:generate", { system: request.system || "", prompt: request.prompt, images, temperature: request.temperature, maxTokens: request.maxTokens, schema });
+        } finally {
+          if (off) off();
+        }
+      },
+      cancel() {
+        return invoke("system_ai:cancel", {});
+      }
+    }),
     // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
     camera: Object.freeze({ capturePhoto(options) {
       return invoke("camera:capture", options || {});
