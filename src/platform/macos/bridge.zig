@@ -23,7 +23,6 @@ const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/appkit.zig") else struct {};
-const native_engine = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {};
 
 const log = std.log.scoped(.oriel);
 
