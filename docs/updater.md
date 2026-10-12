@@ -1,152 +1,539 @@
-# Application updates
+<!-- Generated from site/content/docs/updater.smd by tools/docs/gen-md.mjs: edit that file. -->
 
-[Back to Oriel](../README.md) · [Documentation](README.md)
+# Updater
 
-## Updater (`oriel.updater`)
+In-app updates for desktop apps: an Ed25519-signed manifest, a verified download, an atomic swap of the executable, AppImage or .app bundle, and a restart.
 
-Built-in self-updater featuring Ed25519 signature verification, atomic file replacement, throttled download progress streaming, and in-place restart.
+`oriel.updater` lets an installed desktop app update itself. You publish a
+signed manifest (`latest.json`) next to your release assets; the app
+fetches it, checks the Ed25519 signature against the public key built into
+it, downloads the artifact the manifest names, verifies its size and
+SHA-256, swaps it atomically for the running executable (or AppImage, or
+`.app` bundle), and restarts.
 
-Gzip payloads (including macOS bundle archives) are limited to 512 MiB after
-expansion. Manifests may include a signed `expires` Unix timestamp; when present,
-expired manifests and non-positive system clocks are rejected. Without expiry,
-normal update checks still require a version newer than the installed one.
+The page gets three commands (`updater_check`, `updater_install`,
+`updater_restart`) and a progress event; nothing the page sends can change
+the manifest URL, the key or the file being replaced. Use the updater for
+apps you distribute yourself (GitHub releases, your own server). Apps from
+a store (Google Play, the App Store, Microsoft Store via MSIX) are updated
+by the store. The `oriel` CLI updates itself with the same engine
+([`oriel update`](#oriel-update)).
 
-### 1. Key generation
+## Availability
 
-Generate a new Ed25519 keypair using the app build step registered by `oriel.addApp` (run inside your app project):
+| Platform | Check | Install | Formats | Notes |
+|---|---|---|---|---|
+| Linux | ✓ | ✓ | `raw`, `raw.gz`, `gzip`, `appimage`, `appimage.gz` | Running from an AppImage, the outer `.AppImage` file is replaced. |
+| Windows | ✓ | ✓ | `raw`, `raw.gz`, `gzip` | The running `.exe` is renamed to `<exe>.old`, removed at the next start. |
+| macOS | ✓ | ✓ | `raw`, `raw.gz`, `gzip`, `app.tar.gz` | `app.tar.gz` replaces the whole `.app` bundle. |
+| Android | ✓ | fails (`Unsupported`) | | Off by default (`.updater = true` to turn on): the store updates the app; checking can still tell the user a release is out. |
+| iOS | | | | Not available: the App Store or TestFlight updates the app (`oriel.updater.available` is false). |
 
-```sh
-zig build keygen -- --name myapp --out-dir ~/.config/myapp/keys
-```
+The module is the Oriel dependency's `updater` flag (on by default except
+on Android). It needs no permission. Manifest and artifact URLs must be
+`https://`.
 
-- Private key written to `$XDG_CONFIG_HOME/oriel/keys/<name>.key` (default) with file mode `0600` (refuses to overwrite existing files without `--force`).
-- Public key written to `<name>.pub` (standard base64) and printed to stdout.
+## Quick start
 
-### 2. Signing release artifacts
-
-Sign an update artifact (raw binary, AppImage, or `.gz` archive) and produce a manifest JSON using the app build step (run inside your app project):
-
-```sh
-zig build sign-update -- zig-out/bin/my-app \
-  --app-id com.example.App \
-  --version 1.2.0 \
-  --url https://releases.example.com/my-app-1.2.0 \
-  --key ~/.config/myapp/keys/myapp.key \
-  --out manifest.json
-```
-
-**Signed manifest format (`oriel-update-v2`):**
-```json
-{
-  "app_id": "com.example.App",
-  "version": "1.2.0",
-  "target": "x86_64-linux",
-  "format": "raw",
-  "size": 1048576,
-  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "url": "https://releases.example.com/my-app-1.2.0",
-  "signature": "base64-encoded-ed25519-signature"
-}
-```
-
-The signature is computed over domain-separated canonical bytes:
-`"oriel-update-v2\n" ++ app_id ++ "\n" ++ version ++ "\n" ++ target ++ "\n" ++ format ++ "\n" ++ size ++ "\n" ++ sha256 ++ "\n" ++ url ++ "\n"` (plus optional `expires\n`).
-
-One file for every platform (like Tauri's `latest.json`): sign each platform's artifact with its `--target`, then combine the manifests:
+1. Make a key pair, once, and keep the private key out of the repository:
 
 ```sh
-zig build combine-manifests -- manifest-*.json --out latest.json
+zig build keygen -- --name my-app
+# Private key written to: ~/.config/oriel/keys/my-app.key (mode 0600)
+# Public key (base64): 1DqVHiw6bT4PjHafhfXcXS9jyw+XOPNwTllXlfHLtFQ=
 ```
 
-`latest.json` has a `platforms` map (`"x86_64-linux"`, `"aarch64-macos"`, `"x86_64-windows"`, ...), each entry a complete signed manifest. Publish it at one stable URL (e.g. `https://github.com/you/app/releases/latest/download/latest.json`) and use that as `manifest_url` in every build: each app picks and verifies the entry for its own target, and an entry filed under the wrong platform is refused. A single-platform manifest still works as `manifest_url`.
-
-### 3. Embedding public key in the app
-
-Configure `update_public_key` in `build.zig`:
+2. Put the public key in `build.zig`:
 
 ```zig
 _ = oriel.addApp(b, dep, .{
     .name = "my-app",
     .root_source_file = b.path("src/main.zig"),
     .frontend = .{ .dir = "frontend" },
-    .update_public_key = "base64-public-key-string",
+    .package = .{ .id = "dev.example.MyApp", .version = "1.0.0" },
+    .update_public_key = "1DqVHiw6bT4PjHafhfXcXS9jyw+XOPNwTllXlfHLtFQ=",
 });
 ```
 
-The public key is exposed at compile time via `@import("oriel_app").update_public_key`.
-
-### 4. JS IPC and runtime API
-
-In `src/main.zig`, register the comptime-configured updater commands:
+3. Add the commands, and the progress event, in `src/main.zig`:
 
 ```zig
+const std = @import("std");
+const oriel = @import("oriel");
 const app = @import("oriel_app");
 
 const Updater = oriel.updater.Commands(.{
-    .app_id = "com.example.App",
-    .manifest_url = "https://releases.example.com/latest.json",
-    .current_version = "1.0.0",
-    .public_key_b64 = app.update_public_key orelse @panic("missing update key"),
+    .app_id = "dev.example.MyApp",
+    .manifest_url = "https://github.com/example/my-app/releases/latest/download/latest.json",
+    .current_version = "1.0.0", // keep in step with .package.version
+    .public_key_b64 = app.update_public_key orelse @compileError("set update_public_key in build.zig"),
 });
 
 pub const Commands = struct {
     pub const updater_check = Updater.updater_check;
     pub const updater_install = Updater.updater_install;
     pub const updater_restart = Updater.updater_restart;
-
-    pub const async_commands = .{ "updater_check", "updater_install", "updater_restart" };
+    pub const async_commands = Updater.async_commands;
 };
+
+pub const Events = struct {
+    @"updater://progress": struct { downloaded: u64, total: ?u64 },
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .app = app.build,
+        .window = .{ .title = "My App" },
+    });
+}
 ```
 
-For typed `listen` in the generated TypeScript, declare the progress event in your `Events` struct:
-`@"updater://progress": struct { downloaded: u64, total: ?u64 }`.
-
-From frontend TypeScript / JavaScript:
+4. Call them from the page:
 
 ```ts
 import { invoke, listen } from "./oriel";
 
-// 1. Check for update
 const update = await invoke("updater_check");
-if (update?.available) {
-    console.log(`Update ${update.version} available!`);
-
-    // Listen to download progress events (throttled to ~10/s)
-    const unlisten = listen("updater://progress", ({ downloaded, total }) => {
-        console.log(`Downloaded ${downloaded} of ${total} bytes`);
-    });
-
-    // 2. Download and atomically install update
-    await invoke("updater_install");
-    unlisten();
-
-    // 3. Restart running application
-    await invoke("updater_restart");
+if (update.available) {
+  const stop = listen("updater://progress", ({ downloaded, total }) => {
+    progress.value = total ? downloaded / total : 0;
+  });
+  await invoke("updater_install");
+  stop();
+  await invoke("updater_restart"); // the app restarts as the new version
 }
 ```
 
-### 5. AppImage behavior
+5. On each release, sign every platform's artifact and publish one
+   `latest.json` ([below](#example-release)).
 
-When running inside an AppImage (`$APPIMAGE` environment variable is set), `oriel.updater` automatically targets the outer AppImage executable for replacement and re-exec, keeping desktop launcher integrations seamless.
+## How it works
 
-### 6. Windows behavior
+```mermaid
+sequenceDiagram
+  participant P as Page
+  participant U as updater Commands (worker thread)
+  participant S as Release server
+  participant FS as Install directory
+  P->>U: invoke("updater_check")
+  U->>S: GET manifest_url (64 KiB max, 15 s)
+  S-->>U: latest.json
+  U->>U: pick platforms[target], verify Ed25519,<br/>app_id, target, expires, version > current
+  U-->>P: { available, version }
+  P->>U: invoke("updater_install")
+  U->>S: GET url (3 redirects, 10 min)
+  S-->>U: artifact bytes
+  U-->>P: event updater://progress (at most every 100 ms)
+  U->>FS: temp file next to the target, SHA-256 and size checked, fsync
+  U->>FS: gunzip if *.gz, then atomic rename (or bundle swap)
+  U-->>P: true
+  P->>U: invoke("updater_restart")
+  U->>FS: exec the new binary with the same arguments
+```
 
-On Windows, running executables cannot be directly overwritten. `oriel.updater` downloads and verifies payloads next to the executable as `<exe>.new`, renames the running binary to `<exe>.old` using `MoveFileExW` (`MOVEFILE_REPLACE_EXISTING`), and promotes `<exe>.new` to `<exe>` (with automatic rollback on failure). Stale `.old` files are cleaned up on subsequent startup (`updater.init`). Application restart is performed via `CreateProcessW` using the original command line (`GetCommandLineW`). Runtime untested on Windows.
+**The engine** is `src/updater_core.zig`, which needs neither GTK nor an
+`App` (the `oriel` CLI uses it too); `src/modules/updater.zig` wraps it with
+the page's commands and the progress event. Manifest parsing, signing and
+verification are `src/modules/update_manifest.zig` (standard library only).
+The per-platform parts (replacing a file, restarting) are
+`src/modules/updater/linux.zig`, `windows.zig`, `macos.zig` and
+`android.zig`.
 
-### 7. macOS behavior
+**Startup.** `oriel.main` calls `updater.init` on the main thread: it
+captures `$APPIMAGE` and `$APPDIR` (worker threads never read the
+environment) and, on Windows, deletes a `<exe>.old` left by the previous
+update.
 
-A plain executable is replaced like on Linux (`raw` / `raw.gz`). An app in a
-`.app` bundle is updated as a whole with the format `app.tar.gz` (a gzip'd tar
-of one `<Name>.app`; build it with `COPYFILE_DISABLE=1 tar -czf ... Name.app`):
-it is unpacked next to the running bundle, swapped with it atomically
-(`renameatx_np` `RENAME_SWAP`) and the old bundle is deleted; `restart`
-relaunches the bundle with `open -n`. Other OSes refuse `app.tar.gz`. For
-distribution, tar the signed and notarized `zig-out/package/<Name>.app` (see
-[macOS bundles](packaging.md#macos-bundles-app-dmg)), not `oriel build`'s ad-hoc
-`zig-out/<Name>.app`.
+**Check.** `updater_check` runs on a worker thread (it is an async
+command). It fetches the manifest with a deadline, retrying a 5xx answer
+twice (after 2 s and 5 s: GitHub's download URLs answer 500 for a few
+minutes after a release is published). A combined manifest's entry for
+this build's target is selected, and its signature verified over the
+canonical bytes ([format](#manifest-format)). The entry must name
+the configured `app_id` and the target it is filed under, must not be
+expired, and must be newer than `current_version` (semver). The verified
+update is kept in the module's state; the page only learns
+`{ available, version }`.
 
-### 8. Security notes
+**Install.** `updater_install` downloads the kept update into a temporary
+file next to the file it replaces (same directory, so the final rename is
+atomic), streaming it through SHA-256 and refusing more bytes than the
+signed size. After the hash matches it is synced to disk; a `.gz` payload
+is expanded (at most 512 MiB) into a second temporary file; then the
+platform backend swaps it in:
 
-- **JS cannot choose URLs, keys, or paths**: The manifest URL, public key, and target path are configured strictly in native Zig code; frontend code cannot redirect downloads or bypass signature verification.
-- **Private keys**: Never commit private keys to version control or bundle them into client applications. Use `keygen` with secure out-of-repo storage (`mode 0600`).
-- **Transport**: Production manifest and payload URLs should always use HTTPS.
+- **Linux and macOS (files)**: `rename(2)` over the target, then the
+  directory is synced. The target's mode is kept (0755 when new). Symlinks
+  are resolved first, so the real file is replaced.
+- **Windows**: `MoveFileExW` replaces the file; when the running
+  executable is locked, it is renamed to `<exe>.old` and the new file moved
+  into place (rolled back if that fails). `.old` is deleted at the next
+  start.
+- **macOS bundles** (`app.tar.gz`): the tar is extracted into a staging
+  directory next to the running `.app` (symlinks preserved, size bounded),
+  which must contain exactly one `<Name>.app` with the same executable;
+  `renameatx_np(RENAME_SWAP)` swaps the two atomically and the old bundle
+  is deleted.
+
+The signed format must match how the app is installed: an AppImage is only
+replaced by an `appimage` payload, and a plain executable never by one
+(`error.FormatMismatch`).
+
+**Restart.** On Linux the process `exec`s the new file with the original
+arguments (from `/proc/self/cmdline`). On Windows a new process is created
+suspended with the original command line, the single-instance lock is
+released, and the new process resumed. A macOS bundle is relaunched with
+`open -n <bundle>`; a plain macOS executable is replaced like on Linux.
+
+## Examples
+
+### Sign a release for every platform (CI)
+
+After building each platform's artifact, sign each one for its target and
+merge the manifests. This is GhostPen's release job, shortened:
+
+```sh
+V=1.2.0
+BASE=https://github.com/example/my-app/releases/download/v$V
+printf '%s' "$UPDATE_KEY" > key && chmod 600 key   # the private key, from a CI secret
+
+sign() { # <file> <target> <format>
+  zig build sign-update -- "dist/$1" --app-id dev.example.MyApp --version "$V" \
+    --target "$2" --format "$3" --url "$BASE/$1" --key key --out "dist/update-$2.json"
+}
+sign my-app-$V-x86_64.AppImage   x86_64-linux   appimage
+sign my-app-x86_64-windows.exe   x86_64-windows raw
+sign MyApp-aarch64-macos.app.tar.gz aarch64-macos app.tar.gz
+
+zig build combine-manifests -- dist/update-*.json \
+  --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --out dist/latest.json
+rm key
+```
+
+Upload `latest.json` with the release. With
+`.../releases/latest/download/latest.json` as `manifest_url`, every
+installed copy sees the newest release.
+
+### A macOS bundle update
+
+Tar the signed and notarized package, not `oriel build`'s ad-hoc
+`zig-out/<Name>.app`:
+
+```sh
+oriel package -Dmacos-sign-identity="Developer ID Application: ..." -Dmacos-notarize-profile=notary
+cd zig-out/package && COPYFILE_DISABLE=1 tar -czf MyApp-aarch64-macos.app.tar.gz MyApp.app
+```
+
+`COPYFILE_DISABLE=1` keeps macOS's `._` metadata files out of the tar
+(they are skipped anyway). Sign it with `--format app.tar.gz`.
+
+### Your own flow in Zig
+
+The commands are a convenience; the engine is public. Check at startup and
+emit your own event, for example:
+
+```zig
+const updater = oriel.updater;
+// Events declares `update_ready: struct { version: []const u8 }`.
+const events = oriel.App.events(Events);
+
+fn config() updater.Config {
+    return .{
+        .app_id = "dev.example.MyApp",
+        .manifest_url = "https://example.com/my-app/latest.json",
+        .current_version = "1.0.0",
+        .public_key_b64 = app.update_public_key.?,
+    };
+}
+
+/// On a worker thread: blocks on the network.
+fn checkAndInstall(io: std.Io, gpa: std.mem.Allocator) !void {
+    var update = (try updater.checkForUpdate(io, gpa, config())) orelse return;
+    defer update.deinit();
+    const path = try updater.download(io, gpa, update, null, .{ .callback = onProgress });
+    defer gpa.free(path);
+    events.emit(.update_ready, .{ .version = update.version });
+}
+
+fn onProgress(_: ?*anyopaque, downloaded: u64, total: ?u64) void {
+    updater.emitProgress(downloaded, total);
+}
+```
+
+Restart later with `updater.restart(io, path)`. GhostPen
+(`src/updates.zig`) works this way, with a build option to point the
+updater at a test manifest.
+
+## Reference
+
+### `oriel.updater.Commands`
+
+```zig
+pub fn Commands(comptime config: Config) type
+```
+
+Checked at compile time: `manifest_url` starts with `https://`,
+`public_key_b64` decodes to a 32-byte key, `app_id` isn't empty. The
+returned struct has `async_commands` (all three) and:
+
+| Command | Page call | Returns | Errors |
+|---|---|---|---|
+| `updater_check` | `invoke("updater_check")` | `{ available: boolean, version: string \| null }` | `UpdaterBusy`, and the check's errors |
+| `updater_install` | `invoke("updater_install")` | `true` | `UpdaterBusy`, `NoUpdatePending` (no successful check first), `FormatMismatch`, and the download's errors |
+| `updater_restart` | `invoke("updater_restart")` | doesn't return on success | `UpdaterBusy`, `CannotReadCmdline`, `CmdlineTooLarge`, `TooManyArguments`, `RestartFailed`, `Unsupported` |
+
+A failed command rejects the page's promise with the error's name. One
+operation runs at a time: another command while one is in progress fails
+with `UpdaterBusy`. `updater_install` consumes the update kept by the last
+`updater_check`; `updater_restart` restarts the installed file, or the
+current executable when nothing was installed.
+
+`CheckResult` is `struct { available: bool, version: ?[]const u8 = null }`.
+
+### Event
+
+| Event | Payload | When |
+|---|---|---|
+| `updater://progress` | `{ downloaded: u64, total: ?u64 }` | During `updater_install`, at most every 100 ms, and once at the end. `total` is the signed size. |
+
+Declare it in `Events` (as in the quick start) for a typed `listen`.
+`oriel.updater.emitProgress(downloaded, total)` emits it from your own code.
+
+### `Config`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `app_id` | `[]const u8` | required | Must equal the manifest's `app_id` (use `package.id`). |
+| `manifest_url` | `[]const u8` | required | `https://` URL of a combined or single-platform manifest. |
+| `current_version` | `[]const u8` | required | The installed version (semver; a leading `v` is ignored). |
+| `public_key_b64` | `[]const u8` | required | The 44-character base64 Ed25519 public key (`oriel_app.update_public_key`). |
+| `target` | `[]const u8` | `DEFAULT_TARGET` | The manifest entry to use: `"<arch>-<os>"` of this build (`x86_64-linux`, `aarch64-macos`). Set it for variant builds (`"x86_64-linux-cuda"`). |
+| `timeout_ms` | `u32` | `15_000` | Deadline for fetching the manifest. |
+| `download_timeout_ms` | `u32` | `600_000` | Deadline for the artifact download. |
+| `force` | `bool` | `false` | Also offer the current version (a reinstall). |
+| `allow_downgrade` | `bool` | `false` | Offer any version the manifest names. Only for an explicit request for one version, whose manifest the caller then checks names exactly that version; otherwise a replayed old manifest downgrades. |
+| `allocator` | `?Allocator` | the module's | Allocator for the update state. |
+| `allow_http_for_test` | `bool` | `false` | Loopback `http://` URLs, in test builds only (a compile error elsewhere). |
+
+### Zig API
+
+| Declaration | Meaning |
+|---|---|
+| `available: bool` | `true` where the module is built. |
+| `init(io, gpa, env_map) !void` | Capture `$APPIMAGE` / `$APPDIR`, clean up `<exe>.old`. Called by `oriel.main`; main thread. |
+| `deinit(io) void` | Free the module's state. Called by `oriel.main`. |
+| `checkForUpdate(io, gpa, config) !?Update` | Fetch and verify the manifest; `null` when nothing newer. Blocks: call it off the main thread. |
+| `download(io, gpa, update, dest_path, progress) ![]u8` | Download, verify and install `update`, with the default 10-minute deadline; returns the installed path (caller frees). `dest_path` null: the running executable, or `$APPIMAGE`. |
+| `downloadWithOptions(io, gpa, update, dest_path, progress, timeout_ms) ![]u8` | The same with a deadline. |
+| `restart(io, exe_path) !noreturn` | Replace this process with `exe_path` (see [How it works](#how-it-works)). |
+| `resolveDestPath(io, gpa, dest_path) ![]u8` | The file an update replaces: `dest_path` (must be absolute), else `$APPIMAGE` when running from it, else the executable. |
+| `runningAsAppImage(io, gpa) !bool` | `$APPIMAGE` set and the executable under `$APPDIR`. |
+| `decideDestPath(dest, appimage, appdir, exe) []const u8` | The pure decision behind `resolveDestPath`. |
+| `isUnderDir(path, dir) bool` | `path` inside `dir` on a separator boundary. |
+| `verifyManifest(arena, json, public_key_b64) !Manifest` | Verify a single-platform manifest. |
+| `verifyManifestWithOptions(arena, json, key, options) !Manifest` | The same with `VerifyOptions`. |
+| `unpack(gpa, manifest, payload_gz) ![]u8` | Check a gzip payload's SHA-256 and expand it in memory (512 MiB max). |
+| `splitCmdline(bytes, exe_path, out) ![]const []const u8` | Split `/proc/self/cmdline` for the restart. |
+| `emitProgress(downloaded, total) void` | Emit `updater://progress`. |
+| `Update` | A verified update: the manifest's fields and an arena; `deinit()` frees it. |
+| `ProgressCallback` | `{ context: ?*anyopaque = null, callback: *const fn (?*anyopaque, u64, ?u64) void }`. |
+| `Manifest`, `Semver` | From `update_manifest`. |
+| `State` | `idle`, `checking`, `installing`, `restarting`: the commands' state machine. |
+| `DEFAULT_TARGET`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_DOWNLOAD_TIMEOUT_MS`, `MAX_CMDLINE_LEN` (16 KiB), `MAX_ARGV_COUNT` (256) | Constants. |
+| `core`, `backend`, `update_manifest` | The engine, this platform's backend, the manifest module. |
+| `check(gpa, ctx) !Check` | The module's self-test (`oriel doctor`, `examples/smoke`). |
+
+### Manifest format
+
+A single-platform manifest (`oriel-update-v2`), as `sign-update` writes it:
+
+```json
+{
+  "app_id": "dev.example.MyApp",
+  "version": "1.2.0",
+  "target": "x86_64-linux",
+  "format": "appimage",
+  "size": 9437184,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "url": "https://github.com/example/my-app/releases/download/v1.2.0/my-app-1.2.0-x86_64.AppImage",
+  "expires": null,
+  "signature": "base64 Ed25519 signature, 88 characters"
+}
+```
+
+| Field | Rules |
+|---|---|
+| `app_id`, `target`, `format` | Non-empty, no control characters. |
+| `version` | Semver (`1.2.0`, `1.2.0-rc.1`). |
+| `format` | `raw`, `raw.gz`, `gzip`, `appimage`, `appimage.gz`, `app.tar.gz`. A `.gz` or `gzip` payload is expanded; `app.tar.gz` is a bundle. |
+| `size` | Bytes of the artifact as downloaded; greater than 0, at most 512 MiB. |
+| `sha256` | 64 hex characters (compared case-insensitively). |
+| `url` | `https://`. |
+| `expires` | Optional Unix time; after it the manifest is refused (`ManifestExpired`), and so is a clock at or before 1970 (`InvalidSystemTime`). Not 0. |
+| `signature` | Ed25519 over the canonical bytes below. |
+
+The signature covers, exactly:
+
+```
+"oriel-update-v2\n" app_id "\n" version "\n" target "\n" format "\n" size "\n" sha256 "\n" url "\n" expires "\n"
+```
+
+with `size` in decimal and `expires` in decimal, or `0` when absent. Every
+field is signed, so a manifest can't be retargeted (another platform),
+repointed (another URL) or replayed under another app id.
+
+A combined manifest (`latest.json`, what `combine-manifests` writes) holds
+up to 32 single-platform manifests with the same `app_id` and `version`:
+
+```json
+{
+  "app_id": "dev.example.MyApp",
+  "version": "1.2.0",
+  "pub_date": "2026-10-12T09:00:00Z",
+  "notes": "Faster startup.",
+  "platforms": {
+    "x86_64-linux": { "app_id": "...", "target": "x86_64-linux", "signature": "..." },
+    "x86_64-windows": { "...": "..." },
+    "aarch64-macos": { "...": "..." }
+  }
+}
+```
+
+The top-level fields are informational; the app verifies only the entry
+under its own target, and refuses an entry whose signed `target` differs
+from its key (`TargetMismatch`). A single-platform manifest works as
+`manifest_url` too.
+
+### `keygen`, `sign-update`, `combine-manifests`
+
+Steps `addApp` registers for desktop targets, running `update_tool`
+(`tools/update_tool.zig`); arguments go after `--`.
+
+`zig build keygen -- [options]`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--name <name>` | `oriel` | Key file names: `<name>.key`, `<name>.pub`. |
+| `--out-dir <dir>` | `$XDG_CONFIG_HOME/oriel/keys`, else `~/.config/oriel/keys` | Directory (created 0700). |
+| `--key <path>`, `--pub <path>` | | Exact file paths instead. |
+| `--force` | | Overwrite an existing private key (also a corrupt one). |
+
+The private key file holds the base64 32-byte seed (mode 0600); the public
+key file and the output hold the base64 public key. Files are written
+through a temporary file and renamed.
+
+`zig build sign-update -- <artifact> --app-id <id> --version <ver> --url <url> --key <file> [options]`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--target <arch-os>` | the build machine's | The manifest's target. Always pass it in CI. |
+| `--format <fmt>` | from the file name: `.AppImage` → `appimage`, `.gz` → `raw.gz`, else `raw` | Pass `app.tar.gz` explicitly for macOS bundles. |
+| `--size <bytes>` | the file's size | Must equal the file's size. |
+| `--expires <unix seconds>` | none | Signed expiry. |
+| `--out <file>` | stdout only | Also write the manifest here. |
+| `--artifact <file>` | | Instead of the positional argument. |
+
+A leading `v` in `--version` is dropped. The manifest is printed to stdout.
+
+`zig build combine-manifests -- <manifest.json>... --out <latest.json> [--pub-date <RFC 3339>] [--notes <text>]`:
+merges manifests of one app id and version, one per target (a duplicate
+target, or a different app id or version, is an error; at most 32).
+Signatures are checked for form only; clients verify each entry.
+
+### `oriel update`: the CLI's own updates
+
+`oriel update` updates the `oriel` CLI with the same engine; it isn't for
+apps.
+
+| Option | Meaning |
+|---|---|
+| `--check` | Report whether a newer release exists; install nothing. |
+| `--version <tag>` | Install that release (`v1.2.3`, `1.2.3-rc.1`), older or the same included; its manifest must name exactly that version. |
+| `--yes` | Don't ask; required without a terminal. |
+
+It reads `<releases>/download/<latest tag>/latest.json` from
+`https://github.com/highercomve/Oriel/releases` (app id `dev.oriel.cli`),
+verifies it against the key the CLI was built with (Oriel's
+`-Dupdate-public-key`), and replaces the running binary.
+`ORIEL_RELEASES_URL` points it at another releases URL (`<url>/latest/download/latest.json`),
+and `ORIEL_UPDATE_TARGET` installs to another path; both exist for tests.
+
+### Limits
+
+| What | Limit |
+|---|---|
+| Manifest | 64 KiB, 15 s (`timeout_ms`) |
+| Artifact download | 10 minutes (`download_timeout_ms`), 3 redirects, exactly the signed size |
+| Expanded payload | 512 MiB (gzip and `app.tar.gz`) |
+| Retries | 2 on a 5xx answer (2 s, 5 s), before anything is written |
+| Platforms per `latest.json` | 32 |
+| Restart arguments | 16 KiB of command line, 256 arguments (Linux) |
+
+### Errors
+
+| Error | Meaning |
+|---|---|
+| `InsecureUrl` | A manifest or artifact URL isn't `https://`. |
+| `Timeout`, `BadHttpStatus`, `ManifestTooLarge` | The manifest couldn't be fetched. |
+| `InvalidManifest`, `InvalidFormat`, `InvalidSemver`, `InvalidSize`, `InvalidSha256Length`, `InvalidSha256Hex`, `EmptyField`, `ControlCharactersInField`, `InvalidExpiration` | The manifest is malformed. |
+| `InvalidPublicKeyLength`, `InvalidSignatureLength`, `InvalidPadding` | A key or signature isn't valid base64 of the right length. |
+| `SignatureVerificationFailed` | The signature doesn't match: tampered, or another key. |
+| `TargetNotInManifest` | `latest.json` has no entry for this target. |
+| `AppIdMismatch`, `TargetMismatch` | The entry is for another app or platform. |
+| `ManifestExpired`, `InvalidSystemTime` | `expires` passed, or the clock is unset. |
+| `FormatMismatch` | An AppImage payload for a non-AppImage install, or the reverse. |
+| `PayloadTooLarge`, `PayloadSizeExceeded`, `PayloadSizeMismatch`, `PayloadHashMismatch`, `UpdateTooLarge` | The download doesn't match the manifest, or expands past 512 MiB. |
+| `DestinationPathNotAbsolute` | An explicit `dest_path` is relative. |
+| `NotInAppBundle`, `InvalidAppBundle`, `UnsupportedFormat` | `app.tar.gz` for an app not in a bundle, a tar without exactly one `.app` with the same executable, or on another OS. |
+| `RenameRunningToOldFailed`, `RenameTmpToTargetFailed`, `RenameFailed` | The swap failed (Windows rolls back). |
+| `Unsupported` | Installing or restarting on Android. |
+
+### Security
+
+- The manifest URL, the public key and the replaced file are fixed in Zig;
+  the page can only ask to check, install and restart.
+- TLS only: `http://` is refused outside test builds, for the manifest and
+  the artifact.
+- Every manifest field is signed with a domain-separated prefix; size and
+  SHA-256 are checked before anything replaces the app, and the swap is
+  atomic, so a failed update leaves the old version in place.
+- No downgrades unless asked for (`allow_downgrade`); `expires` limits how
+  long a captured manifest can be replayed.
+- Keep the private key out of the repository and the app: a CI secret,
+  written to a 0600 file for the signing step and deleted after.
+
+### Migrating from 0.11
+
+- `oriel_app.update_public_key` is unchanged; the other `oriel_app`
+  declarations moved into `oriel_app.build`
+  ([Building](building.md#oriel-app)).
+
+## Troubleshooting
+
+- **`FormatMismatch` from an AppImage**: the artifact was signed as `raw`;
+  sign AppImages with `--format appimage` (the default for `.AppImage`
+  file names).
+- **`TargetNotInManifest`**: `latest.json` has no entry for this build's
+  `"<arch>-<os>"`. Sign with `--target` for each platform; a variant build
+  (CUDA) needs its own `Config.target` and entry.
+- **`SignatureVerificationFailed` for every release**: the app was built
+  with another public key than the one matching your private key; compare
+  `update_public_key` with the key's `.pub`.
+- **`available` is false although a release is out**: `current_version`
+  isn't lower than the manifest's version; check it follows
+  `.package.version`.
+- **Windows: a `.old` file next to the executable**: the previous process
+  still held it at startup; the next start removes it.
+- **macOS: the updated app asks for permissions again**: the release is
+  ad-hoc signed; sign every release with the same certificate
+  ([Signing](signing.md#example-self-signed)).
+- **Right after publishing, checks fail with `BadHttpStatus`**: GitHub
+  answers 5xx for a few minutes; the updater retries twice, then gives up
+  until the next check.
+
+## Related
+
+- [Signing](signing.md): code signing, which updates on macOS and Windows also need.
+- [Packaging](packaging.md): the AppImage, executables and bundles you publish.
+- [Commands](commands.md): how `invoke`, async commands and events work.
+- [Building](building.md): `update_public_key` and the `oriel_app` module.

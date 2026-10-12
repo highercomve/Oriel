@@ -42,6 +42,8 @@ jobs:
         run: zig build test -Dkokoro -Dwhisper -Daudio_capture=false --summary all
       - name: Isolation runtime sender validation
         run: node tools/test_isolation_runtime.mjs
+      - name: docs/ matches the site's pages
+        run: node tools/docs/gen-md.mjs --check
       - name: Smoke app, module checks (no GUI)
         working-directory: examples/smoke
         run: zig build && ./zig-out/bin/oriel-smoke --check

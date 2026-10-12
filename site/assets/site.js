@@ -12,7 +12,27 @@
       copyText(btn, document.getElementById(btn.dataset.copy).textContent.trim());
     });
   });
-  document.querySelectorAll(".prose pre").forEach(function (pre) {
+  // Diagrams: `>[]($block.attrs("mermaid"))` right above a fenced block
+  // renders as an empty div.block.mermaid followed by the pre; Mermaid draws
+  // that pre's text (loaded only on pages that have one).
+  var diagrams = document.querySelectorAll(".prose .block.mermaid");
+  if (diagrams.length) {
+    diagrams.forEach(function (block) {
+      var src = block.querySelector("pre") || block.nextElementSibling;
+      if (!src || src.tagName !== "PRE") return;
+      var pre = document.createElement("pre");
+      pre.className = "mermaid";
+      pre.textContent = src.textContent;
+      block.replaceChildren(pre);
+      if (src.parentNode !== block) src.remove();
+    });
+    import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs").then(function (m) {
+      var light = window.matchMedia("(prefers-color-scheme: light)").matches;
+      m.default.initialize({ startOnLoad: false, theme: light ? "neutral" : "dark", fontFamily: "Inter, sans-serif", securityLevel: "strict" });
+      m.default.run({ querySelector: ".prose pre.mermaid" });
+    });
+  }
+  document.querySelectorAll(".prose pre:not(.mermaid)").forEach(function (pre) {
     var btn = document.createElement("button");
     btn.className = "copy-btn";
     btn.type = "button";

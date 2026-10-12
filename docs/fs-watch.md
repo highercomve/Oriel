@@ -1,0 +1,287 @@
+<!-- Generated from site/content/docs/fs-watch.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# File watching
+
+Know when files are created, changed or deleted in a directory: inotify on Linux and Android, ReadDirectoryChangesW on Windows, FSEvents on macOS.
+
+`oriel.fs_watch` tells your Zig code when a file in a watched directory is
+created, modified or deleted: reload a document edited elsewhere, pick up a
+file dropped in an inbox folder, refresh a list. You create a `Watcher`,
+`add` directories, and `poll` it; `poll` never blocks, so it fits a
+worker's loop or a timer.
+
+It watches the **direct children** of each directory, not subtrees, and
+reports names, not contents. It is a Zig API: the page hears about changes
+through events your code emits (see [Quick start](#quick-start)).
+For a one-off read of a file the user picks, see
+[Files](files.md) and [Dialogs](dialogs.md).
+
+## Availability
+
+| Platform | Backend | Notes |
+|---|---|---|
+| Linux | inotify | |
+| Windows | `ReadDirectoryChangesW` (overlapped I/O) | |
+| macOS | FSEvents, per-file events | delivered after about 50 ms |
+| Android | inotify (the Linux backend) | directories the app can read, such as its own (`oriel.paths.appData`) |
+| iOS | none | `oriel.fs_watch.available` is `false` |
+
+The flag is `fs_watch`, on by default; `.fs_watch = false` on the oriel
+dependency leaves it out. On iOS it resolves to off. No permission is
+needed beyond being able to read the directory. The page sees the resolved
+flag as `window.oriel.features.fsWatch`.
+
+## Quick start
+
+Watch the app's data directory on a thread and tell the page what changed:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub const Commands = struct {};
+
+pub const Events = struct {
+    file_changed: struct { kind: []const u8, name: []const u8 },
+};
+const events = oriel.App.events(Events);
+
+var io: std.Io = undefined;
+
+pub fn main(init: std.process.Init) !u8 {
+    io = init.io;
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .app = app.build,
+        .window = .{ .title = "Watcher", .width = 800, .height = 600 },
+        .setup = setup,
+    });
+}
+
+fn setup() !void {
+    if (!oriel.fs_watch.available) return;
+    const thread = try std.Thread.spawn(.{}, watch, .{});
+    thread.detach();
+}
+
+fn watch() void {
+    watchDir() catch |err| std.log.err("fs_watch: {s}", .{@errorName(err)});
+}
+
+fn watchDir() !void {
+    const gpa = std.heap.smp_allocator;
+    const dir = try oriel.paths.appData(gpa, .{ .name = app.build.id });
+    defer gpa.free(dir);
+    const dir_z = try gpa.dupeZ(u8, dir);
+    defer gpa.free(dir_z);
+
+    const watcher = try oriel.fs_watch.Watcher.init();
+    defer watcher.deinit();
+    try watcher.add(dir_z);
+
+    var buf: [4096]u8 align(oriel.fs_watch.buffer_align) = undefined;
+    var out: [256]oriel.fs_watch.Event = undefined;
+    while (true) {
+        const n = try watcher.poll(&buf, &out);
+        for (out[0..n]) |ev| events.emit(.file_changed, .{ .kind = @tagName(ev.kind), .name = ev.name });
+        try io.sleep(.fromMilliseconds(250), .awake);
+    }
+}
+```
+
+```js
+window.oriel.listen("file_changed", ({ kind, name }) => console.log(kind, name));
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+  OS["Kernel / OS<br/>(inotify, ReadDirectoryChangesW,<br/>FSEvents)"] -->|"raw change records"| W["Watcher<br/>(fs_watch/linux.zig,<br/>windows.zig, macos.zig)"]
+  Loop["Your loop<br/>(worker thread or timer)"] -->|"poll(buf, out)"| W
+  W -->|"Event { kind, name }<br/>names point into buf"| Loop
+  Loop -->|"events.emit(...)"| Page["Page<br/>(listen)"]
+```
+
+`oriel.fs_watch` (`src/modules/fs_watch.zig`) picks a backend per OS. All
+three share one shape: `init` creates the OS object, `add` starts watching
+a directory, and `poll` copies whatever has arrived since the last call
+into your arrays and returns how many events it wrote, `0` when nothing
+happened. Nothing calls you back; you decide when to poll, from one thread.
+
+- **Linux and Android** (`fs_watch/linux.zig`): one inotify descriptor,
+  opened non-blocking, with a watch per directory for `IN_CREATE`,
+  `IN_MODIFY` and `IN_DELETE`. `poll` does one `read` of the descriptor
+  into `buf` and decodes the records in it; the names are inotify's own
+  bytes inside `buf`.
+- **Windows** (`fs_watch/windows.zig`): a directory handle per `add`, each
+  with a 4 KiB buffer and an overlapped `ReadDirectoryChangesW` for file
+  and directory names, writes, creation and size changes, not recursive.
+  `poll` checks each handle with `GetOverlappedResult` without waiting,
+  decodes completed records (UTF-16 names to UTF-8, into `buf`), and
+  re-arms the read only once a buffer has been fully handed out, so a
+  small `out` loses nothing. The parser is `fs_watch/common.zig`
+  (unit-tested on every OS).
+- **macOS** (`fs_watch/macos.zig`): one FSEvents stream over every watched
+  directory (recreated on each `add`) with per-file events and a 50 ms
+  latency, running on a private dispatch queue. Its callback keeps events
+  for direct children of a watched directory (paths compared by realpath,
+  so `/var/...` matches `/private/var/...`) in a queue under a mutex; `poll`
+  drains the queue into `buf` and `out`. FSEvents coalesces a path's flags
+  within a batch, so the kind is decided by whether the file exists now.
+
+**Event kinds.** `created`, `modified`, `deleted`, or `other` (an overflow,
+or a flag Oriel doesn't map):
+
+| | `created` | `modified` | `deleted` | `other` |
+|---|---|---|---|---|
+| Linux, Android | `IN_CREATE` (files and subdirectories) | `IN_MODIFY` (each write) | `IN_DELETE` | queue overflow (`name` empty) |
+| Windows | added; rename's new name | modified (writes, size, creation time) | removed; rename's old name | buffer overflow (`name` empty) |
+| macOS | created or renamed, and exists | modified, and exists | removed or renamed, and gone | anything else |
+
+Renames on Linux aren't reported: `IN_MOVED_FROM`/`IN_MOVED_TO` aren't in
+the watch mask, so a file moved into or out of the directory produces no
+event there. On Windows and macOS a rename is a `deleted` plus a
+`created`.
+
+## Examples
+
+### Reload a document when another program saves it
+
+Editors save in different ways (write in place, write a temporary file and
+rename it over the original), so react to any event for the name and
+debounce:
+
+```zig
+fn watchDocument(dir: [:0]const u8, name: []const u8) !void {
+    const watcher = try oriel.fs_watch.Watcher.init();
+    defer watcher.deinit();
+    try watcher.add(dir);
+
+    var buf: [4096]u8 align(oriel.fs_watch.buffer_align) = undefined;
+    var out: [256]oriel.fs_watch.Event = undefined;
+    var dirty = false;
+    while (true) {
+        const n = try watcher.poll(&buf, &out);
+        for (out[0..n]) |ev| {
+            if (ev.kind == .other or std.mem.eql(u8, ev.name, name)) dirty = true;
+        }
+        if (n == 0 and dirty) { // quiet for one tick: the save is done
+            dirty = false;
+            events.emit(.document_changed, .{ .name = name });
+        }
+        try io.sleep(.fromMilliseconds(300), .awake);
+    }
+}
+```
+
+An `other` event with an empty name means events were lost: rescan the
+directory instead of trusting the events you have.
+
+### Several directories, told apart
+
+An event carries the file's name, not its directory. When it matters
+which directory changed, give each its own `Watcher`:
+
+```zig
+const inbox = try oriel.fs_watch.Watcher.init();
+defer inbox.deinit();
+try inbox.add(inbox_dir);
+const outbox = try oriel.fs_watch.Watcher.init();
+defer outbox.deinit();
+try outbox.add(outbox_dir);
+// poll both in the same loop
+```
+
+## Reference
+
+### `oriel.fs_watch`
+
+```zig
+pub const available: bool; // false on iOS, or with .fs_watch = false
+
+pub const buffer_align: comptime_int; // alignment poll's buf needs (4)
+
+pub const Event = struct {
+    pub const Kind = enum { created, modified, deleted, other };
+    kind: Kind,
+    name: []const u8, // the file's name in the watched directory; points into poll's buf
+};
+
+pub const Watcher = struct {
+    pub fn init() !Watcher;
+    pub fn deinit(self: Watcher) void;
+    pub fn add(self: Watcher, path: [:0]const u8) !void;
+    pub fn poll(self: Watcher, buf: []align(buffer_align) u8, out: []Event) !usize;
+};
+
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
+```
+
+| Declaration | Behavior |
+|---|---|
+| `Watcher.init()` | Creates the OS watcher (an inotify descriptor; nothing yet on Windows; a dispatch queue on macOS). |
+| `Watcher.deinit()` | Stops every watch and frees the watcher. On Windows it cancels pending reads and waits for them; on macOS it stops the stream and waits out a running callback. |
+| `Watcher.add(path)` | Watches the direct children of the directory `path` (UTF-8). Call it as often as you like; there is no way to remove one directory short of `deinit`. Events from before `add` aren't reported. |
+| `Watcher.poll(buf, out)` | Writes up to `out.len` events and returns their count; never blocks. Names are copied into (or, on Linux, read into) `buf` and are valid until the next `poll`; copy what you keep. |
+| `Event.name` | The child's name, no directory. Empty for `other` overflow events. |
+| `check(gpa, ctx)` | Smoke check: creates `/tmp/oriel-fswatch-<pid>/hello.txt` and expects a `created` event (as run by `oriel.checkAll`). |
+
+**Sizing `buf` and `out`.** 4096 bytes of `buf` and 256 `out` entries is a
+good default. Per platform:
+
+- **Linux, Android:** `poll` reads as many records as fit in `buf` at
+  once. A `buf` too small for one record (16 bytes plus the name) fails
+  with `error.InotifyRead`. Records read past `out.len` are dropped, so keep
+  `out.len` at least `buf.len / 16` (256 for 4096).
+- **Windows:** each directory has its own 4 KiB kernel buffer; what doesn't
+  fit `out` or `buf` stays for the next `poll`. A name longer than all of
+  `buf` is skipped with `error.BufferTooSmall` (the next call continues).
+- **macOS:** events wait in Oriel's queue until they fit; a name longer than
+  all of `buf` is dropped.
+
+**Threads.** Use a watcher from one thread at a time: create it, add to it
+and poll it on the same thread, or guard it. `poll` doesn't block, so a
+worker that sleeps between polls (as in the quick start) is the usual
+shape; never loop on `poll` without sleeping.
+
+**Errors.**
+
+| Platform | `init` | `add` | `poll` |
+|---|---|---|---|
+| Linux, Android | `error.InotifyInit` | `error.InotifyAddWatch` (missing path, no permission, inotify watch limit) | `error.InotifyRead` |
+| Windows | `error.OutOfMemory` | `error.CreateFileFailed` (missing or not a directory), `error.CreateEventFailed`, `error.ReadDirectoryChangesFailed`, `error.InvalidUtf8`, `error.OutOfMemory` | `error.GetOverlappedResultFailed`, `error.ReadDirectoryChangesFailed` (that directory stops being watched), `error.MalformedRecord`, `error.BufferTooSmall` |
+| macOS | `error.DispatchQueueCreate`, `error.OutOfMemory` | `error.WatchPathNotFound`, `error.FSEventStreamCreate`, `error.FSEventStreamStart`, `error.OutOfMemory` | none |
+
+**Directories only.** On Windows and macOS `path` must be a directory.
+inotify also accepts a file on Linux, but that is platform-specific; watch
+its directory and filter by name instead.
+
+**Unavailable builds.** On iOS, or with `.fs_watch = false`,
+`oriel.fs_watch.available` is `false` and every other declaration is a
+compile error naming the flag; guard shared code with
+`if (oriel.fs_watch.available)`.
+
+The namespace also has `common` (the Windows record parser) and `impl`
+(this OS's backend): internals, not part of the API.
+
+## Troubleshooting
+
+- **No events on macOS right after a change.** FSEvents delivers after its
+  50 ms latency; poll again later.
+- **Nothing when a file is moved into the directory (Linux).** Moves aren't
+  in the inotify mask; only create, modify and delete are reported.
+- **Nothing for files in subdirectories.** Watching isn't recursive: `add`
+  each subdirectory you care about.
+- **`error.InotifyAddWatch` with many directories.** The per-user inotify
+  watch limit (`/proc/sys/fs/inotify/max_user_watches`) is reached.
+- **An `other` event with an empty name.** The OS's buffer overflowed and
+  events were lost; rescan the directory.
+- **A build error on iOS.** Guard the code with `if (oriel.fs_watch.available)`.
+
+## Related
+
+- [Paths](paths.md): the app's own directories, the usual thing to watch on a phone.
+- [Commands](commands.md): events from Zig to the page.
+- [Files](files.md) and [Dialogs](dialogs.md): reading the files the user picks.
+- [Modules](modules.md): every build flag.

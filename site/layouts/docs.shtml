@@ -6,28 +6,67 @@
 	<div class="docs">
 		<aside class="sidebar">
 			<nav>
-				<h4>Guide</h4>
+				<!-- oriel:sidebar begin (tools/docs/gen-md.mjs, from site/docs-index.json) -->
+				<h4>Start</h4>
 				<a href="$site.page('docs/getting-started').link()">Getting started</a>
-				<a href="$site.page('docs/wrap').link()">Wrap a web app</a>
 				<a href="$site.page('docs/tutorial').link()">Tutorial: a notes app</a>
+				<a href="$site.page('docs/wrap').link()">Wrap a web app</a>
 				<a href="$site.page('docs/examples').link()">Examples</a>
-				<a href="$site.page('docs/development').link()">Development</a>
-				<a href="$site.page('docs/building').link()">Building &amp; packaging</a>
-				<a href="$site.page('docs/signing').link()">Code signing</a>
-				<a href="$site.page('docs/permissions').link()">Permissions</a>
-				<a href="$site.page('docs/mobile').link()">Android and iOS</a>
-				<a href="$site.page('docs/platform-hooks').link()">Platform hooks</a>
-				<a href="$site.page('docs/android-extensions').link()">Android platform hooks</a>
-				<a href="$site.page('docs/extensions').link()">App extensions</a>
-				<a href="$site.page('docs/native-renderer').link()">Native UI <span class="tag-exp">experimental</span></a>
-				<a href="$site.page('docs/changelog').link()">Changelog</a>
-				<h4>Reference</h4>
+				<h4>Core</h4>
 				<a href="$site.page('docs/concepts').link()">Concepts</a>
+				<a href="$site.page('docs/commands').link()">Commands and events</a>
+				<a href="$site.page('docs/windows').link()">Windows</a>
+				<a href="$site.page('docs/security').link()">Security</a>
+				<a href="$site.page('docs/development').link()">Development</a>
+				<a href="$site.page('docs/cli').link()">CLI</a>
+				<h4>App and system</h4>
+				<a href="$site.page('docs/lifecycle').link()">Lifecycle</a>
+				<a href="$site.page('docs/deep-links').link()">Deep links</a>
+				<a href="$site.page('docs/permissions').link()">Permissions</a>
+				<a href="$site.page('docs/tray').link()">Tray</a>
+				<a href="$site.page('docs/menu').link()">Menu</a>
+				<a href="$site.page('docs/dialogs').link()">Dialogs</a>
+				<a href="$site.page('docs/notifications').link()">Notifications</a>
+				<a href="$site.page('docs/files').link()">Files</a>
+				<a href="$site.page('docs/store').link()">Settings store</a>
+				<a href="$site.page('docs/paths').link()">App directories</a>
+				<a href="$site.page('docs/logging').link()">Logging</a>
+				<a href="$site.page('docs/sql').link()">SQL</a>
+				<a href="$site.page('docs/fs-watch').link()">File watching</a>
+				<a href="$site.page('docs/clipboard').link()">Clipboard</a>
+				<a href="$site.page('docs/global-shortcuts').link()">Global shortcuts</a>
+				<a href="$site.page('docs/input').link()">Input</a>
+				<a href="$site.page('docs/network').link()">Network</a>
+				<a href="$site.page('docs/share').link()">Share</a>
+				<a href="$site.page('docs/media-server').link()">Media server</a>
+				<a href="$site.page('docs/camera').link()">Camera</a>
+				<h4>Local AI</h4>
+				<a href="$site.page('docs/local-ai').link()">Local AI</a>
+				<a href="$site.page('docs/chat').link()">Chat</a>
+				<a href="$site.page('docs/dictation').link()">Dictation</a>
+				<a href="$site.page('docs/tts').link()">Text to speech</a>
+				<a href="$site.page('docs/system-ai').link()">System AI</a>
+				<h4>Native code</h4>
+				<a href="$site.page('docs/platform-hooks').link()">Platform hooks</a>
+				<a href="$site.page('docs/extensions').link()">App extensions</a>
+				<h4>Platforms</h4>
+				<a href="$site.page('docs/desktop').link()">Desktop: Linux, Windows, macOS</a>
+				<a href="$site.page('docs/android').link()">Android</a>
+				<a href="$site.page('docs/ios').link()">iOS</a>
+				<h4>Ship</h4>
+				<a href="$site.page('docs/building').link()">Building</a>
+				<a href="$site.page('docs/packaging').link()">Packaging</a>
+				<a href="$site.page('docs/signing').link()">Signing</a>
+				<a href="$site.page('docs/updater').link()">Updater</a>
+				<h4>Native UI</h4>
+				<a href="$site.page('docs/native-renderer').link()">Native renderer</a>
+				<a href="$site.page('docs/native-ui-reference').link()">Native UI reference</a>
+				<a href="$site.page('docs/drag-and-drop').link()">Drag and drop</a>
+				<h4>Reference</h4>
 				<a href="$site.page('docs/modules').link()">Modules</a>
-				<a href="$site.page('docs/tts').link()">Offline text to speech</a>
 				<a href="$site.page('docs/comparison').link()">Oriel and Vercel native</a>
-				<h4>Design</h4>
-				<a href="$site.page('docs/design-app-extensions').link()">App extensions <span class="tag-exp">0.10</span></a>
+				<a href="$site.page('docs/changelog').link()">Changelog</a>
+				<!-- oriel:sidebar end -->
 			</nav>
 		</aside>
 		<main class="doc">

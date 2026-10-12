@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'docs/**'
+      - 'tools/docs/**'
       - 'zine.ziggy'
       - 'scripts/site-version.sh'
       - 'scripts/build-site.sh'
@@ -39,6 +41,9 @@ jobs:
           tar xJf /tmp/zine.tar.xz -C /tmp/
           chmod +x /tmp/zine
           echo "/tmp" >> $GITHUB_PATH
+
+      - name: docs/ matches the site's pages
+        run: node tools/docs/gen-md.mjs --check
 
       - name: Read the version from GitHub's latest release
         run: ./scripts/site-version.sh "${{ github.event.release.tag_name || '' }}"

@@ -1,7 +1,7 @@
 ---
 .title = "Oriel and Vercel native",
 .description = "How Oriel compares with Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.",
-.date = .date("2026-10-09T00:00:00"),
+.date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
@@ -24,9 +24,14 @@ pre-1.0 and moves fast, so check its
   runs a Vite + React app with `window.zero.invoke` / `window.zero.on`.
   Its mobile targets (iOS, Android) are experimental.
 - **Oriel is WebView-first.** The UI is a web frontend (React, Vue, Svelte or
-  vanilla) embedded at build time. The Zig side provides typed commands and
-  events, and the modules that reach outside the window: global shortcuts,
-  input injection, clipboard, tray, audio capture, llama.cpp and whisper.cpp.
+  vanilla) embedded at build time. The Zig side provides typed
+  [commands and events]($link.page('docs/commands')), and the
+  [modules]($link.page('docs/modules')) that reach outside the window:
+  global shortcuts, input injection, clipboard, tray, audio capture,
+  llama.cpp and whisper.cpp. The same app builds for
+  [Android]($link.page('docs/android')) and [iOS]($link.page('docs/ios')).
+  An experimental [native renderer]($link.page('docs/native-renderer'))
+  (`-Dnative_ui`) draws the same page with native views and no WebView.
 
 # [Feature by feature]($heading.id('feature-by-feature'))
 
@@ -44,8 +49,9 @@ pre-1.0 and moves fast, so check its
 | Settings, app directories, credentials | ✅ | ✅ (app dirs, libsecret/Keychain credentials) |
 | Notifications | ✅ | ✅ (Windows: one balloon at a time) |
 | Packages | deb, rpm, AppImage, NSIS `setup.exe`, `.app`/`.dmg`, WinGet manifests | `.app`/`.dmg`; Linux and Windows installers are "future work" |
-| Self-update | ✅ Linux (AppImage), Windows, macOS; Ed25519 | macOS only |
-| Code signing | macOS Developer ID or self-signed (`oriel signing`) | macOS |
+| Self-update | ✅ Linux (AppImage), Windows, macOS; Ed25519 ([Updater]($link.page('docs/updater'))) | macOS only |
+| Code signing | macOS Developer ID or self-signed (`oriel signing`); Windows Authenticode with your own tools | macOS |
+| Android and iOS | ✅ the same app, with phone modules (share, camera, system AI) | experimental |
 
 # [Measured: the same app in both]($heading.id('measured-the-same-app-in-both'))
 
@@ -104,8 +110,9 @@ use were not measured.
 
 # [Where native is ahead]($heading.id('where-native-is-ahead'))
 
-- It runs without a WebView: its own renderer, UI written in TypeScript
-  compiled to native code, and experimental iOS and Android targets.
+- Its own renderer is its main path, not an experimental option: UI
+  written in TypeScript compiled to native code, with no JavaScript runtime
+  in the binary.
 - Tooling: an automation server with accessibility snapshots, recording and
   replaying sessions frame by frame, a deterministic reference renderer, hot
   reload that keeps state, and `native check` validation in milliseconds.
@@ -125,3 +132,9 @@ So the two frameworks suit different apps. native fits apps whose UI
 lives in their own window, especially where a WebView isn't wanted. Oriel
 fits apps that need a web UI plus the desktop around it: hotkeys, the
 clipboard, other apps' input, audio, and local AI models.
+
+# [Related]($heading.id('related'))
+
+- [Examples]($link.page('docs/examples').ref('system-monitor')): the system monitor measured above.
+- [Native renderer]($link.page('docs/native-renderer')): how Oriel draws a page without a WebView.
+- [Modules]($link.page('docs/modules')): every module and where it works.

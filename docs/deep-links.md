@@ -1,0 +1,331 @@
+<!-- Generated from site/content/docs/deep-links.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Deep links
+
+Open the app from a URL of its own scheme (myapp://...), cold or running, and receive the link in Zig and in the page.
+
+A deep link is a URL of a scheme the app declares (`myapp://note/42`). The
+system opens the app with it from a browser, another app, a notification or
+the command line: the app starts if it isn't running (a *cold start*), and
+a running app gets the link instead of a second copy of itself. `oriel.deep_link`
+declares the schemes in every package, routes later launches to the running
+instance, validates each URL and delivers it to a Zig handler and to the
+page's `deep-link` event.
+
+Use it for custom schemes. Universal links and App Links (`https://` URLs
+the OS associates with your domain) aren't handled by Oriel: take them in a
+[platform hook](platform-hooks.md) (`continueUserActivity:`
+on iOS and macOS, `onNewIntent` on Android). For a second launch's other
+arguments (a file path, a flag), use `on_second_instance`
+([Windows](windows.md)).
+
+## Availability
+
+| Platform | Declared in | Delivery | Single instance |
+|---|---|---|---|
+| Linux | `.desktop` file: `MimeType=x-scheme-handler/<scheme>;`, `Exec=... %u` | the launch's arguments | GApplication over D-Bus, by app id |
+| Windows | `HKCU\Software\Classes\<scheme>` (NSIS installer); winget manifest `Protocols` | the launch's arguments | named mutex `Local\OrielApp_<id>` + `WM_COPYDATA` |
+| macOS | Info.plist `CFBundleURLTypes` | `kAEGetURL` Apple Event; a URL among the arguments of an unbundled run | Launch Services (bundled app) |
+| Android | `AndroidManifest.xml`: a VIEW / BROWSABLE `intent-filter` per scheme on the main Activity | the launch Intent's data, `onNewIntent` | `launchMode="singleTask"` |
+| iOS | Info.plist `CFBundleURLTypes` | `scene:willConnectToSession:options:` (cold), `scene:openURLContexts:`; a URL among the launch arguments | one process |
+
+Turn it on with the dependency option `.deep_link = true` (off by default
+on every platform) and declare the schemes in `AppOptions.url_schemes`. No
+permission is needed. MSIX packages don't declare the schemes yet (see
+[Troubleshooting](#troubleshooting)).
+
+## Quick start
+
+```zig
+// build.zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .deep_link = true,
+});
+
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .dir = "frontend" },
+    .url_schemes = &.{"myapp"},
+});
+```
+
+```zig
+// src/main.zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = struct {}, .events = struct {} }, .{
+        .app = app.build, // carries url_schemes
+        .window = .{ .title = "My App", .width = 800, .height = 600 },
+        .setup = setup,
+    });
+}
+
+fn setup() !void {
+    oriel.deep_link.onOpen(onDeepLink);
+}
+
+fn onDeepLink(url: []const u8) void {
+    std.log.info("opened with {s}", .{url});
+}
+```
+
+```js
+// The page: links from before it listened come first.
+oriel.listen("deep-link", ({ url }) => router.go(new URL(url)));
+```
+
+Try it: `oriel deep-link register` (Linux, Windows, macOS) points the scheme
+at your build, then open `myapp://hello` from a browser, or run
+`xdg-open myapp://hello`, `start myapp://hello`, `open myapp://hello`,
+`adb shell am start -a android.intent.action.VIEW -d myapp://hello`.
+
+## How it works
+
+```mermaid
+flowchart LR
+  Src["Browser, app,<br/>command line"] -->|"myapp://..."| OS["OS: scheme registered<br/>by the package"]
+  OS -->|"cold: start the app<br/>with the URL"| Shell["Platform shell<br/>(argv, Apple Event,<br/>Intent, scene)"]
+  OS -->|"running: second launch<br/>forwards its arguments"| Shell
+  Shell -->|"validate against<br/>url_schemes"| DL["deep_link.deliver<br/>(main thread)"]
+  DL -->|"(1) url"| Z["onOpen handler (Zig)"]
+  DL -->|"(2) { url }, queued<br/>until the page listens"| P["deep-link event (page)"]
+  DL -->|"latest URL"| C["current() /<br/>oriel.deepLink.current()"]
+```
+
+**Declaration.** `AppOptions.url_schemes` goes everywhere the OS reads
+schemes from: the Linux `.desktop` file of the deb, rpm and AppImage
+packages (`tools/package/desktop.zig`), the NSIS installer's registry keys
+(removed on uninstall, `tools/package/nsis.zig`) and the winget manifest,
+the macOS and iOS Info.plist (`tools/package/macos.zig`, `ios.zig`), and an
+intent filter per scheme on Android's main Activity (generated between the
+`oriel:main-activity` markers of `AndroidManifest.xml`). The same list
+reaches the app through `oriel_app.build` and is what Oriel accepts at run
+time: a URL whose scheme isn't declared is dropped.
+
+**Single instance.** With the module on, a desktop app runs once per user:
+
+- **Linux:** the `GtkApplication` (id `<id>`, or `<id>.Dev` in development)
+  handles the command line; a later launch sends its arguments over D-Bus to
+  the running instance and exits 0. The running one presents its main
+  window (or calls `on_second_instance`) and delivers the link.
+- **Windows:** the first instance holds the mutex `Local\OrielApp_<id>`
+  (`.Dev` suffix in development). A later one finds the running instance's
+  hidden host window, sends its arguments as a JSON array in `WM_COPYDATA`
+  (at most 256 KiB, retrying for about 3 s), and exits 0. The running one
+  delivers the link, then calls `on_second_instance` or restores and focuses
+  the main window (`src/platform/windows/Shell.zig`).
+- **macOS:** Launch Services sends a bundled app's links to the running
+  instance as `kAEGetURL` Apple Events; the window comes forward. A binary
+  run directly (`zig-out/bin/my-app myapp://x`) is forwarded only when the
+  app sets `on_second_instance` (Oriel then keeps a per-user lock and Unix
+  socket, `src/platform/macos/single_instance.zig`).
+- **Android:** the main Activity is `singleTask`: a link for the running app
+  arrives in `onNewIntent`; its data URL joins the arguments, the window is
+  shown and the link delivered.
+- **iOS:** the scene gets the URL contexts; Oriel shows the window and
+  delivers each non-file URL.
+
+**Cold start.** The shell finds the first argument (or Apple Event, Intent
+data, scene URL context) that validates, records it for `current()`, opens
+the main window, runs `setup`, then delivers it. Setting `onOpen` in
+`setup` therefore sees the launch link on every platform.
+
+**Delivery** (`src/modules/deep_link/`): on the main thread, `deliver`
+validates the URL, calls the `onOpen` handler with it, and emits
+`deep-link` with `{ url }` to every window, or queues it (up to 16, the
+oldest dropped) until a page listens. The bridge's `listen("deep-link")`
+sends `events:ready`, which flushes the queue in order. Every delivered URL
+also becomes the latest, which `current()` returns.
+
+**Platform hooks first.** On iOS and macOS an `openURL:` hook sees a URL
+before Oriel and may take it (answer `YES`); on Android a hook's
+`onNewIntent` is a notification only, and the link is delivered too
+([Platform hooks](platform-hooks.md)).
+
+## Examples
+
+### Route a link in a single-page app
+
+```ts
+import { listen, deepLink } from "./oriel";
+
+function route(url: string) {
+  const u = new URL(url);              // myapp://note/42?edit=1
+  if (u.host === "note") openNote(u.pathname.slice(1), u.searchParams.has("edit"));
+}
+
+listen("deep-link", ({ url }) => route(url));
+```
+
+The listener also gets the link that launched the app, so no separate
+`current()` call is needed on load. Use `deepLink.current()` when a view
+that mounts later wants the last link.
+
+### Handle the link in Zig and tell the page
+
+The showcase adds a note for `oriel-showcase://note/<text>` and tells its
+page:
+
+```zig
+const Events = struct {
+    link: struct { url: []const u8 },
+};
+const events = oriel.App.events(Events);
+
+fn setup() !void {
+    if (oriel.deep_link.available) oriel.deep_link.onOpen(onDeepLink);
+}
+
+fn onDeepLink(url: []const u8) void {
+    events.emit(.link, .{ .url = url });
+    const prefix = "oriel-showcase://note/";
+    if (!std.ascii.startsWithIgnoreCase(url, prefix)) return;
+    notes.add(url[prefix.len..]) catch |err| std.log.err("note: {s}", .{@errorName(err)});
+}
+```
+
+(`examples/showcase/src/main.zig`.) Treat the URL as untrusted input:
+Oriel checks its shape, not what it asks the app to do.
+
+### Test on a device
+
+```sh
+adb shell am start -a android.intent.action.VIEW -d "myapp://note/42"
+xcrun simctl launch booted com.example.MyApp "myapp://note/42"
+```
+
+On the iOS simulator, `simctl openurl` makes iOS ask before opening the
+app, which a script can't answer; a URL among the launch arguments is
+delivered like the system's.
+
+## Reference
+
+### `build.zig`
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `.deep_link` (dependency option, `-Ddeep_link`) | `bool` | `false` | Builds `oriel.deep_link` and turns on single instance on the desktop. |
+| `AppOptions.url_schemes` | `[]const []const u8` | `&.{}` | The schemes, without `:` (`"myapp"`). Each must match `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986), or packaging fails with `error.InvalidUrlScheme`. Declared in every package (see [Availability](#availability)) and passed to the app in `oriel_app.build`. |
+
+With the module on and no scheme, the log says so at startup and no link
+is ever delivered. Pick a scheme unlikely to collide: on most systems the
+last app registered for a scheme wins.
+
+### Zig: `oriel.deep_link`
+
+```zig
+pub const available: bool; // false when built without .deep_link
+
+pub fn onOpen(handler: *const fn (url: []const u8) void) void;
+pub fn current() ?[]const u8;
+pub fn deliver(url: []const u8) void;
+
+pub fn validate(url: []const u8, declared_schemes: []const []const u8) ValidationError![]const u8;
+pub const ValidationError = error{ UrlTooLong, ContainsControlChar, InvalidScheme, DisallowedScheme, InvalidUri };
+pub const max_url_len: usize = 2048;
+```
+
+| Declaration | Meaning |
+|---|---|
+| `available` | Whether the module is built. Without `.deep_link = true`, `oriel.deep_link` is a stub: test `available` (comptime) before calling it. |
+| `onOpen(handler)` | Sets the handler (one; a later call replaces it). Called on the main thread for every delivered URL, before the page's event; the slice is valid only during the call (copy it to keep it). Not replayed: set it in `setup` or before `oriel.main`. |
+| `current()` | The most recent URL: the one that launched the app, or the latest delivered since; null if none. Main thread; the slice is overwritten by the next link. |
+| `deliver(url)` | Delivers `url` as if the OS had opened it (validated against the declared schemes; dropped if invalid). Main thread. Oriel's shells call it; an app can use it to feed a URL it got elsewhere (a hook, a notification). |
+| `validate(url, schemes)` | Checks `url` (see below) and returns it. |
+| `ValidationError` | Why a URL was rejected. |
+| `max_url_len` | 2048 bytes. |
+
+Oriel's shells and bridge also use `setColdStartUrl`, `setDeclaredSchemes`,
+`setReady`, `isReady`, `validateUrl` (the same function as `validate`),
+`check` (the module's smoke check), `Queue` / `queue`, `common` and `impl`;
+apps don't need them.
+
+**Validation.** Every URL, whatever its source, must:
+
+- be at most 2048 bytes and valid UTF-8 (`UrlTooLong`, `InvalidUri`);
+- contain no ASCII control character, `0x00..0x1F` or `0x7F`
+  (`ContainsControlChar`);
+- start with a well-formed scheme (`InvalidScheme`) that is one of
+  `url_schemes`, compared case-insensitively (`DisallowedScheme`);
+- parse with `std.Uri.parse` (`InvalidUri`).
+
+A rejected URL is dropped; macOS and iOS log `deep link rejected: <error>`.
+
+### Page
+
+```ts
+// The event
+listen("deep-link", (e: { url: string }) => void): () => void;
+
+interface DeepLinkApi {
+  /** The latest link (the launch's, or one since), or null. */
+  current(): Promise<string | null>;
+}
+// window.oriel.deepLink, or `deepLink` from the generated oriel.ts
+```
+
+- `deep-link` carries `{ url }`, already validated. Links from before the
+  first listener (a cold start) are queued, up to 16, and handed to it in
+  order; after that, links go to every window's page as they come.
+- `oriel.deepLink.current()` resolves `null` when the module isn't built.
+- `oriel.features.deepLink` says whether the build has the module.
+
+### CLI: `oriel deep-link`
+
+| Command | What it does |
+|---|---|
+| `oriel deep-link add <scheme>` | Edits `build.zig`: sets `.deep_link = true` in `b.dependency("oriel", ...)` and adds the scheme to the app's options. Idempotent; the scheme must be well-formed. |
+| `oriel deep-link register` | Registers the built executable for every scheme in `build.zig`, for local testing. Linux: writes `$XDG_DATA_HOME/applications/<id>.desktop` and runs `xdg-mime default` per scheme (needs xdg-utils). Windows: `reg add` under `HKCU\Software\Classes\<scheme>` with `"<exe>" "%1"`. macOS: `lsregister -f` on the `zig-out/<Name>.app` whose bundle id matches. Warns when only the dev build exists. |
+| `oriel deep-link unregister` | Undoes `register`: deletes the `.desktop` file, the `HKCU` keys, or runs `lsregister -u`. |
+
+Run them inside the app (a directory with `build.zig.zon`); `register`
+needs a build in `zig-out` first (`oriel build`, or `oriel dev`). On
+Linux, `oriel desktop-entry` also installs a desktop entry that declares the
+schemes ([CLI](cli.md)).
+
+### Migrating from 0.11
+
+- `App.Config.deep_link_schemes` is gone: the schemes come with
+  `.app = app.build`.
+- `PackageOptions.url_schemes` is gone: use `AppOptions.url_schemes`, a
+  plain slice (`&.{}` by default).
+- The `deep_link:ready` IPC command is gone: the bridge's `listen()` sends
+  `events:ready`.
+
+## Troubleshooting
+
+- **`deep links are enabled but no scheme is accepted`** at startup: add
+  the scheme to `url_schemes`.
+- **The link opens a browser search, or nothing.** The scheme isn't
+  registered: install the package, or run `oriel deep-link register` after
+  building. On Linux, check `xdg-mime query default x-scheme-handler/myapp`.
+- **A second window or process appears.** The module isn't built
+  (`.deep_link = true` on the dependency), or, on macOS, the executable was
+  run directly without `on_second_instance`: open the bundle instead.
+- **The link starts the dev build.** `register` found only `-dev`; run
+  `oriel build` and register again.
+- **macOS ignores the link.** Launch Services delivers links to bundles
+  only: `open zig-out/<Name>.app` once, or `oriel deep-link register`.
+- **MSIX.** The MSIX manifest has no protocol declaration yet: links don't
+  reach an MSIX-installed app. Use the NSIS installer for deep links on
+  Windows.
+- **The page misses the launch link.** Listen with `listen("deep-link")`
+  (which flushes the queue), not by polling `current()` before the bridge
+  is ready.
+
+## Related
+
+- [Platform hooks](platform-hooks.md): `openURL:`,
+  `continueUserActivity:` and `onNewIntent`, before Oriel's handling.
+- [Packaging](packaging.md): the packages that declare the
+  schemes.
+- [Notifications](notifications.md): another way into the
+  running app, with its own queued event.
+- [Share](share.md): files and text sent to the app
+  (Send To, Open with, the share sheet).

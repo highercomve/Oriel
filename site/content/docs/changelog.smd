@@ -51,7 +51,7 @@ the Windows hooks compile but haven't run on Windows yet.
   platform, constructed once at launch before the first scene or window; a
   class that is also an app extension gets one instance for both. The
   showcase's hooks log what they see and own example.com links (an in-app
-  Safari sheet on iOS). [Platform hooks]($link.page('docs/platform-hooks').ref('ios-and-macos'))
+  Safari sheet on iOS). [Platform hooks]($link.page('docs/platform-hooks').ref('apple-protocol'))
 - **App extensions in Objective-C or Swift on macOS:**
   `.extensions[].macos = .{ .objc = .{ .class, .sources, .swift_sources,
   .frameworks, .weak_frameworks } }` runs the iOS protocol and runtime
@@ -87,7 +87,7 @@ the Windows hooks compile but haven't run on Windows yet.
   (formerly `.android.extensions`), and `OrielAndroidHooks` /
   `OrielAndroidHooksContext` are Kotlin typealiases of `OrielAndroidExtension`
   / `OrielAndroidExtensionContext`. The Android page is now
-  [Android platform hooks]($link.page('docs/android-extensions')) (same URL). The
+  [Android platform hooks]($link.page('docs/platform-hooks')) (same URL). The
   showcase registers a hook class with `.android.hooks`.
 
 ## [Deprecated]($heading.id('deprecated'))
@@ -119,7 +119,7 @@ platform, module flags that resolve per target at compile time, app
 extensions (an app's own Kotlin, Objective-C, Swift or Zig, called with one
 API), photo capture, the device's own language model (Gemini Nano on
 Android, Apple Foundation Models on iOS 26) and app directories. See
-[the design]($link.page('docs/design-app-extensions')). **Breaking:** Android's stub
+[App extensions]($link.page('docs/extensions')). **Breaking:** Android's stub
 modules are gone; guard calls to desktop-only modules with
 `if (oriel.<module>.available)`.
 

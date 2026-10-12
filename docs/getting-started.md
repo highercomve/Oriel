@@ -1,0 +1,281 @@
+<!-- Generated from site/content/docs/getting-started.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Getting started
+
+Install the CLI, create an app and run it with hot reload.
+
+An Oriel app is a web frontend (React, Vue, Svelte or plain HTML) in the
+system's web view, with Zig on the other side: typed commands the page
+calls, events Zig pushes to it, and modules for the rest of the system.
+This page installs the `oriel` CLI, creates an app and runs it. To turn an
+existing website into a desktop app instead, see
+[Wrap a website](wrap.md).
+
+## Requirements
+
+- **Zig 0.16.** Optional to install yourself: the `oriel` CLI uses `zig`
+  on PATH (or `$ORIEL_ZIG`) when it is the project's version, and
+  otherwise installs it into `~/.oriel/zig` on first use (downloaded from a
+  community mirror and minisign-verified; see `oriel zig --help`).
+- **Node.js and npm** (Node 20.19+ or 22.12+) for the React, Vue and Svelte
+  templates (Vite). `oriel setup node` installs it without admin rights.
+  The `vanilla` template needs no Node at all.
+- **Linux:** GTK 4 and WebKitGTK 6.0 development packages (`gtk4` and
+  `webkitgtk-6.0` on Arch; `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on
+  Debian and Ubuntu; `gtk4-devel` and `webkitgtk6.0-devel` on Fedora).
+  Apps run on GTK 4.12+ with WebKitGTK 6.0 (Ubuntu 24.04, Debian 13,
+  Fedora 39 or newer). On Wayland, overlay windows (`always_on_top`,
+  `placement`) use gtk4-layer-shell when it's installed; it's loaded at
+  run time, so apps also run without it.
+- **Windows:** the WebView2 runtime (built into Windows 11 and current
+  Windows 10), `WebView2Loader.dll` (cached by `oriel webview2`), and NSIS
+  for installers (`oriel setup nsis` downloads a portable copy). winget
+  works too: `winget install --id OpenJS.NodeJS.LTS` and
+  `winget install --id NSIS.NSIS` (NSIS through winget needs administrator
+  rights).
+- **macOS:** Xcode or the Xcode command-line tools (`xcode-select --install`).
+- **Phones:** the Android SDK and NDK, or the iOS SDK; see
+  [Android](android.md) and [iOS](ios.md).
+
+`oriel doctor --fix` checks all of this and installs what it can without
+administrator rights (Zig, Node.js LTS, `WebView2Loader.dll` and portable
+NSIS on Windows); for system packages it prints the command to run.
+
+## Install the CLI
+
+The `oriel` CLI is a single static binary. It scaffolds apps and wraps
+their build steps, like `create-tauri-app` and `tauri dev` / `tauri build`.
+
+On **Linux and macOS**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh
+```
+
+It installs to `~/.local/bin/oriel`, verifies the download against the
+release's `SHA256SUMS`, and never uses sudo.
+
+On **Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/highercomve/Oriel/main/install.ps1 | iex
+```
+
+If PowerShell blocks scripts, run `Set-ExecutionPolicy -Scope Process Bypass`
+first. It installs per user to `%LOCALAPPDATA%\Programs\oriel` with no
+administrator rights, also verified against `SHA256SUMS`.
+
+Both installers read the same environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ORIEL_VERSION` | newest release | Tag to install, e.g. `v0.11.0` |
+| `ORIEL_INSTALL_DIR` | `~/.local/bin` or `%LOCALAPPDATA%\Programs\oriel` | Where to put the binary |
+
+On a clean machine:
+
+1. Install the CLI with the command above.
+2. Run `oriel doctor --fix`.
+3. Create an app with `oriel init <name>`.
+
+### Updating the CLI
+
+```sh
+oriel update --check          # is there a newer release?
+oriel update                  # download, verify and replace the running binary
+oriel update --version v0.11.0 # a specific release tag
+```
+
+Release manifests are Ed25519-signed and verified against the public key
+built into the CLI. `--yes` skips the confirmation prompt (scripts, CI).
+
+## Create an app
+
+```sh
+oriel init my-app
+cd my-app
+```
+
+`init` creates `./my-app` with a React + Vite frontend, fetches the Zig
+dependencies and runs `npm install`. The options:
+
+| Option | Meaning |
+|---|---|
+| `--template <react\|vue\|svelte\|vanilla>` | Frontend template (default: `react`) |
+| `--id <app-id>` | Application id in reverse-DNS form (default: `com.example.<Name>`) |
+| `--oriel-ref <ref>` | Oriel tag or commit to depend on (default: the one the CLI was built for) |
+| `--oriel-path <dir>` | Depend on a local Oriel checkout instead |
+| `--no-install` | Only write the files: skip `zig build --fetch` and `npm install` |
+| `--no-webview2` | Skip downloading `WebView2Loader.dll` for Windows builds |
+| `--yes` | Don't ask before installing a missing Node.js |
+
+The new project:
+
+| Path | What |
+|---|---|
+| `src/main.zig` | The Zig side: `Commands` the page can call, `Events` pushed to it, and `main` |
+| `frontend/` | The page: a Vite project, or a static page for `vanilla` |
+| `frontend/src/oriel.ts` | Generated: `invoke` and `listen`, typed from `Commands` and `Events` |
+| `build.zig` | Which Oriel modules are compiled in, the app's id, icon, permissions and packaging |
+| `build.zig.zon` | Package manifest; Oriel is a dependency |
+| `icon.png` | Application icon (1024×1024 PNG recommended) |
+
+### What `main` looks like
+
+Everything `build.zig` declares about the app (its id, the embedded
+frontend, the dev server, the icon, URL schemes, permissions, the isolation
+hook) reaches the code as one value, `oriel_app.build`. `main` passes it on,
+with the main window's options:
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app"); // generated from build.zig
+
+pub const Events = struct {
+    greeted: struct { count: u32 },
+};
+const events = oriel.App.events(Events);
+
+pub const Commands = struct {
+    /// invoke("greet", { name }) on the page.
+    pub fn greet(gpa: std.mem.Allocator, args: struct { name: []const u8 }) ![]const u8 {
+        if (args.name.len == 0) return error.EmptyName; // rejects the page's promise
+        events.emit(.greeted, .{ .count = 1 });
+        return std.fmt.allocPrint(gpa, "Hello, {s}!", .{args.name});
+    }
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
+        .app = app.build,
+        .window = .{ .title = "My App", .width = 800, .height = 600 },
+    });
+}
+```
+
+`.window` is the main window's [`WindowOptions`](windows.md)
+(title, size, limits, `visible`, `hide_on_close`, overlay options). The
+other fields of `oriel.main`'s config (`.setup`, `.security`,
+`.on_second_instance`, ...) are on [Commands](commands.md)
+and the pages they belong to. In the page:
+
+```js
+import { invoke, listen } from "./oriel";
+
+listen("greeted", (e) => console.log("greeted", e.count));
+const text = await invoke("greet", { name: "Ada" });
+```
+
+## Run it
+
+```sh
+oriel dev
+```
+
+`dev` starts the Vite dev server and opens the app against it, with hot
+reload for the frontend. Zig changes rebuild and restart the app. Dev builds
+use the app id with a `.Dev` suffix, so they run next to an installed copy.
+See [Development](development.md).
+
+On Windows, the first `oriel dev` with a Node.js installed by Oriel may show
+a Windows Firewall prompt for Node.js. The dev server only listens on
+localhost, so you can cancel it.
+
+To build the real thing, with the frontend embedded in the executable:
+
+```sh
+oriel build            # zig-out/bin/my-app (ReleaseSafe by default)
+oriel run              # build and run
+oriel package          # deb, rpm, AppImage; setup.exe; .app and .dmg
+```
+
+Arguments after `--` go to the app, not to the build: `oriel run -- --verbose`.
+Project commands are thin wrappers around `zig build <step>`: they work from
+anywhere inside the project, extra arguments are passed on
+(`oriel build -Doptimize=ReleaseFast`), and plain `zig build` works too.
+
+## Turn on modules
+
+The generated `build.zig` lists Oriel's desktop modules set to `false`, so
+the app starts small. To use one, set it to `true` there:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .tray = true,
+    .sql = true,
+    // ...
+});
+```
+
+[Modules](modules.md) lists every module, its flag and
+where it works.
+
+## App icon
+
+One source PNG (1024×1024 recommended), in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .icon = b.path("icon.png"), // optional; defaults to Oriel's icon
+    // ...
+});
+```
+
+The build turns it into a multi-resolution `.ico` embedded in the Windows
+executable (window, taskbar, shortcuts, installer), hicolor theme icons and
+a `.desktop` entry on Linux, an `.icns` for the macOS bundle, and the
+Android and iOS launcher icons. The app gets the PNG as
+`oriel_app.build.icon`.
+
+## Native UI (experimental)
+
+Oriel has an optional renderer that draws a supported subset of HTML and
+CSS with native platform views instead of a web view. Keep the default web
+view, or opt in per build:
+
+```sh
+oriel run -Dnative_ui
+oriel android build --apk -Dnative_ui -Doptimize=ReleaseFast
+oriel ios build -Dnative_ui
+```
+
+See the [native renderer](native-renderer.md) for what it
+supports and how it compares.
+
+## The other commands
+
+| Command | What it does |
+|---|---|
+| `oriel wrap <url>` | Create a desktop app for a website ([Wrap a website](wrap.md)) |
+| `oriel types` | Regenerate the frontend's TypeScript types from `Commands` and `Events` |
+| `oriel check` | Type-check the app's Zig code without building (about a second) |
+| `oriel android init \| dev \| build \| devices` | Android: the Gradle project, a debug build on a phone, release APK and AAB |
+| `oriel ios build \| dev \| install \| setup` | iOS: an `.app` / `.ipa` with no Xcode project, on a device or the simulator |
+| `oriel deep-link`, `oriel permission` | Add URL schemes and OS permissions to `build.zig` |
+| `oriel signing` | Code-signing helpers ([Signing](signing.md)) |
+| `oriel setup all \| node \| nsis` | Install tools into `~/.oriel` without admin rights |
+| `oriel zig install \| uninstall \| list \| which` | The Zig versions the CLI uses, in `~/.oriel/zig` |
+| `oriel webview2` | Download and cache `WebView2Loader.dll` for Windows builds |
+
+[CLI](cli.md) documents every command and option.
+
+> Using Oriel without the CLI? Add it with the Zig package manager,
+> `zig fetch --save git+https://github.com/highercomve/Oriel`, and call
+> `oriel.addApp()` from your `build.zig`. A project made by `oriel init`
+> shows the wiring.
+
+## Next
+
+- The [tutorial](tutorial.md): a complete app with commands,
+  events, SQLite and a tray icon.
+- [Concepts](concepts.md): how the page, the bridge and Zig
+  fit together.
+- [Building](building.md) and
+  [Packaging](packaging.md): release builds and installers.
+- The same app on phones: [Android](android.md) and
+  [iOS](ios.md).

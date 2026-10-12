@@ -1,0 +1,404 @@
+<!-- Generated from site/content/docs/security.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Security
+
+What a page may load and call: the navigation policy, IPC tokens and capabilities, the Content-Security-Policy, response headers, external URLs and the isolation pattern.
+
+Oriel's security model follows Tauri's. A window shows only the app's own
+pages and the origins the app lists; everything else is blocked or opened
+in the browser. Only pages the app trusts get `window.oriel`, and every call
+is checked against the exact origin of the page that sent it: the app's own
+pages may call every command, a remote origin only what a capability grants.
+The app's pages carry a strict Content-Security-Policy, and the opt-in
+**isolation pattern** makes every call from them pass a hook the page can't
+reach, so an XSS or a compromised dependency can't call Zig on its own.
+
+Most of it is on by default and set in `App.Config.security`; the
+isolation hook is declared in `build.zig`. OS permissions (microphone,
+camera, location, ...) are a separate layer:
+[Permissions](permissions.md).
+
+## Availability
+
+| Platform | Navigation policy | IPC tokens and capabilities | CSP and headers on app pages | Isolation pattern |
+|---|---|---|---|---|
+| Linux | Yes (WebKitGTK `decide-policy`) | Yes | Yes (`app://` scheme handler) | Yes |
+| Windows | Yes (WebView2 navigation and new-window events) | Yes | Yes (`https://app.localhost`, `WebResourceRequested`) | Yes |
+| macOS | Yes (`WKNavigationDelegate`) | Yes | Yes (`app://` `WKURLSchemeHandler`) | Yes |
+| Android | Yes (`WebViewClient`) | Yes (origin rules on the `WebMessageListener` too) | Yes (`https://app.localhost`, intercepted requests) | Yes |
+| iOS | Yes (`WKNavigationDelegate`) | Yes | Yes (`app://` `WKURLSchemeHandler`) | Yes |
+
+Always on, no build flag. Development builds load the dev server, which
+sends no CSP: check CSP-related behavior in a production build. The
+[native renderer](native-renderer.md) runs only the app's
+embedded page; its `invoke` uses the same capability checks without a token
+or isolation, and QuickJS refuses `eval`, `Function` and string timers when
+the CSP disallows them.
+
+## Quick start
+
+```zig
+// src/main.zig
+return oriel.main(init, .{ .commands = Commands }, .{
+    .app = app.build,
+    .window = .{ .title = "Docs viewer" },
+    .security = .{
+        // Shown in the app's windows, no IPC.
+        .allowed_origins = &.{"https://docs.example.com"},
+        // A partner site that may call one command.
+        .capabilities = &.{.{ .origin = "https://partner.example", .commands = &.{"get_profile"} }},
+        .external_links = .open_in_browser, // other links open in the default browser
+    },
+});
+```
+
+The isolation pattern, in `build.zig`:
+
+```zig
+_ = oriel.addApp(b, dep, .{
+    .name = "my-app",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .dir = "frontend" },
+    .isolation = .{ .hook = b.path("isolation/hook.js") },
+});
+```
+
+```js
+// isolation/hook.js: runs in a sandboxed frame, before every call reaches Zig.
+globalThis.__ORIEL_ISOLATION_HOOK__ = (call) => {
+  if (call.cmd === "delete_everything") throw new Error("not from the UI");
+  return call; // or a modified { cmd, args }
+};
+```
+
+`oriel_app.build` carries the hook to `App.Config.app`; nothing else to
+pass.
+
+## How it works
+
+```mermaid
+flowchart TB
+  Nav["A navigation, frame or popup"] --> NP{"security.navigation"}
+  NP -->|"app origin, dev server,<br/>allowed_origins, capability"| Load["load"]
+  NP -->|"user click on http(s),<br/>mailto, tel"| Ext["open in the default app"]
+  NP -->|"anything else"| Block["blocked (logged)"]
+  Load --> Bridge{"bridge for this origin?<br/>(app origins, capabilities)"}
+  Bridge -->|"yes"| Oriel["window.oriel + IPC token<br/>(top frame only)"]
+  Bridge -->|"no"| Plain["plain page, no oriel"]
+  Oriel -->|"invoke"| Tok{"token valid<br/>for this origin?"}
+  Tok -->|"no"| F1["Forbidden"]
+  Tok -->|"yes"| Iso{"isolation on and<br/>an app page?"}
+  Iso -->|"yes: signed by the hook frame?"| Cap
+  Iso -->|"no"| Cap{"capability grants<br/>this command?"}
+  Cap -->|"no"| F2["Forbidden"]
+  Cap -->|"yes"| Run["dispatch"]
+```
+
+**Navigation.** Each platform's navigation callback asks
+`security.navigation(sec, local, url, user_gesture)`
+(`src/core/security.zig`) for every top-level navigation, frame and
+`window.open`. `about:blank` and `about:srcdoc` load. A URL whose origin is
+the app's own (`app://app`, `https://app.localhost` on Windows and
+Android, the dev server in dev builds), in `allowed_origins`, or a
+capability's origin loads. A user-initiated `http:`, `https:`, `mailto:` or
+`tel:` link anywhere else opens in the default app (unless
+`external_links = .deny`); everything else, scripted redirects included, is
+blocked with the log line `blocked navigation to <url>`.
+
+**The bridge.** The `window.oriel` script is injected only into the top
+frame of pages on the app's origins and capability origins (WebKit user
+scripts matched by `security.bridgePatterns`, which drop ports; the exact
+origin is checked on every call). Each copy embeds the page's IPC tokens:
+HMAC-SHA256 of a per-process random key over each scope that covers the
+origin ("local" for the app's origins, else each matching capability
+pattern), kept in the script's closure. The native side
+(`ipc.tokenValid`) requires the "local" token from the app's origins, or a
+token for every capability matching a remote origin. A frame never gets the
+script, so a cross-origin frame the policy admits can't act as the page,
+and a token a remote page captures is worthless on any origin another scope
+also covers. Without a secure random source there is no key and IPC is off
+(`no secure random source (...): IPC is disabled`).
+
+**Capabilities.** After the token (and the isolation check),
+`security.commandAllowedForWindow` decides: the app's origins may call
+everything; a remote origin may call what a matching capability lists (all
+commands when `commands` is null), in the windows it lists. Events go only
+to pages that get the bridge. The page's `oriel.window` calls use the
+window API policy instead ([Windows](windows.md#policy)).
+
+**CSP.** The app scheme handler (`src/platform/<os>/scheme.zig`) adds
+`Content-Security-Policy` and `X-Content-Type-Options: nosniff` to every
+page it serves, plus the app's `headers`. At build time
+`tools/embed_assets.zig` hashes each HTML file's inline `<script>` and
+`<style>` blocks (`src/core/csp.zig`); serving that file, `csp.withHashes`
+adds the hashes to its `script-src` and `style-src`, so the app's own inline
+code runs without `'unsafe-inline'` while anything injected later doesn't.
+A directive that still has `'unsafe-inline'` is left alone (a hash would
+switch it off).
+
+```mermaid
+sequenceDiagram
+  participant P as App page
+  participant F as Isolation frame (app://isolation, sandboxed)
+  participant N as Native bridge
+  P->>F: postMessage { id, cmd, a }
+  F->>F: your hook(call): return, modify or throw
+  F->>F: s = JSON { seq, cmd, args }, mac = HMAC(key, s)
+  F-->>P: { kid, s, mac }
+  P->>N: { cmd: "oriel:isolated", iso: { kid, s, mac }, token }
+  N->>N: verify MAC for this web view's key, seq above the last
+  N->>N: token, capability, dispatch the inner call
+  N-->>P: reply
+```
+
+**Isolation** (`src/core/isolation.zig`). The bridge adds a hidden
+`<iframe sandbox="allow-scripts">` loading the isolation origin
+(`app://isolation`, or `https://isolation.localhost` on Windows and
+Android) to the top frame before page scripts run. Without
+`allow-same-origin` the frame's origin is opaque: neither side can reach the
+other's globals. Serving that page, the scheme handler mints a fresh key
+for the requesting web view and puts it in the page, which is cross-origin
+to the app (no CORS headers, `Cache-Control: no-store`), so the app page
+can't read it. `invoke` posts each call to the frame; the frame runs the
+hook, then signs `{seq, cmd, args}` with HMAC-SHA256 (a non-extractable
+WebCrypto key) and posts it back; the bridge forwards it as
+`oriel:isolated`. Zig verifies the MAC with that web view's key, requires
+the sequence number to be above the key's last one (no replay), and then
+handles the inner call as usual. From the app's own pages, unsigned calls
+(built-ins included) are refused. Remote capability origins keep the token
+path: the isolation page's `frame-ancestors` doesn't let them embed it.
+Events from Zig are unchanged.
+
+## Examples
+
+### Show a documentation site inside the app
+
+```zig
+.security = .{ .allowed_origins = &.{ "https://docs.example.com", "https://*.cdn.example.com" } },
+```
+
+`https://*.example.com` matches `https://a.example.com` and
+`https://example.com`, not `https://badexample.com`. Pages there load in the
+window but get no `window.oriel`.
+
+### A remote origin with a few commands
+
+```zig
+.security = .{
+    .capabilities = &.{
+        .{ .origin = "https://*.partner.example", .commands = &.{ "get_profile", "open_external" } },
+        .{ .origin = "https://admin.partner.example", .windows = &.{"admin"}, .window_api = true },
+    },
+},
+```
+
+The first grants two commands to every subdomain (built-ins such as
+`open_external` must be listed too). The second grants every command, only
+in the window labeled `admin`, plus the `oriel.window` API. A page on
+`admin.partner.example` matches both and must carry both tokens; the bridge
+gives it both.
+
+### No inline styles, cross-origin isolation
+
+```zig
+.security = .{
+    .strict_styles = true, // style="..." attributes and injected styles stop working
+    .headers = &.{
+        .{ .name = "Cross-Origin-Opener-Policy", .value = "same-origin" },
+        .{ .name = "Cross-Origin-Embedder-Policy", .value = "require-corp" },
+        .{ .name = "Permissions-Policy", .value = "geolocation=()" },
+    },
+},
+```
+
+COOP `same-origin` breaks opener popups (OAuth); COEP `require-corp` blocks
+cross-origin frames and subresources that don't opt in. With isolation on,
+the isolation frame sends the same COEP and
+`Cross-Origin-Resource-Policy: cross-origin`, so the page can still embed
+it.
+
+### An isolation hook that validates arguments
+
+```js
+globalThis.__ORIEL_ISOLATION_HOOK__ = async (call) => {
+  switch (call.cmd) {
+    case "save_note":
+      if (typeof call.args?.text !== "string" || call.args.text.length > 100_000) throw new Error("bad note");
+      return call;
+    case "open_external":
+      if (!String(call.args?.url).startsWith("https://")) throw new Error("https only");
+      return call;
+    default:
+      return call;
+  }
+};
+```
+
+The hook gets `{ cmd, args }` for every call from the app's pages, window
+commands and built-ins included, and returns it, a modified one, or throws
+(the page's `invoke` rejects with the message). It may be async. It runs
+with `default-src 'none'`: no network.
+
+### Open more link types in other apps
+
+```zig
+.security = .{ .open_external_schemes = &.{ "https", "mailto", "zoommtg" } },
+```
+
+```ts
+import { openExternal } from "./oriel";
+await openExternal("zoommtg://zoom.us/join?confno=123");
+```
+
+## Reference
+
+### `security.Security`
+
+`App.Config.security`:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `csp` | `?[]const u8` | `security.default_csp` | The CSP of the app's pages; null sends none. |
+| `allowed_origins` | `[]const []const u8` | `&.{}` | Origins windows may show, without IPC. |
+| `capabilities` | `[]const Capability` | `&.{}` | Remote origins that get the bridge and may call commands (navigation to them is allowed too). |
+| `external_links` | `ExternalLinks` | `.open_in_browser` | `.open_in_browser`: user-initiated http(s), mailto and tel links outside the allowed origins open in the default app. `.deny`: blocked. |
+| `window_api` | `WindowApiPolicy` | `.{}` | The page's `oriel.window` API ([Windows](windows.md#policy)). |
+| `open_external_schemes` | `[]const []const u8` | `&.{ "http", "https", "mailto" }` | Schemes `openExternal` may open. |
+| `freeze_prototype` | `bool` | `false` | Run `Object.freeze(Object.prototype)` in the top frame before any page script (blocks prototype-pollution gadgets). Assigning an inherited name on another object (`Foo.prototype.toString = ...`) then throws in strict code; use `Object.defineProperty`. |
+| `strict_styles` | `bool` | `false` | Drop `'unsafe-inline'` from `style-src` and `style-src-elem`: the app's `<style>` blocks still apply (by hash), `style="..."` attributes and injected styles don't (setting `el.style` from script still works). Needs a CSP (compile error with `csp = null`). |
+| `headers` | `[]const Header` | `&.{}` | Extra headers on the app's successful responses (`app://` assets and the media scheme). Checked at compile time. |
+
+### `Capability`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `origin` | `[]const u8` | required | `scheme://host[:port]`; the host may start with `*.` (any subdomain and the host itself). |
+| `commands` | `?[]const []const u8` | `null` | Commands this origin may call (the app's and built-ins like `open_external`, `permissions:query`); null: all. |
+| `windows` | `?[]const []const u8` | `null` | Window labels where it applies; null: all. |
+| `window_api` | `bool` | `false` | The origin may use `oriel.window`. |
+
+### The default CSP
+
+`security.default_csp`:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: http://127.0.0.1:*; media-src 'self' blob: http://127.0.0.1:*;
+font-src 'self' data:; connect-src 'self' http://127.0.0.1:*;
+object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+```
+
+Only the app's own scripts (plus its inline blocks, by hash), no `eval`,
+no plugins, no framing. Inline styles are allowed because most UI libraries
+use them. Loopback http is for the [media server](media-server.md).
+To reach an API, add it to `connect-src` in your own `csp`.
+
+`security.effectiveCsp(sec, isolation)` is what pages get: `csp`, without
+`'unsafe-inline'` styles under `strict_styles`, and with the isolation
+frame allowed. With isolation on, Oriel adds the isolation origin to
+`frame-src` (derived from `default-src` when there is none). A custom `csp`
+whose `frame-src` lacks it, or that has a `child-src` without `frame-src`,
+is a compile error: Oriel doesn't rewrite a policy the app wrote.
+
+### Response headers
+
+`security.Header` is `{ name, value }`. The allowed names
+(`security.allowed_header_names`, Tauri's list), each at most once:
+`Access-Control-Allow-Credentials`, `Access-Control-Allow-Headers`,
+`Access-Control-Allow-Methods`, `Access-Control-Expose-Headers`,
+`Access-Control-Max-Age`, `Cross-Origin-Embedder-Policy`,
+`Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`,
+`Permissions-Policy`, `Service-Worker-Allowed`, `Timing-Allow-Origin`,
+`X-Content-Type-Options` (only `nosniff`, which Oriel always sends).
+
+Values are printable ASCII or tabs, at most 2047 bytes
+(`security.max_header_value`). Another name, a bad value or a repeated name
+is a compile error. The CSP has its own field; `Content-Type` stays
+Oriel's.
+
+### External URLs
+
+| API | Meaning |
+|---|---|
+| `openExternal(url): Promise<void>` (page, from `./oriel` or `window.oriel`) | Open in the default app; the `open_external` built-in. Remote origins need it in their capability. |
+| `App.openExternal(uri: [*:0]const u8) void` (Zig) | The same without the checks. |
+| `security.validateExternalUrl(sec, url) ValidationError!void` | The page's checks. |
+
+The page's URL must be non-empty, have no control characters or spaces,
+use a scheme in `open_external_schemes` (`file`, `javascript`, `data`,
+`blob` and `about` never pass, even if listed), have a host for http(s),
+and contain only URL characters (valid `%` escapes; no quotes, `<`, `>`,
+backslash, non-ASCII). Errors: `DisallowedScheme`, `InvalidUrl`,
+`ControlCharactersNotAllowed`. It opens with the XDG desktop portal or
+`xdg-open` (Linux), `ShellExecuteW` (Windows), `NSWorkspace` (macOS), an
+`ACTION_VIEW` intent (Android), `UIApplication openURL` (iOS).
+
+### `Isolation`
+
+| Declaration | Meaning |
+|---|---|
+| `AppOptions.isolation: ?Isolation` (`build.zig`) | `.{ .hook = b.path("isolation/hook.js") }`; embedded into `oriel_app.build.isolation`. |
+| `security.Isolation` | `struct { hook: []const u8 }`: the hook's JavaScript. |
+| `isolation.origin` | `"app://isolation"`, or `"https://isolation.localhost"` on Windows and Android. |
+| `isolation.keys_per_view`, `isolation.max_keys` | 8 keys per web view, 256 in all; the least recently used is evicted (its frame fails closed, and the bridge retries once with a fresh frame). |
+
+The hook sets `globalThis.__ORIEL_ISOLATION_HOOK__ = (call) => call`. It is
+inlined into the isolation page, so it must not contain `</script` or
+`<!--` (compile error; write `<\/script`). The isolation page's CSP is
+`default-src 'none'; script-src 'sha256-...'` (its one script) with
+`frame-ancestors` limited to the app's origins. Calls fail with `the
+isolation frame did not load` when the frame isn't ready within 10 seconds,
+and are resent once when the frame reloads.
+
+### Origins and the bridge
+
+| Declaration | Meaning |
+|---|---|
+| `security.app_origin` | `"app://app"`, or `"https://app.localhost"` on Windows and Android (their web views give real origins only to http(s); the `.localhost` host is answered by the web view, never the network). |
+| `security.origin(buf, url) ?[]const u8` | `scheme://host[:port]`, lowercased, default ports dropped; null for URLs without an authority. |
+| `security.originMatches(pattern, origin) bool` | Exact, or a `*.` wildcard host. |
+| `security.Local` | The app's origins: `app_origin` plus `dev_origin` in dev builds. |
+| `security.navigation(sec, local, url, user_gesture) Navigation` | `.allow`, `.open_external` or `.block`. |
+| `security.commandAllowed(sec, local, page_url, cmd)`, `commandAllowedForWindow(..., window_label)` | The capability check. |
+| `security.bridgeAllowedForWindow(sec, local, page_url, window_label)` | Whether that page gets the bridge (and events). |
+| `security.isWindowApiAllowed(...)`, `validateLabel`, `validateWindowUrl`, `validateWindowModification`, `validateWindowCount` | The window API's checks. |
+| `security.resolveWindowUrl(...)` | A window's URL, resolved against the dev server or the app origin. |
+
+### Web view settings
+
+Every web view gets: no popups (`window.open` and `target="_blank"` go
+through the navigation policy and `App.Config.window_open`), no `file://`
+access across files, devtools only when `App.Config.devtools` (Debug builds
+by default), and `getUserMedia` only when the app declares the microphone,
+camera or screen capture permission. Permission requests from the page
+(camera, microphone, geolocation, notifications) are denied unless declared
+([Permissions](permissions.md)). A file dropped on a text
+field the page didn't handle isn't inserted as its path (the bridge cancels
+WebKit's default).
+
+### Migrating from 0.11
+
+- `App.Config.security.isolation` is gone: declare `.isolation` in
+  `addApp` and pass `oriel_app.build` as `App.Config.app`.
+
+## Troubleshooting
+
+| Symptom or log line | Cause and fix |
+|---|---|
+| `blocked navigation to https://...` | The origin isn't the app's, in `allowed_origins` or a capability. Add it, or open it with `openExternal`. |
+| `window.oriel` is undefined on a remote page | Only capability origins get the bridge; `allowed_origins` don't. |
+| `blocked command "x" from https://... (window: main)` and `Forbidden` | The capability doesn't list the command, or the window isn't in its `windows`. |
+| `refused an IPC call without this page's token` | A call from a frame, or a page without a scope. |
+| A script or `fetch` is refused in production only | The CSP: dev builds have none. Add the source to your `csp` (e.g. `connect-src 'self' https://api.example.com`). |
+| Inline `onclick="..."` handlers don't run | No `'unsafe-inline'`; attach listeners from script. |
+| `security.csp: with isolation on, frame-src must allow app://isolation` (compile error) | A custom CSP with `frame-src`: add the isolation origin. |
+| Calls reject with `the isolation frame did not load` | The isolation page was blocked (a custom CSP, a COEP the frame didn't match) or the hook threw while loading. |
+| `isolation.hook: must not contain "</script"` (compile error) | Write `<\/script` in the hook. |
+
+## Related
+
+- [Permissions](permissions.md): OS permissions and the web view's permission requests.
+- [Commands and events](commands.md): what the checks guard.
+- [Windows](windows.md): the window API policy.
+- [Wrap](wrap.md): a remote web app as a desktop app, with its origin as a capability.
+- [Development](development.md): dev builds trust the dev server and have no CSP.

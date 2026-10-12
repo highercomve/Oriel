@@ -1,0 +1,321 @@
+---
+.title = "Settings store",
+.description = "A thread-safe JSON key-value file for the app's settings, written atomically, in the app's config directory on every platform.",
+.date = .date("2026-10-12T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+`oriel.store` keeps small settings (a theme, a zoom level, the last folder
+opened, a launch counter) in a JSON file the app's Zig code reads and
+writes by key. Every change is saved at once, atomically, so a crash or a
+power cut leaves either the old file or the new one, never half of each.
+Oriel itself uses it to remember window sizes
+(`WindowOptions.remember_geometry`).
+
+Use it for settings: a few kilobytes of values the app reads at start.
+Use [SQL]($link.page('docs/sql')) for records that grow (notes, history,
+anything you query), and plain files under
+[`oriel.paths.appData`]($link.page('docs/paths')) for blobs (images,
+downloaded models). A setting only the page needs can stay in the page's
+`localStorage`; the store is for what Zig needs too.
+
+# [Availability]($heading.id('availability'))
+
+| Platform | Settings file | Atomic write | Lock |
+|---|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/<app id>/<name>.json` (`~/.config/...`) | GLib `g_file_set_contents` | `GMutex` |
+| Windows | `%APPDATA%\<app id>\<name>.json` (Roaming) | temp file, `FlushFileBuffers`, `MoveFileExW` (replace existing, write through) | `SRWLOCK` |
+| macOS | `~/Library/Application Support/<app id>/<name>.json` | temp file (`O_EXCL`, `0600`), `fsync`, `rename`, directory `fsync` | pthread mutex |
+| iOS | `<container>/Library/Application Support/<app id>/<name>.json` | as macOS | pthread mutex |
+| Android | `<filesDir>/<app id>/<name>.json` (`/data/user/0/<package>/files/...`) | as macOS | pthread mutex |
+
+The module is on by default on every platform (`store` flag); turn it off
+with `.store = false` on the Oriel dependency. It needs no permission.
+`oriel.store.available` is `false` when it is off, and then any other
+`oriel.store` declaration is a build error unless the use is guarded by
+`if (oriel.store.available)`.
+
+# [Quick start]($heading.id('quick-start'))
+
+```zig
+// build.zig: the store is on by default; nothing to add.
+const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize });
+```
+
+```zig
+// src/main.zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+pub const Commands = struct {
+    /// invoke("launches"): counts the app's launches across restarts.
+    pub fn launches(_: std.mem.Allocator) !i64 {
+        var store = try oriel.store.Store.open(std.heap.smp_allocator, app.build.id, "settings");
+        defer store.deinit();
+        const n = (store.getInt("launches", i64) orelse 0) + 1;
+        try store.set("launches", n); // saved to settings.json now
+        return n;
+    }
+};
+
+pub fn main(init: std.process.Init) !u8 {
+    return oriel.main(init, .{ .commands = Commands, .events = struct {} }, .{
+        .app = app.build,
+        .window = .{ .title = "My App", .width = 800, .height = 600 },
+    });
+}
+```
+
+```js
+const n = await window.oriel.invoke("launches");
+document.title = `Launched ${n} times`;
+```
+
+The page has no store API of its own: it reaches the store through the
+app's [commands]($link.page('docs/commands')), which decide what the page may
+read and change.
+
+# [How it works]($heading.id('how-it-works'))
+
+>[]($block.attrs("mermaid"))
+```
+flowchart LR
+  Page["Page"] -->|"invoke(command)"| Cmd["Your command<br/>(any thread)"]
+  Zig["Your Zig code"] --> Store
+  Cmd --> Store["Store<br/>(mutex + JSON map<br/>in an arena)"]
+  Store -->|"open: read + parse"| File[("config dir/name.json")]
+  Store -->|"set / delete / clear / save:<br/>whole file, temp + rename"| File
+  Store -.->|"unparseable file:<br/>copy kept"| Corrupt[("name.json.corrupt")]
+```
+
+`Store.open(gpa, app_id, name)` resolves the app's config directory
+(`configDir`, created if missing), reads `<name>.json` and parses it into a
+`std.json.ObjectMap` whose keys and values live in the store's arena. A
+missing or empty file is an empty store. A file that doesn't parse is
+copied to `<name>.json.corrupt` before anything else, a warning is logged,
+and the store opens empty: the next save replaces the original, the copy
+keeps the user's data.
+
+Every method takes the store's mutex, so one `*Store` can be shared between
+threads (commands run on the main thread, or on workers when listed in
+`async_commands`). Each `set` turns the value into JSON and parses it back
+into the arena, so the store never borrows the caller's memory. With
+`auto_save` on (the default), `set`, `delete` and `clear` rewrite the whole
+file before returning; `deinit` saves once more and frees everything.
+
+The file is written atomically: a sibling temp file
+(`<name>.json.tmp.<pid>.<n>`), flushed to disk, renamed over the old one
+(on macOS, iOS and Android the directory is `fsync`ed too, so the rename
+itself survives a power cut). The JSON is indented with two spaces, so it
+can be read and edited by hand while the app is closed.
+
+The store is a cache of the file taken at `open`: two `Store`s on the same
+file don't see each other's changes, and the last save wins. Open one per
+file and keep it, or open, change and close it in one go as the quick start
+does.
+
+The code is `src/modules/store.zig` (the facade),
+`src/modules/store/common.zig` (`GenericStore`, the JSON logic and the app
+id rules) and one backend per platform: `linux.zig` (GLib),
+`windows.zig` (Known Folders, Win32 files), `macos.zig` (macOS and iOS,
+`$HOME/Library/...`), `android.zig` (the directories the Kotlin runtime
+hands over before `main`), with `posix.zig` holding the file and mutex code
+macOS, iOS and Android share.
+
+# [Examples]($heading.id('examples'))
+
+## [Keep one store for the app's lifetime]($heading.id('example-shared'))
+
+```zig
+const std = @import("std");
+const oriel = @import("oriel");
+const app = @import("oriel_app");
+
+var settings: *oriel.store.Store = undefined;
+
+fn setup() !void {
+    settings = try oriel.store.Store.open(std.heap.smp_allocator, app.build.id, "settings");
+}
+
+pub const Commands = struct {
+    pub fn get_theme(_: std.mem.Allocator) []const u8 {
+        return settings.getString("theme") orelse "system";
+    }
+
+    pub fn set_theme(_: std.mem.Allocator, args: struct { theme: []const u8 }) !void {
+        if (!std.mem.eql(u8, args.theme, "light") and !std.mem.eql(u8, args.theme, "dark") and
+            !std.mem.eql(u8, args.theme, "system")) return error.InvalidTheme;
+        try settings.set("theme", args.theme);
+    }
+};
+```
+
+Pass `.setup = setup` in `oriel.main`'s config. The returned string is
+borrowed from the store and stays valid until `deinit`; the command's
+result is serialized before the next call.
+
+## [Batch several changes into one write]($heading.id('example-batch'))
+
+```zig
+var store = try oriel.store.Store.open(gpa, app.build.id, "settings");
+defer store.deinit(); // saves (auto_save is back on)
+
+store.auto_save = false;
+try store.set("width", 1280);
+try store.set("height", 800);
+try store.set("recent", .{ "/home/me/a.txt", "/home/me/b.txt" });
+store.auto_save = true;
+try store.save(); // one atomic write
+```
+
+`auto_save` is a plain field, not guarded by the mutex: change it only
+while no other thread uses that store.
+
+## [Structured values]($heading.id('example-struct'))
+
+`set` takes anything `std.json.Stringify` can write (structs, arrays,
+optionals, enums); `get` returns the `std.json.Value`, which
+`std.json.parseFromValue` turns back into a struct:
+
+```zig
+const Window = struct { x: i32, y: i32, docked: bool = false };
+
+try store.set("palette", Window{ .x = 40, .y = 60 });
+
+if (store.get("palette")) |v| {
+    const parsed = try std.json.parseFromValue(Window, gpa, v, .{});
+    defer parsed.deinit();
+    std.log.info("palette at {d},{d}", .{ parsed.value.x, parsed.value.y });
+}
+```
+
+## [A file outside the config directory]($heading.id('example-open-path'))
+
+```zig
+const dir = try oriel.paths.appData(gpa, .{ .name = app.build.id });
+defer gpa.free(dir);
+const path = try std.fs.path.join(gpa, &.{ dir, "library.json" });
+defer gpa.free(path);
+var lib = try oriel.store.Store.openPath(gpa, path); // the directory must exist
+defer lib.deinit();
+```
+
+The showcase counts its launches with the store
+(`examples/showcase/src/main.zig`, the `hello` store).
+
+# [Reference]($heading.id('reference'))
+
+## [`oriel.store`]($heading.id('zig-api'))
+
+```zig
+pub const available: bool;
+
+pub const Store; // GenericStore(<this platform's backend>)
+
+pub fn configDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
+pub fn dataDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
+pub fn cacheDir(gpa: std.mem.Allocator, app_id: []const u8) ![]const u8;
+
+pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
+pub const impl; // this platform's backend
+pub const common; // GenericStore, validateAppId, buildAppPath
+```
+
+## [`Store`]($heading.id('store'))
+
+| Declaration | Meaning |
+|---|---|
+| `open(gpa, app_id: []const u8, name: []const u8) !*Store` | Opens (or starts) `<configDir(app_id)>/<name>.json`; `.json` is added unless `name` already ends with it. Creates the directory. |
+| `openPath(gpa, path: []const u8) !*Store` | Opens a store at any path. The directory must exist; the file needn't. |
+| `deinit(self) void` | Saves (when `auto_save` is on, errors ignored) and frees the store. Every value `get` returned becomes invalid. |
+| `get(self, key) ?std.json.Value` | The raw value, or null. |
+| `getString(self, key) ?[]const u8` | The string, or null when missing or not a string. |
+| `getInt(self, key, comptime T: type) ?T` | The integer cast to `T`, or null when missing, not an integer, or out of `T`'s range. |
+| `getFloat(self, key, comptime T: type) ?T` | The number as `T` (integers convert), or null. |
+| `getBool(self, key) ?bool` | The boolean, or null. |
+| `has(self, key) bool` | Whether the key exists. |
+| `set(self, key, value: anytype) !void` | Stores a copy of `value` (anything `std.json.Stringify` accepts, `std.json.Value` included) and, with `auto_save`, saves. |
+| `delete(self, key) bool` | Removes the key; true if it was there. With `auto_save`, saves (a failed save is ignored). |
+| `clear(self) !void` | Removes every key; with `auto_save`, saves. |
+| `save(self) !void` | Writes the file now, atomically. |
+| `auto_save: bool` | Default `true`. Not locked: set it while no other thread uses the store. |
+
+**Values.** Strings, arrays and objects returned by the getters are
+borrowed from the store's arena: valid until `deinit`, even after the key
+is overwritten or deleted (the arena only grows; a store that is `set`
+millions of times should be reopened now and then). Keys are compared
+exactly; the order in the file is insertion order, with deletes moving the
+last key into the hole.
+
+**Errors.** `open` and `openPath`: allocation failures; the directory's
+errors (Windows `error.KnownFolderNotFound`, `error.CreateDirectoryFailed`;
+macOS and iOS `error.HomeNotSet`; Android `error.AppNotRunning` before the
+runtime started); `error.InvalidAppId` / `error.EmptyAppId` from the app id
+check; on macOS, iOS and Android `error.OpenFailed`, `error.ReadFailed` and
+`error.StoreTooLarge` (over 16 MiB). Saving: `error.SaveFailed` (Linux,
+Windows; Linux logs GLib's message), or on macOS, iOS and Android
+`error.CreateTempFailed`, `error.WriteFailed`, `error.SyncFailed`,
+`error.RenameFailed`.
+
+**Threads.** Every method locks the store; a `*Store` may be used from any
+thread. Opening the same file twice gives two independent stores.
+
+## [Directories]($heading.id('directories'))
+
+`configDir`, `dataDir` and `cacheDir` return `<base>/<app_id>`, created if
+missing; the caller frees the path.
+
+| | `configDir` (the store's files) | `dataDir` | `cacheDir` |
+|---|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/<id>` (`~/.config/<id>`) | `$XDG_DATA_HOME/<id>` (`~/.local/share/<id>`) | `$XDG_CACHE_HOME/<id>` (`~/.cache/<id>`) |
+| Windows | `%APPDATA%\<id>` (roams with the profile) | `%LOCALAPPDATA%\<id>` | `%LOCALAPPDATA%\<id>\cache` |
+| macOS | `~/Library/Application Support/<id>` | the same as `configDir` | `~/Library/Caches/<id>` |
+| iOS | `<container>/Library/Application Support/<id>` | the same as `configDir` | `<container>/Library/Caches/<id>` |
+| Android | `<filesDir>/<id>` | the same as `configDir` | `<cacheDir>/<id>` |
+
+For an app's own data and cache folders, use
+[`oriel.paths`]($link.page('docs/paths')), which is always built and is
+the same folder as `dataDir` / `cacheDir` everywhere but Android.
+
+**App id rules** (`common.validateAppId`): not empty (`error.EmptyAppId`);
+no `/`, `\`, `:`, `..`, NUL or control characters (`error.InvalidAppId`).
+The id becomes a directory name.
+
+## [Window geometry]($heading.id('window-geometry'))
+
+A window with `.remember_geometry = true` (in `WindowOptions`) saves its
+size and maximized state to the `window_geometry` store
+(`<configDir>/window_geometry.json`, keys `<label>_width`,
+`<label>_height`, `<label>_maximized`) and restores them when it is
+created. With the store off, `remember_geometry` does nothing.
+
+## [Smoke check]($heading.id('check'))
+
+`check` writes, rereads and deletes a temporary store (in `/tmp`, the temp
+directory, or the Android cache directory). `oriel.checkAll` runs it with
+every enabled module's check.
+
+# [Troubleshooting]($heading.id('troubleshooting'))
+
+- **Settings were reset and a `.corrupt` file appeared.** The JSON didn't
+  parse (edited by hand, or written by something else). The log has
+  `failed to parse store file <path> (<error>); kept a copy at
+  <path>.corrupt`. Fix the copy and move it back while the app is closed.
+- **A value written in one place isn't seen in another.** Two `Store`s
+  were opened on the same file; each has its own copy. Share one.
+- **`oriel.store.Store is disabled`** at build time: the dependency has
+  `.store = false`; turn it on or guard the use with
+  `if (oriel.store.available)`.
+- **`AppNotRunning` on Android.** The store was opened before the runtime
+  handed over its directories; open it in `setup` or a command, not at
+  comptime or from a global initializer.
+
+# [Related]($heading.id('related'))
+
+- [App directories]($link.page('docs/paths')): where the app's data and
+  cache go.
+- [SQL]($link.page('docs/sql')): SQLite for data that grows or is queried.
+- [Commands]($link.page('docs/commands')): how the page reaches the store.
+- [Windows]($link.page('docs/windows')): `remember_geometry`.
