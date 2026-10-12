@@ -71,11 +71,6 @@
             .hash = "N-V-__8AAEm0CAAEW33nP9aCUOvVMpgTvV3LxivhVTPQUD-T",
             .lazy = true,
         },
-        .objc = .{
-            .url = "git+https://github.com/mitchellh/zig-objc#c8de82ff80281215ad92900866dab7103a8efa8b",
-            .hash = "zig_objc-0.0.0-Ir_Sp9gsAQCPAJc0oF5xoWePHWP6Y6tCphDeyNUThJoi",
-            .lazy = true,
-        },
         .kokoro = .{
             .url = "https://github.com/simonfxr/kokoro.cpp/archive/a9e31430838c8bdc3d4beaaab62753681b9f7839.tar.gz",
             .hash = "N-V-__8AAM9KCAAqFdC_LKX4-mlNf_snnwVFI3Kv8nfrXB8L",

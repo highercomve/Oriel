@@ -11,7 +11,7 @@
 //! command may open or close windows (including its own) safely.
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const objc = apple.objc;
 const Object = apple.Object;
 const window_mod = @import("window.zig");

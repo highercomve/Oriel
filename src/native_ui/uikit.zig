@@ -11,7 +11,7 @@
 //! command answers that arrive after its window closed find nothing).
 
 const std = @import("std");
-const apple = @import("../platform/ios/apple.zig");
+const apple = @import("../platform/apple/apple.zig");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
 const draw = @import("apple_draw.zig");

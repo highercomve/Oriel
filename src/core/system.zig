@@ -77,13 +77,13 @@ fn windowsName(gpa: std.mem.Allocator) !?[]u8 {
 
 fn appleName(gpa: std.mem.Allocator, comptime cls: [:0]const u8, comptime getter: [:0]const u8, comptime prop: [:0]const u8) !?[]u8 {
     if (target.os != .macos and target.os != .ios) return null;
-    const h = if (target.os == .macos) @import("../platform/macos/cocoa.zig") else @import("../platform/ios/apple.zig");
-    const pool = h.objc.AutoreleasePool.init();
+    const apple = @import("../platform/apple/apple.zig");
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
-    const c = h.objc.getClass(cls) orelse return null;
-    const obj = c.msgSend(h.Object, getter, .{});
+    const c = apple.objc.getClass(cls) orelse return null;
+    const obj = c.msgSend(apple.Object, getter, .{});
     if (obj.value == null) return null;
-    const text = h.utf8(obj.msgSend(h.Object, prop, .{})) orelse return null;
+    const text = apple.utf8(obj.msgSend(apple.Object, prop, .{})) orelse return null;
     return try gpa.dupe(u8, text);
 }
 

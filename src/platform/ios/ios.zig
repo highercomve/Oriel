@@ -10,7 +10,7 @@
 const std = @import("std");
 const App = @import("../../core/App.zig");
 
-pub const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 pub const window = @import("window.zig");
 pub const ShellMod = @import("Shell.zig");
 pub const bridge = @import("bridge.zig");

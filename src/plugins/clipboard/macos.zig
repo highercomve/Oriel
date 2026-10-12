@@ -6,12 +6,12 @@
 //! TIFF (what most Mac apps paste); reads prefer PNG and convert TIFF.
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 pub const common = @import("common.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 
 pub const TextCallback = *const fn (result: anyerror![]const u8, user_data: ?*anyopaque) void;
 pub const ImageCallback = *const fn (result: anyerror!?[]const u8, user_data: ?*anyopaque) void;
@@ -22,19 +22,19 @@ const type_tiff = "public.tiff"; // NSPasteboardTypeTIFF
 const NSBitmapImageFileTypePNG: c_ulong = 4;
 
 fn general() Object {
-    return cocoa.class("NSPasteboard").msgSend(Object, "generalPasteboard", .{});
+    return apple.class("NSPasteboard").msgSend(Object, "generalPasteboard", .{});
 }
 
 /// Autoreleased NSString for a pasteboard type.
 fn typeName(comptime name: []const u8) !Object {
-    const s = cocoa.nsString(name) orelse return error.OutOfMemory;
+    const s = apple.nsString(name) orelse return error.OutOfMemory;
     return s.msgSend(Object, "autorelease", .{});
 }
 
 /// Caller frees; "" when there is no text.
 fn readTextFrom(pb: Object, gpa: std.mem.Allocator) ![]u8 {
     const str = pb.msgSend(Object, "stringForType:", .{try typeName(type_text)});
-    return gpa.dupe(u8, cocoa.utf8(str) orelse "");
+    return gpa.dupe(u8, apple.utf8(str) orelse "");
 }
 
 /// PNG bytes (caller frees), or null when there is no image.
@@ -43,9 +43,9 @@ fn readImageFrom(pb: Object, gpa: std.mem.Allocator) !?[]u8 {
     if (data.value == null) {
         const tiff = pb.msgSend(Object, "dataForType:", .{try typeName(type_tiff)});
         if (tiff.value == null) return null;
-        const rep = cocoa.class("NSBitmapImageRep").msgSend(Object, "imageRepWithData:", .{tiff});
+        const rep = apple.class("NSBitmapImageRep").msgSend(Object, "imageRepWithData:", .{tiff});
         if (rep.value == null) return error.InvalidImage;
-        data = rep.msgSend(Object, "representationUsingType:properties:", .{ NSBitmapImageFileTypePNG, cocoa.class("NSDictionary").msgSend(Object, "dictionary", .{}) });
+        data = rep.msgSend(Object, "representationUsingType:properties:", .{ NSBitmapImageFileTypePNG, apple.class("NSDictionary").msgSend(Object, "dictionary", .{}) });
         if (data.value == null) return error.InvalidImage;
     }
     const len = data.msgSend(c_ulong, "length", .{});
@@ -54,20 +54,20 @@ fn readImageFrom(pb: Object, gpa: std.mem.Allocator) !?[]u8 {
 }
 
 fn writeTextTo(pb: Object, text: []const u8) !void {
-    const str = cocoa.nsString(text) orelse return error.InvalidUtf8;
+    const str = apple.nsString(text) orelse return error.InvalidUtf8;
     defer str.release();
     _ = pb.msgSend(isize, "clearContents", .{});
-    if (!cocoa.isTrue(pb.msgSend(cocoa.c.BOOL, "setString:forType:", .{ str, try typeName(type_text) }))) return error.ClipboardWriteFailed;
+    if (!apple.isTrue(pb.msgSend(apple.c.BOOL, "setString:forType:", .{ str, try typeName(type_text) }))) return error.ClipboardWriteFailed;
 }
 
 fn writeImageTo(pb: Object, png: []const u8) !void {
-    const data = cocoa.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ png.ptr, @as(c_ulong, png.len) });
-    const rep = cocoa.class("NSBitmapImageRep").msgSend(Object, "imageRepWithData:", .{data});
+    const data = apple.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ png.ptr, @as(c_ulong, png.len) });
+    const rep = apple.class("NSBitmapImageRep").msgSend(Object, "imageRepWithData:", .{data});
     if (rep.value == null) return error.InvalidImage; // not an image AppKit can read
     const tiff = rep.msgSend(Object, "TIFFRepresentation", .{});
     _ = pb.msgSend(isize, "clearContents", .{});
-    if (!cocoa.isTrue(pb.msgSend(cocoa.c.BOOL, "setData:forType:", .{ data, try typeName(type_png) }))) return error.ClipboardWriteFailed;
-    if (tiff.value != null) _ = pb.msgSend(cocoa.c.BOOL, "setData:forType:", .{ tiff, try typeName(type_tiff) });
+    if (!apple.isTrue(pb.msgSend(apple.c.BOOL, "setData:forType:", .{ data, try typeName(type_png) }))) return error.ClipboardWriteFailed;
+    if (tiff.value != null) _ = pb.msgSend(apple.c.BOOL, "setData:forType:", .{ tiff, try typeName(type_tiff) });
 }
 
 // --- Marshalling --------------------------------------------------------------------
@@ -80,7 +80,7 @@ const Call = struct {
     err: ?anyerror = null,
 
     fn run(self: *Call) void {
-        const pool = cocoa.objc.AutoreleasePool.init();
+        const pool = apple.objc.AutoreleasePool.init();
         defer pool.deinit();
         const pb = general();
         switch (self.op) {
@@ -185,9 +185,9 @@ pub fn readImageAsync(callback: ImageCallback, user_data: ?*anyopaque) void {
 /// Text and PNG round trips on a private pasteboard: the user's clipboard
 /// is left alone.
 pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
-    const pb = cocoa.class("NSPasteboard").msgSend(Object, "pasteboardWithUniqueName", .{});
+    const pb = apple.class("NSPasteboard").msgSend(Object, "pasteboardWithUniqueName", .{});
     if (pb.value == null) return .{ .module = "clipboard", .ok = false, .detail = "could not create a pasteboard" };
     defer pb.msgSend(void, "releaseGlobally", .{});
 
@@ -210,10 +210,10 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
 }
 
 test "text and PNG round trips on a private pasteboard" {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     const gpa = std.testing.allocator;
-    const pb = cocoa.class("NSPasteboard").msgSend(Object, "pasteboardWithUniqueName", .{});
+    const pb = apple.class("NSPasteboard").msgSend(Object, "pasteboardWithUniqueName", .{});
     defer pb.msgSend(void, "releaseGlobally", .{});
 
     try writeTextTo(pb, "héllo");

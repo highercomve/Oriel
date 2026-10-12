@@ -7,7 +7,7 @@
 //! (`isolation.servePage`, a key minted for the requesting webview).
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const Object = apple.Object;
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");

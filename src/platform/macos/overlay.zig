@@ -23,11 +23,11 @@
 const std = @import("std");
 const App = @import("../../core/App.zig");
 const internal = @import("../../core/internal.zig");
-const cocoa = @import("cocoa.zig");
+const apple = @import("../apple/apple.zig");
 const ShellMod = @import("Shell.zig");
 const WindowHandle = @import("window.zig").WindowHandle;
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 
 const NSNormalWindowLevel: isize = 0;
 const NSFloatingWindowLevel: isize = 3;
@@ -47,22 +47,22 @@ fn levelFor(options: App.WindowOptions) isize {
 /// Called by createWindow (main thread) before the window is shown.
 pub fn setup(win: Object, view: Object, options: App.WindowOptions) void {
     if (options.transparent) {
-        win.msgSend(void, "setOpaque:", .{cocoa.boolean(false)});
-        const clear = cocoa.class("NSColor").msgSend(Object, "clearColor", .{});
+        win.msgSend(void, "setOpaque:", .{apple.boolean(false)});
+        const clear = apple.class("NSColor").msgSend(Object, "clearColor", .{});
         win.msgSend(void, "setBackgroundColor:", .{clear});
-        win.msgSend(void, "setHasShadow:", .{cocoa.boolean(false)});
+        win.msgSend(void, "setHasShadow:", .{apple.boolean(false)});
         // WKWebView paints white under the page unless told not to. The key
         // resolves through a private setter: check it exists, since an
         // unknown key raises (and terminates the app). A native window
         // (-Dnative_ui) has no web view: its view clears to transparent itself.
         const cls = view.getClass() orelse return applyLevel(win, options);
-        if (cls.respondsToSelector(cocoa.objc.sel("_setDrawsBackground:")) or cls.respondsToSelector(cocoa.objc.sel("setDrawsBackground:"))) {
-            const no = cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(false)});
-            const key = cocoa.nsString("drawsBackground") orelse return;
+        if (cls.respondsToSelector(apple.objc.sel("_setDrawsBackground:")) or cls.respondsToSelector(apple.objc.sel("setDrawsBackground:"))) {
+            const no = apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(false)});
+            const key = apple.nsString("drawsBackground") orelse return;
             defer key.release();
             view.msgSend(void, "setValue:forKey:", .{ no, key });
         } else std.log.scoped(.oriel).warn("transparent window: this WKWebView can't hide its background", .{});
-        if (view.getClass().?.respondsToSelector(cocoa.objc.sel("setUnderPageBackgroundColor:"))) {
+        if (view.getClass().?.respondsToSelector(apple.objc.sel("setUnderPageBackgroundColor:"))) {
             view.msgSend(void, "setUnderPageBackgroundColor:", .{clear}); // macOS 12+
         }
     }
@@ -89,7 +89,7 @@ pub fn onShow(handle: WindowHandle, options: App.WindowOptions) void {
 /// Run `func(ctx)` on the main thread: at once there, else waiting for it.
 /// From another thread before the app runs, the call is dropped.
 fn onMain(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) void {
-    if (cocoa.isMainThread()) return func(ctx);
+    if (apple.isMainThread()) return func(ctx);
     ShellMod.runOnMainThread(Ctx, ctx, func) catch |err|
         std.log.scoped(.oriel).debug("overlay window call dropped: {s}", .{@errorName(err)});
 }
@@ -116,7 +116,7 @@ pub fn setWindowClickThrough(handle: WindowHandle, enabled: bool) void {
         enabled: bool,
         fn run(c: *@This()) void {
             if (!alive(c.handle)) return;
-            c.handle.nsWindow().msgSend(void, "setIgnoresMouseEvents:", .{cocoa.boolean(c.enabled)});
+            c.handle.nsWindow().msgSend(void, "setIgnoresMouseEvents:", .{apple.boolean(c.enabled)});
         }
     };
     var ctx: Ctx = .{ .handle = handle, .enabled = enabled };
@@ -177,21 +177,21 @@ pub fn getWindowWorkArea(handle: WindowHandle) ?App.Rect {
 /// Height of the primary screen: Cocoa's global coordinates start at its
 /// bottom-left corner; ours at its top-left.
 fn primaryHeight() f64 {
-    const screens = cocoa.class("NSScreen").msgSend(Object, "screens", .{});
+    const screens = apple.class("NSScreen").msgSend(Object, "screens", .{});
     if (screens.value == null or screens.msgSend(c_ulong, "count", .{}) == 0) return 0;
     const primary = screens.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, 0)});
-    return primary.msgSend(cocoa.NSRect, "frame", .{}).size.height;
+    return primary.msgSend(apple.NSRect, "frame", .{}).size.height;
 }
 
 /// The visible frame (no menu bar, no Dock) of the window's screen, or the
 /// main screen's, in top-left coordinates.
 fn workAreaNow(handle: WindowHandle) ?App.Rect {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     var screen = handle.nsWindow().msgSend(Object, "screen", .{});
-    if (screen.value == null) screen = cocoa.class("NSScreen").msgSend(Object, "mainScreen", .{});
+    if (screen.value == null) screen = apple.class("NSScreen").msgSend(Object, "mainScreen", .{});
     if (screen.value == null) return null;
-    const vf = screen.msgSend(cocoa.NSRect, "visibleFrame", .{});
+    const vf = screen.msgSend(apple.NSRect, "visibleFrame", .{});
     return .{
         .x = @intFromFloat(@round(vf.origin.x)),
         .y = @intFromFloat(@round(primaryHeight() - (vf.origin.y + vf.size.height))),
@@ -203,13 +203,13 @@ fn workAreaNow(handle: WindowHandle) ?App.Rect {
 fn placeNow(handle: WindowHandle, placement: App.Placement) void {
     const area = workAreaNow(handle) orelse return;
     const win = handle.nsWindow();
-    const frame = win.msgSend(cocoa.NSRect, "frame", .{});
+    const frame = win.msgSend(apple.NSRect, "frame", .{});
     const w: c_int = @intFromFloat(@round(frame.size.width));
     const h: c_int = @intFromFloat(@round(frame.size.height));
     const o = placement.origin(area, w, h);
     // Back to Cocoa: the bottom-left corner, y up from the primary screen's bottom.
     const y = primaryHeight() - @as(f64, @floatFromInt(o.y)) - frame.size.height;
-    win.msgSend(void, "setFrameOrigin:", .{cocoa.NSPoint{ .x = @floatFromInt(o.x), .y = y }});
+    win.msgSend(void, "setFrameOrigin:", .{apple.NSPoint{ .x = @floatFromInt(o.x), .y = y }});
 }
 
 test {
