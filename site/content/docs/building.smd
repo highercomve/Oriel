@@ -25,7 +25,7 @@ and signing them is [Signing]($link.page('docs/signing')).
 |---|---|---|---|
 | Linux (x86_64, aarch64) | Linux | `zig-out/bin/<name>` | Zig 0.16, GTK 4 and WebKitGTK 6.0 development files (no WebKitGTK with `-Dnative_ui`) |
 | Windows (x86_64, aarch64) | Windows, or cross-compiled from Linux | `zig-out/bin/<name>.exe` and `WebView2Loader.dll` | `-Dwebview2-loader` (the CLI passes the cached one) |
-| macOS (aarch64, x86_64) | A Mac (Xcode or the Command Line Tools) | `zig-out/bin/<name>` and `zig-out/<Name>.app` | The macOS SDK |
+| macOS (aarch64, x86_64) | A Mac (Xcode or the Command Line Tools); `zig build check` anywhere | `zig-out/bin/<name>` and `zig-out/<Name>.app` | The macOS SDK (not for `check`) |
 | Android (aarch64, x86_64) | Linux, macOS, Windows | `zig-out/jniLibs/<abi>/liboriel.so` (the APK is Gradle's) | The Android NDK; the SDK and a JDK 17 for the APK |
 | iOS (device, simulator) | macOS, or Linux with xtool | `zig-out/ios/<Name>.app` | The iOS SDK (`-Dapple_sdk`, `$APPLE_SDK`, or Xcode's) |
 
@@ -532,7 +532,7 @@ command line:
 | `-Dmacos-sign-identity`, `-Dmacos-notarize-profile`, `-Dmacos-sign-dry-run` | macOS distribution signing ([Signing]($link.page('docs/signing').ref('apple'))). |
 | `-Dmsix-pfx`, `-Dmsix-cert-sha1`, `-Dmsix-timestamp` | MSIX signing ([Signing]($link.page('docs/signing').ref('msix'))). |
 | `-Dwinget-url=<base URL>` | Write WinGet manifests ([Packaging]($link.page('docs/packaging').ref('winget'))). |
-| `-Dmacos_sdk=<path>` | macOS SDK for the app's Objective-C and Swift code (default `$SDKROOT`, else Xcode's). |
+| `-Dmacos_sdk=<path>` | macOS SDK for the app's Objective-C and Swift code and the frameworks Oriel links (default `$SDKROOT`, else Xcode's). |
 | `-Dswift_resource_dir=<path>` | Swift on Linux: the Darwin Swift resource directory (default: from xtool). |
 | `-Dapple_sdk=<path>` | iOS SDK (`iPhoneOS.sdk` or `iPhoneSimulator.sdk`; default `$APPLE_SDK`, else Xcode's). |
 | `-Dios_dev_url=<url>` | iOS: the dev server's URL as the device reaches it. |
@@ -572,7 +572,8 @@ const app = @import("oriel_app");
 | Linux packages | GTK 4.12, glibc 2.38 | The deb and rpm dependencies (Ubuntu 24.04, Debian 13, Fedora 39 and later) |
 
 Cross-compiling: Linux builds Windows (installer included) and Android; a
-Mac builds every target; Linux builds iOS with xtool's SDK. Zig adds the
+Mac builds every target; Linux builds iOS with xtool's SDK, and type-checks
+macOS without one (`zig build check -Dtarget=aarch64-macos`). Zig adds the
 macOS SDK's framework path only for native targets, so an extra executable
 that links Apple frameworks without importing `oriel` must add it itself.
 
