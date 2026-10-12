@@ -2,7 +2,17 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.10.0] — 2026-10-12
+
+Oriel 0.10.0 adds what porting GhostPantry to iOS showed was missing, so
+apps no longer write platform code around Oriel: one lifecycle API on every
+platform, module flags that resolve per target at compile time, app
+extensions (an app's own Kotlin, Objective-C, Swift or Zig, called with one
+API), photo capture, the device's own language model (Gemini Nano on
+Android, Apple Foundation Models on iOS 26) and app directories. See
+[the design](docs/app-extensions-design.md). **Breaking:** Android's stub
+modules are gone; guard calls to desktop-only modules with
+`if (oriel.<module>.available)`.
 
 ### Added
 
