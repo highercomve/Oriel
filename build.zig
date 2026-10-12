@@ -17,10 +17,12 @@ const ggml = @import("build/ggml.zig");
 const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
 const swift_build = @import("build/swift.zig");
+const macos_build = @import("build/macos.zig");
 const android_manifest = @import("build/android_manifest.zig");
 const espeak_data = @import("build/espeak_data.zig");
 const module_table = @import("src/core/module_table.zig");
 const extension_spec = @import("src/core/extension_spec.zig");
+const hooks_spec = @import("src/platform/apple/hooks_spec.zig");
 
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
@@ -423,6 +425,17 @@ pub fn build(b: *std.Build) void {
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(swift_tests).step);
 
+    // Apple platform hooks: their selectors and declaration rules, and the
+    // macOS SDK lookup (pure; the dispatcher itself needs a Mac or iOS).
+    for ([_][]const u8{ "src/platform/apple/hooks_spec.zig", "build/macos.zig" }) |path| {
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = b.graph.host }),
+            .use_llvm = true,
+            .use_lld = useLld(b.graph.host),
+        });
+        if (runs_tests) test_step.dependOn(&b.addRunArtifact(t).step);
+    }
+
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
         .use_llvm = true,
@@ -708,6 +721,12 @@ fn addOrielModule(
     // it generates from AppOptions.extensions.
     oriel.addImport("oriel_extensions", b.createModule(.{
         .root_source_file = b.addWriteFiles().add("oriel_extensions.zig", extensionTableText(b, "Oriel's own build", orielExtensions(b, features), module_table.platformOf(&target.result), null)),
+    }));
+    // iOS and macOS platform hooks (src/platform/apple/hooks.zig): none
+    // until addApp sets the table it generates from `.ios.hooks` /
+    // `.macos.hooks`.
+    oriel.addImport("oriel_apple_hooks", b.createModule(.{
+        .root_source_file = b.addWriteFiles().add("oriel_apple_hooks.zig", appleHooksTableText(b, "Oriel's own build", &.{})),
     }));
 
     // gtk4-layer-shell (-Dlayer_shell) isn't linked: it's loaded at runtime
@@ -1056,7 +1075,10 @@ pub const AppOptions = struct {
         /// Any desktop OS, unless `linux`, `macos` or `windows` overrides it.
         desktop: ?DesktopExtension = null,
         linux: ?DesktopExtension = null,
-        macos: ?DesktopExtension = null,
+        /// macOS: Zig (`.{ .zig = path }`, as `desktop`) or Objective-C /
+        /// Swift (`.{ .objc = .{ .class = ..., .swift_sources = ... } }`,
+        /// the iOS protocol and runtime). Either overrides `desktop`.
+        macos: ?MacosExtension = null,
         windows: ?DesktopExtension = null,
         /// The cap on a call's input and on its reply (at most 256 MiB).
         max_bytes: usize = extension_spec.default_max_bytes,
@@ -1094,6 +1116,34 @@ pub const AppOptions = struct {
         weak_frameworks: []const []const u8 = &.{},
         /// Files or directories copied to the bundle's root.
         resources: []const std.Build.LazyPath = &.{},
+    };
+
+    /// `Extension.macos`: a Zig module, or native code as on iOS.
+    pub const MacosExtension = union(enum) {
+        /// As `DesktopExtension.zig`.
+        zig: std.Build.LazyPath,
+        /// A class conforming to OrielAppExtension (oriel_extension.h), run
+        /// by the same backend as on iOS. Its sources need the macOS SDK (a
+        /// Mac with Xcode or the Command Line Tools); Swift raises the
+        /// minimum to macOS 15.
+        objc: AppleNativeExtension,
+    };
+
+    /// `MacosExtension.objc`.
+    pub const AppleNativeExtension = struct {
+        /// The Objective-C class (or `@objc(Name)` Swift class) conforming
+        /// to OrielAppExtension, with a plain `-init`.
+        class: []const u8,
+        /// Objective-C files, compiled with `-fobjc-arc`; they can
+        /// `#import "oriel_extension.h"`.
+        sources: []const std.Build.LazyPath = &.{},
+        /// Swift files, compiled by `swiftc` into one object.
+        swift_sources: []const std.Build.LazyPath = &.{},
+        /// SDK frameworks to link ("Vision", "CoreML").
+        frameworks: []const []const u8 = &.{},
+        /// Frameworks newer than the app's minimum macOS: weak-linked, and
+        /// only when the SDK has them.
+        weak_frameworks: []const []const u8 = &.{},
     };
 
     pub const DesktopExtension = struct {
@@ -1136,6 +1186,12 @@ pub const AppOptions = struct {
         /// `.{ .key = "NSMotionUsageDescription", .text = "Counts your steps" }`.
         /// A key a kind writes too takes this text.
         usage_descriptions: []const UsageDescription = &.{},
+        /// Platform hooks: classes conforming to OrielPlatformHooks
+        /// (src/platform/apple/include/oriel_hooks.h) that take part in
+        /// Oriel's app and scene delegates and WebKit delegates. Constructed
+        /// once at launch, in this order (at most 16).
+        /// docs/platform-hooks-apple.md
+        hooks: []const PlatformHook = &.{},
     };
 
     pub const Macos = struct {
@@ -1144,6 +1200,29 @@ pub const AppOptions = struct {
         /// Boolean hardened-runtime entitlements added to `<Name>.entitlements`
         /// (used when signing), e.g. "com.apple.security.device.bluetooth".
         entitlements: []const []const u8 = &.{},
+        /// Platform hooks, as `Ios.hooks`: the app delegate, windows and
+        /// WebKit delegates. Objective-C and Swift sources need the macOS
+        /// SDK (a Mac with Xcode or the Command Line Tools); Swift raises
+        /// the minimum to macOS 15. docs/platform-hooks-apple.md
+        hooks: []const PlatformHook = &.{},
+    };
+
+    /// An iOS or macOS platform hook (`ios.hooks`, `macos.hooks`).
+    pub const PlatformHook = struct {
+        /// The Objective-C class (or `@objc(Name)` Swift class) conforming
+        /// to OrielPlatformHooks, with a plain `-init`. A class that is
+        /// also an app extension can be listed here without sources (they
+        /// come with the extension): both get one instance.
+        class: []const u8,
+        /// Objective-C files, compiled with `-fobjc-arc`; they can
+        /// `#import "oriel_hooks.h"` (and "oriel_extension.h").
+        sources: []const std.Build.LazyPath = &.{},
+        /// Swift files, compiled by `swiftc` into one object, with both of
+        /// Oriel's protocols visible (include/oriel_swift.h). The minimum
+        /// becomes iOS 18 / macOS 15.
+        swift_sources: []const std.Build.LazyPath = &.{},
+        /// SDK frameworks to link ("SafariServices", "UserNotifications").
+        frameworks: []const []const u8 = &.{},
     };
 
     /// An Info.plist usage-description key and the text the OS shows.
@@ -1294,6 +1373,8 @@ const OrielBuild = struct {
     target: std.Build.ResolvedTarget,
     /// The first app's extension names (`setExtensionTable`).
     extension_names: ?[]const u8 = null,
+    /// The first app's iOS or macOS hook classes (`setAppleHooksTable`).
+    apple_hook_classes: ?[]const u8 = null,
 };
 var oriel_builds: std.ArrayList(OrielBuild) = .empty;
 
@@ -1445,6 +1526,58 @@ fn checkPlatformExtras(b: *std.Build, options: AppOptions) void {
     for (options.windows.capabilities) |c| {
         if (!msix.validCapabilityName(c.name)) @panic(b.fmt("AppOptions.windows.capabilities: invalid name \"{s}\" ([A-Za-z0-9._-] or {{GUID}})", .{c.name}));
     }
+    checkAppleHooks(b, "ios", options.ios.hooks);
+    checkAppleHooks(b, "macos", options.macos.hooks);
+}
+
+/// Panics on a `.ios.hooks` / `.macos.hooks` list the dispatcher can't take
+/// (src/platform/apple/hooks_spec.zig: `check`).
+fn checkAppleHooks(b: *std.Build, comptime os: []const u8, list: []const AppOptions.PlatformHook) void {
+    const field = "AppOptions." ++ os ++ ".hooks";
+    if (list.len > hooks_spec.max_hooks) @panic(b.fmt("{s}: at most {d} hooks", .{ field, hooks_spec.max_hooks }));
+    var declared: [hooks_spec.max_hooks]hooks_spec.Declared = undefined;
+    for (list, 0..) |h, i| declared[i] = .{ .class = h.class, .sources = h.sources.len, .swift_sources = h.swift_sources.len, .frameworks = h.frameworks };
+    const problem = hooks_spec.check(declared[0..list.len]) orelse return;
+    @panic(switch (problem) {
+        .too_many => b.fmt("{s}: at most {d} hooks", .{ field, hooks_spec.max_hooks }),
+        .invalid_class => |name| b.fmt("{s}: invalid class \"{s}\" (an Objective-C class name: [A-Za-z_][A-Za-z0-9_]*)", .{ field, name }),
+        .duplicate_class => |name| b.fmt("{s}: \"{s}\" is listed twice", .{ field, name }),
+        .too_many_sources => |name| b.fmt("{s}: {s}: at most {d} sources of each kind", .{ field, name, hooks_spec.max_sources }),
+        .too_many_frameworks => |name| b.fmt("{s}: {s}: at most {d} frameworks", .{ field, name, hooks_spec.max_frameworks }),
+        .invalid_framework => |f| b.fmt("{s}: {s}: invalid framework \"{s}\"", .{ field, f.class, f.name }),
+    });
+}
+
+/// The source of an `oriel_apple_hooks` table: the hook classes, in
+/// declaration order (validated: no quotes or backslashes).
+fn appleHooksTableText(b: *std.Build, label: []const u8, list: []const AppOptions.PlatformHook) []const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    text.print(b.allocator, "//! Generated from AppOptions.ios.hooks / .macos.hooks ({s}).\npub const classes = [_][:0]const u8{{\n", .{label}) catch @panic("OOM");
+    for (list) |h| text.print(b.allocator, "    \"{s}\",\n", .{h.class}) catch @panic("OOM");
+    text.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    return text.items;
+}
+
+/// The `oriel_apple_hooks` table of the app's `oriel` module, for an iOS or
+/// macOS target (`hooks`: that platform's list). Apps built with one Oriel
+/// dependency share its module, so they must declare the same hooks.
+fn setAppleHooksTable(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) void {
+    const ob = orielBuild(oriel_dep);
+    const list = switch (ob.target.result.os.tag) {
+        .ios => options.ios.hooks,
+        .macos => options.macos.hooks,
+        else => return,
+    };
+    var names: std.ArrayList(u8) = .empty;
+    for (list) |h| names.print(b.allocator, "{s};", .{h.class}) catch @panic("OOM");
+    if (ob.apple_hook_classes) |prev| {
+        if (!std.mem.eql(u8, prev, names.items)) @panic(b.fmt("{s}: apps sharing one oriel dependency must declare the same .{s}.hooks", .{ options.name, @tagName(ob.target.result.os.tag) }));
+        return;
+    }
+    ob.apple_hook_classes = names.items;
+    if (list.len == 0) return;
+    const text = appleHooksTableText(b, options.name, list);
+    ob.module.addImport("oriel_apple_hooks", b.createModule(.{ .root_source_file = b.addWriteFiles().add("oriel_apple_hooks.zig", text) }));
 }
 
 /// Panics on an `AppOptions.extensions` entry no platform could build, for
@@ -1469,6 +1602,12 @@ fn checkExtensions(b: *std.Build, options: AppOptions) void {
             for (x.frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
             for (x.weak_frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
         }
+        if (e.macos) |m| if (m == .objc) {
+            const x = m.objc;
+            if (!extension_spec.validObjcClass(x.class)) @panic(b.fmt("AppOptions.extensions: {s}: invalid macOS class \"{s}\" (an Objective-C class name)", .{ e.name, x.class }));
+            for (x.frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
+            for (x.weak_frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
+        };
     }
 }
 
@@ -1501,9 +1640,13 @@ const ExtensionBackend = union(enum) { none, zig: std.Build.LazyPath, android, o
 
 /// Which implementation of `e` a build for `platform` has.
 fn extensionBackend(e: AppOptions.Extension, platform: module_table.Platform) ExtensionBackend {
+    if (platform == .macos) if (e.macos) |m| switch (m) {
+        .zig => |path| return .{ .zig = path },
+        .objc => return .objc,
+    };
     const desktop: ?AppOptions.DesktopExtension = switch (platform) {
         .linux => e.linux orelse e.desktop,
-        .macos => e.macos orelse e.desktop,
+        .macos => e.desktop,
         .windows => e.windows orelse e.desktop,
         else => null,
     };
@@ -1527,7 +1670,7 @@ fn extensionTableText(b: *std.Build, label: []const u8, list: []const AppOptions
         const backend = extensionBackend(e, platform);
         const class: []const u8 = switch (backend) {
             .android => e.android.?.class,
-            .objc => e.ios.?.class,
+            .objc => if (platform == .macos) e.macos.?.objc.class else e.ios.?.class,
             else => "",
         };
         var impl: []const u8 = "void";
@@ -1623,12 +1766,14 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     checkPlatformExtras(b, options);
     checkExtensions(b, options);
     setExtensionTable(b, oriel_dep, options);
+    setAppleHooksTable(b, oriel_dep, options);
     if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
     if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));
 
     const oriel = oriel_dep.module("oriel");
-    const target = resolveTarget(b, oriel.resolved_target.?);
+    // macOS: raised to macOS 15 by Swift hooks or extensions.
+    const target = macosTarget(b, oriel.resolved_target.?, options);
     const optimize = oriel.optimize.?;
     // When optimize was not explicitly given on the command-line, default production to ReleaseSafe
     const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
@@ -1731,6 +1876,13 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     const exe = addExe(b, oriel, target, prod_optimize, options.name, options.root_source_file, appConfigModule(b, oriel, prod_cfg, assets_dir.path(b, "assets.zig"), app_icon, options.isolation), options.include_paths);
     for (options.imports) |imp| exe.root_module.addImport(imp.name, imp.module);
     b.installArtifact(exe);
+
+    // macOS: the Objective-C and Swift sources of `.macos.hooks` and of
+    // extensions' `.macos.objc` (not in the type-check, which needs no SDK).
+    if (target.result.os.tag == .macos) {
+        addMacosNative(b, oriel_dep, options, exe);
+        if (dev_exe) |d| addMacosNative(b, oriel_dep, options, d);
+    }
 
     // Windows: embed multi-resolution .ico into executable via .rc resource.
     if (target.result.os.tag == .windows) {
@@ -2475,10 +2627,22 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
 }
 
 /// `options` comes with Oriel's own extensions (`withOrielExtensions`), so
-/// -Dsystem_ai's Swift backend counts too.
+/// -Dsystem_ai's Swift backend counts too; so do `.ios.hooks`.
 fn hasSwift(options: AppOptions) bool {
     for (options.extensions) |e| if (e.ios) |x| if (x.swift_sources.len > 0) return true;
+    return hooksHaveSwift(options.ios.hooks);
+}
+
+fn hooksHaveSwift(list: []const AppOptions.PlatformHook) bool {
+    for (list) |h| if (h.swift_sources.len > 0) return true;
     return false;
+}
+
+/// Whether the macOS build has Swift sources: `.macos.hooks` or extensions'
+/// `.macos.objc`.
+fn hasMacosSwift(options: AppOptions) bool {
+    for (options.extensions) |e| if (e.macos) |m| if (m == .objc and m.objc.swift_sources.len > 0) return true;
+    return hooksHaveSwift(options.macos.hooks);
 }
 
 /// The app's iOS target: Oriel's minimum, raised to iOS 18 when the app
@@ -2490,54 +2654,178 @@ fn iosTarget(b: *std.Build, target: std.Build.ResolvedTarget, options: AppOption
     const min = resolved.result.os.version_range.semver.min;
     if (min.order(swift_build.min_ios) != .lt) return resolved;
     if (target.query.os_version_min != null)
-        fatal("iOS {d}.{d} is below what Swift extensions support: with .ios.swift_sources (or -Dsystem_ai, Oriel's Swift backend) the minimum is iOS {d}.{d} (docs/extensions.md)", .{ min.major, min.minor, swift_build.min_ios.major, swift_build.min_ios.minor });
+        fatal("iOS {d}.{d} is below what Swift supports here: with .ios.swift_sources, .ios.hooks' Swift sources (or -Dsystem_ai, Oriel's Swift backend) the minimum is iOS {d}.{d} (docs/extensions.md)", .{ min.major, min.minor, swift_build.min_ios.major, swift_build.min_ios.minor });
     var query = target.query;
     query.os_version_min = .{ .semver = swift_build.min_ios };
     return b.resolveTargetQuery(query);
 }
 
-/// App extensions' iOS parts for one of the app's executables (not the
-/// type-check, which builds without an SDK): Objective-C sources with ARC
-/// and oriel_extension.h on the include path, frameworks, and each
-/// extension's Swift sources as one object (build/swift.zig).
+/// The app's macOS executables' target (`resolveTarget`), raised to macOS
+/// 15 when the app has macOS Swift sources (`swift_build.min_macos`). A
+/// version below that other than `default_macos_min` (which
+/// `resolveTarget` fills in) is a build error.
+fn macosTarget(b: *std.Build, target: std.Build.ResolvedTarget, options: AppOptions) std.Build.ResolvedTarget {
+    const resolved = resolveTarget(b, target);
+    if (resolved.result.os.tag != .macos or !hasMacosSwift(options)) return resolved;
+    const min = resolved.result.os.version_range.semver.min;
+    if (min.order(swift_build.min_macos) != .lt) return resolved;
+    const explicit: ?std.SemanticVersion = if (target.query.os_version_min) |v| switch (v) {
+        .semver => |sv| sv,
+        else => null,
+    } else null;
+    if (explicit) |v| if (v.order(default_macos_min) != .eq)
+        fatal("macOS {d}.{d} is below what Swift supports here: with Swift sources in .macos.hooks or an extension's .macos.objc the minimum is macOS {d}.{d} (docs/platform-hooks-apple.md)", .{ min.major, min.minor, swift_build.min_macos.major, swift_build.min_macos.minor });
+    var query = resolved.query;
+    query.os_version_min = .{ .semver = swift_build.min_macos };
+    return b.resolveTargetQuery(query);
+}
+
+/// One extension's or hook's native sources on iOS or macOS.
+const AppleUnit = struct {
+    /// For messages: "app.vision: .ios.swift_sources".
+    who: []const u8,
+    /// The Swift module of its Swift sources.
+    module_name: []const u8,
+    sources: []const std.Build.LazyPath = &.{},
+    swift_sources: []const std.Build.LazyPath = &.{},
+    frameworks: []const []const u8 = &.{},
+    weak_frameworks: []const []const u8 = &.{},
+};
+
+/// The include directories of the app's Objective-C and Swift sources:
+/// oriel_hooks.h and oriel_swift.h, oriel_extension.h.
+fn appleIncludes(oriel_dep: *std.Build.Dependency) [2]std.Build.LazyPath {
+    return .{ oriel_dep.path("src/platform/apple/include"), oriel_dep.path("src/platform/ios/include") };
+}
+
+/// Add `unit` to `compile` (an app executable, not its type-check, which
+/// builds without an SDK): Objective-C sources with ARC, frameworks, and
+/// its Swift sources as one object (build/swift.zig). The caller adds the
+/// include paths (`appleIncludes`) and, for macOS, the SDK's paths. Returns
+/// whether a Swift object was added (the caller links the runtime once).
+fn addAppleUnit(b: *std.Build, oriel_dep: *std.Build.Dependency, compile: *std.Build.Step.Compile, unit: AppleUnit, sdk: ?[]const u8) bool {
+    const target = compile.rootModuleTarget();
+    const macos = target.os.tag == .macos;
+    for (unit.sources) |src| compile.root_module.addCSourceFile(.{ .file = src, .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" } });
+    for (unit.frameworks) |f| compile.root_module.linkFramework(f, .{});
+    // Weak and only where the SDK has them; Swift doesn't autolink them
+    // (that link would be strong).
+    var no_autolink: std.ArrayList([]const u8) = .empty;
+    if (sdk) |root| for (unit.weak_frameworks) |f| {
+        const dir = b.pathJoin(&.{ root, "System/Library/Frameworks", b.fmt("{s}.framework", .{f}) });
+        std.Io.Dir.cwd().access(b.graph.io, dir, .{}) catch continue;
+        compile.root_module.linkFramework(f, .{ .weak = true });
+        no_autolink.appendSlice(b.allocator, &.{ "-Xfrontend", "-disable-autolink-framework", "-Xfrontend", f }) catch @panic("OOM");
+    };
+    if (unit.swift_sources.len == 0) return false;
+    const root = sdk orelse {
+        if (macos) {
+            macos_build.requireSdk(b, compile, unit.who);
+        } else {
+            compile.step.dependOn(&b.addFail(b.fmt("{s} need the iOS SDK and its Swift modules, and there is no Apple SDK: on Linux, `oriel ios setup` with Xcode.xip " ++
+                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{unit.who})).step);
+        }
+        return false;
+    };
+    const swiftc = swift_build.findSwiftc(b) orelse {
+        compile.step.dependOn(&b.addFail(b.fmt("{s} need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{unit.who})).step);
+        return false;
+    };
+    if (b.graph.host.result.os.tag != .macos and swift_build.resourceDir(b, root, target) == null) {
+        compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{unit.who})).step);
+        return false;
+    }
+    const includes = appleIncludes(oriel_dep);
+    const obj = swift_build.compile(b, swiftc, unit.swift_sources, unit.module_name, target, root, includes[0].path(b, "oriel_swift.h"), &includes, compile.root_module.optimize orelse .Debug, no_autolink.items);
+    compile.root_module.addObjectFile(obj);
+    return true;
+}
+
+/// "OrielExtension_app_vision" for extension "app.vision".
+fn extensionModuleName(b: *std.Build, name: []const u8) []const u8 {
+    const module_name = b.dupe(b.fmt("OrielExtension_{s}", .{name}));
+    std.mem.replaceScalar(u8, module_name, '.', '_');
+    return module_name;
+}
+
+/// "OrielHooks_MyHooks" for hook class "MyHooks".
+fn hookModuleName(b: *std.Build, class: []const u8) []const u8 {
+    var buf: [160]u8 = undefined;
+    return b.dupe(hooks_spec.swiftModuleName(&buf, class) orelse @panic("hook class name too long"));
+}
+
+/// App extensions' and platform hooks' iOS parts for one of the app's
+/// executables (build/swift.zig for Swift).
 fn addIosExtensions(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions, compile: *std.Build.Step.Compile, sdk: ?[]const u8) void {
-    const include = oriel_dep.path("src/platform/ios/include");
+    var any = false;
     var swift = false;
     for (options.extensions) |e| {
         const x = e.ios orelse continue;
-        if (x.sources.len > 0 or x.swift_sources.len > 0) compile.root_module.addIncludePath(include);
-        for (x.sources) |src| compile.root_module.addCSourceFile(.{ .file = src, .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" } });
-        for (x.frameworks) |f| compile.root_module.linkFramework(f, .{});
-        // Weak and only where the SDK has them; Swift doesn't autolink them
-        // (that link would be strong).
-        var no_autolink: std.ArrayList([]const u8) = .empty;
-        if (sdk) |root| for (x.weak_frameworks) |f| {
-            const dir = b.pathJoin(&.{ root, "System/Library/Frameworks", b.fmt("{s}.framework", .{f}) });
-            std.Io.Dir.cwd().access(b.graph.io, dir, .{}) catch continue;
-            compile.root_module.linkFramework(f, .{ .weak = true });
-            no_autolink.appendSlice(b.allocator, &.{ "-Xfrontend", "-disable-autolink-framework", "-Xfrontend", f }) catch @panic("OOM");
-        };
-        if (x.swift_sources.len == 0) continue;
+        any = any or x.sources.len > 0 or x.swift_sources.len > 0;
         // Oriel's own (oriel.system_ai): name the flag that asked for Swift.
         const who = if (extension_spec.reserved(e.name)) b.fmt("{s}: -D{s}'s Swift sources (Oriel's backend)", .{ e.name, e.name["oriel.".len..] }) else b.fmt("{s}: .ios.swift_sources", .{e.name});
-        const root = sdk orelse {
-            compile.step.dependOn(&b.addFail(b.fmt("{s} need the iOS SDK and its Swift modules, and there is no Apple SDK: on Linux, `oriel ios setup` with Xcode.xip " ++
-                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{who})).step);
-            continue;
-        };
-        const swiftc = swift_build.findSwiftc(b) orelse {
-            compile.step.dependOn(&b.addFail(b.fmt("{s} need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{who})).step);
-            continue;
-        };
-        if (b.graph.host.result.os.tag != .macos and swift_build.resourceDir(b, root, compile.rootModuleTarget()) == null) {
-            compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{who})).step);
-            continue;
+        if (addAppleUnit(b, oriel_dep, compile, .{
+            .who = who,
+            .module_name = extensionModuleName(b, e.name),
+            .sources = x.sources,
+            .swift_sources = x.swift_sources,
+            .frameworks = x.frameworks,
+            .weak_frameworks = x.weak_frameworks,
+        }, sdk)) swift = true;
+    }
+    for (options.ios.hooks) |h| {
+        any = any or h.sources.len > 0 or h.swift_sources.len > 0;
+        if (addAppleUnit(b, oriel_dep, compile, .{
+            .who = b.fmt(".ios.hooks {s}: its sources", .{h.class}),
+            .module_name = hookModuleName(b, h.class),
+            .sources = h.sources,
+            .swift_sources = h.swift_sources,
+            .frameworks = h.frameworks,
+        }, sdk)) swift = true;
+    }
+    if (any) for (appleIncludes(oriel_dep)) |dir| compile.root_module.addIncludePath(dir);
+    if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
+}
+
+/// App extensions' `.macos.objc` and `.macos.hooks` for one of the app's
+/// macOS executables (not the type-check): their Objective-C and Swift
+/// sources against the macOS SDK (build/macos.zig), which they need.
+fn addMacosNative(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions, compile: *std.Build.Step.Compile) void {
+    var units: std.ArrayList(AppleUnit) = .empty;
+    for (options.extensions) |e| {
+        const m = e.macos orelse continue;
+        if (m != .objc) continue;
+        const x = m.objc;
+        units.append(b.allocator, .{
+            .who = b.fmt("{s}: .macos.objc sources", .{e.name}),
+            .module_name = extensionModuleName(b, e.name),
+            .sources = x.sources,
+            .swift_sources = x.swift_sources,
+            .frameworks = x.frameworks,
+            .weak_frameworks = x.weak_frameworks,
+        }) catch @panic("OOM");
+    }
+    for (options.macos.hooks) |h| units.append(b.allocator, .{
+        .who = b.fmt(".macos.hooks {s}: its sources", .{h.class}),
+        .module_name = hookModuleName(b, h.class),
+        .sources = h.sources,
+        .swift_sources = h.swift_sources,
+        .frameworks = h.frameworks,
+    }) catch @panic("OOM");
+    var any = false;
+    for (units.items) |u| any = any or u.sources.len > 0 or u.swift_sources.len > 0;
+    if (units.items.len == 0) return;
+    const sdk = macos_build.sdk(b);
+    if (any) {
+        for (appleIncludes(oriel_dep)) |dir| compile.root_module.addIncludePath(dir);
+        if (sdk) |root| macos_build.addPaths(compile.root_module, root) else {
+            macos_build.requireSdk(b, compile, "Objective-C and Swift sources of .macos.hooks and extensions' .macos.objc");
+            return;
         }
-        const module_name = b.dupe(b.fmt("OrielExtension_{s}", .{e.name}));
-        std.mem.replaceScalar(u8, module_name, '.', '_');
-        const obj = swift_build.compile(b, swiftc, x.swift_sources, module_name, compile.rootModuleTarget(), root, include.path(b, "oriel_extension.h"), compile.root_module.optimize orelse .Debug, no_autolink.items);
-        compile.root_module.addObjectFile(obj);
-        swift = true;
+    }
+    var swift = false;
+    for (units.items) |u| {
+        if (addAppleUnit(b, oriel_dep, compile, u, sdk)) swift = true;
     }
     if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
 }

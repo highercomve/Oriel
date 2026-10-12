@@ -1,6 +1,7 @@
-//! Swift sources of iOS app extensions (`AppOptions.extensions[].ios.swift_sources`):
-//! compiled by `swiftc` into one object per extension and linked into the
-//! app with the Swift runtime from the OS (/usr/lib/swift, iOS 12.2+).
+//! Swift sources of iOS app extensions (`AppOptions.extensions[].ios.swift_sources`)
+//! and of iOS and macOS platform hooks (`.ios.hooks`, `.macos.hooks`):
+//! compiled by `swiftc` into one object per extension or hook and linked
+//! into the app with the Swift runtime from the OS (/usr/lib/swift).
 //!
 //! `swiftc` is `$SWIFTC`, else `xcrun --find swiftc` on a Mac, else
 //! `swiftc` on PATH (the swift.org toolchain on Linux). It compiles against
@@ -46,7 +47,9 @@ fn onPath(b: *std.Build, name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// `arm64-apple-ios15.0`, `arm64-apple-ios15.0-simulator`, `x86_64-apple-ios15.0-simulator`.
+/// `arm64-apple-ios15.0`, `arm64-apple-ios15.0-simulator`,
+/// `x86_64-apple-ios15.0-simulator`; `arm64-apple-macos15.0`,
+/// `x86_64-apple-macos15.0`.
 pub fn triple(b: *std.Build, target: std.Target) []const u8 {
     return tripleOf(b.allocator, target) catch @panic("OOM");
 }
@@ -54,7 +57,8 @@ pub fn triple(b: *std.Build, target: std.Target) []const u8 {
 pub fn tripleOf(gpa: std.mem.Allocator, target: std.Target) ![]u8 {
     const arch = if (target.cpu.arch == .aarch64) "arm64" else "x86_64";
     const min = target.os.version_range.semver.min;
-    return std.fmt.allocPrint(gpa, "{s}-apple-ios{d}.{d}{s}", .{ arch, min.major, min.minor, if (target.abi == .simulator) "-simulator" else "" });
+    const os = if (target.os.tag == .macos) "macos" else "ios";
+    return std.fmt.allocPrint(gpa, "{s}-apple-{s}{d}.{d}{s}", .{ arch, os, min.major, min.minor, if (target.abi == .simulator) "-simulator" else "" });
 }
 
 pub const Flags = struct {
@@ -81,19 +85,21 @@ pub fn flags(gpa: std.mem.Allocator, f: Flags) ![]const []const u8 {
 test tripleOf {
     const gpa = std.testing.allocator;
     const q = struct {
-        fn t(arch: std.Target.Cpu.Arch, abi: std.Target.Abi) !std.Target {
-            return std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = arch, .os_tag = .ios, .abi = abi, .os_version_min = .{ .semver = .{ .major = 15, .minor = 0, .patch = 0 } } });
+        fn t(arch: std.Target.Cpu.Arch, os: std.Target.Os.Tag, abi: std.Target.Abi) !std.Target {
+            return std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = arch, .os_tag = os, .abi = abi, .os_version_min = .{ .semver = .{ .major = 15, .minor = 0, .patch = 0 } } });
         }
     };
-    const cases = [_]struct { std.Target.Cpu.Arch, std.Target.Abi, []const u8 }{
-        .{ .aarch64, .none, "arm64-apple-ios15.0" },
-        .{ .aarch64, .simulator, "arm64-apple-ios15.0-simulator" },
-        .{ .x86_64, .simulator, "x86_64-apple-ios15.0-simulator" },
+    const cases = [_]struct { std.Target.Cpu.Arch, std.Target.Os.Tag, std.Target.Abi, []const u8 }{
+        .{ .aarch64, .ios, .none, "arm64-apple-ios15.0" },
+        .{ .aarch64, .ios, .simulator, "arm64-apple-ios15.0-simulator" },
+        .{ .x86_64, .ios, .simulator, "x86_64-apple-ios15.0-simulator" },
+        .{ .aarch64, .macos, .none, "arm64-apple-macos15.0" },
+        .{ .x86_64, .macos, .none, "x86_64-apple-macos15.0" },
     };
     for (cases) |c| {
-        const s = try tripleOf(gpa, try q.t(c[0], c[1]));
+        const s = try tripleOf(gpa, try q.t(c[0], c[1], c[2]));
         defer gpa.free(s);
-        try std.testing.expectEqualStrings(c[2], s);
+        try std.testing.expectEqualStrings(c[3], s);
     }
 }
 
@@ -123,14 +129,34 @@ pub fn resourceDir(b: *std.Build, sdk: []const u8, target: std.Target) ?[]const 
 var resource_dir_cache: ?struct { b: *std.Build, path: ?[]const u8 } = null;
 
 fn findResourceDir(b: *std.Build, sdk: []const u8, target: std.Target) ?[]const u8 {
-    if (b.option([]const u8, "swift_resource_dir", "iOS Swift sources on Linux: the Darwin Swift resource directory (default: from xtool's darwin.artifactbundle)")) |d| return d;
+    if (b.option([]const u8, "swift_resource_dir", "Swift sources on Linux: the Darwin Swift resource directory (default: from xtool's darwin.artifactbundle)")) |d| return d;
     if (b.graph.environ_map.get("SWIFT_RESOURCE_DIR")) |d| if (d.len > 0) return d;
     if (b.graph.host.result.os.tag == .macos) return null;
     const marker = "darwin.artifactbundle";
     const at = std.mem.indexOf(u8, sdk, marker) orelse return null;
     const bundle = sdk[0 .. at + marker.len];
-    const key = b.fmt("{s}-apple-ios{s}", .{ if (target.cpu.arch == .aarch64) "arm64" else "x86_64", if (target.abi == .simulator) "-simulator" else "" });
+    const key = sdkJsonKey(b.allocator, target) catch @panic("OOM");
     return fromSwiftSdkJson(b, bundle, key);
+}
+
+/// The target triple swift-sdk.json lists for `target`: `arm64-apple-ios`,
+/// `arm64-apple-ios-simulator`, `arm64-apple-macosx`.
+pub fn sdkJsonKey(gpa: std.mem.Allocator, target: std.Target) ![]u8 {
+    const arch = if (target.cpu.arch == .aarch64) "arm64" else "x86_64";
+    if (target.os.tag == .macos) return std.fmt.allocPrint(gpa, "{s}-apple-macosx", .{arch});
+    return std.fmt.allocPrint(gpa, "{s}-apple-ios{s}", .{ arch, if (target.abi == .simulator) "-simulator" else "" });
+}
+
+test sdkJsonKey {
+    const gpa = std.testing.allocator;
+    const mac = try std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = .aarch64, .os_tag = .macos });
+    const key = try sdkJsonKey(gpa, mac);
+    defer gpa.free(key);
+    try std.testing.expectEqualStrings("arm64-apple-macosx", key);
+    const sim = try std.zig.system.resolveTargetQuery(std.testing.io, .{ .cpu_arch = .aarch64, .os_tag = .ios, .abi = .simulator });
+    const key2 = try sdkJsonKey(gpa, sim);
+    defer gpa.free(key2);
+    try std.testing.expectEqualStrings("arm64-apple-ios-simulator", key2);
 }
 
 /// swift-sdk.json (SwiftPM's Swift SDK schema) in `bundle`:
@@ -163,8 +189,9 @@ fn fromSwiftSdkJson(b: *std.Build, bundle: []const u8, key: []const u8) ?[]const
 }
 
 /// One object from `sources` (module `module_name`), with `header` as the
-/// bridging header (oriel_extension.h); `extra` goes before the sources
-/// (frameworks it must not autolink, for weak links).
+/// bridging header (include/oriel_swift.h), the headers it imports found in
+/// `include_dirs`; `extra` goes before the sources (frameworks it must not
+/// autolink, for weak links).
 pub fn compile(
     b: *std.Build,
     swiftc: []const u8,
@@ -173,6 +200,7 @@ pub fn compile(
     target: std.Target,
     sdk: []const u8,
     header: std.Build.LazyPath,
+    include_dirs: []const std.Build.LazyPath,
     optimize: std.builtin.OptimizeMode,
     extra: []const []const u8,
 ) std.Build.LazyPath {
@@ -185,6 +213,10 @@ pub fn compile(
         .optimize = optimize,
     }) catch @panic("OOM"));
     run.addArgs(extra);
+    for (include_dirs) |dir| {
+        run.addArg("-Xcc");
+        run.addPrefixedDirectoryArg("-I", dir);
+    }
     run.addArg("-import-objc-header");
     run.addFileArg(header);
     run.addArg("-o");
@@ -199,9 +231,20 @@ pub fn compile(
 /// records the new names, which iOS 15–17 don't have.
 pub const min_ios: std.SemanticVersion = .{ .major = 18, .minor = 0, .patch = 0 };
 
-/// Link the Swift runtime libraries an extension's object needs: the SDK's
-/// stubs, the OS's libraries at run time (Concurrency is in the OS from
-/// iOS 15).
+/// The lowest macOS an app with Swift sources can target, for the same
+/// reason: Swift 6 split the Darwin overlay on macOS 15 too (with iOS 18),
+/// with the same `$ld$previous` stubs, and macOS 13 and 14 lack the new
+/// libraries.
+pub const min_macos: std.SemanticVersion = .{ .major = 15, .minor = 0, .patch = 0 };
+
+/// `min_ios` or `min_macos`, for `os`.
+pub fn minFor(os: std.Target.Os.Tag) std.SemanticVersion {
+    return if (os == .macos) min_macos else min_ios;
+}
+
+/// Link the Swift runtime libraries an extension's or hook's object needs:
+/// the SDK's stubs, the OS's libraries at run time (Concurrency is in the OS
+/// from iOS 15 and macOS 12).
 pub fn linkRuntime(module: *std.Build.Module, sdk: []const u8) void {
     const b = module.owner;
     module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib/swift" }) });

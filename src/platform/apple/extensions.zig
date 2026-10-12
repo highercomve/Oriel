@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const objc = @import("objc.zig");
+const instances = @import("instances.zig");
 const extensions = @import("../../core/extensions.zig");
 const lifecycle = @import("../../core/lifecycle.zig");
 
@@ -97,9 +98,9 @@ fn load(ctx: *extensions.Context) anyerror!void {
     };
     const pool = objc.AutoreleasePool.init();
     defer pool.deinit();
-    // Kept for the process's life (+1, never released).
-    const obj = cls.msgSend(Object, "alloc", .{}).msgSend(Object, "init", .{});
-    if (obj.value == null) return error.Unavailable;
+    // Kept for the process's life; the same object when the class is also
+    // a platform hook (.ios.hooks).
+    const obj = instances.of(cls) orelse return error.Unavailable;
     ctx.runner.native = obj.value;
     if (obj.getClass()) |k| if (k.respondsToSelector(objc.sel("load:"))) {
         const context = newObject(context_class.?, ctx.runner.index, 0) orelse return;
