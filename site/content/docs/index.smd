@@ -11,9 +11,10 @@ Start with [Getting started]($link.page('docs/getting-started')), then build a c
 Already have a website? [Wrap a web app]($link.page('docs/wrap')) with
 `oriel wrap` to give it a desktop window, tray icon and Linux AppImage.
 
-For mobile apps, see [Android and iOS]($link.page('docs/mobile')). Add native
-Android behavior and SDK integrations with
-[app-owned Android extensions]($link.page('docs/android-extensions')).
+For mobile apps, see [Android and iOS]($link.page('docs/mobile')). React to or
+take over the platform's own app, window and web view events with
+[platform hooks]($link.page('docs/platform-hooks')) (Kotlin on Android,
+Objective-C/Swift on iOS and macOS, `oriel.hooks` in Zig on the desktop).
 
 # [Capabilities and local AI]($heading.id('capabilities-and-local-ai'))
 

@@ -1,6 +1,6 @@
 # App extensions
 
-[Back to Oriel](../README.md) · [Documentation](README.md) · [Android extensions](android-extensions.md)
+[Back to Oriel](../README.md) · [Documentation](README.md) · [Platform hooks](platform-hooks.md)
 
 An app extension is the app's own native code, declared by name in build.zig
 and implemented per platform: Kotlin on Android, Objective-C or Swift on iOS,
@@ -170,8 +170,8 @@ class VisionExtension : OrielAppExtension {
 - The class needs a public zero-argument constructor. The generated
   `OrielExtensions` registry constructs it directly (no reflection) and
   build.zig adds a `-keep` rule for it. A class may also implement
-  `OrielAndroidExtension` for Activity and WebView hooks
-  ([Android extensions](android-extensions.md)).
+  `OrielAndroidHooks` for Activity and WebView events
+  ([platform hooks](platform-hooks.md), [Android](android-extensions.md)).
 - `.sources` and `.dependencies` join `android.sources` and
   `android.dependencies`; `.assets` go under the APK's assets
   (`context.assets.open("detectors/...")`).

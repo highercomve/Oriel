@@ -233,8 +233,9 @@ oriel ios build                              # zig-out/ios/<Name>.app
 See [Android and iOS]($link.page('docs/mobile')) for the full workflow (debug runs on a device, installing, what reuses or stands in for the desktop modules, and what was verified on which devices).
 
 For app-owned Kotlin/Java hooks and third-party Android SDKs, declare
-`.android.sources`, `.android.extensions`, and `.android.dependencies` in
-`build.zig`. See [Android extensions]($link.page('docs/android-extensions'))
+`.android.sources`, `.android.hooks` (formerly `.android.extensions`), and
+`.android.dependencies` in `build.zig`. See [Platform hooks]($link.page('docs/platform-hooks'))
+for hooks on every platform, and [Android platform hooks]($link.page('docs/android-extensions'))
 for the generated registry, R8 rules, and manifest integration.
 
 # [Native dependencies]($heading.id('native-dependencies'))
