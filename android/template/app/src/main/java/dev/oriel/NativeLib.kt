@@ -29,6 +29,10 @@ internal object NativeLib {
     @JvmStatic external fun onSystemEvent(name: ByteArray, data: ByteArray)
     /** oriel.lifecycle: 0 background (no Activity started), 1 foreground (OrielRuntime). */
     @JvmStatic external fun onLifecycle(event: Int)
+    /** OrielCall.isCancelled: the caller cancelled or timed out (src/platform/android/extensions.zig). */
+    @JvmStatic external fun extensionCancelled(id: Long): Boolean
+    /** An app extension's emit (any thread): Zig's onEvent handlers and the page. */
+    @JvmStatic external fun onExtensionEvent(extension: ByteArray, event: ByteArray, data: ByteArray)
     /** A registered keyboard shortcut was pressed (src/plugins/global_shortcut/android.zig). */
     @JvmStatic external fun onShortcut(id: ByteArray)
     /** The system speech recognizer (OrielSpeech): kind 0 partial, 1 final, 2 level, 3 error, 4 ended. */

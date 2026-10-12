@@ -55,8 +55,20 @@ pub const Commands = struct {
         "dictation_delete", "dictation_file",     "dictation_sources", "open_file",      "save_file",
         "paste",            "chat_status",        "chat_download",     "chat_delete",    "chat_send",
         "chat_compare",     "tts_status",         "tts_download",      "tts_delete",     "tts_warm_up",
-        "tts_speak",
+        "tts_speak",        "echo_extension",
     };
+
+    /// The app extension called from Zig (async: a call blocks, so never on
+    /// the main thread). The reply is the extension's JSON, as text.
+    pub fn echo_extension(gpa: std.mem.Allocator, args: struct { text: []const u8 }) ![]const u8 {
+        if (!echo_ext.available()) return oriel.ipc.fail("showcase.echo has no implementation on {s}", .{oriel.target.name});
+        const input = try std.json.Stringify.valueAlloc(gpa, .{ .text = args.text }, .{});
+        var diag: oriel.extensions.Diagnostics = .{};
+        return echo_ext.call(gpa, "reverse", input, .{ .timeout_ms = 5_000, .diag = &diag }) catch |err| switch (err) {
+            error.ExtensionFailed => oriel.ipc.fail("{s}: {s}", .{ diag.code(), diag.message() }),
+            else => err,
+        };
+    }
 
     /// The IPC round trip of the pass criteria.
     pub fn echo(gpa: std.mem.Allocator, args: struct { text: []const u8 }) ![]const u8 {
@@ -351,8 +363,28 @@ fn onMenu(id: []const u8, _: ?bool) void {
 
 var tray: if (oriel.tray.available) ?*oriel.tray.Tray else void = if (oriel.tray.available) null else {};
 
+/// The app extension (build.zig): Zig, Kotlin or Objective-C per platform.
+const echo_ext = oriel.extensions.get("showcase.echo");
+
+/// The page may call `reverse`, through this check.
+fn checkEcho(request: *oriel.extensions.PageRequest) !void {
+    if (request.input.len > 4096) return oriel.ipc.fail("Keep it under 4 KB", .{});
+}
+
+fn onEchoEvent(event: oriel.extensions.Event) void {
+    std.log.info("{s}: event {s}: {s}", .{ event.extension, event.name, event.data[0..@min(event.data.len, 200)] });
+}
+
 fn setup() !void {
     const gpa = std.heap.smp_allocator;
+    if (echo_ext.available()) {
+        oriel.extensions.expose("showcase.echo", .{ .methods = &.{"reverse"}, .filter = checkEcho });
+        echo_ext.onEvent(onEchoEvent);
+    }
+    if (comptime oriel.extensions.declared("showcase.swift")) {
+        if (oriel.extensions.get("showcase.swift").available())
+            oriel.extensions.expose("showcase.swift", .{ .methods = &.{"reverse"}, .filter = checkEcho });
+    }
     if (oriel.deep_link.available) oriel.deep_link.onOpen(onDeepLink);
     if (oriel.target.is_android) {
         // In-app shortcuts, shown in the system's Meta+/ list.
