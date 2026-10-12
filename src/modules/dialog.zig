@@ -26,6 +26,7 @@ const target = @import("../core/target.zig");
 pub const common = @import("dialog/common.zig");
 
 pub const OpenOptions = common.OpenOptions;
+pub const Filter = common.Filter;
 pub const SaveOptions = common.SaveOptions;
 pub const FolderOptions = common.FolderOptions;
 pub const Folder = common.Folder;

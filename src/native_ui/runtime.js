@@ -20592,6 +20592,10 @@ ${a.stack || ""}`;
         return g.oriel.listen("extension:" + name, callback);
       }
     }),
+    // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
+    camera: Object.freeze({ capturePhoto(options) {
+      return invoke("camera:capture", options || {});
+    } }),
     deepLink: Object.freeze({ current() {
       return invoke("deep_link:current", {});
     } }),

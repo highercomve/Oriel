@@ -25,6 +25,8 @@ internal object NativeLib {
     @JvmStatic external fun onFileDialogResult(path: ByteArray?)
     /** A folder call's answer (OrielRuntime.FOLDER_* status); `request` is Zig's. */
     @JvmStatic external fun onFolderResult(request: Long, status: Int, data: ByteArray?)
+    /** A capturePhoto's answer (OrielCamera's STATUS_*; the encoded photo when ok); `request` is Zig's. */
+    @JvmStatic external fun onCameraResult(request: Long, status: Int, width: Int, height: Int, data: ByteArray?)
     /** A tile tap, notification action, headset button or keyboard event (OrielSystem). */
     @JvmStatic external fun onSystemEvent(name: ByteArray, data: ByteArray)
     /** oriel.lifecycle: 0 background (no Activity started), 1 foreground (OrielRuntime). */

@@ -127,6 +127,8 @@ pub fn build(b: *std.Build) void {
         .permissions = .{
             .notifications = "",
             .microphone = "Dictation turns what you say into text, on this device.",
+            // Also turns on oriel.camera (the Files tab's Camera card).
+            .camera = "Take photos to show on the Files tab.",
         },
         // iOS: keep dictating when the app goes to the background.
         .ios = .{ .background_audio = true },
