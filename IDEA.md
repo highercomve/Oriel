@@ -37,7 +37,7 @@ rendering, canvas, pointer and keyboard events, fields and selection, native but
 checkboxes and radios, forced-colors handling, drag and drop, and platform-specific
 window backends. It remains experimental because browser compatibility is narrower
 than WebView mode and the API surface is still growing. See `docs/native-renderer.md`,
-`docs/native-dom.md`, and `docs/native-controls-a11y-design.md`.
+`docs/design/native-dom.md`, and `docs/design/native-controls-a11y-design.md`.
 
 The important product idea is **web layout with native platform rendering**: existing
 HTML/CSS/JS can be reused, while apps that need a browser can stay on the WebView

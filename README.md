@@ -14,7 +14,7 @@ Zig 0.16: a native window with the system webview, your frontend (React, Vite,
 plain HTML…) embedded in a small binary, and typed JS ↔ Zig calls generated
 from plain Zig structs. It targets Linux, Windows, macOS, Android and iOS
 (iOS is verified in the simulator; device testing is next). An optional
-[native renderer](docs/renderers.md#native-renderer-experimental) runs the same frontend
+[native renderer](docs/native-renderer.md) runs the same frontend
 without a WebView.
 
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
@@ -31,15 +31,15 @@ oriel init my-app         # React + Vite (or --template vue|svelte|vanilla)
 cd my-app && oriel dev    # hot reload; `oriel build` for the release binary
 
 # Or wrap any website into a standalone desktop app with system tray & AppImage:
-oriel wrap https://web.whatsapp.com --tray --user-agent chrome --package
+oriel wrap https://web.whatsapp.com --user-agent chrome --package
 ```
 
 ## Renderers
 
 Use the system WebView, or build with `-Dnative_ui` to render HTML, CSS and
 JavaScript with QuickJS, Oriel’s native DOM, Yoga, and platform drawing.
-The native renderer is experimental; see its [support and limits](docs/native-renderer.md)
-and [performance measurements](docs/native-renderer-performance.md).
+The native renderer is experimental; see its [guide](docs/native-renderer.md)
+and [support reference](docs/native-ui-reference.md).
 
 ## App extensions
 
@@ -55,9 +55,7 @@ web view with its native handle), Kotlin or Java on Android (`.android.hooks`,
 `OrielAndroidHooks`: WebView and Activity lifecycles, native results and
 permissions, a custom file picker), Objective-C or Swift on iOS and macOS.
 
-See [Platform hooks](docs/platform-hooks.md), and
-[Android platform hooks](docs/android-extensions.md) for a complete example,
-request-code namespaces, and callback ownership.
+See [Platform hooks](docs/platform-hooks.md).
 
 ## Examples
 
@@ -72,31 +70,29 @@ with Oriel. See [apps and examples](docs/examples.md) for screenshots and detail
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md), or go straight to a guide:
+Every feature has one page with the same parts: where it works, a quick
+start, how it works (with a diagram), examples, and the full reference. Start
+with the [documentation index](docs/README.md) (the same pages as the
+[website](https://highercomve.github.io/Oriel/docs/)), or go straight to:
 
 | Guide | Contents |
 |---|---|
-| [CLI](docs/cli.md) | Install, scaffold, develop, manage tools, and update the CLI |
-| [Building apps](docs/app-development.md) | Build configuration, typed IPC, events, security, permissions, tray, and windows |
-| [Modules and plugins](docs/modules.md) | Lifecycle, camera, system AI, shortcuts, clipboard, dialogs, notifications, storage, SQL, and deep links |
-| [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends, chat, and dictation |
-| [Text to speech](docs/tts.md) | `oriel.tts`: Kokoro voices offline, verified downloads, streaming playback, CPU or GPU |
-| [Application updates](docs/updater.md) | Signed manifests, update payloads, and runtime APIs |
-| [Packaging](docs/packaging.md) | Linux packages, Windows installers, macOS bundles, and signing |
-| [Platforms](docs/platforms.md) | Desktop support, prerequisites, and cross-compilation |
-| [Android](docs/android.md) · [iOS](docs/ios.md) | Mobile setup, builds, and platform behavior |
-| [App extensions](docs/extensions.md) | Your own Kotlin, Objective-C, Swift or Zig code, called by name from Zig and the page |
-| [Platform hooks](docs/platform-hooks.md) | React to or take over the platform's app, window and web view events, on every platform |
-| [Android platform hooks](docs/android-extensions.md) | App-owned Kotlin/Java hooks, generated registration, and native SDK dependencies |
-| [Native rendering](docs/renderers.md) | Renderer overview, implementation guides, and limits |
-| [Contributing](docs/contributing.md) | Repository layout, builds, tests, development rules, and releases |
-| [Background and comparisons](docs/overview.md) | The Oriel name and comparisons with other frameworks |
+| [Getting started](docs/getting-started.md) · [Tutorial](docs/tutorial.md) | Install, scaffold, and build a first app |
+| [Concepts](docs/concepts.md) | How an Oriel app is put together: windows, the bridge, commands, modules, the build |
+| [Commands and events](docs/commands.md) | Typed calls between the page and Zig, and the generated TypeScript |
+| [Modules](docs/modules.md) | Every module, its build flag and where it works, with a page each |
+| [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends; [chat](docs/chat.md), [dictation](docs/dictation.md), [text to speech](docs/tts.md) |
+| [Platform hooks](docs/platform-hooks.md) · [App extensions](docs/extensions.md) | Your Kotlin, Objective-C, Swift or Zig code inside the platform's events, or called from Zig |
+| [Desktop](docs/desktop.md) · [Android](docs/android.md) · [iOS](docs/ios.md) | Platform setup, builds, and behavior |
+| [Building](docs/building.md) · [Packaging](docs/packaging.md) · [Signing](docs/signing.md) · [Updates](docs/updater.md) | Every `build.zig` option, packages, signatures, signed updates |
+| [CLI](docs/cli.md) | Every `oriel` command |
+| [Contributing](docs/internal/contributing.md) | Repository layout, builds, tests, development rules, and releases |
 
 ## Project status
 
 Oriel is experimental and APIs will change. It targets Linux, Windows,
-macOS, Android, and iOS; see the [platform guide](docs/platforms.md) and
-mobile guides for verification details and limitations.
+macOS, Android, and iOS; see the [desktop](docs/desktop.md), [Android](docs/android.md)
+and [iOS](docs/ios.md) guides for verification details and limitations.
 
 [Changelog](CHANGELOG.md) · [Project background](IDEA.md) · [Dependencies](LIBRARIES.md)
 
