@@ -69,14 +69,14 @@ From Zig, on a worker thread (an async command or `oriel.App.spawn`):
 const std = @import("std");
 const oriel = @import("oriel");
 
-fn ask(io: std.Io, arena: std.mem.Allocator) !?[]const u8 {
+fn ask(arena: std.mem.Allocator) !?[]const u8 {
     if (!oriel.system_ai.available) return null;
     const st = oriel.system_ai.status();
     if (st.state != .available) {
         std.log.info("system AI: {s}: {s}", .{ @tagName(st.state), st.reason() });
         return null;
     }
-    return try oriel.system_ai.generate(io, arena, .{
+    return try oriel.system_ai.generate(arena, .{
         .system = "Answer in one sentence.",
         .prompt = "Name three herbs",
     }, null); // the page gets system_ai:token events either way
@@ -177,12 +177,10 @@ try { fields = JSON.parse(raw); } catch { fields = null; } // instructions, not 
 ### System AI first, a local model otherwise
 
 ```zig
-var io: std.Io = undefined; // set in main: io = init.io
-
 pub fn summarize(gpa: std.mem.Allocator, args: struct { text: []const u8 }) ![]const u8 {
     const prompt = try std.fmt.allocPrint(gpa, "Summarize:\n{s}", .{args.text});
     if (oriel.system_ai.available and oriel.system_ai.status().state == .available) {
-        if (oriel.system_ai.generate(io, gpa, .{ .prompt = prompt }, null)) |reply| return reply else |err| {
+        if (oriel.system_ai.generate(gpa, .{ .prompt = prompt }, null)) |reply| return reply else |err| {
             std.log.warn("system AI: {s} ({s})", .{ @errorName(err), oriel.system_ai.lastError() });
         }
     }
@@ -214,8 +212,8 @@ blocks: call them from a worker.
 | `available: bool` | `true` in an Android or iOS build with `.system_ai`. |
 | `status() Status` | Whether the model is ready, downloadable, downloading or unavailable, and why. Never fails: problems read as `unavailable` with a reason. |
 | `capabilities() Capabilities` | What the model takes (cached by the platform; all false/0 when the call fails). |
-| `download(io, on_progress: ?ProgressFn) Error!void` | Android: download Gemini Nano, returning when it's ready. iOS: returns at once when ready, else `error.NotReady` (or `error.Unavailable`). `io` is unused. |
-| `generate(io, arena, req: Request, on_token: ?TokenFn) Error![]const u8` | The whole reply, allocated in `arena`; `on_token` sees it piece by piece (the page always does). `io` is unused. |
+| `download(on_progress: ?ProgressFn) Error!void` | Android: download Gemini Nano, returning when it's ready. iOS: returns at once when ready, else `error.NotReady` (or `error.Unavailable`). |
+| `generate(arena, req: Request, on_token: ?TokenFn) Error![]const u8` | The whole reply, allocated in `arena`; `on_token` sees it piece by piece (the page always does). |
 | `cancel() void` | Any thread: the running `generate` or `download` fails with `error.Cancelled`. |
 | `lastError() []const u8` | `"<code>: <message>"` of this thread's last failed `download` or `generate`, in the platform's words, or `""`. |
 | `pageCall(arena, cmd, args) ![]u8` | The page's `system_ai:*` commands; called by Oriel's IPC. |
@@ -317,6 +315,12 @@ their events only while they run.
 |---|---|---|
 | `system_ai:token` | `{ text }` | The reply's next piece, whole UTF-8 characters (from Zig callers too). |
 | `system_ai:download` | `{ state, downloaded, total }` | Android's download progress. |
+
+### Migrating from 0.11
+
+- `download(io, on_progress)` and `generate(io, arena, req, on_token)`
+  lose their unused `io`: `download(on_progress)`,
+  `generate(arena, req, on_token)`.
 
 ## Troubleshooting
 
