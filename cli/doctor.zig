@@ -26,9 +26,6 @@ pub const Command = struct {
         \\GlobalShortcuts portal are reported for information only.
         \\macOS: the Xcode command-line tools (Apple SDK).
         \\Windows: the WebView2 runtime; NSIS (makensis) for installers.
-        \\Options:
-        \\  --fix     Install missing non-admin tools and print admin commands
-        \\  --yes     Skip confirmation prompt for --fix
         \\Exits with 1 when something required is missing.
     ;
 };

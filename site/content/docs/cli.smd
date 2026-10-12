@@ -189,7 +189,6 @@ Usage: oriel wrap <url> [options]
 | `--title <title>` | Window title and package display name |
 | `--id <app-id>` | Application id in reverse-DNS form (default: `com.<domain>.<name>`) |
 | `--icon <icon.png>` | Path to PNG icon file |
-| `--tray` | Accepted; the tray is on by default |
 | `--no-tray` | Disable the system tray icon (on by default: closing the window hides it to the tray) |
 | `--user-agent <ua>` | Custom User-Agent: `chrome`, `safari`, `firefox`, or a custom string |
 | `--devtools` | Enable web developer tools and forward console messages to stdout |

@@ -16,6 +16,15 @@ const metadata = @import("package_metadata");
 pub const Command = struct {
     pub const summary = "Configure and register deep link URL schemes";
     pub const forward = "args";
+    pub const usage =
+        \\Usage: oriel deep-link <command> [args...]
+        \\
+        \\Commands:
+        \\  add <scheme>    Enable deep_link in build.zig and register scheme in AppOptions.url_schemes
+        \\  register        Register the built dev app locally for deep link handling
+        \\  unregister      Remove local dev registration for deep link handling
+        \\
+    ;
     args: []const []const u8 = &.{},
 };
 
@@ -304,15 +313,7 @@ pub fn parseExeNameFromBuildZig(allocator: std.mem.Allocator, build_zig_text: []
 
 pub fn run(ctx: Context, cmd: Command) !u8 {
     if (cmd.args.len == 0 or std.mem.eql(u8, cmd.args[0], "--help") or std.mem.eql(u8, cmd.args[0], "-h")) {
-        try ctx.out.writeAll(
-            \\Usage: oriel deep-link <command> [args...]
-            \\
-            \\Commands:
-            \\  add <scheme>    Enable deep_link in build.zig and register scheme in AppOptions.url_schemes
-            \\  register        Register the built dev app locally for deep link handling
-            \\  unregister      Remove local dev registration for deep link handling
-            \\
-        );
+        try ctx.out.writeAll(Command.usage);
         return 0;
     }
 

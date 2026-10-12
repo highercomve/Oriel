@@ -19,23 +19,23 @@ const deep_link = @import("deep_link.zig");
 pub const Command = struct {
     pub const summary = "Install the app's desktop entry for local runs (Linux: global hotkeys, app menu)";
     pub const forward = "args";
+    pub const usage =
+        \\Usage: oriel desktop-entry [--release | --remove] [zig build args...]
+        \\
+        \\Installs $XDG_DATA_HOME/applications/<id>.desktop and the app's icons for
+        \\the build in zig-out, so the desktop knows the app when it runs from there:
+        \\global hotkeys (the GlobalShortcuts portal needs it on Wayland), the app
+        \\menu, notifications. Installed packages ship their own.
+        \\
+        \\  (no flag)   the dev build (<id>.Dev, used by `oriel dev`), or the
+        \\              production build when the app has no dev mode
+        \\  --release   the production build (<id>, used by `oriel build` / `oriel run`)
+        \\  --remove    remove both entries and their icons
+        \\
+    ;
     args: []const []const u8 = &.{},
 };
 
-const usage =
-    \\Usage: oriel desktop-entry [--release | --remove] [zig build args...]
-    \\
-    \\Installs $XDG_DATA_HOME/applications/<id>.desktop and the app's icons for
-    \\the build in zig-out, so the desktop knows the app when it runs from there:
-    \\global hotkeys (the GlobalShortcuts portal needs it on Wayland), the app
-    \\menu, notifications. Installed packages ship their own.
-    \\
-    \\  (no flag)   the dev build (<id>.Dev, used by `oriel dev`), or the
-    \\              production build when the app has no dev mode
-    \\  --release   the production build (<id>, used by `oriel build` / `oriel run`)
-    \\  --remove    remove both entries and their icons
-    \\
-;
 
 pub fn run(ctx: Context, cmd: Command) !u8 {
     var release = false;
@@ -44,7 +44,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     defer rest.deinit(ctx.gpa);
     for (cmd.args) |a| {
         if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
-            try ctx.out.writeAll(usage);
+            try ctx.out.writeAll(Command.usage);
             return 0;
         } else if (std.mem.eql(u8, a, "--release")) {
             release = true;
