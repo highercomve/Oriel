@@ -4,8 +4,9 @@
 //! Linux backend: libpulse (works on PipeWire through pipewire-pulse); the
 //! sound server resamples and downmixes. Windows backend: WASAPI shared mode,
 //! system audio through loopback on each output device; downmixed and
-//! resampled here. macOS backend: CoreAudio + AudioQueue (system audio through
-//! a loopback device such as BlackHole).
+//! resampled here. macOS backend: CoreAudio + AudioQueue; system audio through
+//! a process tap on macOS 14.2+ (macos_tap.zig), or a loopback device such as
+//! BlackHole.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;

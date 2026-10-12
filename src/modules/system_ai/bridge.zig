@@ -99,7 +99,7 @@ pub const typescript =
     \\  download(onProgress?: (event: SystemAiDownloadEvent) => void): Promise<SystemAiStatus>;
     \\  /** The whole reply; `onToken` sees it piece by piece. */
     \\  generate(request: SystemAiRequest, onToken?: (text: string) => void): Promise<string>;
-    \\  /** Stops the running generate or download: it rejects with "Cancelled". */
+    \\  /** Stops the running generate or download: it rejects with "cancelled". */
     \\  cancel(): Promise<void>;
     \\}
     \\

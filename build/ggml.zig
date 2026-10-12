@@ -4,9 +4,9 @@
 //! llama.cpp and/or whisper.cpp when their corresponding feature is enabled.
 //!
 //! With `ggml_cuda`, the CUDA backend is built separately by nvcc into
-//! `libggml-cuda.so`, which the app loads at runtime (`whisper.loadGpuBackends`,
-//! `llama.loadGpuBackends`). It stays a separate library because nvcc's host
-//! code uses GCC's libstdc++ while Zig builds C++ against libc++; the ggml
+//! `libggml-cuda.so`, which the app loads at runtime (`ggml_gpu.load` in
+//! src/modules/ggml_gpu.zig). It stays a separate library because nvcc's
+//! host code uses GCC's libstdc++ while Zig builds C++ against libc++; the ggml
 //! backend interface between them is plain C. The library resolves ggml's
 //! own symbols from the executable (`rdynamic`, set by `addApp`).
 //!

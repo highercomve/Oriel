@@ -6,8 +6,8 @@
 //!
 //!     if (oriel.system_ai.available) {
 //!         const st = oriel.system_ai.status();
-//!         if (st.state == .downloadable) try oriel.system_ai.download(io, null);
-//!         const reply = try oriel.system_ai.generate(io, arena, .{ .prompt = "Name three herbs" }, onToken);
+//!         if (st.state == .downloadable) try oriel.system_ai.download(null);
+//!         const reply = try oriel.system_ai.generate(arena, .{ .prompt = "Name three herbs" }, onToken);
 //!     }
 //!
 //! - Whether a device has the model is a runtime fact: `status()` (a phone
@@ -99,16 +99,14 @@ pub fn capabilities() Capabilities {
 /// AICore); returns when it's ready, error.Unavailable where there's
 /// nothing to download. iOS downloads it with Apple Intelligence: this
 /// returns at once when it's ready, else error.NotReady.
-pub fn download(io: std.Io, on_progress: ?ProgressFn) Error!void {
-    _ = io;
+pub fn download(on_progress: ?ProgressFn) Error!void {
     last_error = .{};
     return session.download(on_progress, &last_error);
 }
 
 /// The model's reply to `req`, in `arena`. `on_token` sees it piece by
 /// piece while it's generated (also when null, the page does).
-pub fn generate(io: std.Io, arena: std.mem.Allocator, req: Request, on_token: ?TokenFn) Error![]const u8 {
-    _ = io;
+pub fn generate(arena: std.mem.Allocator, req: Request, on_token: ?TokenFn) Error![]const u8 {
     last_error = .{};
     return session.generate(arena, req, on_token, &last_error);
 }
