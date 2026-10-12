@@ -192,6 +192,7 @@ pub fn Bridge(
     comptime local: security.Local,
 ) type {
     const window_commands = @import("../../core/window_commands.zig");
+    const native_commands = @import("../../core/native_commands.zig");
     return struct {
         /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
         /// `onMessage`, for the app's own page. No IPC token or isolation: the
@@ -252,14 +253,7 @@ pub fn Bridge(
                 const pool = App.getWorkerPool();
                 defer if (pool != null) App.releaseWorkerPool();
                 const result: anyerror![]const u8 = blk: {
-                    if (window_commands.isWindowCommand(self.cmd))
-                        break :blk window_commands.dispatch(config.security, local, arena, page_url, label, self.cmd, args);
-                    if (!security.commandAllowedForWindow(config.security, local, page_url, self.cmd, label)) {
-                        log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(self.cmd[0..@min(self.cmd.len, 64)]), label });
-                        break :blk error.Forbidden;
-                    }
-                    if (ipc.isBuiltinCommand(self.cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
-                    if (!ipc.isAsync(api.commands, self.cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                    if (native_commands.dispatch(api, config, local, surface.engine, arena, page_url, label, request, self.args_json, if (pool) |p| p.io else null)) |answer| break :blk answer;
                     // Async: on the worker pool, answered from the main loop.
                     const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                     const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(self.cmd, .{}), if (self.args_json.len > 0) self.args_json else "null" }) catch break :blk error.OutOfMemory;
