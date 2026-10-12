@@ -102,6 +102,14 @@ Notable changes in Oriel releases.
   "Upgrading an existing project".
 - Showcase: a Camera card on the Files tab and a `camera` UI test; a System
   AI card (`-Dsystem_ai`).
+- `oriel.paths` (core): `appData(gpa, .{ .name })` and `appCache(gpa,
+  .{ .name })`, the app's private data and cache directories on every
+  platform, created if missing. Android: the files and cache dirs
+  themselves (no subfolder: the sandbox is the app's); elsewhere the same
+  folders as `oriel.store.dataDir` / `cacheDir` (XDG, `Library/Application
+  Support` and `Library/Caches`, `%LOCALAPPDATA%`). Apps no longer reach
+  for `oriel.android.paths.filesDir()` behind an Android check
+  (docs/modules.md, "App directories").
 
 ### Changed
 
@@ -131,6 +139,13 @@ Notable changes in Oriel releases.
   "trim-memory" and the Android-only events.
 - The showcase frees its models through `unload_on` instead of
   `onSystemEvent` glue.
+- `zig build check` for iOS without the SDK covers apps with C
+  dependencies (`sql`, `llama`, `whisper`, `kokoro`): their C and C++
+  type-check against Zig's own Darwin headers, and the Objective-C that
+  needs framework headers (ggml's Metal backend, miniaudio's AVFoundation
+  playback) and the frameworks themselves (Foundation, Metal, MetalKit)
+  are left out. It failed before (missing libc, "unable to find
+  framework"). With an SDK nothing changes.
 
 ### Deprecated
 
@@ -139,6 +154,10 @@ Notable changes in Oriel releases.
   `oriel.lifecycle`.
 - `App.Config.on_session_end`: still called on Windows at session end,
   after `terminating`; subscribe to `oriel.lifecycle` instead.
+- `oriel.android.preconnect`: not needed. The `io` Oriel hands the app
+  resolves host names through bionic's getaddrinfo, so `std.http.Client`
+  works on Android as it is (redirects included); remove the call. Oriel's
+  own model downloads no longer use it.
 
 ### Fixed
 

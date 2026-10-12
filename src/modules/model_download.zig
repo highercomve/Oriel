@@ -1,15 +1,13 @@
 //! Model downloads for `dictation`, `chat` and `tts`: an HTTPS GET into a
 //! `.part` file, renamed when complete (and, with `fetchVerified`, only
 //! when its SHA-256 matches), with progress per megabyte. Redirects are
-//! followed by hand (Hugging Face sends to its CDN), and on Android each
-//! host is resolved by `oriel.android.preconnect` first (Zig's resolver
-//! needs /etc/resolv.conf, which Android doesn't have). On iOS the download
-//! goes through NSURLSession (model_download/ios.zig): Zig's TLS finds no
-//! CA certificates there.
+//! followed by hand (Hugging Face sends to its CDN). On Android host names
+//! resolve through the app's `io` (bionic's getaddrinfo:
+//! platform/android/io.zig). On iOS the download goes through NSURLSession
+//! (model_download/ios.zig): Zig's TLS finds no CA certificates there.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const oriel = @import("../oriel.zig");
 
 const log = std.log.scoped(.model_download);
 
@@ -80,7 +78,6 @@ pub fn fetchVerified(
     while (true) : (hops += 1) {
         if (hops == 6) return error.TooManyHttpRedirects;
         try validateUrl(uri);
-        if (builtin.abi.isAndroid()) try oriel.android.preconnect(&client, uri);
         req = try client.request(.GET, uri, .{
             .headers = .{ .accept_encoding = .{ .override = "identity" } },
             .redirect_behavior = .unhandled,

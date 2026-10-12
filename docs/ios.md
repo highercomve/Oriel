@@ -14,7 +14,7 @@ device or simulator: linking needs Apple's SDK, which CI or a Mac provides.
 
 | Step | What it does |
 |---|---|
-| `zig build check -Dtarget=aarch64-ios` | Type-check. No SDK needed: Oriel declares the Objective-C runtime in Zig (`src/platform/apple/objc.zig`) instead of translating SDK headers. Apps with C dependencies (`sql`, `llama`, `whisper`) need the SDK's libc headers even for this. |
+| `zig build check -Dtarget=aarch64-ios` | Type-check. No SDK needed: Oriel declares the Objective-C runtime in Zig (`src/platform/apple/objc.zig`) instead of translating SDK headers. C dependencies (`sql`, `llama`, `whisper`, `kokoro`) type-check against the SDK's libc when there is one, else against Zig's own Darwin headers; without an SDK the Objective-C that needs framework headers (ggml's Metal backend, miniaudio's AVFoundation playback) is left out, and no framework is linked (nothing links in a check). |
 | `zig build -Dtarget=aarch64-ios -Dapple_sdk=<iPhoneOS.sdk>` | The frontend built and embedded, the executable linked, and `zig-out/ios/<Name>.app` written (unsigned). |
 | `zig build ios-dev -Dtarget=… [-Dios_dev_url=http://<LAN address>:5173/]` | The same app loading the dev server: `zig-out/ios-dev/<Name>.app`. A device can't reach the machine's `localhost`, so pass its LAN address (and run the dev server with `--host`). The dev bundle allows plain HTTP (App Transport Security). |
 | `zig build ios-ipa -Dtarget=aarch64-ios …` | `zig-out/<Name>.ipa` (`Payload/<Name>.app`, zipped with `zip`). |
