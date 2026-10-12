@@ -94,8 +94,8 @@ this, every feature edits five files.
 ### ADR-0.5 Generic queued events
 Generalize notification's `Pending`/`pageReady` into `src/core/pending_events.zig`, a bounded
 per-event FIFO (`capacity`), delivered once a Zig handler is set and once the page listens. A
-generic builtin `events:ready {event}` replaces the per-event commands; the old commands stay as
-aliases. `listen()` calls it for events in a frozen set: `notification:action`, `share:received`
+generic builtin `events:ready {event}` replaces the per-event commands (`notification:ready`, briefly
+kept as an alias, is gone: every bridge sends `events:ready`). `listen()` calls it for events in a frozen set: `notification:action`, `share:received`
 and `deep-link`.
 
 ### ADR-0.6 Module flags

@@ -20525,9 +20525,7 @@ ${a.stack || ""}`;
       }
       if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {
       });
-      if (event === "notification:action") invoke("notification:ready", {}).catch(() => {
-      });
-      if (event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {
+      if (event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {
       });
       return () => set.delete(callback);
     },
