@@ -274,6 +274,7 @@ test {
     std.testing.refAllDecls(security);
     std.testing.refAllDecls(@import("core/isolation.zig"));
     std.testing.refAllDecls(@import("core/csp.zig"));
+    std.testing.refAllDecls(@import("core/bridge_js.zig"));
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(system);
     std.testing.refAllDecls(paths);

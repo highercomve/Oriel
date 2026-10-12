@@ -1,63 +1,112 @@
-//! The WebView2 bridge script (`window.oriel`), in a file of its own so the
-//! Android bridge can derive its script from it without importing the
-//! Windows backend.
+//! The page bridge script: the `window.oriel` API injected into every
+//! WebView, one script for every platform. A platform supplies only its
+//! transport (`script`'s argument): `webkit_transport` (Linux, macOS, iOS)
+//! or a `channelTransport` (Windows, Android).
 
-const target = @import("../../core/target.zig");
+const std = @import("std");
+const target = @import("target.zig");
 /// `window.oriel.features`: the build's resolved feature flags.
-const features = @import("../../core/features.zig");
+const features = @import("features.zig");
 
-/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`).
+/// The script message handler WebKit pages post to.
+pub const handler_name = "oriel";
+
+/// Replaced by `ipc.tokenScript` (which defines `const ipcToken`) in each
+/// window's copy of the script.
 pub const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
 /// Replaced by `isolation.bridgeScript` (which defines `invoke`).
 pub const isolation_placeholder = "/*__ORIEL_ISOLATION__*/";
 
-/// Injected into allowed pages before their own scripts run.
-pub const bridge_js =
-    \\(() => {
-    \\  if (window !== window.top) return;
-    \\  const listeners = new Map();
-    \\  const pending = new Map();
-    \\  const pendingEvents = new Map();
-    \\  let nextId = 1;
-    \\
-++ token_placeholder ++
-    \\
-    \\  window.chrome.webview.addEventListener('message', (event) => {
-    \\    const data = event.data;
-    \\    // Events come on the same channel as replies, so a command's
-    \\    // events arrive before its reply.
-    \\    if (data && typeof data === 'object' && '__oriel_event' in data) {
-    \\      window.oriel?.__emit(data.__oriel_event, data.payload);
-    \\      return;
-    \\    }
-    \\    if (data && typeof data === 'object' && '__oriel_reply' in data) {
-    \\      const p = pending.get(data.id);
-    \\      if (p) {
-    \\        pending.delete(data.id);
-    \\        if (data.error) {
-    \\          p.reject(new Error(data.error));
-    \\        } else {
-    \\          p.resolve(data.result);
-    \\        }
-    \\      }
-    \\    }
-    \\  });
-    \\  function send(msg) {
-    \\    return new Promise((resolve, reject) => {
-    \\      const id = nextId++;
-    \\      pending.set(id, { resolve, reject });
-    \\      window.chrome.webview.postMessage(JSON.stringify(Object.assign({ id, token: ipcToken }, msg)));
-    \\    });
-    \\  }
+/// The bridge script with `transport`: statements that define
+/// `rawInvoke(cmd, args)` and `sendSealed(iso)` (both return Promises). They
+/// see `listeners`, `pendingEvents` and `ipcToken`, and may `return` to
+/// leave a page without the bridge.
+pub fn script(comptime transport: []const u8) []const u8 {
+    comptime {
+        @setEvalBranchQuota(100_000); // the scans cover the whole script
+        const out = head ++ transport ++ "\n" ++ isolation_placeholder ++ "\n" ++ body;
+        std.debug.assert(std.mem.count(u8, out, token_placeholder) == 1);
+        std.debug.assert(std.mem.count(u8, out, isolation_placeholder) == 1);
+        return out;
+    }
+}
+
+/// WebKit (WebKitGTK, WKWebView): `postMessage` on the script message
+/// handler, whose reply resolves the returned Promise.
+pub const webkit_transport = "  const handler = window.webkit.messageHandlers." ++ handler_name ++ ";\n" ++
     \\  function rawInvoke(cmd, args) {
-    \\    return send({ cmd, args: args ?? null });
+    \\    return handler.postMessage(JSON.stringify({ cmd, args: args ?? null, token: ipcToken }));
     \\  }
     \\  function sendSealed(iso) {
-    \\    return send({ cmd: "oriel:isolated", iso });
+    \\    return handler.postMessage(JSON.stringify({ cmd: "oriel:isolated", iso, token: ipcToken }));
     \\  }
+;
+
+/// A message channel (WebView2, Android's WebMessageListener).
+pub const Channel = struct {
+    /// Statements run first; they may `return` (no channel, no bridge).
+    setup: []const u8 = "",
+    /// An expression with `addEventListener("message", ...)` and
+    /// `postMessage(string)`.
+    port: []const u8,
+    /// Statements that set `data` from the message `event`; they may
+    /// `return` to drop it.
+    decode: []const u8,
+};
+
+/// Requests carry an `id`; replies (`__oriel_reply`) and events
+/// (`__oriel_event`) come back on the same channel, so a command's events
+/// arrive before its reply. Top-level documents only.
+pub fn channelTransport(comptime c: Channel) []const u8 {
+    return "  if (window !== window.top) return;\n" ++ c.setup ++
+        \\  const pending = new Map();
+        \\  let nextId = 1;
+        \\
+    ++ "  " ++ c.port ++ ".addEventListener('message', (event) => {\n" ++ c.decode ++
+        \\    // Events come on the same channel as replies, so a command's
+        \\    // events arrive before its reply.
+        \\    if (data && typeof data === 'object' && '__oriel_event' in data) {
+        \\      window.oriel?.__emit(data.__oriel_event, data.payload);
+        \\      return;
+        \\    }
+        \\    if (data && typeof data === 'object' && '__oriel_reply' in data) {
+        \\      const p = pending.get(data.id);
+        \\      if (p) {
+        \\        pending.delete(data.id);
+        \\        if (data.error) {
+        \\          p.reject(new Error(data.error));
+        \\        } else {
+        \\          p.resolve(data.result);
+        \\        }
+        \\      }
+        \\    }
+        \\  });
+        \\  function send(msg) {
+        \\    return new Promise((resolve, reject) => {
+        \\      const id = nextId++;
+        \\      pending.set(id, { resolve, reject });
+        \\
+    ++ "      " ++ c.port ++ ".postMessage(JSON.stringify(Object.assign({ id, token: ipcToken }, msg)));\n" ++
+        \\    });
+        \\  }
+        \\  function rawInvoke(cmd, args) {
+        \\    return send({ cmd, args: args ?? null });
+        \\  }
+        \\  function sendSealed(iso) {
+        \\    return send({ cmd: "oriel:isolated", iso });
+        \\  }
+    ;
+}
+
+const head =
+    \\(() => {
+    \\  const listeners = new Map();
+    \\  const pendingEvents = new Map();
     \\
-++ isolation_placeholder ++
-    \\
+++ token_placeholder ++ "\n";
+
+/// Everything after the transport and the isolation script (`invoke`).
+const body =
     \\  class WindowHandle {
     \\    constructor(label) {
     \\      this.label = label;
@@ -141,7 +190,7 @@ pub const bridge_js =
     \\      return () => set.delete(callback);
     \\    },
     \\    openExternal(url) {
-    \\      return this.invoke("open_external", { url });
+    \\      return invoke("open_external", { url });
     \\    },
     \\    permissions: Object.freeze({
     \\      query(name) {
@@ -186,7 +235,7 @@ pub const bridge_js =
     \\        return invoke("camera:capture", options || {});
     \\      },
     \\    }),
-    ++ @import("../../modules/system_ai/bridge.zig").js ++
+++ @import("../modules/system_ai/bridge.zig").js ++
     \\    deepLink: Object.freeze({
     \\      current() {
     \\        return invoke("deep_link:current", {});
@@ -259,7 +308,23 @@ pub const bridge_js =
     \\    Promise.resolve(windowApi.current().startDragging()).catch(() => {});
     \\  }, true);
     \\
-++ @import("../../core/window_commands.zig").theme_color_js ++
-    @import("../../core/security.zig").drop_guard_js ++
+++ @import("window_commands.zig").theme_color_js ++
+    @import("security.zig").drop_guard_js ++
     \\})();
 ;
+
+test "bridge script: each transport, one of each placeholder" {
+    const scripts = comptime .{
+        script(webkit_transport),
+        script(channelTransport(.{ .port = "window.chrome.webview", .decode = "    const data = event.data;\n" })),
+    };
+    inline for (scripts) |s| {
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, s, token_placeholder));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, s, isolation_placeholder));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, s, "function rawInvoke("));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, s, "function sendSealed("));
+        // Methods call the closure's invoke, so destructured ones work
+        // (`const { openExternal } = oriel`).
+        try std.testing.expect(std.mem.indexOf(u8, s, "this.invoke") == null);
+    }
+}
