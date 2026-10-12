@@ -299,7 +299,7 @@ test fail {
 
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "deep_link:ready") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
+    return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "events:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
@@ -401,9 +401,6 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const out = try arena.alloc(u8, enc.calcSize(bytes.items.len));
         _ = enc.encode(out, bytes.items);
         return std.json.Stringify.valueAlloc(arena, out, .{});
-    } else if (std.mem.eql(u8, request.cmd, "deep_link:ready")) {
-        deepLinkReady();
-        return arena.dupe(u8, "null");
     }
     return error.UnknownCommand;
 }

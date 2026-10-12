@@ -177,12 +177,10 @@ const body =
     \\          try { callback(payload); } catch (e) { console.error(e); }
     \\        }
     \\      }
-    \\      if (event === "deep-link") {
-    \\        try { Promise.resolve(invoke("deep_link:ready", {})).catch(() => {}); } catch (_) {}
-    \\      } else if (event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) {
-    \\        // Notification clicks and shares that came before the page listened
-    \\        // (one that launched the app); lifecycle and app extension events
-    \\        // from before it loaded.
+    \\      if (event === "deep-link" || event === "notification:action" || event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) {
+    \\        // Deep links, notification clicks and shares that came before the
+    \\        // page listened (one that launched the app); lifecycle and app
+    \\        // extension events from before it loaded.
     \\        try { Promise.resolve(invoke("events:ready", { event })).catch(() => {}); } catch (_) {}
     \\      }
     \\      return () => set.delete(callback);
