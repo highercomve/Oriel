@@ -547,8 +547,8 @@ Run inside an app (the directory with `build.zig.zon` or below). It edits
 `.permissions` in the first `addApp(...)` options of `build.zig`, creating
 the field when missing and removing it with its last kind. It accepts the
 kinds `microphone`, `camera`, `screen_capture`, `accessibility`,
-`location`, `notifications` and `system_audio`; declare `bluetooth` and
-`local_network` by editing `build.zig`.
+`location`, `notifications`, `system_audio`, `bluetooth` and
+`local_network`.
 
 ### Migrating from 0.11
 
