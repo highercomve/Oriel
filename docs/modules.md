@@ -317,6 +317,49 @@ try oriel.App.setMenu(&menu_items, onMenuAction);
 - **Windows:** Uses Win32 window menus (`CreateMenu`, `AppendMenuW`) and accelerator tables (`CreateAcceleratorTableW`). Commands and hotkeys marshal through `Shell.runOnMainThread`. Runtime untested on Windows.
 - **macOS:** the app's menus go into the main menu between the default App menu (Hide, Quit) and the default Edit / Window menus (kept unless the app defines menus with those names). `<Ctrl>` / `<Primary>` shortcuts become ⌘, `<Alt>` ⌥.
 
+### App directories (`oriel.paths`)
+
+Core (always built, no flag): the app's private data and cache directories
+on every platform, created if missing. The caller frees the path.
+
+```zig
+const data = try oriel.paths.appData(gpa, .{ .name = "GhostPantry" });
+defer gpa.free(data);
+const db_path = try std.fs.path.join(gpa, &.{ data, "pantry.db" });
+
+const cache = try oriel.paths.appCache(gpa, .{ .name = "GhostPantry" });
+```
+
+| | `appData` (kept until the app is removed) | `appCache` (the system may clear it) |
+|---|---|---|
+| Android | the files dir itself (`Context.getFilesDir()`) | the cache dir itself (`getCacheDir()`) |
+| iOS | `<container>/Library/Application Support/<name>` | `<container>/Library/Caches/<name>` |
+| macOS | `~/Library/Application Support/<name>` | `~/Library/Caches/<name>` |
+| Linux | `$XDG_DATA_HOME/<name>` (`~/.local/share/<name>`) | `$XDG_CACHE_HOME/<name>` (`~/.cache/<name>`) |
+| Windows | `%LOCALAPPDATA%\<name>` | `%LOCALAPPDATA%\<name>\cache` |
+
+Which to use:
+
+- **`oriel.paths.appData`** for an app's databases, downloaded models and
+  files: one call, no `if (builtin.abi.isAndroid())`. On Android the
+  sandbox is already the app's, so `name` adds no folder there: the files
+  sit in `filesDir` like a plain Android app's (and like apps that kept
+  them there before Oriel had this).
+- **`oriel.store.dataDir(gpa, app_id)`** is the same folder everywhere but
+  Android, where it is `<filesDir>/<app_id>`. It stays that way (moving
+  it would orphan existing apps' data), so an app that already keeps data
+  there keeps calling it. An app that kept data in `filesDir` itself moves
+  to `paths.appData` without moving anything.
+- Windows uses Local AppData, not Roaming: databases and models are
+  machine-local, and it matches `store.dataDir`. Settings meant to roam
+  belong in `oriel.store.configDir` (`%APPDATA%`).
+- Large downloads on Android that may live on shared storage:
+  `oriel.store.impl.externalDataDir` (Android only).
+- `name` follows the store's app id rules (no `/`, `\`, `:`, `..` or
+  control characters: `error.InvalidAppId`) on every platform, Android
+  included, so a bad name fails everywhere. On Android before the runtime
+  handed over its directories (before `main`): `error.AppNotRunning`.
+
 ### Settings store (`oriel.store`)
 
 Thread-safe JSON settings store with atomic writes, plus standard directory helpers (XDG on Linux, Known Folders Roaming/Local AppData on Windows):

@@ -92,6 +92,14 @@ Notable changes in Oriel releases.
   ... }`), typed as `Features` in the generated `oriel.ts`.
 - `zig build --verbose` prints one line listing the flags resolved to
   unavailable for the target.
+- `oriel.paths` (core): `appData(gpa, .{ .name })` and `appCache(gpa,
+  .{ .name })`, the app's private data and cache directories on every
+  platform, created if missing. Android: the files and cache dirs
+  themselves (no subfolder: the sandbox is the app's); elsewhere the same
+  folders as `oriel.store.dataDir` / `cacheDir` (XDG, `Library/Application
+  Support` and `Library/Caches`, `%LOCALAPPDATA%`). Apps no longer reach
+  for `oriel.android.paths.filesDir()` behind an Android check
+  (docs/modules.md, "App directories").
 
 ### Changed
 
