@@ -23,6 +23,7 @@ const security = @import("security.zig");
 const isolation = @import("isolation.zig");
 const App = @import("App.zig");
 const extensions = @import("extensions.zig");
+const camera_page = @import("../modules/camera/page.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -228,6 +229,8 @@ test tokenValid {
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     // The page's oriel.extensions.call blocks on native code: always a worker's.
     if (std.mem.eql(u8, cmd, extensions.page_command)) return true;
+    // oriel.camera.capturePhoto waits for the user.
+    if (std.mem.eql(u8, cmd, camera_page.command)) return true;
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
     comptime checkAsyncCommands(Commands, list);
@@ -457,6 +460,12 @@ pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, reques
     // its error was never turned into text) must not label this one's.
     fail_len = null;
     if (std.mem.eql(u8, request.cmd, extensions.page_command)) return extensions.pageCall(arena, request.args);
+    if (std.mem.eql(u8, request.cmd, camera_page.command)) {
+        // Off, the module isn't compiled (comptime branch).
+        if (@import("build_options").camera) {
+            return camera_page.capture(io orelse return error.Unavailable, arena, request.args);
+        } else return error.Unsupported;
+    }
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);
         if (@typeInfo(@TypeOf(field)) == .@"fn" and std.mem.eql(u8, decl.name, request.cmd)) {
@@ -716,6 +725,29 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  on(callback: (event: LifecycleEvent) => void): () => void;
             \\}
             \\
+            \\export interface CapturePhotoOptions {
+            \\  /** "camera" takes a new photo (phones), "library" picks one. Default "library". */
+            \\  source?: "camera" | "library";
+            \\  /** The longest side in pixels (1..8192), default 1600. */
+            \\  maxSide?: number;
+            \\  format?: "jpeg" | "png";
+            \\  /** JPEG quality, 1..100, default 85. */
+            \\  quality?: number;
+            \\}
+            \\
+            \\export interface CapturedPhoto {
+            \\  dataUrl: string;
+            \\  /** 0 when the desktop returned a file it couldn't decode (HEIC) as it was. */
+            \\  width: number;
+            \\  height: number;
+            \\  mime: string;
+            \\}
+            \\
+            \\export interface CameraApi {
+            \\  /** Rejects with "Cancelled", "Unsupported", "PermissionDenied" or "TooLarge". Needs `features.camera`. */
+            \\  capturePhoto(options?: CapturePhotoOptions): Promise<CapturedPhoto>;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -735,6 +767,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      deepLink: DeepLinkApi;
             \\      lifecycle: LifecycleApi;
             \\      extensions: ExtensionsApi;
+            \\      camera: CameraApi;
             \\      permissions: PermissionsApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
@@ -764,6 +797,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const lifecycle: LifecycleApi = (globalThis as any).oriel?.lifecycle;
             \\/** The app's extensions, as far as Zig exposes them (oriel.extensions.expose). */
             \\export const extensions: ExtensionsApi = (globalThis as any).oriel?.extensions;
+            \\/** Photos from the camera or the library (oriel.camera; `features.camera`). */
+            \\export const camera: CameraApi = (globalThis as any).oriel?.camera;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
@@ -1012,6 +1047,7 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "  lifecycle: LifecycleEvent;\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "extensions: ExtensionsApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "camera: CameraApi;") != null);
 
     const ts_disabled = comptime typescriptWithOptions(Commands, Events, false);
     try std.testing.expect(std.mem.indexOf(u8, ts_disabled, "\"deep-link\": { url: string };") == null);

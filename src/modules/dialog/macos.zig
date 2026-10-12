@@ -33,6 +33,7 @@ const Params = struct {
     gpa: std.mem.Allocator,
     kind: Kind,
     title: []const u8,
+    filter: ?common.Filter = null,
     result: ?[]u8 = null,
     err: ?anyerror = null,
 };
@@ -55,6 +56,7 @@ fn runPanel(params: *Params) void {
         panel.msgSend(void, "setCanChooseDirectories:", .{cocoa.boolean(folder)});
         panel.msgSend(void, "setAllowsMultipleSelection:", .{cocoa.boolean(false)});
         if (folder) panel.msgSend(void, "setCanCreateDirectories:", .{cocoa.boolean(true)});
+        if (params.filter) |f| setFilter(panel, f);
     }
     if (cocoa.nsString(params.title)) |title| {
         defer title.release();
@@ -77,8 +79,23 @@ fn runPanel(params: *Params) void {
     };
 }
 
-fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8) !?[]u8 {
-    var params: Params = .{ .gpa = gpa, .kind = kind, .title = title };
+/// Only the filter's extensions can be chosen (`allowedFileTypes`:
+/// deprecated for UTTypes, still honored, and needs no UTType lookups).
+fn setFilter(panel: Object, f: common.Filter) void {
+    const list = cocoa.class("NSMutableArray").msgSend(Object, "array", .{});
+    var n: usize = 0;
+    for (f.extensions[0..@min(f.extensions.len, common.max_filter_extensions)]) |ext| {
+        if (!common.validExtension(ext)) continue;
+        const s = cocoa.nsString(ext) orelse continue;
+        defer s.release();
+        list.msgSend(void, "addObject:", .{s});
+        n += 1;
+    }
+    if (n > 0) panel.msgSend(void, "setAllowedFileTypes:", .{list});
+}
+
+fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8, filter: ?common.Filter) !?[]u8 {
+    var params: Params = .{ .gpa = gpa, .kind = kind, .title = title, .filter = filter };
     try ShellMod.runOnMainThread(Params, &params, runPanel);
     if (params.err) |err| return err;
     return params.result;
@@ -86,18 +103,18 @@ fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8) !?[]u8 {
 
 /// Ask for an existing file. Caller frees the path; null if cancelled.
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
-    return run(gpa, .open, options.title);
+    return run(gpa, .open, options.title, options.filter);
 }
 
 /// Ask for a file to save to (the panel confirms overwrites). Caller frees
 /// the path; null if cancelled.
 pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
-    return run(gpa, .save, options.title);
+    return run(gpa, .save, options.title, null);
 }
 
 /// Ask for a folder: its path is the id. Null if cancelled.
 pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
-    const path = try run(gpa, .folder, options.title) orelse return null;
+    const path = try run(gpa, .folder, options.title, null) orelse return null;
     errdefer gpa.free(path);
     return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
 }

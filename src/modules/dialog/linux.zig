@@ -18,16 +18,16 @@ pub const Folder = common.Folder;
 pub const folderName = path_folder.folderName;
 
 pub fn openFile(gpa: std.mem.Allocator, options: OpenOptions) !?[]u8 {
-    return run(gpa, .open, options.title, options.modal);
+    return run(gpa, .open, options.title, options.modal, options.filter);
 }
 
 pub fn saveFile(gpa: std.mem.Allocator, options: SaveOptions) !?[]u8 {
-    return run(gpa, .save, options.title, options.modal);
+    return run(gpa, .save, options.title, options.modal, null);
 }
 
 /// Ask for a folder: its path is the id. Null if cancelled.
 pub fn openFolder(gpa: std.mem.Allocator, options: FolderOptions) !?Folder {
-    const path = try run(gpa, .folder, options.title, options.modal) orelse return null;
+    const path = try run(gpa, .folder, options.title, options.modal, null) orelse return null;
     errdefer gpa.free(path);
     return .{ .id = path, .name = try gpa.dupe(u8, common.pathName(path)) };
 }
@@ -53,6 +53,7 @@ const Call = struct {
     kind: Kind,
     title: [:0]const u8,
     modal: bool,
+    filter: ?common.Filter = null,
     result: ?[]u8 = null,
     /// Main thread: the nested loop to quit.
     loop: ?*glib.MainLoop = null,
@@ -67,12 +68,29 @@ const Call = struct {
         defer dialog.unref(); // the pending operation holds its own reference
         dialog.setTitle(self.title.ptr);
         dialog.setModal(@intFromBool(self.modal));
+        if (self.filter) |f| setFilter(dialog, f);
         const parent = if (oriel.App.main_window) |w| @as(?*gtk.Window, @ptrCast(w)) else null;
         switch (self.kind) {
             .open => dialog.open(parent, null, &finish, self),
             .save => dialog.save(parent, null, &finish, self),
             .folder => dialog.selectFolder(parent, null, &finish, self),
         }
+    }
+
+    /// The dialog's only filter: the valid extensions, as suffixes (GTK
+    /// matches them case-insensitively).
+    fn setFilter(dialog: *gtk.FileDialog, f: common.Filter) void {
+        const filter = gtk.FileFilter.new();
+        defer filter.unref(); // the dialog holds its own reference
+        var buf: [256]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&buf, "{s}", .{f.name[0..@min(f.name.len, 200)]}, 0)) |name| filter.setName(name.ptr) else |_| {}
+        for (f.extensions[0..@min(f.extensions.len, common.max_filter_extensions)]) |ext| {
+            if (!common.validExtension(ext)) continue;
+            var ext_buf: [17]u8 = undefined;
+            const ext_z = std.fmt.bufPrintSentinel(&ext_buf, "{s}", .{ext}, 0) catch continue;
+            filter.addSuffix(ext_z.ptr);
+        }
+        dialog.setDefaultFilter(filter);
     }
 
     fn startIdle(p: ?*anyopaque) callconv(.c) c_int {
@@ -112,10 +130,10 @@ const Call = struct {
     }
 };
 
-fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool) !?[]u8 {
+fn run(gpa: std.mem.Allocator, kind: Kind, title: []const u8, modal: bool, filter: ?common.Filter) !?[]u8 {
     var title_buf: [256]u8 = undefined;
     const title_z = try std.fmt.bufPrintSentinel(&title_buf, "{s}", .{title}, 0);
-    var call: Call = .{ .gpa = gpa, .kind = kind, .title = title_z, .modal = modal };
+    var call: Call = .{ .gpa = gpa, .kind = kind, .title = title_z, .modal = modal, .filter = filter };
 
     const context = glib.MainContext.default();
     const owner = context.isOwner() != 0;
