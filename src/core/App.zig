@@ -11,6 +11,8 @@ const platform = @import("../platform/platform.zig");
 const ipc = @import("ipc.zig");
 const security = @import("security.zig");
 const ThreadPool = @import("ThreadPool.zig").ThreadPool;
+const lifecycle = @import("lifecycle.zig");
+const target = @import("target.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -129,6 +131,8 @@ pub const Config = struct {
     /// so cleanup that would follow `run` (temp files, discovery files)
     /// belongs here too. Called on the main thread. Linux and macOS quit
     /// through the run loop on SIGTERM instead, so `run` returns there.
+    /// Deprecated: subscribe to `oriel.lifecycle`'s `terminating`, sent
+    /// first and on every platform.
     on_session_end: ?*const fn () void = null,
 };
 
@@ -944,7 +948,13 @@ pub fn run(io: std.Io, comptime api: Api, comptime config: Config) u8 {
         current_app_id = null;
     }
 
-    return platform.run(io, api, config);
+    lifecycle.beginRun();
+    const code = platform.run(io, api, config);
+    // The loop returned on the main thread (desktop): a quit the backend
+    // didn't announce (the last window closed) still sends `terminating`.
+    // Android ends processes without it, and iOS never gets here.
+    if (comptime !target.is_android) lifecycle.terminateAfterLoop();
+    return code;
 }
 
 test "pool shutdown withdraws publication and waits for outstanding borrows" {

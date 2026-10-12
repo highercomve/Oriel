@@ -12,6 +12,7 @@ const WindowHandle = window.WindowHandle;
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 const build_opts = @import("build_options");
 const single_instance = @import("single_instance.zig");
 const deep_link = if (build_opts.deep_link) @import("../../modules/deep_link.zig") else struct {};
@@ -203,6 +204,7 @@ const NSEventTypeApplicationDefined: c_ulong = 15;
 
 fn stopNow() void {
     quit_requested = true;
+    lifecycle.dispatch(.terminating);
     const app = sharedApplication();
     app.msgSend(void, "stop:", .{cocoa.nil});
     // `stop:` only takes effect once the current event is handled: post an
@@ -249,6 +251,50 @@ fn applicationDidFinishLaunching(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callc
     finished_launching = true;
     if (build_opts.notification) @import("../../modules/notification/macos.zig").installAtLaunch();
 }
+
+// ---------------------------------------------------------------------------
+// oriel.lifecycle: memory pressure (a dispatch source) and sleep / wake
+// (NSWorkspace's notification center, not the default one).
+// ---------------------------------------------------------------------------
+
+extern const NSWorkspaceWillSleepNotification: cocoa.id;
+extern const NSWorkspaceDidWakeNotification: cocoa.id;
+
+fn workspaceWillSleep(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
+    lifecycle.dispatch(.suspend_);
+}
+
+fn workspaceDidWake(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
+    lifecycle.dispatch(.resume_);
+}
+
+var memory_source: ?*anyopaque = null;
+
+fn onMemoryPressure(_: ?*anyopaque) callconv(.c) void {
+    const source = memory_source orelse return;
+    if (lifecycle.fromDispatchMemoryPressure(cocoa.sourceData(source))) |event| lifecycle.dispatch(event);
+}
+
+const LifecycleWatch = struct {
+    center: Object,
+    observer: Object,
+
+    fn install(observer: Object) LifecycleWatch {
+        memory_source = cocoa.memoryPressureSource(&onMemoryPressure);
+        if (memory_source == null) log.warn("could not watch memory pressure", .{});
+        const workspace = cocoa.class("NSWorkspace").msgSend(Object, "sharedWorkspace", .{});
+        const center = workspace.msgSend(Object, "notificationCenter", .{});
+        center.msgSend(void, "addObserver:selector:name:object:", .{ observer, objc.sel("orielWillSleep:"), Object{ .value = NSWorkspaceWillSleepNotification }, cocoa.nil });
+        center.msgSend(void, "addObserver:selector:name:object:", .{ observer, objc.sel("orielDidWake:"), Object{ .value = NSWorkspaceDidWakeNotification }, cocoa.nil });
+        return .{ .center = center, .observer = observer };
+    }
+
+    fn uninstall(self: LifecycleWatch) void {
+        self.center.msgSend(void, "removeObserver:", .{self.observer});
+        if (memory_source) |source| cocoa.cancelSource(source);
+        memory_source = null;
+    }
+};
 
 // Deep links: Launch Services sends `open myapp://...` (browser links,
 // `open`) to the app that declares the scheme in Info.plist as a kAEGetURL
@@ -573,6 +619,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 .{ "handleGetURLEvent:withReplyEvent:", handleGetURL },
                 .{ "application:openURLs:", applicationOpenURLs },
                 .{ "orielShare:userData:error:", orielShareService },
+                .{ "orielWillSleep:", workspaceWillSleep },
+                .{ "orielDidWake:", workspaceDidWake },
             });
             // NSApp's delegate is a weak reference: keep ours for the whole run.
             const delegate = cocoa.new(delegate_class);
@@ -581,6 +629,8 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
                 delegate.release();
             }
             app.msgSend(void, "setDelegate:", .{delegate});
+            const lifecycle_watch = LifecycleWatch.install(delegate);
+            defer lifecycle_watch.uninstall();
             installDefaultMenu(app, config.title);
             // The delegate answers the app's Services item (share module).
             if (build_opts.share) {

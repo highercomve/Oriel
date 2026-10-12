@@ -6,10 +6,12 @@
 const std = @import("std");
 const glib = @import("glib");
 const gio = @import("gio");
+const gobject = @import("gobject");
 const gtk = @import("gtk");
 const App = @import("../../core/App.zig");
 const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
+const lifecycle = @import("../../core/lifecycle.zig");
 const dev_server = @import("dev_server.zig");
 const window = @import("window.zig");
 
@@ -94,8 +96,49 @@ pub fn quit(code: u8) void {
 }
 
 fn quitNow() void {
+    lifecycle.dispatch(.terminating);
     if (App.gtk_app) |app| gio.Application.quit(app.as(gio.Application));
 }
+
+/// oriel.lifecycle: memory pressure from GMemoryMonitor (PSI, or the
+/// low-memory-monitor daemon / the portal; GLib picks), and sleep / wake
+/// from logind's PrepareForSleep on the system bus. Both call back on the
+/// main context. Once per process: a GMemoryMonitor is a singleton.
+const LifecycleWatch = struct {
+    var installed = false;
+
+    fn install() void {
+        if (installed) return;
+        installed = true;
+        const monitor = gio.MemoryMonitor.dupDefault(); // kept for the process
+        _ = gio.MemoryMonitor.signals.low_memory_warning.connect(monitor, ?*anyopaque, &onLowMemory, null, .{});
+        // Async: no system bus (containers) just means no sleep events.
+        gio.busGet(.system, null, &onSystemBus, null);
+    }
+
+    fn onLowMemory(_: *gio.MemoryMonitor, level: gio.MemoryMonitorWarningLevel, _: ?*anyopaque) callconv(.c) void {
+        if (lifecycle.fromGioMemoryWarning(@intFromEnum(level))) |event| lifecycle.dispatch(event);
+    }
+
+    fn onSystemBus(_: ?*gobject.Object, res: *gio.AsyncResult, _: ?*anyopaque) callconv(.c) void {
+        var err: ?*glib.Error = null;
+        const conn = gio.busGetFinish(res, &err) orelse {
+            if (err) |e| {
+                log.debug("no system bus, no sleep events: {s}", .{e.f_message orelse "unknown error"});
+                e.free();
+            }
+            return;
+        };
+        // Kept (with its subscription) for the process.
+        _ = conn.signalSubscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", null, .{}, &onPrepareForSleep, null, null);
+    }
+
+    fn onPrepareForSleep(_: *gio.DBusConnection, _: ?[*:0]const u8, _: [*:0]const u8, _: [*:0]const u8, _: [*:0]const u8, params: *glib.Variant, _: ?*anyopaque) callconv(.c) void {
+        const start = params.getChildValue(0);
+        defer start.unref();
+        lifecycle.dispatch(if (start.getBoolean() != 0) .suspend_ else .resume_);
+    }
+};
 
 fn quitIdle(_: ?*anyopaque) callconv(.c) c_int {
     quitNow();
@@ -188,6 +231,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
 
             _ = g_unix_signal_add(@intFromEnum(std.posix.SIG.TERM), &onQuitSignal, null);
             _ = g_unix_signal_add(@intFromEnum(std.posix.SIG.INT), &onQuitSignal, null);
+            LifecycleWatch.install();
 
             // Under dev_runner (`zig build dev`), exit when dev_runner dies, even by
             // SIGKILL: it can't clean up then. dev_runner exports its pid, so a parent

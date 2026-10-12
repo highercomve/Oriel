@@ -976,8 +976,9 @@ g.oriel = Object.freeze({
     if (event === "deep-link") invoke("deep_link:ready", {}).catch(() => {});
     // A notification click that came before the page listened (one that launched the app).
     if (event === "notification:action") invoke("notification:ready", {}).catch(() => {});
-    // Shares that came before the page listened (one that launched the app).
-    if (event === "share:received") invoke("events:ready", { event }).catch(() => {});
+    // Shares that came before the page listened (one that launched the app);
+    // lifecycle events (oriel.lifecycle) from before it loaded.
+    if (event === "share:received" || event === "lifecycle") invoke("events:ready", { event }).catch(() => {});
     return () => set.delete(callback);
   },
   openExternal(url) { return invoke("open_external", { url }); },
@@ -1007,6 +1008,9 @@ g.oriel = Object.freeze({
     },
     openSettings(name) { return invoke("permissions:open_settings", { name }); },
   }),
+  // { type: "background" | "foreground" | "memory_pressure" | "suspend" |
+  // "resume" | "terminating", level: "moderate" | "critical" | null }.
+  lifecycle: Object.freeze({ on(callback) { return g.oriel.listen("lifecycle", callback); } }),
   deepLink: Object.freeze({ current() { return invoke("deep_link:current", {}); } }),
   share: Object.freeze({
     // A received file (from share:received's files, or its handle) as a File.
