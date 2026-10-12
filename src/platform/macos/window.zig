@@ -26,6 +26,7 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 const build_target = @import("../../core/target.zig");
+const hooks = @import("../../core/hooks.zig");
 /// -Dnative_ui: pages drawn with native views instead of WebKit (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/appkit.zig") else struct {};
 
@@ -40,9 +41,23 @@ pub const WindowHandle = struct {
     /// The native renderer's surface (-Dnative_ui, `native_ui/appkit.zig`)
     /// for a window without a web view, else null.
     native: ?*anyopaque = null,
+    /// The window's label, owned by its `App.Window` (for the destroyed
+    /// hooks of `teardown`).
+    label: []const u8 = "",
 
     pub fn eql(self: WindowHandle, other: WindowHandle) bool {
         return self.serial == other.serial;
+    }
+
+    /// The platform hooks' view of the window (hooks.zig).
+    fn hookWindow(self: WindowHandle) ?hooks.NativeWindow {
+        const w = self.window orelse return null;
+        return .{ .appkit = w };
+    }
+
+    fn hookView(self: WindowHandle) ?hooks.NativeWebView {
+        const v = self.webview orelse return null;
+        return .{ .wkwebview = v };
     }
 
     pub fn nsWindow(self: WindowHandle) Object {
@@ -451,6 +466,7 @@ fn getWindowByNSWindow(nswindow: cocoa.id) ?*App.Window {
 /// release is deferred to the enclosing autorelease pool so a window can be
 /// torn down from inside its own delegate or webview callbacks.
 fn teardown(handle: WindowHandle) void {
+    if (handle.hookWindow()) |w| hooks.destroyed(handle.label, w, handle.hookView());
     allowOverlayKey(handle.window, false);
     if (comptime build_opts.native_ui) if (handle.native) |p| {
         // The window must not keep pointing at the view (its initial first
@@ -719,9 +735,12 @@ pub fn WindowCreator(
                 config.start,
             );
             defer gpa.free(target_uri);
+            const handle: WindowHandle = .{ .window = win.value, .webview = view.value, .serial = next_serial.fetchAdd(1, .monotonic), .label = options.label };
+            if (handle.hookWindow()) |w| hooks.created(options.label, w, handle.hookView());
+            errdefer if (handle.hookWindow()) |w| hooks.destroyed(options.label, w, handle.hookView());
             try load(view, target_uri);
 
-            return .{ .window = win.value, .webview = view.value, .serial = next_serial.fetchAdd(1, .monotonic) };
+            return handle;
         }
 
         /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
@@ -752,7 +771,9 @@ pub fn WindowCreator(
             // Transparency and overlay placement (always on top, placement),
             // as for a web view window.
             overlay.setup(win, cocoa.nil, options);
-            return .{ .window = win.value, .webview = null, .serial = next_serial.fetchAdd(1, .monotonic), .native = surface };
+            const handle: WindowHandle = .{ .window = win.value, .webview = null, .serial = next_serial.fetchAdd(1, .monotonic), .native = surface, .label = options.label };
+            if (handle.hookWindow()) |w| hooks.created(options.label, w, null);
+            return handle;
         }
 
         fn load(view: Object, uri: []const u8) !void {
