@@ -47,6 +47,10 @@ pub fn isSimulator(target: std.Target) bool {
 pub fn link(module: *std.Build.Module, root: []const u8, audio_capture: bool) void {
     const b = module.owner;
     module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ root, "System/Library/Frameworks" }) });
+    // iOS 26 SDKs: UIKit's headers include <UIUtilities/UIDefines.h>, from a
+    // framework that lives here (Objective-C extension sources need it).
+    const sub = b.pathJoin(&.{ root, "System/Library/SubFrameworks" });
+    if (std.Io.Dir.cwd().access(b.graph.io, sub, .{})) |_| module.addSystemFrameworkPath(.{ .cwd_relative = sub }) else |_| {}
     module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ root, "usr/lib" }) });
     module.linkSystemLibrary("objc", .{});
     for ([_][]const u8{ "Foundation", "UIKit", "WebKit", "AVFoundation", "UserNotifications", "UniformTypeIdentifiers", "CoreLocation" }) |fw|
