@@ -129,6 +129,13 @@ Notable changes in Oriel releases.
   Apps no longer need per-target flags like `.tray = !is_android`.
 - `-Dlayer_shell` is unavailable outside desktop Linux (it was ignored on
   Windows and macOS).
+- `zig build check` for iOS without the SDK covers apps with C
+  dependencies (`sql`, `llama`, `whisper`, `kokoro`): their C and C++
+  type-check against Zig's own Darwin headers, and the Objective-C that
+  needs framework headers (ggml's Metal backend, miniaudio's AVFoundation
+  playback) and the frameworks themselves (Foundation, Metal, MetalKit)
+  are left out. It failed before (missing libc, "unable to find
+  framework"). With an SDK nothing changes.
 
 ### Deprecated
 
@@ -137,6 +144,10 @@ Notable changes in Oriel releases.
   `oriel.lifecycle`.
 - `App.Config.on_session_end`: still called on Windows at session end,
   after `terminating`; subscribe to `oriel.lifecycle` instead.
+- `oriel.android.preconnect`: not needed. The `io` Oriel hands the app
+  resolves host names through bionic's getaddrinfo, so `std.http.Client`
+  works on Android as it is (redirects included); remove the call. Oriel's
+  own model downloads no longer use it.
 
 
 ## [0.9.16] — 2026-10-11

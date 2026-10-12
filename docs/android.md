@@ -43,7 +43,8 @@ Platform contract mapping:
 | Drag, click-through, always-on-top | No-ops; caption bar handles dragging. |
 | IPC bridge | Mirrors `linux/bridge.zig`; token and isolation checks (`ipc.zig`) must behave identically. |
 | Dialogs | AlertDialog + Storage Access Framework picker. Folders: `ACTION_OPEN_DOCUMENT_TREE` with a persisted read/write grant (`oriel.dialog.openFolder`, `saveToFolder` through `DocumentsContract.createDocument`). |
-| Clipboard, paths | ClipboardManager; `getFilesDir` / `getExternalFilesDir` over JNI. |
+| Clipboard, paths | ClipboardManager; `getFilesDir` / `getCacheDir` / `getExternalFilesDir` handed over at start. Apps use `oriel.paths.appData` / `appCache` (the files and cache dirs themselves) rather than `oriel.android.paths`. |
+| HTTP from Zig | A plain `std.http.Client` on the app's `io` (`init.io`): host names resolve through bionic's getaddrinfo (`io.zig`), CA certificates come from `/system/etc/security/cacerts` (std reads them). `oriel.android.preconnect` is deprecated and no longer needed. An `std.Io.Threaded` the app makes itself resolves from /etc/resolv.conf, which Android lacks: use Oriel's `io`. |
 | Single instance | Launcher Activity `singleTask`, `onNewIntent` → `on_second_instance`. |
 | Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |
 | Global shortcuts | In-app only (Android has no system-wide hotkeys): `global_shortcut.register` works while one of the app's windows has focus, with a hardware keyboard. `OrielActivity.dispatchKeyEvent` matches the key before the WebView, and `onProvideKeyboardShortcuts` lists each shortcut's description in the system's Meta+/ helper. |
