@@ -6,71 +6,6 @@ Notable changes in Oriel releases.
 
 ### Added
 
-- `oriel.system_ai` (`-Dsystem_ai`, off by default; Android and iOS): the
-  device's own language model. `status()` (available, downloadable,
-  downloading, unavailable, with a reason), `capabilities()`,
-  `download(io, on_progress)`, `generate(io, arena, .{ .system, .prompt,
-  .images, .temperature, .max_tokens, .schema }, on_token)`, `cancel()` and
-  `lastError()`; one generate or download at a time, from a worker; caps of
-  64 KiB per text, 4 images of 8 MiB and a 1 MiB reply; timeouts of 20 s,
-  3 min and 10 min. Android: Gemini Nano through ML Kit's GenAI Prompt API
-  (`genai-prompt` 1.0.0-beta4, added to Gradle only with the flag), text
-  and one image, streaming, download progress. iOS: Apple Foundation
-  Models (iOS 26+ with Apple Intelligence; text only), weak-linked and
-  compiled only when the SDK has it; Oriel's Swift raises the app's minimum
-  to iOS 18. The page: `oriel.systemAi.status/capabilities/download/
-  generate/cancel` with `system_ai:token` and `system_ai:download` events
-  (TypeScript `SystemAiApi`); `oriel.features.systemAi`. Linux, Windows and
-  macOS report `available = false`. The showcase has a System AI card
-  (`-Dsystem_ai`).
-- Oriel's own app extensions: modules can be built on the extension
-  primitive (`oriel.system_ai` is the first: Kotlin and Swift backends
-  shipped in Oriel, merged before the app's). Names starting with `oriel.`
-  are reserved: an app can't declare or expose them. `.ios.weak_frameworks`
-  weak-links frameworks newer than the app's minimum, only when the SDK has
-  them.
-- `oriel.camera` (`-Dcamera`, and on when the app declares
-  `.permissions.camera`; docs/modules.md, "Camera"):
-  `capturePhoto(io, arena, .{ .source = .camera | .library, .max_side,
-  .format, .quality })` returns the photo scaled and encoded (`bytes`,
-  `width`, `height`, `mime`), with `error.Cancelled`, `Unsupported`,
-  `PermissionDenied` and `TooLarge`. Android: the camera app into Oriel's
-  capture provider and the system photo picker, scaled in Kotlin. iOS:
-  `UIImagePickerController` and `PHPickerViewController`. Desktop:
-  `.library` through the file dialog (filtered to images) and zigimg,
-  `.camera` Unsupported. The page: `oriel.camera.capturePhoto({ source,
-  maxSide })` → `{ dataUrl, width, height, mime }` (TypeScript `CameraApi`).
-- Android, with the camera module on: `<input type="file"
-  accept="image/*">` opens the camera app (`capture`; CAMERA asked first)
-  or the system photo picker (`ACTION_PICK_IMAGES` on 13+, several with
-  `multiple`), and HEIC/AVIF picks are transcoded to JPEG
-  (`AppOptions.camera.transcode`, default true). The generated
-  `<app id>.oriel.capture` provider serves only Oriel's own captures.
-  Apps no longer need their own camera extension; extensions still see
-  the chooser first. Declaring `.permissions.camera` also declares
-  `android.hardware.camera` as not required.
-- `oriel.dialog.openFile`'s `.filter = .{ .name, .extensions }` (desktop).
-- Showcase: a Camera card on the Files tab and a `camera` UI test.
-- App extensions (`oriel.extensions`, docs/extensions.md): an app's own
-  native code, declared by name in `AppOptions.extensions` with an
-  implementation per platform: Kotlin (`.android`: `OrielAppExtension`,
-  `OrielCall`, `OrielExtensionError`; sources, Maven dependencies, assets,
-  generated R8 keep rules), Objective-C (`.ios`: the `OrielAppExtension`
-  protocol in `oriel_extension.h`, compiled with `-fobjc-arc`; frameworks,
-  bundle resources), opt-in Swift (`.ios.swift_sources`, with `swiftc` from
-  Xcode or the Linux toolchain plus xtool's SDK) and Zig (`.desktop`, or
-  `.linux`/`.macos`/`.windows`). `oriel.extensions.get("name")` is checked
-  at build time and `available()` is comptime per target; `call(arena,
-  method, input, .{ .timeout_ms, .cancel, .diag })` runs on the
-  extension's own workers (`.concurrency`), with capped inputs and replies
-  (`.max_bytes`, 32 MiB), a bounded queue, cancellation and timeouts, and
-  is refused on the main thread. Native code emits events
-  (`onEvent`; the page's `extension:<name>`) and gets `oriel.lifecycle`.
-- The page reaches extensions only through Zig: an app command, or
-  `oriel.extensions.expose(name, .{ .methods, .filter })` and
-  `oriel.extensions.call(name, method, payload)` / `.on(name, cb)` in every
-  bridge (TypeScript `ExtensionsApi`). The showcase's `showcase.echo` runs
-  in Zig, Kotlin and Objective-C.
 - `oriel.lifecycle`: the app's lifecycle with one API on every platform
   (core, always on). `subscribe(handler)` (up to 16, called on the main
   thread in order) gets `background` / `foreground` (Android: the last
@@ -87,14 +22,107 @@ Notable changes in Oriel releases.
 - `oriel.chat`, `oriel.dictation` and `oriel.tts` unload their models on
   critical memory pressure by themselves; `unload_on` changes when
   (`.{ .background = true }`, or `.{ .memory_pressure = null }` for never).
-- `window.oriel.features` in every page (and the native renderer), with
-  the build's resolved flags in camelCase (`{ tray: false, fsWatch: true,
-  ... }`), typed as `Features` in the generated `oriel.ts`.
-- `zig build --verbose` prints one line listing the flags resolved to
+- Every module namespace has a comptime `available` (see Changed, module
+  flags). `window.oriel.features` in every page (and the native renderer)
+  has the build's resolved flags in camelCase (`{ tray: false, fsWatch:
+  true, ... }`), typed as `Features` in the generated `oriel.ts`.
+  `zig build --verbose` prints one line listing the flags resolved to
   unavailable for the target.
+- App extensions (`oriel.extensions`, docs/extensions.md): an app's own
+  native code, declared by name in `AppOptions.extensions` with an
+  implementation per platform: Kotlin (`.android`: `OrielAppExtension`,
+  `OrielCall`, `OrielExtensionError`; sources, Maven dependencies, assets,
+  generated R8 keep rules), Objective-C (`.ios`: the `OrielAppExtension`
+  protocol in `oriel_extension.h`, compiled with `-fobjc-arc`; frameworks,
+  bundle resources), opt-in Swift (`.ios.swift_sources`, with `swiftc` from
+  Xcode or the Linux toolchain plus xtool's SDK; it raises the app's
+  minimum to iOS 18) and Zig (`.desktop`, or `.linux`/`.macos`/`.windows`).
+  `oriel.extensions.get("name")` is checked at build time and
+  `available()` is comptime per target; `call(arena, method, input,
+  .{ .timeout_ms, .cancel, .diag })` runs on the extension's own workers
+  (`.concurrency`), with capped inputs and replies (`.max_bytes`, 32 MiB),
+  a bounded queue, cancellation and timeouts, and is refused on the main
+  thread. Native code emits events (`onEvent`; the page's
+  `extension:<name>`) and gets `oriel.lifecycle`.
+- The page reaches extensions only through Zig: an app command, or
+  `oriel.extensions.expose(name, .{ .methods, .filter })` and
+  `oriel.extensions.call(name, method, payload)` / `.on(name, cb)` in every
+  bridge (TypeScript `ExtensionsApi`). The showcase's `showcase.echo` runs
+  in Zig, Kotlin and Objective-C, and `-Dswift_example` adds
+  `showcase.swift` on iOS; the `extension` UI test calls both where built.
+- Oriel's own app extensions: modules can be built on the extension
+  primitive (`oriel.system_ai` is the first: Kotlin and Swift backends
+  shipped in Oriel, merged before the app's). Names starting with `oriel.`
+  are reserved: an app can't declare or expose them. `.ios.weak_frameworks`
+  weak-links frameworks newer than the app's minimum, only when the SDK has
+  them.
+- `oriel.camera` (`-Dcamera`, and on when the app declares
+  `.permissions.camera`; docs/modules.md, "Camera"):
+  `capturePhoto(io, arena, .{ .source = .camera | .library, .max_side,
+  .format, .quality })` returns the photo upright, scaled and encoded
+  (`bytes`, `width`, `height`, `mime`), with `error.Cancelled`,
+  `Unsupported`, `PermissionDenied` and `TooLarge`. Android: the camera app
+  into Oriel's capture provider and the system photo picker, scaled in
+  Kotlin. iOS: `UIImagePickerController` and `PHPickerViewController`.
+  Desktop: `.library` through the file dialog (filtered to images) and
+  zigimg, with a JPEG's EXIF orientation applied; `.camera` Unsupported.
+  The page: `oriel.camera.capturePhoto({ source, maxSide })` →
+  `{ dataUrl, width, height, mime }` (TypeScript `CameraApi`).
+- Android, with the camera module on: `<input type="file"
+  accept="image/*">` opens the camera app (`capture`; CAMERA asked first)
+  or the system photo picker (`ACTION_PICK_IMAGES` on 13+, several with
+  `multiple`), and HEIC/AVIF picks are transcoded to JPEG
+  (`AppOptions.camera.transcode`, default true). The generated
+  `<app id>.oriel.capture` provider serves only Oriel's own captures.
+  Apps no longer need their own camera extension; extensions still see
+  the chooser first. Declaring `.permissions.camera` also declares
+  `android.hardware.camera` as not required.
+- `oriel.dialog.openFile`'s `.filter = .{ .name, .extensions }` (desktop).
+- `oriel.system_ai` (`-Dsystem_ai`, off by default; Android and iOS): the
+  device's own language model. `status()` (available, downloadable,
+  downloading, unavailable, with a reason), `capabilities()`,
+  `download(io, on_progress)`, `generate(io, arena, .{ .system, .prompt,
+  .images, .temperature, .max_tokens, .schema }, on_token)`, `cancel()` and
+  `lastError()`; one generate or download at a time, from a worker; caps of
+  64 KiB per text, 4 images of 8 MiB and a 1 MiB reply; timeouts of 20 s,
+  3 min and 10 min. Android: Gemini Nano through ML Kit's GenAI Prompt API
+  (`genai-prompt` 1.0.0-beta4, added to Gradle only with the flag), text
+  and one image, streaming, download progress. iOS: Apple Foundation
+  Models (iOS 26+ with Apple Intelligence; text only), weak-linked and
+  compiled only when the SDK has it; Oriel's Swift raises the app's minimum
+  to iOS 18. The page: `oriel.systemAi.status/capabilities/download/
+  generate/cancel` with `system_ai:token` and `system_ai:download` events
+  (TypeScript `SystemAiApi`), in the native renderer too; its promises
+  reject with a lowercase code and the platform's message, like `status()`
+  (`"unavailable: …"`, `"busy"`). `oriel.features.systemAi`. Linux,
+  Windows and macOS report `available = false`.
+- Android builds with `-Dsystem_ai` stop with the lines to change when the
+  Gradle project's Kotlin plugin is older than 2.3 (projects generated
+  before 0.10 have 2.0.21; ML Kit needs 2.3). See docs/android.md,
+  "Upgrading an existing project".
+- Showcase: a Camera card on the Files tab and a `camera` UI test; a System
+  AI card (`-Dsystem_ai`).
 
 ### Changed
 
+- Module flags are said once, for every target. An app's `.tray = true` in
+  `b.dependency("oriel", ...)` means "where it exists": on a target without
+  the module it resolves to off instead of failing the build (iOS) or
+  building a stub (Android). Guard calls with `if (oriel.tray.available)`,
+  and the code under it isn't built where the module is missing. A use
+  outside the guard is a build error naming the module and the guard; so is
+  one of a module the app left off. `-Dtray=true` on Oriel's own command
+  line for a target without a tray is still a build error. Apps no longer
+  need per-target flags like `.tray = !is_android`. See docs/modules.md,
+  "Availability".
+- **Breaking:** Android's stub modules are gone: `tray`, `menu` and `input`
+  no longer build there with calls that fail with `error.Unsupported`. An
+  Android build that calls them must guard the calls with
+  `if (oriel.tray.available)` (or `oriel.menu`, `oriel.input`), and code
+  that branched on `oriel.options.tray` can use `oriel.tray.available`.
+- **Breaking:** `-Dlayer_shell` on Oriel's own command line is a build
+  error outside desktop Linux (it was ignored on Windows and macOS); as an
+  app flag it resolves to off there.
 - Android: `background` / `foreground` come from OrielActivity's
   onStart/onStop (a new `NativeLib.onLifecycle` native, in the runtime
   synced into apps). The malloc purge on trim-memory is now a lifecycle
@@ -103,24 +131,6 @@ Notable changes in Oriel releases.
   "trim-memory" and the Android-only events.
 - The showcase frees its models through `unload_on` instead of
   `onSystemEvent` glue.
-- Module flags are said once, for every target. An app's `.tray = true` in
-  `b.dependency("oriel", ...)` means "where it exists": on a target without
-  the module it resolves to off instead of failing the build (iOS) or
-  building a stub (Android). Every module namespace has a comptime
-  `available`: guard calls with `if (oriel.tray.available)`, and the code
-  under it isn't built where the module is missing. A use outside the guard
-  is a build error naming the module and the guard; so is one of a module
-  the app left off. `-Dtray=true` on Oriel's own command line for a target
-  without a tray is still a build error. See docs/modules.md,
-  "Availability".
-- **Breaking:** Android's stub modules are gone: `tray`, `menu` and `input`
-  no longer build there with calls that fail with `error.Unsupported`. An
-  Android build that calls them must guard the calls with
-  `if (oriel.tray.available)` (or `oriel.menu`, `oriel.input`), and code
-  that branched on `oriel.options.tray` can use `oriel.tray.available`.
-  Apps no longer need per-target flags like `.tray = !is_android`.
-- `-Dlayer_shell` is unavailable outside desktop Linux (it was ignored on
-  Windows and macOS).
 
 ### Deprecated
 
@@ -130,6 +140,17 @@ Notable changes in Oriel releases.
 - `App.Config.on_session_end`: still called on Windows at session end,
   after `terminating`; subscribe to `oriel.lifecycle` instead.
 
+### Fixed
+
+- iOS 26 SDKs: Objective-C sources that import UIKit failed to compile
+  (UIKit's headers include `<UIUtilities/UIDefines.h>`, from the SDK's
+  `System/Library/SubFrameworks`, now on the framework path).
+- iOS: `foreground` (and the old "foreground" system event) fired while the
+  app launched; UIKit sends willEnterForeground then too. It now means
+  "back from the background", as on Android.
+- iOS: a build on a Mac without `-Dapple_sdk` or `$APPLE_SDK` found no SDK
+  and couldn't link; it now asks `xcrun` for Xcode's (iPhoneOS or
+  iPhoneSimulator, per target).
 
 ## [0.9.16] — 2026-10-11
 
