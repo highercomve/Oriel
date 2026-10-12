@@ -1021,6 +1021,8 @@ g.oriel = Object.freeze({
     call(name, method, payload) { return invoke("extensions:call", { name, method, payload: payload === undefined ? null : payload }); },
     on(name, callback) { return g.oriel.listen("extension:" + name, callback); },
   }),
+  // oriel.camera (features.camera): resolves to { dataUrl, width, height, mime }.
+  camera: Object.freeze({ capturePhoto(options) { return invoke("camera:capture", options || {}); } }),
   deepLink: Object.freeze({ current() { return invoke("deep_link:current", {}); } }),
   share: Object.freeze({
     // A received file (from share:received's files, or its handle) as a File.

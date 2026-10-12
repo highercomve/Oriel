@@ -47,6 +47,10 @@ const Features = struct {
     /// Receiving shares and the share sheet; also on when the app declares
     /// `.share_target`.
     share: bool,
+    /// Photos from the camera or the library (oriel.camera, and Android's
+    /// `<input type=file accept=image/*>`); on when the app declares
+    /// `.permissions.camera`.
+    camera: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -94,6 +98,7 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
                 std.mem.eql(u8, field.name, "native_ui") or
+                std.mem.eql(u8, field.name, "camera") or
                 std.mem.eql(u8, field.name, "deep_link"));
             // The updater is opt-in on Android: the store updates apps there.
             const android_opt_in = comptime std.mem.eql(u8, field.name, "updater");
@@ -1234,6 +1239,7 @@ const capability_modules = [_]CapabilityModule{
     .{ .capability = "bluetooth", .module = "bluetooth", .implies = true },
     .{ .capability = "local_network", .module = "network" },
     .{ .capability = "share_target", .module = "share" },
+    .{ .capability = "camera", .module = "camera" },
     // audio_capture records these; declaring them doesn't build it (whisper's
     // apps opt in to it).
     .{ .capability = "microphone", .module = "audio_capture", .enables = false, .implies = true },
@@ -1245,9 +1251,17 @@ const capability_modules = [_]CapabilityModule{
 fn linkCapabilityModule(module: *std.Build.Module, target: std.Build.ResolvedTarget, comptime name: []const u8) void {
     // network and share link nothing new so far (Network.framework is in
     // libSystem on Apple).
-    _ = module;
-    _ = target;
-    _ = name;
+    if (comptime std.mem.eql(u8, name, "camera")) {
+        const t = target.result;
+        if (t.os.tag == .ios) {
+            // PHPickerViewController. Without an SDK nothing links (check).
+            if (ios_build.sdk(module.owner, t) != null) module.linkFramework("PhotosUI", .{});
+        } else if (!t.abi.isAndroid() and module.import_table.get("zigimg") == null) {
+            // The desktop decodes, scales and encodes picked photos.
+            const zigimg = module.owner.dependency("zigimg", .{ .target = target, .optimize = module.optimize orelse .Debug });
+            module.addImport("zigimg", zigimg.module("zigimg"));
+        }
+    }
 }
 
 /// The `oriel` module of each Oriel dependency instance in this build,
