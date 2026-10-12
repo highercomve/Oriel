@@ -20,6 +20,8 @@ const App = @import("../../core/App.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
 const build_target = @import("../../core/target.zig");
+/// `window.oriel.features`: the build's resolved feature flags.
+const features = @import("../../core/features.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
@@ -119,7 +121,7 @@ pub const bridge_js =
     \\  };
     \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
     \\    platform:
-++ " " ++ build_target.platform_js ++ ",\n" ++
+++ " " ++ build_target.platform_js ++ ",\n    features: " ++ features.js ++ ",\n" ++
     \\    invoke,
     \\    listen(event, callback) {
     \\      let set = listeners.get(event);

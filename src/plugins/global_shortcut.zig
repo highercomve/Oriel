@@ -7,6 +7,9 @@
 //! keyboard), listed in the system's Meta+/ helper: Android has no
 //! system-wide hotkeys.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("global_shortcut/common.zig");
@@ -23,8 +26,8 @@ pub const impl = switch (target.os) {
     .windows => @import("global_shortcut/windows.zig"),
     .macos => @import("global_shortcut/macos.zig"),
     .android => @import("global_shortcut/android.zig"),
-    .ios => @compileError("global_shortcut is not available on iOS: apps get no system-wide hotkeys"),
-    .other => @compileError("global_shortcut is not supported on " ++ target.name),
+    // No hotkeys of any kind: never built there (src/core/module_table.zig).
+    .ios, .other => @compileError("global_shortcut is not available on " ++ target.name),
 };
 
 pub const register = impl.register;

@@ -1,5 +1,8 @@
 //! Application menu bar module facade.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("menu/common.zig");
@@ -11,10 +14,8 @@ const backend = switch (target.os) {
     .linux => @import("menu/linux.zig"),
     .windows => @import("menu/windows.zig"),
     .macos => @import("menu/macos.zig"),
-    // No menu bar: a stub with the same API (see docs/android.md).
-    .android => @import("menu/android.zig"),
-    .ios => @compileError("menu is not available on iOS: apps have no menu bar"),
-    .other => @compileError("Unsupported platform for menu module"),
+    // No menu bar: never built there (src/core/module_table.zig).
+    .android, .ios, .other => @compileError("menu is not available on " ++ target.name),
 };
 
 pub const set = backend.set;

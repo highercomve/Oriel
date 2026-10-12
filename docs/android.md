@@ -47,7 +47,7 @@ Platform contract mapping:
 | Single instance | Launcher Activity `singleTask`, `onNewIntent` → `on_second_instance`. |
 | Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |
 | Global shortcuts | In-app only (Android has no system-wide hotkeys): `global_shortcut.register` works while one of the app's windows has focus, with a hardware keyboard. `OrielActivity.dispatchKeyEvent` matches the key before the WebView, and `onProvideKeyboardShortcuts` lists each shortcut's description in the system's Meta+/ helper. |
-| Menus, tray | Unavailable: documented no-ops or compile errors. |
+| Menus, tray, input, media server | Not available: an app's `.tray = true` resolves to `oriel.tray.available = false`, and calls under `if (oriel.tray.available)` aren't built ([Availability](modules.md#availability)). No stubs. |
 
 ## Step zero: the silent-GTK trap
 

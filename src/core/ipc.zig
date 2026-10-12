@@ -678,6 +678,11 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  arch: string;
             \\}
             \\
+            \\/** Oriel's modules as this build resolved them for its target (fixed per
+            \\ *  build): `features.tray` is false where there is no tray. */
+            \\
+        ++ @import("features.zig").typescript ++
+            \\
             \\export interface DeepLinkApi {
             \\  current(): Promise<string | null>;
             \\}
@@ -694,6 +699,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  interface Window {
             \\    oriel: {
             \\      platform: Platform;
+            \\      features: Features;
             \\      invoke(cmd: string, args: unknown): Promise<unknown>;
             \\      listen(event: string, callback: (payload: unknown) => void): () => void;
             \\      window: WindowApi;
@@ -727,6 +733,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
             \\export const platform: Platform = (globalThis as any).oriel?.platform;
+            \\/** What this build has: `if (features.tray) ...` (camelCase module names). */
+            \\export const features: Features = (globalThis as any).oriel?.features;
             \\/** Global Oriel API object. */
             \\export const oriel: Window["oriel"] = (globalThis as any).oriel;
             \\/** Open a URL in the system's default browser. */
@@ -903,6 +911,8 @@ test "typescript generation" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "export function openExternal(url: string): Promise<void>") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "      platform: Platform;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const platform: Platform") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "      features: Features;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export interface Features {\n  tray: boolean;\n") != null);
 }
 
 test "builtin open_external dispatch and validation" {

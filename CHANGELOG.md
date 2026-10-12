@@ -2,6 +2,37 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Changed
+
+- Module flags are said once, for every target. An app's `.tray = true` in
+  `b.dependency("oriel", ...)` means "where it exists": on a target without
+  the module it resolves to off instead of failing the build (iOS) or
+  building a stub (Android). Every module namespace has a comptime
+  `available`: guard calls with `if (oriel.tray.available)`, and the code
+  under it isn't built where the module is missing. A use outside the guard
+  is a build error naming the module and the guard; so is one of a module
+  the app left off. `-Dtray=true` on Oriel's own command line for a target
+  without a tray is still a build error. See docs/modules.md,
+  "Availability".
+- **Breaking:** Android's stub modules are gone: `tray`, `menu` and `input`
+  no longer build there with calls that fail with `error.Unsupported`. An
+  Android build that calls them must guard the calls with
+  `if (oriel.tray.available)` (or `oriel.menu`, `oriel.input`), and code
+  that branched on `oriel.options.tray` can use `oriel.tray.available`.
+  Apps no longer need per-target flags like `.tray = !is_android`.
+- `-Dlayer_shell` is unavailable outside desktop Linux (it was ignored on
+  Windows and macOS).
+
+### Added
+
+- `window.oriel.features` in every page (and the native renderer), with
+  the build's resolved flags in camelCase (`{ tray: false, fsWatch: true,
+  ... }`), typed as `Features` in the generated `oriel.ts`.
+- `zig build --verbose` prints one line listing the flags resolved to
+  unavailable for the target.
+
 ## [0.9.16] — 2026-10-11
 
 Oriel 0.9.16 fixes what a code review against the NASA/JPL "Power of 10"

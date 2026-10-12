@@ -3,7 +3,10 @@
 //! Linux backend: StatusNotifierItem + com.canonical.dbusmenu over GDBus.
 //! Windows backend: Win32 Shell_NotifyIconW + TrackPopupMenu.
 //! macOS backend: NSStatusItem + NSMenu.
-//! Android: a stub (no system tray).
+//! Phones have no system tray: `oriel.tray.available` is false there.
+
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
 
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
@@ -20,11 +23,8 @@ pub const impl = switch (target.os) {
     .linux => @import("tray/linux.zig"),
     .windows => @import("tray/windows.zig"),
     .macos => @import("tray/macos.zig"),
-    // No system tray: a stub with the same API (Tray.create fails), so the
-    // same app source builds (use a notification: see docs/android.md).
-    .android => @import("tray/android.zig"),
-    .ios => @compileError("tray is not available on iOS: there is no system tray"),
-    .other => @compileError("tray is not supported on " ++ target.name),
+    // No system tray: never built there (src/core/module_table.zig).
+    .android, .ios, .other => @compileError("tray is not available on " ++ target.name),
 };
 
 // Re-export Linux-specific watcher_name if on Linux

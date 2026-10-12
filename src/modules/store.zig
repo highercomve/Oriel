@@ -4,6 +4,9 @@
 //! Windows backend: Known folders (Roaming/Local AppData) + Win32 JSON store.
 //! macOS backend: ~/Library/Application Support and Caches + libc JSON store.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
 pub const common = @import("store/common.zig");

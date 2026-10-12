@@ -9320,6 +9320,8 @@ ${a.stack || ""}`;
   g.localStorage = typeof host.storageGet === "function" ? persistentStore() : store("local");
   g.sessionStorage = store("session");
   var platform = JSON.parse(host.platform || "{}");
+  var features = Object.freeze(platform.features ?? {});
+  delete platform.features;
   function forcedColorsOf(d) {
     if (!d || typeof d !== "object" || !d.colors || typeof d.colors !== "object") return null;
     const colors = {};
@@ -9431,6 +9433,7 @@ ${a.stack || ""}`;
   };
   g.oriel = Object.freeze({
     platform: Object.freeze(platform),
+    features,
     native: true,
     invoke,
     listen(event, callback) {

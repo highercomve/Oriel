@@ -2,6 +2,47 @@
 
 [Back to Oriel](../README.md) · [Documentation](README.md)
 
+## Availability
+
+An app's module flags say what it uses, once, for every target:
+
+```zig
+const dep = b.dependency("oriel", .{ .target = target, .optimize = optimize, .tray = true, .menu = true });
+```
+
+Each module then resolves per target to a comptime fact, `oriel.<module>.available`:
+
+```zig
+if (oriel.tray.available) {
+    tray = try oriel.tray.Tray.create(gpa, .{ ... });
+}
+```
+
+- **Where the module exists and is on**, `available` is true and the whole API is there.
+- **Where it doesn't exist, or it's off**, the namespace holds `available = false`, and nothing else is built:
+  - Code under `if (oriel.tray.available)` is never analyzed, so it costs nothing and needs no stub.
+  - A use outside the guard is a build error naming the module and the guard:
+    `oriel.tray.Tray is not available on ios: guard the call with if (oriel.tray.available)`, or, for a
+    module the app left off, `... is disabled: enable it with .tray = true in b.dependency("oriel", ...)`.
+- **Runtime state** stays a runtime question: a desktop without a tray host, or a device without a model,
+  is reported by the module's own `status()` or `check()`, or an error from the call.
+- **The page** gets the same table as `window.oriel.features` (camelCase: `{ tray: false, fsWatch: true, ... }`,
+  typed as `Features` in the generated `oriel.ts`), so a UI can hide what this build can't do.
+
+Missing per platform (`src/core/module_table.zig`):
+
+| Platform | Not available |
+|---|---|
+| Android | `tray`, `menu`, `input`, `media_server`, `layer_shell` |
+| iOS | `tray`, `menu`, `input`, `media_server`, `layer_shell`, `global_shortcut`, `updater`, `fs_watch` |
+| Windows, macOS | `layer_shell` (a Wayland thing) |
+
+Android keeps `global_shortcut` (in-app shortcuts), `fs_watch` (inotify) and `updater` (opt-in there: checking for a release works,
+installing is the store's job). `zig build --verbose` prints one line listing the flags a build resolved to unavailable.
+
+On Oriel's own command line the flags are not intent but a request: `zig build check -Dtarget=aarch64-ios -Dtray=true` is a build
+error. Only the options an app passes through `b.dependency` resolve quietly.
+
 ## Plugins and system modules
 
 ### Global shortcuts (`oriel.global_shortcut`)

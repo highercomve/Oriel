@@ -16,6 +16,9 @@
 //! `send` and `open` return `error.Unsupported`, `capabilities()` reports
 //! nothing, and nothing is received.
 
+/// Built for this target (docs/modules.md, "Availability").
+pub const available = true;
+
 const std = @import("std");
 const target = @import("../core/target.zig");
 pub const common = @import("share/common.zig");

@@ -3,6 +3,8 @@
 //! Windows backend.
 
 const target = @import("../../core/target.zig");
+/// `window.oriel.features`: the build's resolved feature flags.
+const features = @import("../../core/features.zig");
 
 /// Replaced by `ipc.tokenScript` (which defines `const ipcToken`).
 pub const token_placeholder = "/*__ORIEL_IPC_TOKEN__*/";
@@ -113,7 +115,7 @@ pub const bridge_js =
     \\  };
     \\  Object.defineProperty(window, "oriel", { value: Object.freeze({
     \\    platform:
-++ " " ++ target.platform_js ++ ",\n" ++
+++ " " ++ target.platform_js ++ ",\n    features: " ++ features.js ++ ",\n" ++
     \\    invoke,
     \\    listen(event, callback) {
     \\      let set = listeners.get(event);
