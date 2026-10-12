@@ -77,8 +77,12 @@ pub const requirements = [_]Requirement{
         .{ .name = "android.permission.FOREGROUND_SERVICE" },
         .{ .name = "android.permission.FOREGROUND_SERVICE_MICROPHONE" },
     } },
+    // CAMERA alone would make Google Play require a camera: oriel.camera
+    // falls back to the photo picker without one.
     .{ .kind = "camera", .permissions = &.{
         .{ .name = "android.permission.CAMERA" },
+    }, .features = &.{
+        .{ .name = "android.hardware.camera", .required = false },
     } },
     .{ .kind = "location", .permissions = &.{
         .{ .name = "android.permission.ACCESS_COARSE_LOCATION" },
@@ -252,6 +256,34 @@ pub fn nativeLibrariesXml(gpa: Allocator, extras: []const Feature) ![]u8 {
         library.name, if (library.required) "true" else "false",
     });
     return out.toOwnedSlice(gpa);
+}
+
+/// oriel.camera's capture provider (OrielCaptureProvider.kt) for the
+/// components region: not exported, URI grants only. `transcode` is
+/// `AppOptions.camera.transcode`, read by OrielCamera from the meta-data.
+pub fn captureProviderXml(transcode: bool) []const u8 {
+    const head =
+        \\        <provider
+        \\            android:name="dev.oriel.OrielCaptureProvider"
+        \\            android:authorities="${applicationId}.oriel.capture"
+        \\            android:exported="false"
+        \\            android:grantUriPermissions="true">
+        \\            <meta-data android:name="dev.oriel.camera.transcode" android:value="
+    ;
+    const tail =
+        \\" />
+        \\        </provider>
+        \\
+    ;
+    return if (transcode) head ++ "true" ++ tail else head ++ "false" ++ tail;
+}
+
+test captureProviderXml {
+    const xml = captureProviderXml(false);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "android:authorities=\"${applicationId}.oriel.capture\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "android:exported=\"false\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "android:value=\"false\" />\n        </provider>\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, captureProviderXml(true), "android:value=\"true\"") != null);
 }
 
 // ---------------------------------------------------------------------------
