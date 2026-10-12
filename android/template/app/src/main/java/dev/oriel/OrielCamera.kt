@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -336,9 +338,36 @@ internal object OrielCamera {
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
         } catch (e: java.io.IOException) {
-            // Some HEIF/AVIF files only BitmapFactory reads (no orientation there).
-            decodeWithBitmapFactory(app, uri, size) ?: throw e
+            // Some HEIF/AVIF files only BitmapFactory reads; it ignores
+            // EXIF orientation, so it's applied here.
+            val decoded = decodeWithBitmapFactory(app, uri, size) ?: throw e
+            upright(decoded, exifOrientation(app, uri))
         }
+    }
+
+    /** The EXIF orientation of `uri` (the framework's reader: JPEG, HEIF, WebP, PNG), else normal. */
+    private fun exifOrientation(app: Context, uri: Uri): Int = try {
+        app.contentResolver.openInputStream(uri)?.use {
+            ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } ?: ExifInterface.ORIENTATION_NORMAL
+    } catch (e: Exception) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
+
+    /** `bitmap` turned as its EXIF `orientation` says (recycled when a new one is made). */
+    private fun upright(bitmap: Bitmap, orientation: Int): Bitmap {
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { m.setRotate(90f); m.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> { m.setRotate(-90f); m.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+            else -> return bitmap
+        }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true).also { if (it !== bitmap) bitmap.recycle() }
     }
 
     private fun decodeWithBitmapFactory(app: Context, uri: Uri, size: (Int, Int) -> Pair<Int, Int>): Bitmap? {

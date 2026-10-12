@@ -6,7 +6,9 @@
 //! zigimg decodes baseline JPEG, PNG, GIF, BMP and more, but not HEIC,
 //! AVIF, WebP or progressive JPEG: those come back as they were picked
 //! (`mime` from their bytes, the size from their header, else 0 x 0), as
-//! long as they fit `max_bytes`. EXIF orientation isn't applied.
+//! long as they fit `max_bytes`. A JPEG's EXIF orientation is applied
+//! before scaling (common.jpegOrientation); one passed through keeps its
+//! EXIF, and its size is reported upright.
 
 const std = @import("std");
 const zigimg = @import("zigimg");
@@ -51,13 +53,24 @@ pub fn encode(arena: std.mem.Allocator, bytes: []const u8, path: []const u8, opt
     if (image.width == 0 or image.height == 0 or image.width > 1 << 16 or image.height > 1 << 16) return passThrough(arena, bytes, path);
     image.convert(gpa, .rgba32) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else passThrough(arena, bytes, path);
 
-    const sw: u32 = @intCast(image.width);
-    const sh: u32 = @intCast(image.height);
+    var sw: u32 = @intCast(image.width);
+    var sh: u32 = @intCast(image.height);
+    var src = image.pixels.asConstBytes();
+    // Upright first: zigimg ignores EXIF, the camera's sideways JPEGs need it.
+    const orientation = if (std.mem.eql(u8, common.sniffMime(bytes) orelse "", "image/jpeg")) common.jpegOrientation(bytes) else .normal;
+    var upright: []u8 = &.{};
+    defer if (upright.len > 0) gpa.free(upright);
+    if (orientation != .normal) {
+        upright = try gpa.alloc(u8, src.len);
+        common.orient(src, sw, sh, upright, orientation);
+        src = upright;
+        if (orientation.swapsSides()) std.mem.swap(u32, &sw, &sh);
+    }
     const size = common.fitSize(sw, sh, options.max_side);
     const channels: u3 = if (options.format == .jpeg) 3 else 4;
     const pixels = try gpa.alloc(u8, @as(usize, size.width) * size.height * channels);
     defer gpa.free(pixels);
-    common.downscale(image.pixels.asConstBytes(), sw, sh, pixels, size.width, size.height, channels);
+    common.downscale(src, sw, sh, pixels, size.width, size.height, channels);
 
     const scaled = zigimg.Image.fromRawPixelsOwned(size.width, size.height, pixels, if (channels == 3) .rgb24 else .rgba32) catch return error.CaptureFailed;
     // Room for the worst case: raw pixels plus headers (PNG of noise).
@@ -84,7 +97,9 @@ pub fn encode(arena: std.mem.Allocator, bytes: []const u8, path: []const u8, opt
 fn passThrough(arena: std.mem.Allocator, bytes: []const u8, path: []const u8) common.Error!common.Photo {
     if (bytes.len > common.max_bytes) return error.TooLarge;
     const mime = common.sniffMime(bytes) orelse common.mimeFromExtension(path) orelse return error.CaptureFailed;
-    const size = common.imageSize(bytes) orelse common.Size{ .width = 0, .height = 0 };
+    var size = common.imageSize(bytes) orelse common.Size{ .width = 0, .height = 0 };
+    // Shown upright (the page's <img> applies EXIF): report it so.
+    if (std.mem.eql(u8, mime, "image/jpeg") and common.jpegOrientation(bytes).swapsSides()) std.mem.swap(u32, &size.width, &size.height);
     return .{ .bytes = try arena.dupe(u8, bytes), .width = size.width, .height = size.height, .mime = mime };
 }
 
@@ -117,6 +132,36 @@ test "a PNG is decoded, scaled and encoded as JPEG" {
     const kept = try encode(arena.allocator(), png, "x.png", .{ .max_side = 1600, .format = .png });
     try std.testing.expectEqual(common.Size{ .width = 64, .height = 32 }, common.imageSize(kept.bytes).?);
     try std.testing.expectEqualStrings("image/png", kept.mime);
+}
+
+test "a JPEG's EXIF orientation is applied before scaling" {
+    const gpa = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    // 64 x 32: the left half black, the right half white.
+    var src = try zigimg.Image.create(gpa, 64, 32, .rgb24);
+    defer src.deinit(gpa);
+    for (src.pixels.rgb24, 0..) |*p, i| {
+        const v: u8 = if (i % 64 < 32) 0 else 255;
+        p.* = .{ .r = v, .g = v, .b = v };
+    }
+    var buf: [64 << 10]u8 = undefined;
+    const plain = try src.writeToMemory(gpa, &buf, .{ .jpeg = .{ .quality = 95 } });
+    // Splice in an APP1 with orientation 6 (rotate 90 clockwise) after SOI.
+    const app1 = "\xFF\xE1\x00\x22Exif\x00\x00" ++ "MM\x00\x2A\x00\x00\x00\x08" ++ "\x00\x01" ++
+        "\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00" ++ "\x00\x00\x00\x00";
+    const jpeg = try std.mem.concat(arena.allocator(), u8, &.{ plain[0..2], app1, plain[2..] });
+    try std.testing.expectEqual(common.Orientation.rotate_90, common.jpegOrientation(jpeg));
+
+    const photo = try encode(arena.allocator(), jpeg, "x.jpg", .{ .max_side = 1600, .format = .png });
+    try std.testing.expectEqual(common.Size{ .width = 32, .height = 64 }, common.imageSize(photo.bytes).?);
+    // Rotated clockwise: the left half (black) is now the top.
+    var out = try zigimg.Image.fromMemory(gpa, photo.bytes);
+    defer out.deinit(gpa);
+    try out.convert(gpa, .rgba32);
+    const px = out.pixels.rgba32;
+    try std.testing.expect(px[2 * 32 + 16].r < 64); // top
+    try std.testing.expect(px[60 * 32 + 16].r > 192); // bottom
 }
 
 test "what zigimg can't decode comes back as it was" {
