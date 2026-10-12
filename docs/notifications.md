@@ -159,7 +159,7 @@ fn onNotification(id: []const u8, action: ?[]const u8) void {
     if (action) |a| {
         if (std.mem.eql(u8, a, "snooze")) scheduleReminder(id);
     } else {
-        oriel.App.showWindow(); // a click on the notification itself
+        if (oriel.App.getWindow("main")) |w| w.show(); // a click on the notification itself
     }
 }
 

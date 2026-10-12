@@ -73,7 +73,7 @@ fn setup() !void {
 }
 
 fn onMenu(id: []const u8, _: ?bool) void {
-    if (std.mem.eql(u8, id, "show")) oriel.App.toggleWindow();
+    if (std.mem.eql(u8, id, "show")) if (oriel.App.getWindow("main")) |w| w.toggle();
     if (std.mem.eql(u8, id, "quit")) oriel.App.quit(0);
 }
 ```
@@ -124,7 +124,7 @@ Clicks call `on_menu(id, checked)` on the main thread. A check item flips
 its own state first, so `checked` is the new value; plain items pass
 `null`; disabled items, separators and submenus call nothing. `id` is a
 copy, so the callback may call `setMenu` or even `deinit` (a "Quit" item).
-The left click calls `on_activate`, or `oriel.App.toggleWindow()` when you
+The left click calls `on_activate`, or toggles the main window when you
 gave none.
 
 Nothing crosses to the page by itself: the tray is a Zig API. To let the

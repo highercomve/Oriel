@@ -315,7 +315,7 @@ fn setup() !void {
 }
 
 fn onTrayMenu(id: []const u8, _: ?bool) void {
-    if (std.mem.eql(u8, id, "show")) oriel.App.showWindow();
+    if (std.mem.eql(u8, id, "show")) if (oriel.App.getWindow("main")) |w| w.show();
     if (std.mem.eql(u8, id, "quit")) oriel.App.quit(0);
 }
 

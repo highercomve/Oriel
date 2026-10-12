@@ -129,7 +129,7 @@ flowchart TB
   Backend -->|"text sizes"| Tree
   Backend -->|"pointer, keys, input, focus, scroll, drag"| Runtime
   Runtime -->|"invoke(cmd, args)"| Zig["App's Zig commands"]
-  Zig -->|"replies, App.emit"| Runtime
+  Zig -->|"replies, events"| Runtime
 ```
 
 **One engine per window.** `src/native_ui/engine.zig` owns a window's
@@ -224,7 +224,7 @@ again, the view redraws, and the page's `scroll` events follow at the next
 frame.
 
 **Commands and events.** The page has the same `window.oriel` as in the web
-view: `invoke` calls the app's Zig commands, `listen` receives `App.emit`
+view: `invoke` calls the app's Zig commands, `listen` receives `events.emit`
 events, and the window, permissions, lifecycle, extensions and the other
 modules' page APIs are the same. Calls don't cross a process: the engine
 calls the platform's bridge directly (`nativeInvoke` in

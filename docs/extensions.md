@@ -473,7 +473,7 @@ pub const max_timeout_ms = 10 * 60 * 1000;
 
 | `Error` | When |
 |---|---|
-| `Unavailable` | No implementation on this target, the app isn't running yet (before `App.run`), no worker thread could start, or the Android registry lacks the class (rebuild the Gradle project). |
+| `Unavailable` | No implementation on this target, the app isn't running yet (before `oriel.main`), no worker thread could start, or the Android registry lacks the class (rebuild the Gradle project). |
 | `Timeout` | `timeout_ms` passed. The native side sees `isCancelled`. |
 | `Cancelled` | The `CancelToken` was cancelled, or the implementation returned `Cancelled`. |
 | `TooLarge` | The input is over `max_bytes` (refused before it crosses), or the reply is (code `too_large`). |

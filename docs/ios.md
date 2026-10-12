@@ -96,7 +96,7 @@ keychain need them. On a Mac the simulator bundle is then signed ad hoc as
 a whole (`codesign --sign -`), so the signature names the bundle id and
 seals `Info.plist` and the resources.
 
-**Running.** `App.run` calls `UIApplicationMain`, which never returns. The
+**Running.** `oriel.main` calls `UIApplicationMain`, which never returns. The
 app and scene delegates are defined at run time (`src/platform/ios/Shell.zig`).
 Launching opens the main window and runs `setup`; the first scene the
 system connects shows it. Each window is a view controller with a

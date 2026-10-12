@@ -84,8 +84,13 @@ fn setup() !void {
 2. answers `--emit-types <path>` by writing the page's TypeScript bindings
    and exiting (the build uses this, see [Commands]($link.page('docs/commands').ref('typescript')));
 3. keeps the process arguments for the platform (deep links, a second
-   launch), then calls `App.run(init.io, api, config)`, which returns the
-   exit code when the app quits.
+   launch), then runs the app on the calling (main) thread and returns the
+   exit code when it quits.
+
+It is the only entry point. An app that reads its own arguments does so
+before calling it (`examples/smoke` handles `--check` that way); a config
+chosen at runtime is a choice between two `oriel.main` calls, each with its
+own comptime config.
 
 `api` and `config` are comptime: the commands, the events, the security
 policy and the main window's options are known when the app compiles, so
@@ -120,8 +125,8 @@ flowchart TB
 - **The worker pool** (`src/core/ThreadPool.zig`) has one thread per CPU,
   at least 2 and at most 16, and at most 1024 queued tasks. It runs async
   commands and `App.spawn` jobs; replies go back to the main thread.
-- **From any thread**, `events.emit`, `App.emit`, `App.emitTo`,
-  `App.quit` and `App.runOnMain` are safe. Use `App.runOnMain(ctx, func)`
+- **From any thread**, `events.emit`, `events.emitTo`, `App.quit` and
+  `App.runOnMain` are safe. Use `App.runOnMain(ctx, func)`
   to touch a window from a worker.
 
 The rules for each command and event are on
@@ -299,12 +304,11 @@ build, is on [Desktop]($link.page('docs/desktop')),
 
 # [Reference]($heading.id('reference'))
 
-## [`oriel.main` and `App.run`]($heading.id('main'))
+## [`oriel.main`]($heading.id('main'))
 
 | Declaration | Meaning |
 |---|---|
-| `oriel.main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8` | The entry point: updater init, `--emit-types`, process arguments, then `App.run`. Returns the exit code. |
-| `App.run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8` | Runs the app on the calling (main) thread until it quits. For an app that parses its own arguments: call `App.setProcessArgs(args)` first (deep links and second launches need them). |
+| `oriel.main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8` | The entry point: updater init, `--emit-types`, process arguments, then the app runs on the calling (main) thread until it quits. Returns the exit code. |
 | `App.Api` | `struct { commands: type, events: type = struct {} }` |
 | `oriel.writeTypes(io, gpa, comptime api, path) !void` | Writes the TypeScript bindings to `path`, leaving the file untouched when nothing changed. |
 
@@ -342,7 +346,8 @@ Generated into `oriel_app.build`; an app doesn't write it by hand.
 | File | What's in it |
 |---|---|
 | `src/oriel.zig` | The `oriel` module: `main`, `writeTypes`, every module by name |
-| `src/core/App.zig` | `Config`, `Build`, `WindowOptions`, windows, `emit`, `spawn`, `runOnMain`, `run` |
+| `src/core/App.zig` | The app's API: `Config`, `Build`, `WindowOptions`, `Window`, `events`, `spawn`, `runOnMain` |
+| `src/core/internal.zig` | Oriel's own state, not exported: the window list and its lock, the worker pool, the untyped `emit` modules use, `run` |
 | `src/core/ipc.zig` | Command dispatch, async dispatch, built-in commands, IPC tokens, TypeScript generation |
 | `src/core/window_commands.zig` | The page's `oriel.window` commands |
 | `src/core/bridge_js.zig` | The `window.oriel` script |
@@ -352,6 +357,15 @@ Generated into `oriel_app.build`; an app doesn't write it by hand.
 | `build.zig` | `addApp`, `AppOptions`, `Frontend`, the generated `oriel_app` |
 | `tools/dev_runner.zig` | `oriel dev`'s rebuild-and-restart loop |
 | `cli/` | The `oriel` command |
+
+## [Migrating from 0.11]($heading.id('migrating'))
+
+- `App.run(io, api, config)` and `App.setProcessArgs` are gone: call
+  `oriel.main(init, api, config)`, after parsing any arguments of your own.
+- The platform layer's state on `App` (`windows_list`, `windows_mutex`,
+  `getWorkerPool`, `current_security`, `gtk_app`, `main_window`, ...) moved
+  to an internal file apps can't reach. Native handles come from
+  [platform hooks]($link.page('docs/platform-hooks')).
 
 # [Related]($heading.id('related'))
 

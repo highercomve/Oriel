@@ -173,7 +173,7 @@ start and after each app update.
 
 **Memory.** `unload_on` (critical memory pressure by default) frees the
 context unless speaking ([Local AI]($link.page('docs/local-ai').ref('how-it-works'))).
-`App.run` shuts playback down and frees the context after its command pool
+`oriel.main` shuts playback down and frees the context after its command pool
 drains.
 
 # [Examples]($heading.id('examples'))
@@ -269,7 +269,7 @@ doesn't read that folder).
 | `download(id) !void` | worker | A model or voice id. Emits `tts:download`; returns at once when the file is there. The file's SHA-256 is checked before it is renamed into place. |
 | `delete(id) !void` | worker | Remove a model (unloaded first) or voice, and a half-finished download of it. |
 | `unloadIdle() void` | any (main included) | Free the context unless speaking. |
-| `deinit() void` | after commands finished | Stop and free the context. `App.run` calls it; safe twice or without `init`. |
+| `deinit() void` | after commands finished | Stop and free the context. `oriel.main` calls it; safe twice or without `init`. |
 | `prepareText(a, text) ![]u8` | any | `text` with its Markdown removed. |
 | `guessLanguage(text) []const u8` | any | `"en-us"`, `"es"`, `"fr"`, `"it"`, `"pt-br"`, `"ja"`, `"zh"`, `"hi"` or `"ru"` (static). |
 | `defaultThreads() c_int` | any | Up to 8 on desktops; on phones the fast cores, 2 to 4. |
@@ -391,7 +391,7 @@ worker.
 | `start(io, gpa, samples, rate) !void` | Play `samples`; stops and joins the previous device first. An empty buffer just stops. Not from an audio callback. |
 | `stop() void` | Control thread: stop and join the callbacks; safe before the first `start` and after `shutdown`. From a callback it only silences. |
 | `finished() bool` | Safe to poll any time. |
-| `shutdown() void` | `stop`; `App.run` calls it after its commands drain. |
+| `shutdown() void` | `stop`; `oriel.main` calls it after its commands drain. |
 | `on_progress: ?*const fn (fraction: f64) void`, `on_done: ?*const fn () void` | Set before `start`, change only after `stop`; they run on the audio thread. `on_done` reports natural completion, not a stop. |
 
 Stop playback before freeing its samples or the allocator its device uses.
