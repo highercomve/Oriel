@@ -381,6 +381,108 @@ test withProguardRules {
     try std.testing.expectError(error.MalformedRegion, withProguardRules(gpa, proguard_begin ++ "\nx\n", "y"));
 }
 
+/// Dependencies built with a newer Kotlin than older projects have: their
+/// metadata needs that Kotlin Gradle plugin (or newer) to compile against.
+const kotlin_minimums = [_]struct { dependency: []const u8, why: []const u8, major: u32, minor: u32 }{
+    .{ .dependency = "com.google.mlkit:genai-prompt:", .why = "-Dsystem_ai (ML Kit's GenAI Prompt API)", .major = 2, .minor = 3 },
+};
+/// The template's Kotlin plugin (android/template/build.gradle.kts).
+const template_kotlin = "2.3.21";
+const kotlin_plugin_id = "id(\"org.jetbrains.kotlin.android\") version \"";
+
+/// The Kotlin Gradle plugin's version in a root build.gradle.kts, or null
+/// when it isn't set there (a version catalog, settings.gradle.kts).
+pub fn kotlinPluginVersion(root_gradle: []const u8) ?[]const u8 {
+    const at = std.mem.indexOf(u8, root_gradle, kotlin_plugin_id) orelse return null;
+    const start = at + kotlin_plugin_id.len;
+    const end = std.mem.indexOfScalarPos(u8, root_gradle, start, '"') orelse return null;
+    return root_gradle[start..end];
+}
+
+/// Whether "major.minor[.patch][-suffix]" is at least `major`.`minor`;
+/// false when it doesn't parse.
+pub fn versionAtLeast(version: []const u8, major: u32, minor: u32) bool {
+    var it = std.mem.splitScalar(u8, version, '.');
+    const ma = std.fmt.parseInt(u32, it.next() orelse return false, 10) catch return false;
+    const mi_text = it.next() orelse "0";
+    const digits = for (mi_text, 0..) |c, i| {
+        if (!std.ascii.isDigit(c)) break i;
+    } else mi_text.len;
+    const mi = std.fmt.parseInt(u32, mi_text[0..digits], 10) catch return false;
+    return ma > major or (ma == major and mi >= minor);
+}
+
+/// False (after printing what to change) when `dependencies` need a newer
+/// Kotlin plugin than the project at `out` sets. A project without a root
+/// build.gradle.kts, or one that sets the version elsewhere, is left to
+/// Gradle.
+fn kotlinRecentEnough(gpa: std.mem.Allocator, io: Io, out: []const u8, dependencies: []const u8) !bool {
+    const need = for (kotlin_minimums) |m| {
+        if (std.mem.indexOf(u8, dependencies, m.dependency) != null) break m;
+    } else return true;
+    const root_path = try std.fs.path.join(gpa, &.{ out, "build.gradle.kts" });
+    defer gpa.free(root_path);
+    const root = Dir.cwd().readFileAlloc(io, root_path, gpa, .limited(1 << 20)) catch return true;
+    defer gpa.free(root);
+    const version = kotlinPluginVersion(root) orelse return true;
+    if (versionAtLeast(version, need.major, need.minor)) return true;
+    std.debug.print(
+        \\error: android project: {s} needs Kotlin {d}.{d} or newer in the Gradle project, and {s} has {s}.
+        \\  In {s}, change
+        \\      id("org.jetbrains.kotlin.android") version "{s}" apply false
+        \\  to
+        \\      id("org.jetbrains.kotlin.android") version "{s}" apply false
+        \\  and in app/build.gradle.kts replace `kotlinOptions {{ jvmTarget = "17" }}` (an error since Kotlin 2.2) with
+        \\      kotlin {{ compilerOptions {{ jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }} }}
+        \\  after `android {{ }}`. Keep your Android Gradle Plugin version (AGP 8.13 doesn't load with Gradle 9.8).
+        \\  See docs/android.md, "Upgrading an existing project" (`oriel android init --force` regenerates the files instead).
+        \\
+    , .{ need.why, need.major, need.minor, root_path, version, root_path, version, template_kotlin });
+    return false;
+}
+
+test kotlinPluginVersion {
+    try std.testing.expectEqualStrings("2.0.21", kotlinPluginVersion(
+        \\plugins {
+        \\    id("com.android.application") version "8.9.3" apply false
+        \\    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+        \\}
+    ).?);
+    try std.testing.expect(kotlinPluginVersion("plugins { alias(libs.plugins.kotlin.android) apply false }") == null);
+    try std.testing.expect(kotlinPluginVersion("id(\"org.jetbrains.kotlin.android\") version \"2.3") == null);
+}
+
+test versionAtLeast {
+    try std.testing.expect(versionAtLeast("2.3.21", 2, 3));
+    try std.testing.expect(versionAtLeast("2.3", 2, 3));
+    try std.testing.expect(versionAtLeast("2.4.0-Beta1", 2, 3));
+    try std.testing.expect(versionAtLeast("3.0.0", 2, 3));
+    try std.testing.expect(versionAtLeast("2.3.0-RC2", 2, 3));
+    try std.testing.expect(!versionAtLeast("2.0.21", 2, 3));
+    try std.testing.expect(!versionAtLeast("2.2.20", 2, 3));
+    try std.testing.expect(!versionAtLeast("1.9.24", 2, 3));
+    try std.testing.expect(!versionAtLeast("x.y", 2, 3));
+    try std.testing.expect(!versionAtLeast("", 2, 3));
+}
+
+test "an older Kotlin plugin with -Dsystem_ai is an error" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out = try tmp.dir.realPathFileAlloc(io, ".", gpa);
+    defer gpa.free(out);
+    const ml_kit = "    add(\"implementation\", \"com.google.mlkit:genai-prompt:1.0.0-beta4\")\n";
+    // No root build.gradle.kts: left to Gradle.
+    try std.testing.expect(try kotlinRecentEnough(gpa, io, out, ml_kit));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.gradle.kts", .data = "plugins {\n    id(\"org.jetbrains.kotlin.android\") version \"2.0.21\" apply false\n}\n" });
+    try std.testing.expect(!try kotlinRecentEnough(gpa, io, out, ml_kit));
+    // Other dependencies don't care.
+    try std.testing.expect(try kotlinRecentEnough(gpa, io, out, "    add(\"implementation\", \"example:feature:1.0\")\n"));
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.gradle.kts", .data = "plugins {\n    id(\"org.jetbrains.kotlin.android\") version \"2.3.21\" apply false\n}\n" });
+    try std.testing.expect(try kotlinRecentEnough(gpa, io, out, ml_kit));
+}
+
 pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     var template_dir: ?[]const u8 = null;
     var out_dir: ?[]const u8 = null;
@@ -503,6 +605,14 @@ pub fn androidProjectCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const
             error.FileNotFound => {},
             else => return err,
         };
+        break;
+    };
+
+    // An older project with a dependency that needs a newer Kotlin plugin
+    // (ML Kit's genai-prompt, -Dsystem_ai): say which lines to change
+    // instead of Gradle's metadata error.
+    for (vars.items) |v| if (std.mem.eql(u8, v.key, "android_dependencies")) {
+        if (!try kotlinRecentEnough(gpa, io, out, v.value)) return 1;
         break;
     };
 
