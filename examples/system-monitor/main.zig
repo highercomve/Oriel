@@ -92,13 +92,7 @@ pub fn main(init: std.process.Init) !u8 {
     sampler_initialized = true;
 
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.oriel.SystemMonitor",
-        .title = "Oriel System Monitor",
-        .width = 1280,
-        .height = 900,
-        .min_width = 860,
-        .min_height = 540,
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Oriel System Monitor", .width = 1280, .height = 900, .min_width = 860, .min_height = 540 },
     });
 }

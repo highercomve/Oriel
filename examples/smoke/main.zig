@@ -112,7 +112,7 @@ fn probeServer(local_io: std.Io) void {
         w.interface.flush() catch {};
     }
 }
-const app_id = "dev.oriel.Smoke";
+const app_id = app.build.id;
 const icon_png = @embedFile("web/icon.png");
 
 var io: std.Io = undefined;
@@ -180,7 +180,7 @@ fn createTestMediaFile(local_io: std.Io, gpa: std.mem.Allocator) ![]const u8 {
 const Commands = struct {
     /// The isolation checks: whether the hook is on, and its origin.
     pub fn isolation_info() struct { enabled: bool, origin: []const u8 } {
-        return .{ .enabled = app.isolation != null, .origin = oriel.isolation.origin };
+        return .{ .enabled = app.build.isolation != null, .origin = oriel.isolation.origin };
     }
 
     /// The isolation hook rejects this one (it succeeds without isolation).
@@ -514,10 +514,11 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     const config_gui: oriel.App.Config = .{
-        .id = app_id,
-        .title = "Oriel smoke test",
-        .icon = app.icon_bytes,
-        .assets = app.assets,
+        // Security 3 (the `isolation` checks): every call from the page goes
+        // through isolation/hook.js (`.isolation` in build.zig). Off with
+        // -Disolation=false.
+        .app = app.build,
+        .window = .{ .title = "Oriel smoke test" },
         // The security checks navigate to remote URLs: never hand them to a browser.
         // The probe origin may be framed (the `ipc frame` check).
         .security = .{
@@ -525,10 +526,7 @@ pub fn main(init: std.process.Init) !u8 {
             // The round-trip checks intentionally exchange events across windows.
             .window_api = .{ .allow_modify_other_windows = true },
             .allowed_origins = &.{probe_origin},
-            .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin ++ (if (app.isolation != null) " " ++ oriel.isolation.origin else ""),
-            // Security 3 (the `isolation` checks): every call from the page
-            // goes through isolation/hook.js. Off with -Disolation=false.
-            .isolation = app.isolation,
+            .csp = oriel.security.default_csp ++ "; frame-src " ++ probe_origin ++ (if (app.build.isolation != null) " " ++ oriel.isolation.origin else ""),
             // Security 4.1 (the `csp hash` and `csp styles` checks): no
             // 'unsafe-inline' styles; index.html's <style> block is allowed by hash.
             .strict_styles = true,
@@ -539,8 +537,6 @@ pub fn main(init: std.process.Init) !u8 {
                 .{ .name = "Permissions-Policy", .value = "geolocation=()" },
             },
         },
-        .deep_link_schemes = app.url_schemes,
-        .permissions = app.permissions,
         // Servers start after App.run's single-instance check: a second
         // launch forwards its arguments and exits before binding any port.
         .setup = &setupGui,

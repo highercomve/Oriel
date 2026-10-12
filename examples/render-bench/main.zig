@@ -272,11 +272,7 @@ pub fn main(init: std.process.Init) !u8 {
     bench_mode = init.environ_map.get("RENDER_BENCH") != null;
     if (init.environ_map.get("RENDER_BENCH_POWER")) |v| power_seconds = std.fmt.parseInt(u32, v, 10) catch 60;
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.oriel.RenderBench",
-        .title = "Oriel render bench",
-        .width = 900,
-        .height = 700,
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Oriel render bench", .width = 900, .height = 700 },
     });
 }

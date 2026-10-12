@@ -590,8 +590,11 @@ test "every template renders to a valid project" {
 
             const main_zig = try tmp.dir.readFileAlloc(io, "src/main.zig", gpa, .limited(1 << 20));
             defer gpa.free(main_zig);
-            try testing.expect(std.mem.indexOf(u8, main_zig, ".id = \"com.example.MyApp\"") != null);
+            try testing.expect(std.mem.indexOf(u8, main_zig, ".app = app.build,") != null);
             try testing.expect(std.mem.indexOf(u8, main_zig, ".title = \"My App\"") != null);
+            const build_zig = try tmp.dir.readFileAlloc(io, "build.zig", gpa, .limited(1 << 20));
+            defer gpa.free(build_zig);
+            try testing.expect(std.mem.indexOf(u8, build_zig, ".id = \"com.example.MyApp\"") != null);
 
             // Nothing is overwritten.
             try testing.expectError(error.PathAlreadyExists, writeFiles(gpa, io, tmp.dir, project));

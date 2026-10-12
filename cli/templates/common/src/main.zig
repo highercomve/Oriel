@@ -40,25 +40,17 @@ pub const Commands = struct {
         return .{
             .zig = builtin.zig_version_string,
             .mode = @tagName(builtin.mode),
-            .dev = app.dev != null,
+            .dev = app.build.dev != null,
         };
     }
 };
 
 pub fn main(init: std.process.Init) !u8 {
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "@@app_id@@",
-        .title = "@@title@@",
-        .width = 800,
-        .height = 600,
-        .assets = app.assets, // the embedded frontend (empty in dev builds)
-        .dev = app.dev, // dev-server settings (null in production builds)
-        // URL schemes this app accepts deep links for (`oriel deep-link add`);
-        // links with any other scheme are dropped.
-        .deep_link_schemes = app.url_schemes,
-        // OS permissions declared in build.zig (`oriel permission add`).
-        .permissions = app.permissions,
-        // The isolation hook (null unless `.isolation` is set in build.zig).
-        .security = .{ .isolation = app.isolation },
+        // What build.zig declares: the app id, the embedded frontend (or the
+        // dev server), the icon, deep-link schemes (`oriel deep-link add`),
+        // permissions (`oriel permission add`) and the isolation hook.
+        .app = app.build,
+        .window = .{ .title = "@@title@@", .width = 800, .height = 600 },
     });
 }

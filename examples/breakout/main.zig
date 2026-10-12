@@ -101,11 +101,7 @@ pub fn main(init: std.process.Init) !u8 {
         if (m.len > 0) demo_mode_env = try init.arena.allocator().dupe(u8, m);
     }
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
-        .id = "dev.oriel.Breakout",
-        .title = "Breakout",
-        .width = 900,
-        .height = 700,
-        .assets = app.assets,
-        .dev = app.dev,
+        .app = app.build,
+        .window = .{ .title = "Breakout", .width = 900, .height = 700 },
     });
 }

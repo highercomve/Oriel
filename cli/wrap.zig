@@ -286,7 +286,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\            .id = "{f}",
         \\            .title = "{f}",
         \\            .tooltip = "{f}",
-        \\            .icon = .{{ .png = app.icon_bytes }},
+        \\            .icon = .{{ .png = app.build.icon.? }},
         \\            .menu = &.{{
         \\                .{{ .item = .{{ .id = "toggle", .label = "Show / Hide" }} }},
         \\                .separator,
@@ -304,7 +304,7 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     else
         "";
 
-    const on_close_line = if (use_tray) "        .on_close = .hide,\n" else "";
+    const hide_on_close_line = if (use_tray) "            .hide_on_close = true,\n" else "";
     const setup_line = if (use_tray) "        .setup = setup,\n" else "";
 
     const main_zig_content = try std.fmt.allocPrint(arena,
@@ -316,16 +316,15 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
         \\{s}
         \\pub fn main(init: std.process.Init) !u8 {{
         \\    return oriel.main(init, .{{ .commands = struct {{}} }}, .{{
-        \\        .id = "{f}",
-        \\        .title = "{f}",
-        \\        .width = 1100,
-        \\        .height = 750,
-        \\        .icon = app.icon_bytes,
-        \\        .permissions = app.permissions,
-        \\        .assets = app.assets,
-        \\        .url = "{f}",
+        \\        .app = app.build,
+        \\        .window = .{{
+        \\            .title = "{f}",
+        \\            .width = 1100,
+        \\            .height = 750,
+        \\            .url = "{f}",
+        \\{s}        }},
         \\        .devtools = {s},
-        \\{s}{s}{s}        .security = .{{
+        \\{s}{s}        .security = .{{
         \\            .csp = null,
         \\            .allowed_origins = &.{{
         \\{s}            }},
@@ -339,12 +338,11 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
     , .{
         tray_globals,
         tray_funcs,
-        std.zig.fmtString(app_id),
         std.zig.fmtString(app_title),
         std.zig.fmtString(full_url),
+        hide_on_close_line,
         if (cmd.devtools) "true" else "false",
         user_agent_line,
-        on_close_line,
         setup_line,
         origins_buf.items,
         cap_buf.items,
