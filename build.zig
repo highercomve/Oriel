@@ -16,6 +16,7 @@ const Scanner = @import("wayland").Scanner;
 const ggml = @import("build/ggml.zig");
 const android_build = @import("build/android.zig");
 const ios_build = @import("build/ios.zig");
+const swift_build = @import("build/swift.zig");
 const android_manifest = @import("build/android_manifest.zig");
 const espeak_data = @import("build/espeak_data.zig");
 const module_table = @import("src/core/module_table.zig");
@@ -404,6 +405,14 @@ pub fn build(b: *std.Build) void {
         .use_lld = useLld(if (runs_tests) target else b.graph.host),
     });
     if (runs_tests) test_step.dependOn(&b.addRunArtifact(android_manifest_tests).step);
+
+    // The swiftc command line of iOS extensions' Swift sources.
+    const swift_tests = b.addTest(.{
+        .root_module = b.createModule(.{ .root_source_file = b.path("build/swift.zig"), .target = b.graph.host }),
+        .use_llvm = true,
+        .use_lld = useLld(b.graph.host),
+    });
+    if (runs_tests) test_step.dependOn(&b.addRunArtifact(swift_tests).step);
 
     const dev_runner_tests = b.addTest(.{
         .root_module = dev_runner.root_module,
@@ -2293,6 +2302,7 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         if (sdk) |root| ios_build.link(c.root_module, root, audio_capture);
         ios_build.configure(b, c);
         ios_build.requireSdk(b, c);
+        addIosExtensions(b, oriel_dep, options, c, sdk);
     }
 
     const pkg = options.package orelse PackageOptions{};
@@ -2333,10 +2343,17 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         made[idx] = .{ .step = run, .dir = out };
         // -Dkokoro: espeak-ng's compiled data at the bundle's root, its
         // resource directory (<Name>.app/espeak-ng-data; oriel.tts finds it).
-        if (espeak_data.fromDependency(b, oriel_dep.builder)) |data| {
+        // App extensions' `.ios.resources` go there too.
+        const espeak = espeak_data.fromDependency(b, oriel_dep.builder);
+        const resources = iosExtensionResources(b, options);
+        if (espeak != null or resources.len > 0) {
             const with_data = b.addWriteFiles();
             _ = with_data.addCopyDirectory(out.path(b, bundle_dir), bundle_dir, .{});
-            _ = with_data.addCopyDirectory(data.dir, b.fmt("{s}/{s}", .{ bundle_dir, espeak_data.name }), .{});
+            if (espeak) |data| _ = with_data.addCopyDirectory(data.dir, b.fmt("{s}/{s}", .{ bundle_dir, espeak_data.name }), .{});
+            for (resources) |res| {
+                const dest = b.fmt("{s}/{s}", .{ bundle_dir, res.name });
+                if (lazyPathIsFile(b, res.path)) _ = with_data.addCopyFile(res.path, dest) else _ = with_data.addCopyDirectory(res.path, dest, .{});
+            }
             made[idx].dir = with_data.getDirectory();
         }
     }
@@ -2366,6 +2383,61 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
     }
     return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+/// App extensions' iOS parts for one of the app's executables (not the
+/// type-check, which builds without an SDK): Objective-C sources with ARC
+/// and oriel_extension.h on the include path, frameworks, and each
+/// extension's Swift sources as one object (build/swift.zig).
+fn addIosExtensions(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions, compile: *std.Build.Step.Compile, sdk: ?[]const u8) void {
+    const include = oriel_dep.path("src/platform/ios/include");
+    var swift = false;
+    for (options.extensions) |e| {
+        const x = e.ios orelse continue;
+        if (x.sources.len > 0 or x.swift_sources.len > 0) compile.root_module.addIncludePath(include);
+        for (x.sources) |src| compile.root_module.addCSourceFile(.{ .file = src, .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" } });
+        for (x.frameworks) |f| compile.root_module.linkFramework(f, .{});
+        if (x.swift_sources.len == 0) continue;
+        const root = sdk orelse {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need the iOS SDK and its Swift modules: on Linux, `oriel ios setup` with Xcode.xip " ++
+                "(xtool extracts both into ~/.swiftpm/swift-sdks/darwin.artifactbundle), or -Dapple_sdk=<iPhoneOS.sdk> plus -Dswift_resource_dir=<the Darwin Swift resource dir>; on a Mac, Xcode (docs/extensions.md)", .{e.name})).step);
+            continue;
+        };
+        const swiftc = swift_build.findSwiftc(b) orelse {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: .ios.swift_sources need swiftc: Xcode on a Mac, or the Swift toolchain (swift.org) on Linux with xtool's SDK; or set $SWIFTC (docs/extensions.md)", .{e.name})).step);
+            continue;
+        };
+        if (b.graph.host.result.os.tag != .macos and swift_build.resourceDir(b, root, compile.rootModuleTarget()) == null) {
+            compile.step.dependOn(&b.addFail(b.fmt("{s}: a Linux swiftc has no Darwin standard library: build against xtool's SDK (`oriel ios setup` with Xcode.xip; its darwin.artifactbundle has the Swift modules), or pass -Dswift_resource_dir (docs/extensions.md)", .{e.name})).step);
+            continue;
+        }
+        const module_name = b.dupe(b.fmt("OrielExtension_{s}", .{e.name}));
+        std.mem.replaceScalar(u8, module_name, '.', '_');
+        const obj = swift_build.compile(b, swiftc, x.swift_sources, module_name, compile.rootModuleTarget(), root, include.path(b, "oriel_extension.h"), compile.root_module.optimize orelse .Debug);
+        compile.root_module.addObjectFile(obj);
+        swift = true;
+    }
+    if (swift) swift_build.linkRuntime(compile.root_module, sdk.?);
+}
+
+const IosResource = struct { path: std.Build.LazyPath, name: []const u8 };
+
+/// Every extension's `.ios.resources`, named by their base names (source
+/// paths only: the bundle needs the name while configuring).
+fn iosExtensionResources(b: *std.Build, options: AppOptions) []const IosResource {
+    var out: std.ArrayList(IosResource) = .empty;
+    for (options.extensions) |e| {
+        const x = e.ios orelse continue;
+        for (x.resources) |res| {
+            const p = switch (res) {
+                .src_path => |s| s.sub_path,
+                .cwd_relative => |c| c,
+                else => @panic(b.fmt("AppOptions.extensions: {s}: .ios.resources must be paths in the source tree (b.path)", .{e.name})),
+            };
+            out.append(b.allocator, .{ .path = res, .name = std.fs.path.basename(p) }) catch @panic("OOM");
+        }
+    }
+    return out.items;
 }
 
 fn addAndroidLib(
