@@ -280,6 +280,28 @@ Buttons show on Linux, macOS (`.app` bundles), iOS and Android (at most 3). Wind
 
 **Platform support:** Linux (`GNotification`) · Windows (balloon tooltips) · macOS (`UNUserNotificationCenter` in an `.app`; `osascript` fallback when unbundled) · Android · iOS.
 
+# [App directories]($heading.id('app-directories'))
+
+Core, always built: the app's private data and cache directories, created if missing (the caller frees the path).
+
+```zig
+const data = try oriel.paths.appData(gpa, .{ .name = "GhostPantry" });
+defer gpa.free(data);
+const cache = try oriel.paths.appCache(gpa, .{ .name = "GhostPantry" });
+```
+
+| | `appData` | `appCache` |
+|---|---|---|
+| Android | the files dir itself (`getFilesDir()`) | the cache dir itself (`getCacheDir()`) |
+| iOS | `Library/Application Support/<name>` | `Library/Caches/<name>` |
+| macOS | `~/Library/Application Support/<name>` | `~/Library/Caches/<name>` |
+| Linux | `$XDG_DATA_HOME/<name>` | `$XDG_CACHE_HOME/<name>` |
+| Windows | `%LOCALAPPDATA%\<name>` | `%LOCALAPPDATA%\<name>\cache` |
+
+Use `paths.appData` for databases, models and files: no Android special case in the app. The Android sandbox is already per app, so `name` adds no folder there. `oriel.store.dataDir` is the same folder everywhere but Android, where it is `<filesDir>/<app id>` and stays so (existing apps' data lives there). Windows uses Local AppData, not Roaming: databases and models don't roam.
+
+**Platform support:** Linux · Windows · macOS · Android · iOS.
+
 # [Settings store]($heading.id('settings-store'))
 
 Thread-safe JSON key-value store with atomic writes. Standard directories per OS (XDG on Linux, Known Folders on Windows, `~/Library/Application Support` and `~/Library/Caches` on macOS):

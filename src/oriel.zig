@@ -40,6 +40,9 @@ pub const ios = if (target.is_ios) @import("platform/ios/ios.zig") else struct {
 pub const permissions = @import("core/permissions.zig");
 /// Facts about the device: its name (what a sharing app announces).
 pub const system = @import("core/system.zig");
+/// The app's private data and cache directories on every platform
+/// (`paths.appData(gpa, .{ .name = "MyApp" })`; Android: the files dir itself).
+pub const paths = @import("core/paths.zig");
 /// The app's lifecycle on every platform: background/foreground, memory
 /// pressure, sleep/wake, terminating (`lifecycle.subscribe`; the page's
 /// `oriel.lifecycle.on`).
@@ -267,6 +270,8 @@ test {
     std.testing.refAllDecls(@import("core/csp.zig"));
     std.testing.refAllDecls(permissions);
     std.testing.refAllDecls(system);
+    std.testing.refAllDecls(paths);
+    std.testing.refAllDecls(paths);
     std.testing.refAllDecls(lifecycle);
     std.testing.refAllDecls(extensions);
     std.testing.refAllDecls(@import("core/extension_spec.zig"));
