@@ -621,7 +621,9 @@ oriel.system_ai.cancel(); // any thread: the call fails with error.Cancelled
   `download` returns when it's ready, `error.NotReady` while it isn't.
 - **Errors:** `Unavailable`, `NotReady`, `Busy` (one generate or download at a time; `status` answers meanwhile),
   `Cancelled`, `Timeout`, `TooLarge`, `InvalidRequest`, `WrongThread` (the main thread), `Failed`.
-  `lastError()` has the platform's code and message.
+  `lastError()` has the platform's code and message. The page's promises reject with the same as lowercase
+  codes, like `status()`'s states: `"unavailable: <the platform's message>"`, or the code alone (`"busy"`,
+  `"not_ready"`, `"cancelled"`).
 - **Caps:** prompt, system prompt and schema 64 KiB each, 4 images of 8 MiB, a 1 MiB reply (a longer stream is
   cancelled); timeouts of 20 s (status), 3 min (generate) and 10 min (download).
 - **Platforms:**

@@ -442,10 +442,29 @@ fn pageStatus(arena: std.mem.Allocator, st: Status) ![]u8 {
     return std.json.Stringify.valueAlloc(arena, PageStatus{ .state = @tagName(st.state), .reason = st.reason() }, .{});
 }
 
-/// The page's error text: the platform's message when there is one.
+/// The page's error text, like `status`'s "<state>: <reason>" and
+/// `oriel.extensions.call`'s: "<code>: <the platform's message>", or the
+/// code alone ("busy", "not_ready"). Zig callers keep the error names.
 fn pageFail(err: Error, diag: *const extensions.Diagnostics) anyerror {
-    if (diag.message().len > 0) return ipc.fail("{s}: {s}", .{ @errorName(err), diag.message() });
-    return err;
+    if (err == error.OutOfMemory) return err;
+    if (diag.message().len > 0) return ipc.fail("{s}: {s}", .{ errorCode(err), diag.message() });
+    return ipc.fail("{s}", .{errorCode(err)});
+}
+
+/// `err` as the page's lowercase code (the codes the backends report).
+pub fn errorCode(err: Error) []const u8 {
+    return switch (err) {
+        error.Unavailable => "unavailable",
+        error.NotReady => "not_ready",
+        error.Busy => "busy",
+        error.Cancelled => "cancelled",
+        error.Timeout => "timeout",
+        error.TooLarge => "too_large",
+        error.InvalidRequest => "invalid_request",
+        error.WrongThread => "wrong_thread",
+        error.Failed => "failed",
+        error.OutOfMemory => "out_of_memory",
+    };
 }
 
 /// `oriel.systemAi.generate`'s arguments: images as base64 (the bridge
@@ -779,6 +798,11 @@ test "the page's commands" {
     try testing.expectError(error.UnknownCommand, pageCall(&s, arena, "system_ai:nope", .null));
     FakeBackend.fail_code = "unavailable";
     try testing.expectError(error.CommandFailed, pageCall(&s, arena, "system_ai:generate", try args.of(arena, "{\"prompt\":\"hi\"}")));
-    try testing.expectEqualStrings("Unavailable: the fake says no", ipc.errorText(error.CommandFailed));
+    try testing.expectEqualStrings("unavailable: the fake says no", ipc.errorText(error.CommandFailed));
     FakeBackend.fail_code = null;
+    // No message: the code alone, lowercase like status's states.
+    try testing.expectEqual(error.CommandFailed, pageFail(error.Busy, &.{}));
+    try testing.expectEqualStrings("busy", ipc.errorText(error.CommandFailed));
+    try testing.expectEqual(error.CommandFailed, pageFail(error.NotReady, &.{}));
+    try testing.expectEqualStrings("not_ready", ipc.errorText(error.CommandFailed));
 }
