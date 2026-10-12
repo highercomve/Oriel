@@ -80,9 +80,16 @@ pub fn build(b: *std.Build) void {
     // (Android) and Objective-C (iOS); the page calls it through
     // oriel.extensions.expose (src/main.zig). -Dswift_example adds
     // "showcase.swift", in Swift on iOS only (it needs swiftc: docs/extensions.md).
+    // -Dobjc_echo: on macOS, "showcase.echo" in Objective-C (the iOS
+    // protocol and runtime) instead of Zig; needs the macOS SDK (a Mac).
+    const objc_echo = b.option(bool, "objc_echo", "macOS: the echo extension in Objective-C instead of Zig") orelse false;
     const echo: oriel.AppOptions.Extension = .{
         .name = "showcase.echo",
         .desktop = .{ .zig = b.path("src/echo_desktop.zig") },
+        .macos = if (objc_echo) .{ .objc = .{
+            .class = "ShowcaseMacEchoExtension",
+            .sources = &.{b.path("extensions/macos/EchoExtension.m")},
+        } } else null,
         .android = .{
             .class = "dev.oriel.showcase.EchoExtension",
             .sources = &.{b.path("extensions/android/EchoExtension.kt")},
@@ -101,7 +108,26 @@ pub fn build(b: *std.Build) void {
             .swift_sources = &.{b.path("extensions/ios/SwiftExtension.swift")},
         },
     };
-    const swift_example = b.option(bool, "swift_example", "iOS: add the Swift extension \"showcase.swift\" (needs swiftc)") orelse false;
+    const swift_example = b.option(bool, "swift_example", "iOS: add the Swift extension \"showcase.swift\"; iOS and macOS: the Swift platform hooks (needs swiftc)") orelse false;
+
+    // Platform hooks (docs/platform-hooks.md): Objective-C classes in
+    // Oriel's app and scene delegates and WebKit delegates; they log what
+    // they see ("showcase.hooks:") and own navigation to example.com (the
+    // App tab's link). -Dswift_example adds a Swift one after them (iOS 18
+    // and macOS 15 minimum).
+    const ios_hooks: oriel.AppOptions.PlatformHook = .{
+        .class = "ShowcaseHooks",
+        .sources = &.{b.path("extensions/ios/ShowcaseHooks.m")},
+        .frameworks = &.{"SafariServices"},
+    };
+    const macos_hooks: oriel.AppOptions.PlatformHook = .{
+        .class = "ShowcaseHooks",
+        .sources = &.{b.path("extensions/macos/ShowcaseHooks.m")},
+    };
+    const swift_hooks: oriel.AppOptions.PlatformHook = .{
+        .class = "ShowcaseSwiftHooks",
+        .swift_sources = &.{b.path("extensions/apple/SwiftHooks.swift")},
+    };
 
     _ = oriel.addApp(b, dep, .{
         .extensions = if (swift_example) &.{ echo, swift_echo } else &.{echo},
@@ -131,7 +157,11 @@ pub fn build(b: *std.Build) void {
             .camera = "Take photos to show on the Files tab.",
         },
         // iOS: keep dictating when the app goes to the background.
-        .ios = .{ .background_audio = true },
+        .ios = .{
+            .background_audio = true,
+            .hooks = if (swift_example) &.{ ios_hooks, swift_hooks } else &.{ios_hooks},
+        },
+        .macos = .{ .hooks = if (swift_example) &.{ macos_hooks, swift_hooks } else &.{macos_hooks} },
         // Android: dictate anywhere from a Quick Settings tile and a keyboard;
         // platform hooks in Kotlin (src/platform_hooks.zig on the desktop).
         .android = .{
