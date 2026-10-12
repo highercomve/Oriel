@@ -93,7 +93,7 @@ if (oriel.tray.available) {
 }
 ```
 - **Where the module exists:** `available = true` and the full API is there.
-- **Where it doesn't** (tray, menu, global_shortcut, input, updater, media_server, fs_watch and layer_shell on phones; system_ai on Linux…): `available = false`, and the namespace holds only `available`.
+- **Where it doesn't** (tray, menu, input, media_server and layer_shell on phones, plus global_shortcut, updater and fs_watch on iOS; layer_shell off Linux; system_ai on Linux…; the updater stays on Android, where it checks for a release): `available = false`, and the namespace holds only `available`.
   - Code under `if (oriel.tray.available)` is never analyzed, so it costs nothing and needs no stub.
   - An unguarded call is a **compile error**, with a message naming the module and the guard (`@compileError`: "oriel.tray is not available on ios: guard with if (oriel.tray.available)"), raised from a small generated shim type.
 - **The app's flags stay intent:** `.tray = true` in `b.dependency` means "used where it exists". No per-target branching, no build-time fatal, and no runtime `Unsupported` from a stub.
