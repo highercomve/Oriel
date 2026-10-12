@@ -21,26 +21,20 @@ const log = std.log.scoped(.native_ui);
 /// as QuickJS bytecode (compiled at build time: tools/qjs_bytecode.c).
 const runtime_bytecode = @import("runtime_bytecode").data;
 
-// -Dnative_dom: the native DOM's C API (dom_qjs.c calls it), and rows
-// stamped from it (host.stamp).
-const native_dom = @import("build_options").native_dom;
-const dom_stamp = if (native_dom) @import("dom_stamp.zig") else struct {};
+// The native DOM's C API (dom_qjs.c calls it), and rows stamped from it
+// (host.stamp).
+const dom_stamp = @import("dom_stamp.zig");
 comptime {
-    if (native_dom) {
-        _ = @import("dom/capi.zig");
-        @export(&stampExport, .{ .name = "oriel_nui_stamp" });
-        @export(&stampListExport, .{ .name = "oriel_nui_stamp_list" });
-    }
+    _ = @import("dom/capi.zig");
 }
 
 test {
-    if (native_dom) _ = dom_stamp;
+    _ = dom_stamp;
 }
 
 /// host.stamp(rowId, row, plan): row element `row` (a DOM store index in
 /// `dom`) stamped as tree row `row_id` (dom_stamp.zig); 0 when declined.
-fn stampExport(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32) callconv(.c) c_int {
-    if (!native_dom) return 0;
+export fn oriel_nui_stamp(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32) c_int {
     const e = engineOf(p);
     const ok = dom_stamp.stamp(&e.tree, @ptrCast(@alignCast(dom)), row, Tree.idOf(row_id), plan) catch return 0;
     return @intFromBool(ok);
@@ -49,8 +43,7 @@ fn stampExport(p: *anyopaque, row_id: f64, dom: *anyopaque, row: u32, plan: u32)
 /// host.stampList(listId, list, rowStyle, plan, template, kept): a list's
 /// rows but its template and kept ones stamped by the tree
 /// (dom_stamp.stampList); 0 when declined.
-fn stampListExport(p: *anyopaque, list_id: f64, dom: *anyopaque, list: u32, row_style: f64, plan: u32, template: u32, kept: [*]const u32, kept_len: usize) callconv(.c) c_int {
-    if (!native_dom) return 0;
+export fn oriel_nui_stamp_list(p: *anyopaque, list_id: f64, dom: *anyopaque, list: u32, row_style: f64, plan: u32, template: u32, kept: [*]const u32, kept_len: usize) c_int {
     const e = engineOf(p);
     const ok = dom_stamp.stampList(&e.tree, @ptrCast(@alignCast(dom)), list, Tree.idOf(list_id), Tree.idOf(row_style), plan, template, kept[0..kept_len]) catch return 0;
     return @intFromBool(ok);
@@ -341,9 +334,9 @@ test "drops: drop:path answers the file's path, then null once it is gone" {
 
     const args_known = try std.fmt.allocPrint(arena, "{{\"handle\":{d}}}", .{handle});
     const answer = try e.dropPathCommand(arena, args_known);
-    try std.testing.expect(std.mem.startsWith(u8, answer, "{\"path\":\""));
+    try std.testing.expect(std.mem.startsWith(u8, answer, "\""));
     // The platform's separator, JSON-escaped on Windows ("C:\\...\\f.txt").
-    const tail = if (comptime @import("builtin").os.tag == .windows) "\\\\f.txt\"}" else "/f.txt\"}";
+    const tail = if (comptime @import("builtin").os.tag == .windows) "\\\\f.txt\"" else "/f.txt\"";
     try std.testing.expect(std.mem.endsWith(u8, answer, tail));
 
     // Unknown, malformed and released handles answer null, not an error.
@@ -758,18 +751,18 @@ pub const Engine = struct {
     }
 
     /// The page asks where a dropped file lives now (`drop:path`, the
-    /// drop-table handle it got in `drop`'s File). Answers a JSON object
-    /// `{"path": "…"}`, or `"null"` when the handle is unknown, its file
-    /// was deleted or changed, or the platform can't resolve paths. Built
-    /// for a trusted app that sends dropped files on (the design's open
-    /// question #1, Electron's webUtils.getPathForFile being the
-    /// precedent); the bridges call it after their command policy check.
+    /// drop-table handle it got in `drop`'s File). Answers the path as a
+    /// JSON string, or `null` when the handle is unknown, its file was
+    /// deleted or changed, or the platform can't resolve paths. Built for a
+    /// trusted app that sends dropped files on (the design's open question
+    /// #1, Electron's webUtils.getPathForFile being the precedent);
+    /// `native_commands.dispatch` calls it after the command policy check.
     pub fn dropPathCommand(e: *Engine, arena: std.mem.Allocator, args_json: []const u8) ![]u8 {
         const Args = struct { handle: u32 };
         const value = std.json.parseFromSliceLeaky(std.json.Value, arena, args_json, .{}) catch return arena.dupe(u8, "null");
         const parsed = std.json.parseFromValueLeaky(Args, arena, value, .{}) catch return arena.dupe(u8, "null");
         const path = e.drops.nativePath(arena, parsed.handle) catch return arena.dupe(u8, "null");
-        return std.fmt.allocPrint(arena, "{{\"path\":{f}}}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
+        return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
     }
 
     /// A JSON message for the page (Android's events), see `__oriel.message`.
@@ -1087,7 +1080,7 @@ pub const Engine = struct {
         oqjs_run_gc(e.js);
         // The native DOM's trees the collection left without wrappers go too
         // (its finalizers only list them), not at the next render.
-        if (native_dom) _ = e.callf("globalThis.__nuiDom?.collect()", .{});
+        _ = e.callf("globalThis.__nuiDom?.collect()", .{});
     }
 
     pub fn jsMemory(e: *Engine) usize {

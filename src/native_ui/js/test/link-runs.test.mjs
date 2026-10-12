@@ -15,7 +15,7 @@ const host = {
   platform: JSON.stringify({ os: "android", arch: "aarch64" }), label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 vm.runInContext(`globalThis.clicked = []; document.getElementById("a").addEventListener("click", (e) => { clicked.push(e.target.id || e.target.localName); e.preventDefault(); });`, ctx);
 ctx.__oriel.render();

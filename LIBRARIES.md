@@ -38,7 +38,7 @@ but their runtime dependencies differ:
 | WebView (Windows) | Win32, WebView2 COM interfaces and loader | Window, browser rendering and IPC |
 | WebView (Android/iOS) | platform WebView, JNI/UIKit | Mobile compatibility path |
 | Native UI | vendored QuickJS-ng, Oriel native DOM, Yoga, platform drawing backends | JavaScript execution, DOM/layout, and native rendering |
-| Native UI fallback | vendored QuickJS-ng, LinkeDOM, Yoga | Compatibility fallback selected with `-Dnative_dom=false` |
+| Native UI tests | vendored LinkeDOM | The DOM the native runtime's Node tests run on (`src/native_ui/js/test`); not in apps |
 
 The native renderer has no WebKit/WebView dependency. QuickJS-ng is built from
 `src/native_ui/vendor/quickjs-ng`; Yoga is patched during the build for Oriel's layout

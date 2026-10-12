@@ -21,7 +21,7 @@ function run(os, dpr) {
     platform: JSON.stringify({ os, dpr }), label: "main", url: "index.html",
   };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, false, false);
   ctx.__oriel.render();
   const bws = [...nodes.values()].map((n) => n.props.bw).filter(Boolean).map((b) => +b[0].toFixed(6));

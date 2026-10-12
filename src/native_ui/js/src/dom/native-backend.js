@@ -1,4 +1,4 @@
-// The runtime's DOM as the native one (-Dnative_dom, docs/native-dom.md):
+// The runtime's DOM as the native one (docs/native-dom.md):
 // the engine installs the store and its bindings (__nuiDom, the Node…
 // interfaces) and hands over the document as __host.document. Same exports
 // as ./linkedom.js.

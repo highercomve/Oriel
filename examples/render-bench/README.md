@@ -12,7 +12,6 @@ below retain their own dates and measurement conditions.
 ```sh
 zig build -Doptimize=ReleaseFast                                  # WebView
 zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native (native DOM)
-zig build -Dnative_ui -Dnative_dom=false -Doptimize=ReleaseFast -p zig-out-linkedom  # native on linkedom
 ./zig-out/bin/oriel-render-bench                                  # GUI
 RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench            # one JSON line, then exits
 ```
@@ -246,7 +245,7 @@ intervals or proof of performance on every platform.
 
 The owned LinkeDOM source now allocates listener Maps only on the first
 listener. Flattening uses scalar primary IDs, shared empty child arrays and
-leaf snapshots, and a single style cache with epoch invalidation. Runtime and
+leaf snapshots, and a single style cache with epoch invalidation. The runtime's
 tests import `src/native_ui/js/vendor/linkedom`; the build has no dependency
 source patches.
 
@@ -292,7 +291,7 @@ shared-style pass had already reduced build traffic 86–88%.
 Repeat the isolated harness from the repository root with QuickJS-NG:
 
 ```sh
-qjs src/native_ui/js/test/bench-qjs.js src/native_ui/runtime.js examples/render-bench/web
+qjs src/native_ui/js/test/bench-qjs.js src/native_ui/js/test/runtime-linkedom.js examples/render-bench/web
 ```
 
 [Research and remaining implementation priorities](../../docs/native-renderer-performance.md)

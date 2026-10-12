@@ -11,7 +11,7 @@ const host = {
   platform: '{"os":"linux"}', label: "main", url: "index.html",
 };
 const ctx = vm.createContext({ __host: host, Map: CountedMap });
-vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx);
+vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx);
 ctx.__oriel.boot(800, 600, false, false);
 ctx.__oriel.render();
 const before = maps;

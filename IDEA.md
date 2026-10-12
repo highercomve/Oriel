@@ -29,8 +29,7 @@ Oriel has one page/runtime contract with two implementations:
 - **Native UI (`-Dnative_ui`):** QuickJS executes the page JavaScript, Oriel's native
   DOM stores the document, Yoga performs flexbox layout, and platform backends draw
   the result with GTK, Direct2D/DirectWrite, AppKit, UIKit, or Android views. There
-  is no browser process. `-Dnative_dom=false` keeps the native renderer but uses the
-  LinkeDOM compatibility path instead of Oriel's native DOM.
+  is no browser process.
 
 The native renderer is more than a prototype: it includes CSS/layout, text and SVG
 rendering, canvas, pointer and keyboard events, fields and selection, native buttons,

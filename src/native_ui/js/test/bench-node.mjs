@@ -1,5 +1,5 @@
 // Run the same fake-host workload as bench-qjs.js under Node/V8:
-// node src/native_ui/js/test/bench-node.mjs src/native_ui/runtime.js examples/render-bench/web
+// node src/native_ui/js/test/bench-node.mjs src/native_ui/js/test/runtime-linkedom.js examples/render-bench/web
 // Add --jitless before the script to compare V8's interpreter.
 import { readFileSync } from "node:fs";
 

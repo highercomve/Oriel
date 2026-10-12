@@ -11,7 +11,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .native_ui = b.option(bool, "native_ui", "Draw the page with native widgets instead of a WebView (experimental)") orelse true,
         .native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings") orelse false,
-        .native_dom = b.option(bool, "native_dom", "With -Dnative_ui: the native DOM (default), or linkedom when false"),
         .clipboard = true,
     });
     _ = oriel.addApp(b, dep, .{

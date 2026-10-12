@@ -25,7 +25,7 @@ function props(os) {
     platform: JSON.stringify({ os }), label: "main", url: "index.html",
   };
   const ctx = vm.createContext({ __host: host });
-  vm.runInContext(fs.readFileSync(new URL("../../runtime.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
+  vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(600, 400, false, false);
   ctx.__oriel.render();
   // The buttons, in order: the clickable boxes.
