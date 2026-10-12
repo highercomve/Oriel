@@ -1,4 +1,4 @@
-//! The device's network: a multicast lock, LAN information and mDNS/DNS-SD
+//! The device's network: a multicast lock and mDNS/DNS-SD
 //! (docs/platform-capabilities-design.md, section 2).
 //!
 //!     const lock = try oriel.network.acquireMulticast(); // mDNS on Android
@@ -12,7 +12,6 @@
 //! - multicast: a no-op on Linux, Windows, macOS and iOS (nothing to hold;
 //!   Apple's prompt and entitlement are the real gates); Android:
 //!   `error.Unsupported` until its Wi-Fi MulticastLock lands.
-//! - `info`: `error.Unsupported` everywhere; `onChange` never fires yet.
 //! - `mdns` (service registration and browsing, network/mdns.zig): Android
 //!   (NsdManager) and Windows (dnsapi); `error.Unsupported` elsewhere for now.
 
@@ -23,11 +22,8 @@ const std = @import("std");
 const target = @import("../core/target.zig");
 pub const common = @import("network/common.zig");
 
-pub const Transport = common.Transport;
-pub const Info = common.Info;
 pub const MulticastLock = common.MulticastLock;
 pub const MulticastError = common.MulticastError;
-pub const ChangeHandler = common.ChangeHandler;
 
 /// DNS-SD service registration and browsing through the platform's mDNS
 /// responder: `mdns.register`, `mdns.browse`, `mdns.supported`.
@@ -38,15 +34,6 @@ pub const mdns = @import("network/mdns.zig");
 pub fn acquireMulticast() MulticastError!MulticastLock {
     return common.acquireMulticastWith(impl.setMulticast);
 }
-
-/// The network the device is on now. Free with `info.deinit(gpa)`.
-pub fn info(gpa: std.mem.Allocator) !Info {
-    return impl.info(gpa);
-}
-
-/// Set (or clear) the handler for network changes (main thread). The page
-/// gets the `network:changed` event.
-pub const onChange = common.onChange;
 
 pub const check = impl.check;
 

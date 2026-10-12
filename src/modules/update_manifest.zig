@@ -110,11 +110,6 @@ pub fn parseSignature(b64: []const u8) ![Ed25519.Signature.encoded_length]u8 {
     return decodeExact(64, trimmed);
 }
 
-/// Encode a 64-byte Ed25519 signature into standard base64.
-pub fn encodeSignature(sig_bytes: [Ed25519.Signature.encoded_length]u8, out: *[SIGNATURE_B64_LEN]u8) []const u8 {
-    return std.base64.standard.Encoder.encode(out, &sig_bytes);
-}
-
 /// Decode a 32-byte Ed25519 seed from standard base64 (44 chars).
 pub fn parsePrivateKeySeed(b64: []const u8) ![Ed25519.KeyPair.seed_length]u8 {
     const trimmed = std.mem.trim(u8, b64, " \t\r\n");

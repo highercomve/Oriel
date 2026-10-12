@@ -214,34 +214,6 @@ pub fn sharedApplication() Object {
 
 pub var on_shutdown_fn: ?*const fn () void = null;
 
-/// Deprecated: `oriel.lifecycle` has these events on every platform.
-/// "background" (every window left the screen), "foreground" (back), and
-/// "memory-warning" (iOS may end the app next: drop caches and models).
-/// Called on the main thread. Do "background" work right there, not on
-/// another thread: iOS suspends the app soon after the handler returns,
-/// and a worker it froze mid-way finishes only when the app comes back.
-pub const SystemEventHandler = *const fn (name: []const u8, data: []const u8) void;
-var system_event_handler: ?SystemEventHandler = null;
-var system_event_subscribed = false;
-
-/// Deprecated: a lifecycle subscriber under the old names.
-pub fn onSystemEvent(handler: ?SystemEventHandler) void {
-    system_event_handler = handler;
-    if (handler == null or system_event_subscribed) return;
-    system_event_subscribed = true;
-    lifecycle.subscribe(&legacySystemEvent) catch log.warn("onSystemEvent: lifecycle has no room for it", .{});
-}
-
-fn legacySystemEvent(event: lifecycle.Event) void {
-    const h = system_event_handler orelse return;
-    switch (event) {
-        .background => h("background", ""),
-        .foreground => h("foreground", ""),
-        .memory_pressure => h("memory-warning", ""),
-        else => {},
-    }
-}
-
 /// Set by the first background: UIKit also sends willEnterForeground while
 /// launching, and, as on Android, `foreground` means "back from background".
 var was_background = false;

@@ -33,8 +33,8 @@ pub const target = @import("core/target.zig");
 /// Android backend internals the generated library root uses
 /// (`android.exportStart`, `android.panic`); empty elsewhere.
 pub const android = if (target.is_android) @import("platform/android/android.zig") else struct {};
-/// iOS-only APIs (`ios.onSystemEvent`, deprecated: use `lifecycle`);
-/// empty elsewhere.
+/// iOS backend internals; empty elsewhere. App and scene events are
+/// `lifecycle` and platform hooks (docs/platform-hooks.md).
 pub const ios = if (target.is_ios) @import("platform/ios/ios.zig") else struct {};
 /// OS permissions: declared in build.zig, queried and requested at runtime.
 pub const permissions = @import("core/permissions.zig");

@@ -3,9 +3,9 @@
 //! Tools supported:
 //!   - `nsis`: portable NSIS for Windows (nsis-3.12, pinned SHA-256) into ~/.oriel/nsis/3.12/
 //!   - `node`: official Node.js LTS from https://nodejs.org/dist/ into ~/.oriel/node/<version>/
-//!   - `webview2`: alias to `oriel webview2` (fetches WebView2Loader.dll from NuGet)
-//!   - `zig`: alias to `oriel zig install`
-//!   - `all`: install everything this host OS needs (skipping what is already present)
+//!   - `all`: install everything this host OS needs (skipping what is already
+//!     present), Zig (`oriel zig`) and WebView2Loader.dll (`oriel webview2`)
+//!     included
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,25 +20,22 @@ pub const Tool = enum {
     all,
     node,
     nsis,
-    zig,
-    webview2,
 };
 
 pub const Command = struct {
     pub const summary = "Install managed tools (~/.oriel/<tool>) without admin rights";
     pub const positionals = .{ "tool", "version" };
     pub const help = .{
-        .tool = "all | node | nsis | zig | webview2",
-        .version = "Optional tool version (node: LTS; nsis: pinned 3.12; zig: project minimum)",
+        .tool = "all | node | nsis",
+        .version = "Optional tool version (node: LTS; nsis: pinned 3.12)",
         .yes = "Skip confirmation prompts",
     };
     pub const details =
-        \\all                 Install everything this OS needs (skips what is already present)
+        \\all                 Install everything this OS needs, Zig and WebView2Loader.dll
+        \\                    included (skips what is already present)
         \\node [version]      Download and install official Node.js LTS into ~/.oriel/node/<v>
         \\nsis                On Windows hosts: download portable NSIS 3 into ~/.oriel/nsis/<v>
         \\                    On Linux/macOS: print package manager command to install makensis
-        \\webview2            Alias to `oriel webview2` (downloads Microsoft WebView2Loader.dll)
-        \\zig [version]       Alias to `oriel zig install`
     ;
 
     tool: Tool = .all,
@@ -839,12 +836,6 @@ pub fn run(ctx: Context, cmd: Command) !u8 {
                 .printed_package_command => {},
             }
             return 0;
-        },
-        .webview2 => {
-            return webview2.run(ctx, .{ .arch = .all, .version = cmd.version });
-        },
-        .zig => {
-            return zig_manager.run(ctx, .{ .action = .install, .version = cmd.version });
         },
     }
 }

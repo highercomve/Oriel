@@ -106,14 +106,8 @@ pub const PackageOptions = struct {
     /// Version string (e.g. "0.1.0"). Defaults to "0.1.0".
     version: ?[]const u8 = null,
 
-    /// High-resolution icon (PNG). Deprecated: use `AppOptions.icon` instead. Defaults to Oriel brand icon (1024x1024).
-    icon: ?std.Build.LazyPath = null,
-
     /// Target package formats to build. Overrides defaultFormats(os) if specified.
     formats: ?[]const Format = null,
-
-    /// Custom URL schemes handled by the application (e.g. &.{ "oriel-notes" }).
-    url_schemes: []const []const u8 = &.{},
 
     /// Extra runtime dependencies for Debian packages.
     extra_deb_depends: []const []const u8 = &.{},
@@ -600,7 +594,7 @@ pub fn addPackageSteps(
         .icon = app_icon,
         .extra_deb_depends = pkg_opts.extra_deb_depends,
         .extra_rpm_depends = pkg_opts.extra_rpm_depends,
-        .url_schemes = pkg_opts.url_schemes,
+        .url_schemes = options.url_schemes,
         .replaces = pkg_opts.replaces,
         .conflicts = pkg_opts.conflicts,
         .winget = pkg_opts.winget,

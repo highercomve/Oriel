@@ -33,7 +33,6 @@ const program = "oriel";
 pub const Commands = union(enum) {
     init: init_cmd.Command,
     wrap: wrap_cmd.Command,
-    pake: wrap_cmd.Command,
     doctor: doctor.Command,
     setup: setup_cmd.Command,
     update: update_cmd.Command,
@@ -105,7 +104,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
         },
         .command => |cmd| switch (cmd) {
             .init => |c| return init_cmd.run(ctx, c),
-            .wrap, .pake => |c| return wrap_cmd.run(ctx, c),
+            .wrap => |c| return wrap_cmd.run(ctx, c),
             .doctor => |c| return doctor.run(ctx, c),
             .setup => |c| return setup_cmd.run(ctx, c),
             .update => |c| return update_cmd.run(ctx, c),

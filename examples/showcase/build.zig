@@ -148,8 +148,8 @@ pub fn build(b: *std.Build) void {
             .description = "Dictation, a local chat, text to speech, windows, the clipboard, notifications, files, storage, deep links and shortcuts: one app for Linux, Windows, macOS, Android and iOS.",
             .categories = "Utility;Development;",
             .version = "0.1.0",
-            .url_schemes = &.{"oriel-showcase"},
         },
+        .url_schemes = &.{"oriel-showcase"},
         .permissions = .{
             .notifications = "",
             .microphone = "Dictation turns what you say into text, on this device.",

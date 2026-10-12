@@ -50,23 +50,6 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         return 1;
     };
 
-    const arch_str = switch (builtin.cpu.arch) {
-        .x86_64 => "x86_64",
-        .aarch64 => "aarch64",
-        else => @tagName(builtin.cpu.arch),
-    };
-    const os_str = switch (builtin.os.tag) {
-        .linux => "linux",
-        .windows => "windows",
-        .macos => "macos",
-        else => @tagName(builtin.os.tag),
-    };
-
-    // One combined manifest for every platform (v0.3.1+), or the per-platform
-    // one that older releases publish.
-    const legacy_asset = try std.fmt.allocPrint(ctx.gpa, "oriel-update-{s}-{s}.json", .{ arch_str, os_str });
-    defer ctx.gpa.free(legacy_asset);
-
     const releases_url = ctx.environ.get("ORIEL_RELEASES_URL") orelse default_releases_url;
     const trimmed_releases = std.mem.trimEnd(u8, releases_url, "/");
 
@@ -99,19 +82,14 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         .allow_downgrade = is_forced,
     };
 
-    var maybe_update: ?core.Update = null;
-    for ([_][]const u8{ "latest.json", legacy_asset }, 0..) |asset, attempt| {
-        const url = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ release_base, asset });
-        defer ctx.gpa.free(url);
-        update_cfg.manifest_url = url;
-        maybe_update = core.checkForUpdate(ctx.io, ctx.gpa, update_cfg) catch |err| {
-            // A release without latest.json: try the per-platform manifest.
-            if (attempt == 0 and err == error.BadHttpStatus) continue;
-            try ctx.err.print("error: update check failed: {s}\n", .{@errorName(err)});
-            return 1;
-        };
-        break;
-    }
+    // One combined manifest for every platform.
+    const manifest_url = try std.fmt.allocPrint(ctx.gpa, "{s}/latest.json", .{release_base});
+    defer ctx.gpa.free(manifest_url);
+    update_cfg.manifest_url = manifest_url;
+    var maybe_update: ?core.Update = core.checkForUpdate(ctx.io, ctx.gpa, update_cfg) catch |err| {
+        try ctx.err.print("error: update check failed: {s}\n", .{@errorName(err)});
+        return 1;
+    };
 
     // A signed manifest for another version (e.g. an old one replayed under
     // this tag) must not install it.

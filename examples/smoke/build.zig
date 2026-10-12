@@ -34,9 +34,9 @@ pub fn build(b: *std.Build) void {
             .description = "Smoke-test app checking modules and security inside a webview.",
             .categories = "Utility;Development;",
             .version = "0.1.0",
-            .url_schemes = &.{"smoke-scheme"},
         },
         // The permission checks expect exactly these: the camera stays undeclared.
+        .url_schemes = &.{"smoke-scheme"},
         .permissions = .{ .microphone = "The smoke test checks microphone access.", .notifications = "" },
         .isolation = if (isolation) .{ .hook = b.path("isolation/hook.js") } else null,
     });

@@ -1719,7 +1719,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             v.setPopupBackgroundDrawable(android.graphics.drawable.ColorDrawable(if (n.p.optBoolean("dk")) Color.rgb(43, 43, 43) else Color.WHITE))
         }
         if (v is Field && !n.p.has("range")) keyboard(n, v)
-        if (v is EditText && android.os.Build.VERSION.SDK_INT >= 29) {
+        if (v is EditText) {
             // The caret in the field's text colour (light on a dark field), the
             // selection's handles and highlight in the system accent.
             v.textCursorDrawable = android.graphics.drawable.GradientDrawable().apply { setColor(color); setSize(max(1, (2 * density).toInt()), 0) }
