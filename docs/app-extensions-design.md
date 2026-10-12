@@ -1,6 +1,11 @@
 # Oriel app extensions, lifecycle, camera and system AI: design
 
-Status: proposal (2026-10-11), for review before any code.
+Status: implemented in 0.10.0. Written as a proposal on 2026-10-11; the shipped APIs are documented in
+[App extensions](extensions.md) and [Modules](modules.md) ([lifecycle](modules.md#lifecycle-oriellifecycle),
+[availability](modules.md#availability), [camera](modules.md#camera-orielcamera),
+[system AI](modules.md#system-ai-orielsystem_ai)), and the [changelog](../CHANGELOG.md) lists the changes.
+Still to come: system AI on macOS (Foundation Models) and Windows (Windows AI APIs), Swift extensions before
+iOS 18 (iOS 15 to 17), and Objective-C and Swift extensions on macOS (Zig extensions there today).
 
 Oriel's apps exist to find what the framework is missing. Porting GhostPantry to iOS
 found four gaps. In each, the app had to write platform code that belongs in Oriel:

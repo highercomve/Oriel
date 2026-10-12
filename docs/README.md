@@ -8,7 +8,7 @@ Commands in these guides run from your app directory unless a guide explicitly s
 
 - [CLI reference](cli.md)
 - [Building apps](app-development.md)
-- [System modules and plugins](modules.md)
+- [System modules and plugins](modules.md): availability per platform, [lifecycle](modules.md#lifecycle-oriellifecycle), [camera](modules.md#camera-orielcamera), [system AI](modules.md#system-ai-orielsystem_ai), and the rest
 - [Local AI, chat, and dictation](local-ai.md)
 - [Offline text to speech](tts.md): `oriel.tts` (Kokoro voices, downloads, streaming playback), bundled phoneme data, and the `kokoro`/`audio_play` building blocks.
 - [Application updates](updater.md)
@@ -28,3 +28,4 @@ Commands in these guides run from your app directory unless a guide explicitly s
 - [Memory-safety review](memory-safety-review.md)
 - [Zig 0.16](zig-0.16.md)
 - [Background and comparisons](overview.md)
+- [Design: app extensions, lifecycle, camera and system AI](app-extensions-design.md) (implemented in 0.10.0)

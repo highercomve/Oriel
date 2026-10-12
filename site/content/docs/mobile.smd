@@ -105,3 +105,5 @@ The full notes, including what was verified on which device, are in [docs/androi
 # [Google Play baseline]($heading.id('google-play-baseline'))
 
 New Android projects compile and target API 36 (Android 16), with Android Gradle Plugin 8.13.2, Kotlin 2.3.21, and a Gradle 8.14.3 wrapper. Install `platforms;android-36` in the SDK. Android 10 remains the minimum device version. Existing generated projects keep edited Gradle files; update those settings or regenerate with `oriel android init --force` after saving your edits.
+
+`-Dsystem_ai` needs Kotlin 2.3 in the Gradle project (ML Kit's metadata). A project generated before 0.10 has Kotlin 2.0.21, and the build stops with the lines to change: the `org.jetbrains.kotlin.android` version in the root `build.gradle.kts` (to `2.3.21`), and `kotlinOptions { jvmTarget = "17" }` in `app/build.gradle.kts` replaced by `kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }`. Keep the project's Android Gradle Plugin version unless you build with its Gradle wrapper: AGP 8.13 doesn't load with Gradle 9.8.

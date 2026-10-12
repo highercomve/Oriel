@@ -17,6 +17,7 @@ Android behavior and SDK integrations with
 
 # [Capabilities and local AI]($heading.id('capabilities-and-local-ai'))
 
-- [Modules and plugins]($link.page('docs/modules')): tray, updater, dialogs, notifications, shortcuts, clipboard, SQLite, deep links, and network mDNS.
+- [Modules and plugins]($link.page('docs/modules')): lifecycle, camera, system AI, tray, updater, dialogs, notifications, shortcuts, clipboard, SQLite, deep links, and network mDNS.
+- [App extensions]($link.page('docs/extensions')): your own Kotlin, Objective-C, Swift or Zig code, called by name from Zig and the page.
 - [Offline text to speech]($link.page('docs/tts')): `oriel.tts` with Kokoro-82M voices, verified downloads, and streaming playback on CPU or GPU.
 - [Android and iOS]($link.page('docs/mobile')): camera, microphone, SAF, and mobile-specific modules.

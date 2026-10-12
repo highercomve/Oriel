@@ -20,7 +20,8 @@ without a WebView.
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
-- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp, offline text to speech (Kokoro), file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
+- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp, offline text to speech (Kokoro), the phone's own model (system AI: Gemini Nano, Apple Foundation Models), camera and photo library, lifecycle events, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
+- **Native code when you need it:** [app extensions](docs/extensions.md) in Kotlin, Objective-C, Swift or Zig, called by name from Zig and, where you expose them, from the page.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/highercomve/Oriel/main/install.sh | sh     # Linux, macOS
@@ -40,9 +41,15 @@ JavaScript with QuickJS, Oriel’s native DOM, Yoga, and platform drawing.
 The native renderer is experimental; see its [support and limits](docs/native-renderer.md)
 and [performance measurements](docs/native-renderer-performance.md).
 
-## Android extensions
+## App extensions
 
-Add app-owned Kotlin or Java behavior with `OrielAndroidExtension`: configure
+Call your own native code by name: an [app extension](docs/extensions.md) is a
+Kotlin class on Android, an Objective-C or Swift class on iOS, or Zig on the
+desktop, declared in `build.zig`. Zig calls it with bytes in and out; the page
+reaches the methods Zig exposes (`oriel.extensions.call`). Oriel's own
+`oriel.system_ai` is built this way.
+
+For deeper Android integration, add app-owned Kotlin or Java behavior with `OrielAndroidExtension`: configure
 WebViews, receive Activity and WebView lifecycle callbacks, handle native
 results and permissions, or supply a custom file picker. Declare sources,
 extension classes, and Maven SDK dependencies in `build.zig`; Oriel regenerates
@@ -70,13 +77,14 @@ Start with the [documentation index](docs/README.md), or go straight to a guide:
 |---|---|
 | [CLI](docs/cli.md) | Install, scaffold, develop, manage tools, and update the CLI |
 | [Building apps](docs/app-development.md) | Build configuration, typed IPC, events, security, permissions, tray, and windows |
-| [Modules and plugins](docs/modules.md) | Shortcuts, clipboard, dialogs, notifications, storage, SQL, and deep links |
+| [Modules and plugins](docs/modules.md) | Lifecycle, camera, system AI, shortcuts, clipboard, dialogs, notifications, storage, SQL, and deep links |
 | [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends, chat, and dictation |
 | [Text to speech](docs/tts.md) | `oriel.tts`: Kokoro voices offline, verified downloads, streaming playback, CPU or GPU |
 | [Application updates](docs/updater.md) | Signed manifests, update payloads, and runtime APIs |
 | [Packaging](docs/packaging.md) | Linux packages, Windows installers, macOS bundles, and signing |
 | [Platforms](docs/platforms.md) | Desktop support, prerequisites, and cross-compilation |
 | [Android](docs/android.md) · [iOS](docs/ios.md) | Mobile setup, builds, and platform behavior |
+| [App extensions](docs/extensions.md) | Your own Kotlin, Objective-C, Swift or Zig code, called by name from Zig and the page |
 | [Android extensions](docs/android-extensions.md) | App-owned Kotlin/Java hooks, generated registration, and native SDK dependencies |
 | [Native rendering](docs/renderers.md) | Renderer overview, implementation guides, and limits |
 | [Contributing](docs/contributing.md) | Repository layout, builds, tests, development rules, and releases |
