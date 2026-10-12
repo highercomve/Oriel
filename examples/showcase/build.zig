@@ -51,6 +51,9 @@ pub fn build(b: *std.Build) void {
         // the .app's Resources, APK assets).
         .kokoro = true,
         .audio_capture = true,
+        // -Dsystem_ai: the System AI card (the phone's own model: Gemini
+        // Nano on Android, Foundation Models on iOS 26+; iOS 18 minimum).
+        .system_ai = b.option(bool, "system_ai", "The System AI card: the phone's own model (Android, iOS)") orelse false,
         .ggml_vulkan = b.option(bool, "ggml_vulkan", "Run whisper, chat and speech on the GPU through Vulkan") orelse false,
         .ggml_opencl = b.option(bool, "ggml_opencl", "Run whisper, chat and speech on Adreno GPUs through OpenCL") orelse false,
         // Desktop Linux with an NVIDIA GPU: builds ggml's CUDA backend with

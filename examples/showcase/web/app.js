@@ -22,6 +22,7 @@ let info = null;
   setupAnywhere();
   setupKeys();
   setupLinks();
+  setupSystemAi();
 })().catch((e) => { $("info").textContent = String(e.message || e); });
 
 // Tabs: the hash picks the section, so every switch is a history entry and
@@ -176,6 +177,38 @@ async function reverseWithExtension() {
 }
 $("ext-form").addEventListener("submit", (e) => { e.preventDefault(); reverseWithExtension(); });
 window.oriel.extensions?.on("showcase.echo", (e) => setResult("ext-event", `event "${e.name}": ${e.data && e.data.text}`));
+
+// System AI (oriel.systemAi, -Dsystem_ai): the phone's own model. The card
+// shows only where the build has it; the device decides the rest (status).
+async function systemAiStatus() {
+  const st = await window.oriel.systemAi.status();
+  setResult("sysai-status", `${st.state}: ${st.reason}`, st.state === "available" ? "ok" : st.state === "unavailable" ? "err" : "");
+  $("sysai-download").hidden = st.state !== "downloadable" && st.state !== "downloading";
+  return st;
+}
+function setupSystemAi() {
+  if (!info.system_ai || !window.oriel.features?.systemAi) return;
+  $("sysai-card").hidden = false;
+  systemAiStatus().catch((e) => setResult("sysai-status", "Error: " + (e.message || e), "err"));
+  $("sysai-download").addEventListener("click", async () => {
+    try {
+      await window.oriel.systemAi.download((p) => setResult("sysai-status", p.total ? `downloading: ${Math.round((100 * p.downloaded) / p.total)}%` : `download ${p.state}`));
+      await systemAiStatus();
+    } catch (e) { setResult("sysai-status", "Error: " + (e.message || e), "err"); }
+  });
+  $("sysai-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    let text = "";
+    setResult("sysai-out", "…");
+    $("sysai-cancel").hidden = false;
+    try {
+      const reply = await window.oriel.systemAi.generate({ prompt: $("sysai-prompt").value, maxTokens: 256 }, (piece) => setResult("sysai-out", (text += piece)));
+      setResult("sysai-out", reply, "ok");
+    } catch (err) { setResult("sysai-out", "Error: " + (err.message || err), "err"); }
+    $("sysai-cancel").hidden = true;
+  });
+  $("sysai-cancel").addEventListener("click", () => window.oriel.systemAi.cancel());
+}
 
 const dots = [...document.querySelectorAll(".ticks i")];
 listen("tick", (n) => {
