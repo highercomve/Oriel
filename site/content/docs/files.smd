@@ -27,7 +27,7 @@ access), [Share]($link.page('docs/share')) (files from other apps).
 |---|---|---|---|---|---|
 | Drop on a web view page | the web view's own `File`s | same | same | same | same |
 | Drop on a native renderer page (`-Dnative_ui`) | handles | handles | handles | handles (`ParcelFileDescriptor`) | handles (descriptor) |
-| `oriel.drop.path` (native renderer) | yes | yes | no | no | no |
+| `oriel.drop.path` (native renderer) | yes | yes | yes | when the URI is a file | while iOS keeps the file |
 | `<input type="file">` (web view) | WebKitGTK's picker | WebView2's picker | WKWebView's panel | Oriel's chooser (system picker, camera with `oriel.camera`) | WKWebView's menu |
 | `oriel.dialog` pickers (Zig) | paths | paths | paths | cache copy / descriptor | temporary copy / folder path |
 | Received shares (handles) | no | yes (Send To, Open with) | yes (Open with) | no | yes (Open in) |
@@ -159,7 +159,7 @@ into where the file lives now:
 document.addEventListener("drop", async (e) => {
   e.preventDefault();
   for (const file of e.dataTransfer.files) {
-    const path = await window.oriel.drop.path(file); // null: gone or changed (Linux, Windows)
+    const path = await window.oriel.drop.path(file); // null: gone, changed, or no path
     if (path) await window.oriel.invoke("send_file", { path, name: file.name });
   }
 });
@@ -167,10 +167,10 @@ document.addEventListener("drop", async (e) => {
 
 The command is checked like any other (`security.capabilities`), and
 answers `null` when the file was deleted or changed since the drop, the
-handle is unknown, or the platform can't resolve it. Linux reads the
-descriptor's `/proc/self/fd` link, Windows asks
-`GetFinalPathNameByHandleW` (so a file renamed after the drop answers its
-new name). HollerShare (`personal/ghostfile`) sends dropped files this way.
+handle is unknown, or the platform can't resolve it. Linux and Android
+read the descriptor's `/proc/self/fd` link, macOS and iOS ask `F_GETPATH`,
+Windows asks `GetFinalPathNameByHandleW` (so a file renamed after the drop
+answers its new name). HollerShare (`personal/ghostfile`) sends dropped files this way.
 
 ## [Read a big shared file in Zig]($heading.id('example-share-zig'))
 
@@ -221,16 +221,17 @@ handle means nothing to `oriel.share.file`, and the reverse.
 ## [Page API]($heading.id('page-api'))
 
 ```ts
-// Native renderer only (the web view has no drop handles).
+// A dropped file's path; null in the web view (its files have no handle).
 oriel.drop.path(file: File | number): Promise<string | null>;
 
 // Received shares (oriel.share; full API on the Share page).
 oriel.share.file(f: { handle: number; name?: string; mime?: string } | number): Promise<File>;
 ```
 
-- `oriel.drop.path` sends the `drop:path` command; the native bridges on
-  Linux and Windows answer it (after the command policy check). It throws
-  a `TypeError` for anything but a dropped `File` or a number.
+- `oriel.drop.path` sends the `drop:path` command, which every platform's
+  native bridge answers (`src/core/native_commands.zig`, after the command
+  policy check). Anything but a dropped `File` or a number answers `null`
+  without asking.
 - `oriel.share.file` reads in 4 MiB chunks through `share:read` (base64,
   at most 16 MiB per call) and assembles a `File` named `name` (default
   `"file"`) of type `mime`. It fails with `InvalidHandle` once the share
@@ -273,7 +274,7 @@ failure), `read(handle, offset, len, out)`, `duplicate(handle) !std.Io.File`
 (an owned copy), `info(handle) ?Entry` (`size`, `mtime_ns`, `mtimeMs()`),
 `release(handle)` (unknown handles ignored), `count()`, `currentPath`
 (Windows: where the file is now, for OS APIs that take only paths; never
-for the page) and `nativePath` (Linux, macOS, Windows: for `drop:path`).
+for the page) and `nativePath` (every platform: for `drop:path`).
 All are thread-safe. Linux and Android use Linux syscalls, macOS and iOS
 libc, Windows kernel32.
 
@@ -282,9 +283,9 @@ libc, Windows kernel32.
 - **Reading a dropped or shared file fails with `NotReadableError`.** The
   file was saved, touched or truncated after the user handed it over. Ask
   for it again; this is the browser's behaviour too.
-- **`oriel.drop.path` fails on macOS, Android or iOS.** Only the Linux and
-  Windows native bridges answer `drop:path`; elsewhere the command is
-  unknown and the promise rejects.
+- **`oriel.drop.path` answers `null`.** The file has no path any more:
+  iOS deleted its temporary copy, or an Android `content://` stream isn't
+  a file. Read the bytes through the `File` instead.
 - **The page never gets `share:received` files' bytes on Linux or
   Android.** Receiving shares isn't written there yet
   (`oriel.share.capabilities()` reports `receive: null`).

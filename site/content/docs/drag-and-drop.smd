@@ -30,7 +30,7 @@ share with yours, [Share]($link.page('docs/share')).
 | Web view: drops into the page | WebKitGTK | WebView2 | WKWebView | WKWebView (iPad; in-app on iPhone) | Android WebView |
 | Native renderer: drops into the page | `GtkDropTargetAsync` | OLE `IDropTarget` | `NSDraggingDestination` | `UIDropInteraction` (iPad; in-app on iPhone) | `View.onDragEvent` |
 | Native renderer: files | Files with a local path | Yes | Yes (while the drag's sandbox grant holds) | Yes, by data type (Photos images too) | `content://` URIs, with the drag's permissions |
-| Native renderer: `oriel.drop.path` | Yes | Yes | No | No | No |
+| Native renderer: `oriel.drop.path` | Yes | Yes | Yes | While iOS keeps the file | When the URI is a file |
 
 No build flag and no permission. Not available in either renderer's
 Oriel-specific part, on any platform:
@@ -201,14 +201,14 @@ zone.addEventListener("drop", (e) => {
 ## [Hand a dropped file to Zig by path]($heading.id('example-path'))
 
 Reading a large video through the page is slow; a trusted app can ask where
-the file lives and let Zig open it (Linux and Windows, native renderer):
+the file lives and let Zig open it (native renderer):
 
 ```js
 zone.addEventListener("drop", async (e) => {
   e.preventDefault();
   for (const file of e.dataTransfer.files) {
-    const where = window.oriel.drop ? await window.oriel.drop.path(file) : null;
-    if (where) await window.oriel.invoke("transcode", { path: where.path });
+    const path = await window.oriel.drop.path(file);
+    if (path) await window.oriel.invoke("transcode", { path });
     else console.warn(`${file.name}: no path (gone, changed, or not available here)`);
   }
 });
@@ -284,20 +284,23 @@ unknown. `stream()` isn't supported.
 ## [`oriel.drop.path(file)`]($heading.id('drop-path'))
 
 ```ts
-oriel.drop.path(file: File | number): Promise<{ path: string } | null>
+oriel.drop.path(file: File | number): Promise<string | null>
 ```
 
 Where a dropped file lives now, for a trusted app that hands the file to
-Zig (Electron's `webUtils.getPathForFile` is the precedent). Native renderer
-only: in the web view `oriel.drop` is undefined.
+Zig (Electron's `webUtils.getPathForFile` is the precedent). Only the native
+renderer's dropped files have a handle; in the web view it answers `null`.
 
 - **Argument.** A `File` from a `drop`, or its `handle`. Anything else
-  throws `TypeError`.
-- **Answer.** `{ path }`, or `null` when the handle is unknown or released,
-  or the file was deleted or changed since the drop.
-- **Platforms.** Linux (`/proc/self/fd/N`) and Windows
-  (`GetFinalPathNameByHandleW`). On macOS, iOS and Android the promise
-  rejects (the command isn't routed there).
+  (a web view's `File`) answers `null`.
+- **Answer.** The path, or `null` when the handle is unknown or released,
+  the file was deleted or changed since the drop, or the platform has no
+  path for it.
+- **Platforms.** The path of the descriptor the drop opened: Linux and
+  Android (`/proc/self/fd/N`; on Android a `content://` URI whose stream
+  isn't a file, or was copied, answers `null`), Windows
+  (`GetFinalPathNameByHandleW`), macOS and iOS (`F_GETPATH`; iOS deletes
+  its temporary copies, which then answer `null`).
 - **Security.** It goes through the bridge's command check
   ([`security.capabilities`]($link.page('docs/security'))) as the
   `drop:path` command. The path can only come from a drop the user made
@@ -313,6 +316,12 @@ only: in the web view `oriel.drop` is undefined.
 | iOS | A `UIDropInteraction` on the page's view. An item with non-text data (an image, a PDF), or named text from Files, is a `File`; Photos images arrive as files; other text is `text/plain`; a link is both `text/uri-list` and `text/plain`. Each file opens in its load's completion handler, before iOS deletes the temporary copy. Move only when the session allows it. |
 | Android | `NuiView.onDragEvent`; drags over an `EditText` are forwarded to it. Android gives no source operations or modifiers: every operation is allowed and copy suggested, as Chrome does. Text, HTML and URI lists are strings, any other MIME type a file. On drop, `requestDragAndDropPermissions`, then each `content://` URI is opened on a worker; a stream that can't seek is copied into `cacheDir/oriel-dropped/`, opened and unlinked at once. |
 
+## [Migrating from 0.11]($heading.id('migrating'))
+
+- `oriel.drop.path` resolves the path as a string, not `{ path }`, on
+  every platform (macOS, iOS and Android rejected it), and `oriel.drop`
+  exists in the web view too (answering `null`).
+
 # [Troubleshooting]($heading.id('troubleshooting'))
 
 - **The drop never fires.** The page didn't cancel `dragover` on that
@@ -325,8 +334,9 @@ only: in the web view `oriel.drop` is undefined.
   moved or deleted after the drop; ask the user to drop it again.
 - **A folder dropped does nothing.** Directories are skipped in the native
   renderer.
-- **`oriel.drop.path` rejects** on macOS, iOS and Android, and is undefined
-  in the web view; read the file's bytes through the `File` instead.
+- **`oriel.drop.path` answers `null`.** The file has no path any more (iOS's
+  temporary copies, Android content that isn't a file), or it's a web
+  view's `File`; read the file's bytes through the `File` instead.
 - **The log says `native ui: a dropped file: …`.** A file couldn't be
   opened (permissions, a device file); it's left out of the drop.
 
