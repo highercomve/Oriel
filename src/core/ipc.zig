@@ -22,6 +22,7 @@ pub const ThreadPool = @import("ThreadPool.zig").ThreadPool;
 const security = @import("security.zig");
 const isolation = @import("isolation.zig");
 const App = @import("App.zig");
+const extensions = @import("extensions.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -225,6 +226,8 @@ test tokenValid {
 
 /// Check if `cmd` is configured to run asynchronously on the worker pool.
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
+    // The page's oriel.extensions.call blocks on native code: always a worker's.
+    if (std.mem.eql(u8, cmd, extensions.page_command)) return true;
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
     comptime checkAsyncCommands(Commands, list);
@@ -334,7 +337,7 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = try std.json.parseFromValueLeaky(ReadyArgs, arena, request.args, .{ .ignore_unknown_fields = true });
         if (std.mem.eql(u8, args.event, "deep-link")) {
             deepLinkReady();
-        } else if (!@import("pending_events.zig").pageReady(args.event)) return error.UnknownEvent;
+        } else if (!@import("pending_events.zig").pageReady(args.event) and !extensions.pageReady(args.event)) return error.UnknownEvent;
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "share:send")) {
         // The page's oriel.share.send: the sheet opens now, and its result
@@ -453,6 +456,7 @@ pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, reques
     // A message an earlier command left behind (it failed with `fail` but
     // its error was never turned into text) must not label this one's.
     fail_len = null;
+    if (std.mem.eql(u8, request.cmd, extensions.page_command)) return extensions.pageCall(arena, request.args);
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);
         if (@typeInfo(@TypeOf(field)) == .@"fn" and std.mem.eql(u8, decl.name, request.cmd)) {
@@ -694,6 +698,19 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  level: "moderate" | "critical" | null;
             \\}
             \\
+            \\/** An app extension's event (`extension:<name>`): `data` is parsed when it is JSON. */
+            \\export interface ExtensionEvent {
+            \\  name: string;
+            \\  data: unknown;
+            \\}
+            \\
+            \\export interface ExtensionsApi {
+            \\  /** A method Zig exposed (oriel.extensions.expose); others fail with "not exposed". */
+            \\  call<T = unknown>(name: string, method: string, payload?: unknown): Promise<T>;
+            \\  /** Events the extension's native code emits. Returns an unsubscribe function. */
+            \\  on(name: string, callback: (event: ExtensionEvent) => void): () => void;
+            \\}
+            \\
             \\export interface LifecycleApi {
             \\  /** Events from before the page listened come first. Returns an unsubscribe function. */
             \\  on(callback: (event: LifecycleEvent) => void): () => void;
@@ -717,6 +734,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      window: WindowApi;
             \\      deepLink: DeepLinkApi;
             \\      lifecycle: LifecycleApi;
+            \\      extensions: ExtensionsApi;
             \\      permissions: PermissionsApi;
             \\      openExternal(url: string): Promise<void>;
             \\    };
@@ -744,6 +762,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const deepLink: DeepLinkApi = (globalThis as any).oriel?.deepLink;
             \\/** Built-in lifecycle API: background, memory pressure, sleep, terminating. */
             \\export const lifecycle: LifecycleApi = (globalThis as any).oriel?.lifecycle;
+            \\/** The app's extensions, as far as Zig exposes them (oriel.extensions.expose). */
+            \\export const extensions: ExtensionsApi = (globalThis as any).oriel?.extensions;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** The OS and CPU the app was built for: `platform.os === "android"`. */
@@ -991,6 +1011,7 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const oriel: Window[\"oriel\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  lifecycle: LifecycleEvent;\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "extensions: ExtensionsApi;") != null);
 
     const ts_disabled = comptime typescriptWithOptions(Commands, Events, false);
     try std.testing.expect(std.mem.indexOf(u8, ts_disabled, "\"deep-link\": { url: string };") == null);

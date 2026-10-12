@@ -325,6 +325,16 @@
         <p id="echo-out" class="result"></p>
       </div>
       <div class="card">
+        <h2>App extension</h2>
+        <p class="hint">The app's own native code: Zig on the desktop, Kotlin on Android, Objective-C on iOS. The page calls the one method Zig exposes; the extension reverses the text and emits an event.</p>
+        <form id="ext-form" class="inline">
+          <input id="ext-input" value="Oriel 👋" aria-label="Text for the extension">
+          <button class="btn filled">Reverse</button>
+        </form>
+        <p id="ext-out" class="result"></p>
+        <p id="ext-event" class="result"></p>
+      </div>
+      <div class="card">
         <h2>Events from a worker</h2>
         <p class="hint">A Zig worker thread emits five <code>tick</code> events.</p>
         <div class="ticks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>

@@ -139,9 +139,9 @@ pub const bridge_js =
     \\      } else if (event === "notification:action") {
     \\        // A click that came before the page listened (one that launched the app).
     \\        try { Promise.resolve(invoke("notification:ready", {})).catch(() => {}); } catch (_) {}
-    \\      } else if (event === "share:received" || event === "lifecycle") {
+    \\      } else if (event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) {
     \\        // Shares that came before the page listened (one that launched the
-    \\        // app); lifecycle events (oriel.lifecycle) from before it loaded.
+    \\        // app); lifecycle and app extension events from before it loaded.
     \\        try { Promise.resolve(invoke("events:ready", { event })).catch(() => {}); } catch (_) {}
     \\      }
     \\      return () => set.delete(callback);
@@ -173,6 +173,17 @@ pub const bridge_js =
     \\    lifecycle: Object.freeze({
     \\      on(callback) {
     \\        return window.oriel.listen("lifecycle", callback);
+    \\      },
+    \\    }),
+    \\    // The app's extensions, as far as Zig exposes them
+    \\    // (oriel.extensions.expose): JSON in, JSON out. Native events come as
+    \\    // `extension:<name>` with { name, data }.
+    \\    extensions: Object.freeze({
+    \\      call(name, method, payload) {
+    \\        return invoke("extensions:call", { name, method, payload: payload === undefined ? null : payload });
+    \\      },
+    \\      on(name, callback) {
+    \\        return window.oriel.listen("extension:" + name, callback);
     \\      },
     \\    }),
     \\    deepLink: Object.freeze({

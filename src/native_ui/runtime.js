@@ -20527,7 +20527,7 @@ ${a.stack || ""}`;
       });
       if (event === "notification:action") invoke("notification:ready", {}).catch(() => {
       });
-      if (event === "share:received" || event === "lifecycle") invoke("events:ready", { event }).catch(() => {
+      if (event === "share:received" || event === "lifecycle" || event.startsWith("extension:")) invoke("events:ready", { event }).catch(() => {
       });
       return () => set.delete(callback);
     },
@@ -20582,6 +20582,16 @@ ${a.stack || ""}`;
     lifecycle: Object.freeze({ on(callback) {
       return g.oriel.listen("lifecycle", callback);
     } }),
+    // The app's extensions, as far as Zig exposes them (oriel.extensions.expose):
+    // JSON in, JSON out; native events come as `extension:<name>`.
+    extensions: Object.freeze({
+      call(name, method, payload) {
+        return invoke("extensions:call", { name, method, payload: payload === void 0 ? null : payload });
+      },
+      on(name, callback) {
+        return g.oriel.listen("extension:" + name, callback);
+      }
+    }),
     deepLink: Object.freeze({ current() {
       return invoke("deep_link:current", {});
     } }),
