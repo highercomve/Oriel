@@ -10,7 +10,8 @@
 //   dictate-<lang> the Dictate tab with the System engine in <lang> (en, es),
 //                 on test.wav in the models directory (no microphone in CI).
 //   extension     the App tab's app extension: the page's call, its event,
-//                 an unexposed method refused, the call from Zig.
+//                 an unexposed method refused, the call from Zig; with
+//                 -Dswift_example (iOS) also showcase.swift and its event.
 //   camera        the Files tab's Camera card: features.camera, bad options
 //                 refused; off the phones capturePhoto({ source: "camera" })
 //                 is Unsupported (the pickers need a person).
@@ -255,6 +256,22 @@
     try { await window.oriel.extensions.call("showcase.echo", "nope", {}); } catch (e) { refused = String(e.message || e); }
     check(/not exposed/.test(refused), `an unexposed method: ${refused}`);
     await log(`unexposed: ${refused}`);
+    // The same extension in Swift ("showcase.swift", -Dswift_example on iOS).
+    const built = await invoke("info");
+    if (!built.swift_extension) {
+      await log("showcase.swift: skipped (not in this build: -Dswift_example, iOS)");
+      return;
+    }
+    let swiftEvent = null;
+    const off = window.oriel.extensions.on("showcase.swift", (e) => { swiftEvent = e; });
+    try {
+      const r = await window.oriel.extensions.call("showcase.swift", "reverse", { text: "abc👋" });
+      check(r.text === "👋cba", `showcase.swift: ${JSON.stringify(r)}`);
+      await until(() => swiftEvent && swiftEvent.name === "reversed", 5000, "the Swift extension's event");
+      await log(`showcase.swift: ✓ ${r.text} (${r.platform}, ${r.device}) | event "${swiftEvent.name}": ${swiftEvent.data && swiftEvent.data.text}`);
+    } finally {
+      if (typeof off === "function") off();
+    }
   }
 
   // oriel.camera: what runs without a person (the camera and the pickers

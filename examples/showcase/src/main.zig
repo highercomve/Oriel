@@ -87,6 +87,8 @@ pub const Commands = struct {
         anywhere: bool,
         /// The System AI card (-Dsystem_ai on Android and iOS).
         system_ai: bool,
+        /// "showcase.swift" (-Dswift_example, iOS): the UI test calls it.
+        swift_extension: bool,
         hotkey: []const u8,
     } {
         return .{
@@ -99,6 +101,7 @@ pub const Commands = struct {
             .hotkeys = oriel.global_shortcut.available,
             .anywhere = anywhere.available,
             .system_ai = oriel.system_ai.available,
+            .swift_extension = swiftExtension(),
             .hotkey = anywhere.hotkey,
         };
     }
@@ -378,6 +381,12 @@ fn onEchoEvent(event: oriel.extensions.Event) void {
     std.log.info("{s}: event {s}: {s}", .{ event.extension, event.name, event.data[0..@min(event.data.len, 200)] });
 }
 
+/// Whether "showcase.swift" is built (-Dswift_example) and runs here (iOS 18+).
+fn swiftExtension() bool {
+    if (comptime !oriel.extensions.declared("showcase.swift")) return false;
+    return oriel.extensions.get("showcase.swift").available();
+}
+
 fn setup() !void {
     const gpa = std.heap.smp_allocator;
     if (echo_ext.available()) {
@@ -385,7 +394,7 @@ fn setup() !void {
         echo_ext.onEvent(onEchoEvent);
     }
     if (comptime oriel.extensions.declared("showcase.swift")) {
-        if (oriel.extensions.get("showcase.swift").available())
+        if (swiftExtension())
             oriel.extensions.expose("showcase.swift", .{ .methods = &.{"reverse"}, .filter = checkEcho });
     }
     if (oriel.deep_link.available) oriel.deep_link.onOpen(onDeepLink);

@@ -205,9 +205,9 @@ simulator, a phone without a camera app), `error.PermissionDenied` (refused, or 
 
 | Platform | `.camera` | `.library` | Scaling and encoding |
 |---|---|---|---|
-| Android | `ACTION_IMAGE_CAPTURE` into the capture provider | the system photo picker | `ImageDecoder` (orientation applied; `BitmapFactory` for files it refuses), `Bitmap.compress` |
+| Android | `ACTION_IMAGE_CAPTURE` into the capture provider | the system photo picker | `ImageDecoder` (orientation applied; `BitmapFactory` for files it refuses, turned by their EXIF orientation), `Bitmap.compress` |
 | iOS | `UIImagePickerController` (`isSourceTypeAvailable` checked; Unsupported on the simulator) | `PHPickerViewController` (PhotosUI) | `UIGraphicsImageRenderer` (orientation applied) |
-| Linux, Windows, macOS | `error.Unsupported` | the dialog module's file dialog, filtered to images (used whether or not `dialog` is on) | zigimg: decoded, box-filtered, encoded. What zigimg can't decode (HEIC, WebP, progressive JPEG) comes back as it was picked, `mime` from its bytes and the size from its header (0 x 0 when unknown); EXIF orientation isn't applied |
+| Linux, Windows, macOS | `error.Unsupported` | the dialog module's file dialog, filtered to images (used whether or not `dialog` is on) | zigimg: decoded, box-filtered, encoded. What zigimg can't decode (HEIC, WebP, progressive JPEG) comes back as it was picked, `mime` from its bytes and the size from its header (0 x 0 when unknown). A JPEG's EXIF orientation is applied before scaling |
 
 ### Notifications (`oriel.notification`)
 
@@ -621,7 +621,9 @@ oriel.system_ai.cancel(); // any thread: the call fails with error.Cancelled
   `download` returns when it's ready, `error.NotReady` while it isn't.
 - **Errors:** `Unavailable`, `NotReady`, `Busy` (one generate or download at a time; `status` answers meanwhile),
   `Cancelled`, `Timeout`, `TooLarge`, `InvalidRequest`, `WrongThread` (the main thread), `Failed`.
-  `lastError()` has the platform's code and message.
+  `lastError()` has the platform's code and message. The page's promises reject with the same as lowercase
+  codes, like `status()`'s states: `"unavailable: <the platform's message>"`, or the code alone (`"busy"`,
+  `"not_ready"`, `"cancelled"`).
 - **Caps:** prompt, system prompt and schema 64 KiB each, 4 images of 8 MiB, a 1 MiB reply (a longer stream is
   cancelled); timeouts of 20 s (status), 3 min (generate) and 10 min (download).
 - **Platforms:**
