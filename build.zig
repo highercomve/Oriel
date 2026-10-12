@@ -2234,7 +2234,7 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
 /// Signing and installing are `xtool`'s (or Xcode's) job.
 fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptions) App {
     const oriel = oriel_dep.module("oriel");
-    const target = ios_build.resolveTarget(b, oriel.resolved_target.?);
+    const target = iosTarget(b, oriel.resolved_target.?, options);
     const optimize = oriel.optimize.?;
     const prod_optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseSafe;
     const dev_optimize = if (b.user_input_options.contains("optimize")) optimize else .Debug;
@@ -2383,6 +2383,26 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         @import("build/package.zig").getOrCreateStep(b, "types", "Generate TypeScript types for the Zig commands").dependOn(&fail.step);
     }
     return .{ .exe = exe, .dev_exe = dev_exe };
+}
+
+fn hasSwift(options: AppOptions) bool {
+    for (options.extensions) |e| if (e.ios) |x| if (x.swift_sources.len > 0) return true;
+    return false;
+}
+
+/// The app's iOS target: Oriel's minimum, raised to iOS 18 when the app
+/// has Swift sources (`swift_build.min_ios`). An explicit lower version
+/// (`-Dtarget=aarch64-ios.16.0`) with Swift sources is a build error.
+fn iosTarget(b: *std.Build, target: std.Build.ResolvedTarget, options: AppOptions) std.Build.ResolvedTarget {
+    const resolved = ios_build.resolveTarget(b, target);
+    if (!hasSwift(options)) return resolved;
+    const min = resolved.result.os.version_range.semver.min;
+    if (min.order(swift_build.min_ios) != .lt) return resolved;
+    if (target.query.os_version_min != null)
+        fatal("iOS {d}.{d} is below what Swift extensions support: with .ios.swift_sources the minimum is iOS {d}.{d} (docs/extensions.md)", .{ min.major, min.minor, swift_build.min_ios.major, swift_build.min_ios.minor });
+    var query = target.query;
+    query.os_version_min = .{ .semver = swift_build.min_ios };
+    return b.resolveTargetQuery(query);
 }
 
 /// App extensions' iOS parts for one of the app's executables (not the
