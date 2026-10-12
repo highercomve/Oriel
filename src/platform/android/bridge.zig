@@ -161,6 +161,7 @@ pub fn Bridge(
     comptime local: security.Local,
 ) type {
     const window_commands = @import("../../core/window_commands.zig");
+    const native_commands = @import("../../core/native_commands.zig");
     return struct {
         /// The document-start script for window `label`: the prelude, the
         /// label, and the bridge with this origin's token and the isolation
@@ -217,7 +218,7 @@ pub fn Bridge(
                 const window = self.window;
                 const call_id = self.call_id;
                 const cmd = self.cmd;
-                if (native.get(window) == null) return; // the window closed
+                const surface = native.get(window) orelse return; // the window closed
                 const gpa = heap.gpa;
                 const arena = self.arena_state.allocator();
                 // The window's label and URL, copied (it may close during the command).
@@ -241,14 +242,7 @@ pub fn Bridge(
                 defer if (pool != null) App.releaseWorkerPool();
 
                 const result: anyerror![]const u8 = blk: {
-                    if (window_commands.isWindowCommand(cmd))
-                        break :blk window_commands.dispatch(config.security, local, arena, page_url, label, cmd, args);
-                    if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, label)) {
-                        log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), label });
-                        break :blk error.Forbidden;
-                    }
-                    if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
-                    if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                    if (native_commands.dispatch(api, config, local, surface.engine, arena, page_url, label, request, self.args_json, if (pool) |p| p.io else null)) |answer| break :blk answer;
                     const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                     const req_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch break :blk error.OutOfMemory;
                     const job = gpa.create(NativeReply) catch break :blk error.OutOfMemory;

@@ -191,6 +191,7 @@ pub fn Bridge(
     comptime bridge_patterns: anytype,
 ) type {
     const window_commands = @import("../../core/window_commands.zig");
+    const native_commands = @import("../../core/native_commands.zig");
     return struct {
         pub fn setupUserContent(view: *webkit.WebView, label: [:0]const u8) void {
             const gpa = std.heap.smp_allocator;
@@ -239,18 +240,7 @@ pub fn Bridge(
             defer if (pool != null) App.releaseWorkerPool();
 
             const result: anyerror![]const u8 = blk: {
-                if (window_commands.isWindowCommand(cmd))
-                    break :blk window_commands.dispatch(config.security, local, arena, page_url, win.label, cmd, args);
-                if (!security.commandAllowedForWindow(config.security, local, page_url, cmd, win.label)) {
-                    log.warn("native page: blocked command \"{f}\" (window: {s})", .{ std.zig.fmtString(cmd[0..@min(cmd.len, 64)]), win.label });
-                    break :blk error.Forbidden;
-                }
-                // A dropped file's handle back to a path (native pages only:
-                // only they hold drop handles). Engine.dropPathCommand.
-                if (std.mem.eql(u8, cmd, "drop:path"))
-                    break :blk engine.dropPathCommand(arena, args_json);
-                if (ipc.isBuiltinCommand(cmd)) break :blk ipc.dispatchBuiltin(config.security, arena, request);
-                if (!ipc.isAsync(api.commands, cmd)) break :blk ipc.dispatchRequest(api.commands, arena, request, if (pool) |p| p.io else null);
+                if (native_commands.dispatch(api, config, local, engine, arena, page_url, win.label, request, args_json, if (pool) |p| p.io else null)) |answer| break :blk answer;
                 // Async: on the worker pool, answered from the main loop.
                 const worker_pool = pool orelse break :blk error.WorkerPoolNotRunning;
                 const req_json = std.fmt.allocPrint(arena, "{{\"cmd\":{f},\"args\":{s}}}", .{ std.json.fmt(cmd, .{}), if (args_json.len > 0) args_json else "null" }) catch break :blk error.OutOfMemory;
