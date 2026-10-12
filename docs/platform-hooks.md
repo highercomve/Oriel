@@ -299,6 +299,7 @@ final class PushHooks: NSObject, OrielPlatformHooks {
 | `applicationDidFinishLaunching:(UIApplication *) options:(NSDictionary *)` | iOS | notify | after `registered:`, before the main window and the app's `setup` |
 | `sceneWillConnect:(UIScene *) options:(UISceneConnectionOptions *)` | iOS | notify | after Oriel shows its window in the scene, before the scene's URLs and activities |
 | `sceneDidDisconnect:`, `sceneDidBecomeActive:`, `sceneWillResignActive:`, `sceneWillEnterForeground:`, `sceneDidEnterBackground:` | iOS | notify | the scene delegate's own events |
+| `handleEventsForBackgroundURLSession:completionHandler:` | iOS | intercept | a background URLSession's events (downloads that continue while the app is suspended); the owner keeps the handler and calls it once, otherwise Oriel calls it at once |
 | `applicationDidFinishLaunching:(NSNotification *)` | macOS | notify | when the run loop starts: after the main window opened and `setup` ran |
 | `windowCreated:(NSWindow *) label:(NSString *)` | macOS | notify | an Oriel window exists, before its page loads |
 | `windowWillClose:(NSWindow *) label:(NSString *)` | macOS | notify | the window closes (not when it is only hidden) |

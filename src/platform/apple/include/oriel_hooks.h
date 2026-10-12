@@ -165,6 +165,17 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)sceneWillResignActive:(UIScene *)scene;
 - (void)sceneWillEnterForeground:(UIScene *)scene;
 - (void)sceneDidEnterBackground:(UIScene *)scene;
+
+/// Interception: iOS launched or woke the app for the events of a
+/// background URLSession (`URLSessionConfiguration.background(withIdentifier:)`):
+/// downloads that keep going while the app is suspended or even quit.
+/// YES: the session is yours (match `identifier`); recreate it with the same
+/// identifier so its delegate receives the events, keep `completionHandler`
+/// and call it exactly once, on the main thread, after
+/// `urlSessionDidFinishEvents(forBackgroundURLSession:)`. NO: the next hook;
+/// unclaimed, Oriel calls it at once.
+- (BOOL)handleEventsForBackgroundURLSession:(NSString *)identifier
+                          completionHandler:(void (^)(void))completionHandler;
 #else
 // ---------------------------------------------------------------------------
 // macOS: the app and its windows
