@@ -123,7 +123,7 @@ File picker dialogs using `GtkFileDialog` on Linux and `IFileOpenDialog` / `IFil
 ```zig
 const file = try oriel.dialog.openFile(gpa, .{
     .title = "Select Document",
-    .filters = &.{ .{ .name = "Text Files", .patterns = &.{ "*.txt", "*.md" } } },
+    .filter = .{ .name = "Text Files", .extensions = &.{ "txt", "md" } }, // desktop only
 });
 ```
 
@@ -157,6 +157,56 @@ oriel.dialog.forgetFolder(id); // let the access go
 
 These are Zig-only, like `openFile`/`saveFile` (expose them to the page through your own commands). On
 Android and iOS `openFolder` waits for an Activity/view controller: call it from an async command.
+
+### Camera (`oriel.camera`)
+
+Photos from the camera or the photo library. The module is on when the app declares
+`.permissions.camera` in `addApp` (or with `.camera = true` on the dependency); `.permissions.camera` is
+also the text iOS shows (`NSCameraUsageDescription`) and Android's `CAMERA` permission.
+
+**Image inputs just work.** `<input type="file" accept="image/*">` with `capture` opens the camera,
+without it the photo library:
+
+| | Camera (`capture`) | Library |
+|---|---|---|
+| Android | Oriel asks for `CAMERA` (declared by `.permissions.camera`), then starts the camera app (`ACTION_IMAGE_CAPTURE`) writing into Oriel's capture provider (`<app id>.oriel.capture`); no camera app: the picker | The system photo picker (`ACTION_PICK_IMAGES` on Android 13+, `ACTION_GET_CONTENT` before), several with `multiple` |
+| iOS | WKWebView's own Take Photo / Photo Library menu (needs `NSCameraUsageDescription`, which `.permissions.camera` writes) | same (WKWebView uses the out-of-process picker: no photo library permission) |
+| Desktop | The browser engine's file chooser; pages use `getUserMedia` for live video | same |
+
+On Android, images the WebView can't decode (HEIC, AVIF) are transcoded to JPEG (quality 90, the long
+side kept or halved while it stays at least 1600 px) off the UI thread, unless
+`.camera = .{ .transcode = false }` in `addApp`. App extensions (`OrielAndroidExtension.onShowFileChooser`)
+still see every chooser first. The capture provider serves only the `capture-<digits>.jpg` files Oriel
+creates in `<cacheDir>/oriel-captures/`, and files older than a day are deleted.
+
+**Bytes, from Zig or the page:**
+
+```zig
+// Off the main thread (an async command): it waits for the user.
+const photo = try oriel.camera.capturePhoto(io, arena, .{
+    .source = .camera, // or .library
+    .max_side = 1600, // the longest side, 1..8192; never scaled up
+    .format = .jpeg, // or .png
+    .quality = 85, // JPEG, 1..100
+});
+// photo.bytes, photo.width, photo.height, photo.mime (in `arena`)
+```
+
+```js
+const { dataUrl, width, height, mime } = await oriel.camera.capturePhoto({ source: "library", maxSide: 1600 });
+```
+
+Errors: `error.Cancelled` (the user backed out), `error.Unsupported` (no camera: the desktop, the iOS
+simulator, a phone without a camera app), `error.PermissionDenied` (refused, or on iOS no
+`.permissions.camera`), `error.TooLarge` (over 32 MiB encoded; 16 MiB for the page), plus
+`InvalidOptions`, `MainThread` (called on a phone's UI thread), `Busy` (one capture at a time) and
+`CaptureFailed`. The page's promise rejects with the error's name.
+
+| Platform | `.camera` | `.library` | Scaling and encoding |
+|---|---|---|---|
+| Android | `ACTION_IMAGE_CAPTURE` into the capture provider | the system photo picker | `ImageDecoder` (orientation applied; `BitmapFactory` for files it refuses), `Bitmap.compress` |
+| iOS | `UIImagePickerController` (`isSourceTypeAvailable` checked; Unsupported on the simulator) | `PHPickerViewController` (PhotosUI) | `UIGraphicsImageRenderer` (orientation applied) |
+| Linux, Windows, macOS | `error.Unsupported` | the dialog module's file dialog, filtered to images (used whether or not `dialog` is on) | zigimg: decoded, box-filtered, encoded. What zigimg can't decode (HEIC, WebP, progressive JPEG) comes back as it was picked, `mime` from its bytes and the size from its header (0 x 0 when unknown); EXIF orientation isn't applied |
 
 ### Notifications (`oriel.notification`)
 
