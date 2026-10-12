@@ -1,4 +1,4 @@
-//! `app://` asset scheme through a `WKURLSchemeHandler`.
+//! `app://` asset scheme through a `WKURLSchemeHandler`, on macOS and iOS.
 //!
 //! Serves the embedded frontend (`App.findAsset`, with the SPA fallback) with
 //! the same response headers as the Linux and Windows backends:
@@ -7,7 +7,7 @@
 //! (`isolation.servePage`, a key minted for the requesting webview).
 
 const std = @import("std");
-const apple = @import("../apple/apple.zig");
+const apple = @import("apple.zig");
 const Object = apple.Object;
 const security = @import("../../core/security.zig");
 const App = @import("../../core/App.zig");

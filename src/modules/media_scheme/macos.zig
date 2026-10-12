@@ -1,5 +1,5 @@
 //! `app://app/media/...` on macOS: range-aware streaming of files below a
-//! media root through the WKURLSchemeHandler (src/platform/macos/scheme.zig).
+//! media root through the WKURLSchemeHandler (src/platform/apple/scheme.zig).
 //!
 //! The response head (200/206/416, Content-Range, Accept-Ranges) is sent at
 //! once on the main thread. The body is read by a worker thread in 256 KiB
