@@ -31,7 +31,7 @@ final class ShowcaseSwiftHooks: NSObject, OrielPlatformHooks {
         NSLog("showcase.swift_hooks: webViewCreated window=%@", label)
     }
 
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+    func webView(_ webView: WKWebView, handle action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) -> Bool {
         NSLog("showcase.swift_hooks: navigation to %@ (left to the next hook)", action.request.url?.absoluteString ?? "?")
         return false

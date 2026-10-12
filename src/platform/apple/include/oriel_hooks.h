@@ -99,19 +99,24 @@ NS_ASSUME_NONNULL_BEGIN
 /// Allowing what Oriel would block bypasses its navigation rules (the
 /// bridge still checks every call's origin against the app's own).
 - (BOOL)webView:(WKWebView *)webView
-    decidePolicyForNavigationAction:(WKNavigationAction *)action
-                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler;
+    handleNavigationAction:(WKNavigationAction *)action
+           decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+    NS_SWIFT_NAME(webView(_:handle:decisionHandler:));
 
+/// (Named apart from WKNavigationDelegate's and WKUIDelegate's methods, so
+/// one class can adopt this protocol and WebKit's.)
+///
 /// Interception: getUserMedia's camera or microphone, before Oriel's rule
 /// (granted when the app declares the device and the page is the app's
 /// own). YES: you own it and call decisionHandler exactly once (Grant,
 /// Deny or Prompt). NO: the next hook, then Oriel, decides. The OS's own
 /// permission (TCC) still applies after a grant.
 - (BOOL)webView:(WKWebView *)webView
-    requestMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
-                          initiatedByFrame:(WKFrameInfo *)frame
-                                      type:(WKMediaCaptureType)type
-                           decisionHandler:(void (^)(WKPermissionDecision))decisionHandler;
+    handleMediaCapturePermissionForOrigin:(WKSecurityOrigin *)origin
+                         initiatedByFrame:(WKFrameInfo *)frame
+                                     type:(WKMediaCaptureType)type
+                          decisionHandler:(void (^)(WKPermissionDecision))decisionHandler
+    NS_SWIFT_NAME(webView(_:handleMediaCapturePermissionFor:initiatedBy:type:decisionHandler:));
 
 // ---------------------------------------------------------------------------
 // URLs and activities

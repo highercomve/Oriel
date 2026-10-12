@@ -1114,8 +1114,11 @@ pub const AppOptions = struct {
         /// only when the SDK has them (Swift sees them through
         /// `#if canImport(...)`; check the OS version before use).
         weak_frameworks: []const []const u8 = &.{},
-        /// Files or directories copied to the bundle's root.
-        resources: []const std.Build.LazyPath = &.{},
+        /// Files or directories copied into the bundle at `to` (relative to
+        /// the bundle's root; `Bundle.main` finds them there). `from` is a
+        /// source path (`b.path`) or a dependency's (`dep.path(...)`, e.g.
+        /// a hash-pinned model archive in build.zig.zon).
+        resources: []const Asset = &.{},
     };
 
     /// `Extension.macos`: a Zig module, or native code as on iOS.
@@ -1606,6 +1609,7 @@ fn checkExtensions(b: *std.Build, options: AppOptions) void {
             if (!extension_spec.validObjcClass(x.class)) @panic(b.fmt("AppOptions.extensions: {s}: invalid iOS class \"{s}\" (an Objective-C class name)", .{ e.name, x.class }));
             for (x.frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
             for (x.weak_frameworks) |f| if (!validFrameworkName(f)) @panic(b.fmt("AppOptions.extensions: {s}: invalid framework \"{s}\"", .{ e.name, f }));
+            for (x.resources) |r| if (!validAssetPath(r.to)) @panic(b.fmt("AppOptions.extensions: {s}: invalid resource path \"{s}\" (relative, no \"..\")", .{ e.name, r.to }));
         }
         if (e.macos) |m| if (m == .objc) {
             const x = m.objc;
@@ -2248,6 +2252,7 @@ fn lazyPathIsFile(b: *std.Build, path: std.Build.LazyPath) bool {
     const p = switch (path) {
         .src_path => |s| s.owner.pathFromRoot(s.sub_path),
         .cwd_relative => |c| c,
+        .dependency => |d| d.dependency.builder.pathFromRoot(d.sub_path),
         else => return false,
     };
     const stat = std.Io.Dir.cwd().statFile(b.graph.io, p, .{}) catch return false;
@@ -2841,19 +2846,16 @@ fn addMacosNative(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppO
 
 const IosResource = struct { path: std.Build.LazyPath, name: []const u8 };
 
-/// Every extension's `.ios.resources`, named by their base names (source
-/// paths only: the bundle needs the name while configuring).
+/// Every extension's `.ios.resources`. Whether each is a file or a
+/// directory is read while configuring, so `from` must exist then: a source
+/// path or a (fetched) dependency's, not a build step's output.
 fn iosExtensionResources(b: *std.Build, options: AppOptions) []const IosResource {
     var out: std.ArrayList(IosResource) = .empty;
     for (options.extensions) |e| {
         const x = e.ios orelse continue;
         for (x.resources) |res| {
-            const p = switch (res) {
-                .src_path => |s| s.sub_path,
-                .cwd_relative => |c| c,
-                else => @panic(b.fmt("AppOptions.extensions: {s}: .ios.resources must be paths in the source tree (b.path)", .{e.name})),
-            };
-            out.append(b.allocator, .{ .path = res, .name = std.fs.path.basename(p) }) catch @panic("OOM");
+            if (res.from == .generated) @panic(b.fmt("AppOptions.extensions: {s}: .ios.resources \"{s}\": a build step's output can't be a resource; use a source or dependency path", .{ e.name, res.to }));
+            out.append(b.allocator, .{ .path = res.from, .name = res.to }) catch @panic("OOM");
         }
     }
     return out.items;
