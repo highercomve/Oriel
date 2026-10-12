@@ -23,8 +23,6 @@ pub const backend = switch (target.os) {
 pub const update_manifest = @import("modules/update_manifest.zig");
 pub const Semver = update_manifest.Semver;
 pub const Manifest = update_manifest.Manifest;
-pub const verifyManifest = update_manifest.verify;
-pub const verifyManifestWithOptions = update_manifest.verifyWithOptions;
 
 pub const DEFAULT_TARGET = @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag);
 pub const DEFAULT_TIMEOUT_MS: u32 = 15_000;
@@ -43,10 +41,23 @@ var state_mutex: std.Io.Mutex = .init;
 var captured_appimage: ?[]const u8 = null;
 var captured_appdir: ?[]const u8 = null;
 var module_allocator: ?std.mem.Allocator = null;
-/// Test hook: download target used instead of the running executable (ignored outside tests).
-pub var test_dest_override: ?[]const u8 = null;
-/// Test hook replacing the exec in `restart` (ignored outside tests).
-pub var mock_exec_fn: ?*const fn (io: std.Io, exe_path: []const u8) anyerror!noreturn = null;
+
+/// Hooks for Oriel's own tests (the updater's, the CLI's); ignored outside
+/// test builds. Not part of `oriel.updater`.
+pub const testing = struct {
+    /// Accept loopback `http://` manifest and artifact URLs.
+    pub var allow_loopback_http: bool = false;
+    /// Download target used instead of the running executable.
+    pub var dest_override: ?[]const u8 = null;
+    /// Replaces the exec in `restart`.
+    pub var exec_fn: ?*const fn (io: std.Io, exe_path: []const u8) anyerror!noreturn = null;
+    /// A local HTTP server for end-to-end update tests.
+    pub const MockServer = MockServerImpl;
+};
+
+fn allowTestHttp() bool {
+    return builtin.is_test and testing.allow_loopback_http;
+}
 
 /// Capture APPIMAGE and APPDIR on the main thread during app startup.
 pub fn init(io: std.Io, allocator: std.mem.Allocator, env_map: ?*const std.process.Environ.Map) !void {
@@ -94,21 +105,10 @@ pub fn deinit(io: std.Io) void {
         alloc.free(ad);
         captured_appdir = null;
     }
-    test_dest_override = null;
-    mock_exec_fn = null;
+    testing.allow_loopback_http = false;
+    testing.dest_override = null;
+    testing.exec_fn = null;
     module_allocator = null;
-}
-
-pub fn setTestDestOverride(path: ?[]const u8) void {
-    if (builtin.is_test) {
-        test_dest_override = path;
-    }
-}
-
-pub fn setMockExecFn(f: ?*const fn (io: std.Io, exe_path: []const u8) anyerror!noreturn) void {
-    if (builtin.is_test) {
-        mock_exec_fn = f;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ pub fn resolveDestPath(io: std.Io, gpa: std.mem.Allocator, dest_path: ?[]const u
         defer state_mutex.unlock(io);
         if (captured_appimage) |v| ai = try gpa.dupe(u8, v);
         if (captured_appdir) |v| ad = try gpa.dupe(u8, v);
-        break :blk if (builtin.is_test) test_dest_override else null;
+        break :blk if (builtin.is_test) testing.dest_override else null;
     };
 
     if (override) |ov| {
@@ -220,8 +220,6 @@ pub const Config = struct {
     target: []const u8 = DEFAULT_TARGET,
     timeout_ms: u32 = DEFAULT_TIMEOUT_MS,
     download_timeout_ms: u32 = DEFAULT_DOWNLOAD_TIMEOUT_MS,
-    /// Accept loopback `http://` URLs; ignored outside test builds.
-    allow_http_for_test: bool = false,
     allocator: ?std.mem.Allocator = null,
     /// Also offer the current version (a reinstall); an older one still isn't.
     force: bool = false,
@@ -244,7 +242,7 @@ pub fn checkForUpdate(
     config: Config,
 ) !?Update {
     // TLS only (loopback http only in test builds).
-    try update_manifest.validateUrl(config.manifest_url, config.allow_http_for_test);
+    try update_manifest.validateUrl(config.manifest_url, allowTestHttp());
 
     var manifest_buf: [64 * 1024]u8 = undefined;
 
@@ -323,7 +321,7 @@ pub fn checkForUpdate(
 
     // A combined manifest (latest.json) or a single-platform one.
     const manifest = try update_manifest.verifyForTarget(arena, manifest_json, config.public_key_b64, config.target, .{
-        .allow_test_http = config.allow_http_for_test,
+        .allow_test_http = allowTestHttp(),
     });
 
     // Validate app_id and target match config
@@ -390,27 +388,29 @@ pub const ProgressCallback = struct {
     }
 };
 
+pub const DownloadOptions = struct {
+    /// The file to replace (absolute); null: the running executable, or
+    /// `$APPIMAGE` when running from one.
+    dest_path: ?[]const u8 = null,
+    /// Called as bytes arrive.
+    progress: ?ProgressCallback = null,
+    /// Deadline for the whole download.
+    timeout_ms: u32 = DEFAULT_DOWNLOAD_TIMEOUT_MS,
+};
+
 /// Download an update artifact to a temporary file next to the destination,
 /// stream and compute SHA-256 on the fly, enforce size bounds, verify the hash,
-/// fsync to disk, and atomically rename over destination.
+/// fsync to disk, and atomically rename over destination. Returns the
+/// installed path (caller frees).
 pub fn download(
     io: std.Io,
     gpa: std.mem.Allocator,
     update: Update,
-    dest_path: ?[]const u8,
-    progress_callback: ?ProgressCallback,
+    options: DownloadOptions,
 ) ![]u8 {
-    return downloadWithOptions(io, gpa, update, dest_path, progress_callback, DEFAULT_DOWNLOAD_TIMEOUT_MS);
-}
-
-pub fn downloadWithOptions(
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    update: Update,
-    dest_path: ?[]const u8,
-    progress_callback: ?ProgressCallback,
-    timeout_ms: u32,
-) ![]u8 {
+    const dest_path = options.dest_path;
+    const progress_callback = options.progress;
+    const timeout_ms = options.timeout_ms;
     const Runner = struct {
         fn run(
             i: std.Io,
@@ -716,7 +716,7 @@ pub fn splitCmdline(
 /// Re-exec the updated binary using std.process.replace with original arguments.
 pub fn restart(io: std.Io, exe_path: []const u8) !noreturn {
     if (builtin.is_test) {
-        if (mock_exec_fn) |f| return f(io, exe_path);
+        if (testing.exec_fn) |f| return f(io, exe_path);
     }
     return backend.restart(io, exe_path);
 }
@@ -741,8 +741,8 @@ pub const test_payload_gz = [_]u8{
     0x00, 0x00, 0x00,
 };
 
-/// Local mock HTTP server for end-to-end update test
-pub const MockServer = struct {
+/// Local mock HTTP server for end-to-end update tests (`testing.MockServer`).
+const MockServerImpl = struct {
     server: std.Io.net.Server,
     thread: std.Thread,
     port: u16,
@@ -757,9 +757,9 @@ pub const MockServer = struct {
     fail_next: std.atomic.Value(u32) = .init(0),
     running: std.atomic.Value(bool) = .init(true),
 
-    pub fn start(io: std.Io, port: u16, manifest_json: []const u8, payload: []const u8, gzip_payload: ?[]const u8) !*MockServer {
+    pub fn start(io: std.Io, port: u16, manifest_json: []const u8, payload: []const u8, gzip_payload: ?[]const u8) !*MockServerImpl {
         const allocator = std.testing.allocator;
-        const self = try allocator.create(MockServer);
+        const self = try allocator.create(MockServerImpl);
         errdefer allocator.destroy(self);
 
         const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(port) };
@@ -778,19 +778,19 @@ pub const MockServer = struct {
         return self;
     }
 
-    pub fn setManifest(self: *MockServer, io: std.Io, json: []const u8) void {
+    pub fn setManifest(self: *MockServerImpl, io: std.Io, json: []const u8) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.manifest_json = json;
     }
 
-    pub fn setCombined(self: *MockServer, io: std.Io, json: ?[]const u8) void {
+    pub fn setCombined(self: *MockServerImpl, io: std.Io, json: ?[]const u8) void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         self.combined_json = json;
     }
 
-    fn run(self: *MockServer) void {
+    fn run(self: *MockServerImpl) void {
         while (self.running.load(.acquire)) {
             var stream = self.server.accept(self.io) catch break;
             defer stream.close(self.io);
@@ -867,7 +867,7 @@ pub const MockServer = struct {
         }
     }
 
-    pub fn stop(self: *MockServer) void {
+    pub fn stop(self: *MockServerImpl) void {
         self.running.store(false, .release);
         _ = std.posix.system.shutdown(self.server.socket.handle, std.posix.SHUT.RDWR);
         const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(self.port) };
@@ -896,6 +896,7 @@ test "core end-to-end update flow" {
 
     try init(io, allocator, null);
     defer deinit(io);
+    testing.allow_loopback_http = true;
 
     // Generate test Ed25519 keypair
     const kp = try Ed25519.KeyPair.generateDeterministic([_]u8{77} ** 32);
@@ -918,7 +919,7 @@ test "core end-to-end update flow" {
     const gz_payload_sha256 = std.fmt.bytesToHex(gz_digest, .lower);
 
     // Start mock server first to obtain ephemeral port
-    var server = try MockServer.start(io, 0, "", new_payload, &test_payload_gz);
+    var server = try testing.MockServer.start(io, 0, "", new_payload, &test_payload_gz);
     defer server.stop();
 
     const payload_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/payload", .{server.port});
@@ -951,7 +952,6 @@ test "core end-to-end update flow" {
         .current_version = "2.0.0",
         .public_key_b64 = &pk_b64,
         .target = DEFAULT_TARGET,
-        .allow_http_for_test = true,
     };
 
     // 1. Version checks:
@@ -978,10 +978,10 @@ test "core end-to-end update flow" {
     var downgrade = (try checkForUpdate(io, allocator, force_older_cfg)).?;
     downgrade.deinit();
 
-    // A plain http:// manifest URL needs allow_http_for_test (test builds only)
-    var insecure_cfg = base_cfg;
-    insecure_cfg.allow_http_for_test = false;
-    try std.testing.expectError(error.InsecureUrl, checkForUpdate(io, allocator, insecure_cfg));
+    // A plain http:// manifest URL needs testing.allow_loopback_http (test builds only)
+    testing.allow_loopback_http = false;
+    try std.testing.expectError(error.InsecureUrl, checkForUpdate(io, allocator, base_cfg));
+    testing.allow_loopback_http = true;
 
     // Manifest signed with another key is rejected
     var wrong_key_cfg = base_cfg;
@@ -1046,7 +1046,7 @@ test "core end-to-end update flow" {
     };
 
     server.fail_next.store(1, .release); // retried, as for the manifest
-    const returned_path = try download(io, allocator, update, dummy_app_path, progress_cb);
+    const returned_path = try download(io, allocator, update, .{ .dest_path = dummy_app_path, .progress = progress_cb });
     try std.testing.expectEqual(@as(u32, 0), server.fail_next.load(.acquire));
     defer allocator.free(returned_path);
     try std.testing.expectEqualStrings(dummy_app_path, returned_path);
@@ -1069,7 +1069,7 @@ test "core end-to-end update flow" {
     var bad_update = update;
     bad_update.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
 
-    const err = download(io, allocator, bad_update, dummy_app_path, null);
+    const err = download(io, allocator, bad_update, .{ .dest_path = dummy_app_path });
     try std.testing.expectError(error.PayloadHashMismatch, err);
 
     const intact_content = try std.Io.Dir.cwd().readFileAlloc(io, dummy_app_path, allocator, .limited(1024));
@@ -1105,7 +1105,7 @@ test "core end-to-end update flow" {
     var gz_update = gz_update_opt.?;
     defer gz_update.deinit();
 
-    const gz_returned_path = try download(io, allocator, gz_update, dummy_app_path, null);
+    const gz_returned_path = try download(io, allocator, gz_update, .{ .dest_path = dummy_app_path });
     defer allocator.free(gz_returned_path);
 
     const gz_decompressed_content = try std.Io.Dir.cwd().readFileAlloc(io, dummy_app_path, allocator, .limited(2048));
@@ -1122,6 +1122,7 @@ test "core end-to-end update flow on Windows: replace the running exe" {
 
     try init(io, allocator, null);
     defer deinit(io);
+    testing.allow_loopback_http = true;
 
     // Two real executables: PING.EXE as the installed app (it keeps running),
     // HOSTNAME.EXE as the update (it prints the host name and exits 0).
@@ -1145,7 +1146,7 @@ test "core end-to-end update flow on Windows: replace the running exe" {
     var wrong_pk_b64: [update_manifest.PUBLIC_KEY_B64_LEN]u8 = undefined;
     _ = update_manifest.encodePublicKey(wrong_kp.public_key.toBytes(), &wrong_pk_b64);
 
-    var server = try MockServer.start(io, 0, "", new_payload, null);
+    var server = try testing.MockServer.start(io, 0, "", new_payload, null);
     defer server.stop();
 
     const payload_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/payload", .{server.port});
@@ -1174,7 +1175,6 @@ test "core end-to-end update flow on Windows: replace the running exe" {
         .current_version = "1.0.0",
         .public_key_b64 = &pk_b64,
         .target = DEFAULT_TARGET,
-        .allow_http_for_test = true,
     };
 
     // A manifest signed with another key is rejected.
@@ -1212,10 +1212,10 @@ test "core end-to-end update flow on Windows: replace the running exe" {
     // temp files next to it.
     var bad_hash = update;
     bad_hash.sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-    try std.testing.expectError(error.PayloadHashMismatch, download(io, allocator, bad_hash, app_path, null));
+    try std.testing.expectError(error.PayloadHashMismatch, download(io, allocator, bad_hash, .{ .dest_path = app_path }));
     var bad_size = update;
     bad_size.size = update.size - 1;
-    try std.testing.expectError(error.PayloadSizeExceeded, download(io, allocator, bad_size, app_path, null));
+    try std.testing.expectError(error.PayloadSizeExceeded, download(io, allocator, bad_size, .{ .dest_path = app_path }));
     {
         const content = try std.Io.Dir.cwd().readFileAlloc(io, app_path, allocator, .limited(1 << 20));
         defer allocator.free(content);
@@ -1228,7 +1228,7 @@ test "core end-to-end update flow on Windows: replace the running exe" {
     }
 
     // The verified update replaces the running exe, which moves to <exe>.old.
-    const returned_path = try download(io, allocator, update, app_path, null);
+    const returned_path = try download(io, allocator, update, .{ .dest_path = app_path });
     defer allocator.free(returned_path);
     try std.testing.expectEqualStrings(app_path, returned_path);
     {

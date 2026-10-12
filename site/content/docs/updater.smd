@@ -142,10 +142,10 @@ The per-platform parts (replacing a file, restarting) are
 `src/modules/updater/linux.zig`, `windows.zig`, `macos.zig` and
 `android.zig`.
 
-**Startup.** `oriel.main` calls `updater.init` on the main thread: it
+**Startup.** `oriel.main` sets the updater up on the main thread: it
 captures `$APPIMAGE` and `$APPDIR` (worker threads never read the
 environment) and, on Windows, deletes a `<exe>.old` left by the previous
-update.
+update. Apps don't call anything for this.
 
 **Check.** `updater_check` runs on a worker thread (it is an async
 command). It fetches the manifest with a deadline, retrying a 5xx answer
@@ -253,7 +253,7 @@ fn config() updater.Config {
 fn checkAndInstall(io: std.Io, gpa: std.mem.Allocator) !void {
     var update = (try updater.checkForUpdate(io, gpa, config())) orelse return;
     defer update.deinit();
-    const path = try updater.download(io, gpa, update, null, .{ .callback = onProgress });
+    const path = try updater.download(io, gpa, update, .{ .progress = .{ .callback = onProgress } });
     defer gpa.free(path);
     events.emit(.update_ready, .{ .version = update.version });
 }
@@ -315,35 +315,23 @@ Declare it in `Events` (as in the quick start) for a typed `listen`.
 | `download_timeout_ms` | `u32` | `600_000` | Deadline for the artifact download. |
 | `force` | `bool` | `false` | Also offer the current version (a reinstall). |
 | `allow_downgrade` | `bool` | `false` | Offer any version the manifest names. Only for an explicit request for one version, whose manifest the caller then checks names exactly that version; otherwise a replayed old manifest downgrades. |
-| `allocator` | `?Allocator` | the module's | Allocator for the update state. |
-| `allow_http_for_test` | `bool` | `false` | Loopback `http://` URLs, in test builds only (a compile error elsewhere). |
+| `allocator` | `?Allocator` | `std.heap.smp_allocator` | Allocator for the update state. |
 
 ## [Zig API]($heading.id('zig-api'))
 
 | Declaration | Meaning |
 |---|---|
 | `available: bool` | `true` where the module is built. |
-| `init(io, gpa, env_map) !void` | Capture `$APPIMAGE` / `$APPDIR`, clean up `<exe>.old`. Called by `oriel.main`; main thread. |
-| `deinit(io) void` | Free the module's state. Called by `oriel.main`. |
 | `checkForUpdate(io, gpa, config) !?Update` | Fetch and verify the manifest; `null` when nothing newer. Blocks: call it off the main thread. |
-| `download(io, gpa, update, dest_path, progress) ![]u8` | Download, verify and install `update`, with the default 10-minute deadline; returns the installed path (caller frees). `dest_path` null: the running executable, or `$APPIMAGE`. |
-| `downloadWithOptions(io, gpa, update, dest_path, progress, timeout_ms) ![]u8` | The same with a deadline. |
+| `download(io, gpa, update, options) ![]u8` | Download, verify and install `update`; returns the installed path (caller frees). `options` is a `DownloadOptions`. |
 | `restart(io, exe_path) !noreturn` | Replace this process with `exe_path` (see [How it works]($link.ref('how-it-works'))). |
 | `resolveDestPath(io, gpa, dest_path) ![]u8` | The file an update replaces: `dest_path` (must be absolute), else `$APPIMAGE` when running from it, else the executable. |
 | `runningAsAppImage(io, gpa) !bool` | `$APPIMAGE` set and the executable under `$APPDIR`. |
-| `decideDestPath(dest, appimage, appdir, exe) []const u8` | The pure decision behind `resolveDestPath`. |
-| `isUnderDir(path, dir) bool` | `path` inside `dir` on a separator boundary. |
-| `verifyManifest(arena, json, public_key_b64) !Manifest` | Verify a single-platform manifest. |
-| `verifyManifestWithOptions(arena, json, key, options) !Manifest` | The same with `VerifyOptions`. |
-| `unpack(gpa, manifest, payload_gz) ![]u8` | Check a gzip payload's SHA-256 and expand it in memory (512 MiB max). |
-| `splitCmdline(bytes, exe_path, out) ![]const []const u8` | Split `/proc/self/cmdline` for the restart. |
 | `emitProgress(downloaded, total) void` | Emit `updater://progress`. |
 | `Update` | A verified update: the manifest's fields and an arena; `deinit()` frees it. |
+| `DownloadOptions` | `{ dest_path: ?[]const u8 = null, progress: ?ProgressCallback = null, timeout_ms: u32 = DEFAULT_DOWNLOAD_TIMEOUT_MS }`. `dest_path` null: the running executable, or `$APPIMAGE`. |
 | `ProgressCallback` | `{ context: ?*anyopaque = null, callback: *const fn (?*anyopaque, u64, ?u64) void }`. |
-| `Manifest`, `Semver` | From `update_manifest`. |
-| `State` | `idle`, `checking`, `installing`, `restarting`: the commands' state machine. |
-| `DEFAULT_TARGET`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_DOWNLOAD_TIMEOUT_MS`, `MAX_CMDLINE_LEN` (16 KiB), `MAX_ARGV_COUNT` (256) | Constants. |
-| `core`, `backend`, `update_manifest` | The engine, this platform's backend, the manifest module. |
+| `DEFAULT_TARGET`, `DEFAULT_TIMEOUT_MS`, `DEFAULT_DOWNLOAD_TIMEOUT_MS` | Constants. |
 | `check(gpa, ctx) !Check` | The module's self-test (`oriel doctor`, `examples/smoke`). |
 
 ## [Manifest format]($heading.id('manifest-format'))
@@ -510,6 +498,18 @@ and `ORIEL_UPDATE_TARGET` installs to another path; both exist for tests.
 - `oriel_app.update_public_key` is unchanged; the other `oriel_app`
   declarations moved into `oriel_app.build`
   ([Building]($link.page('docs/building').ref('oriel-app'))).
+- `download(io, gpa, update, dest_path, progress)` and
+  `downloadWithOptions(..., timeout_ms)` are one
+  `download(io, gpa, update, .{ .dest_path, .progress, .timeout_ms })`.
+- `updater.init` and `updater.deinit` are gone from the API: `oriel.main`
+  sets the updater up; delete your own `init` call.
+- `Config.allow_http_for_test`, `setTestDestOverride`, `setMockExecFn`,
+  `MockServer` and `test_payload_gz` were Oriel's test hooks and are no
+  longer public.
+- `verifyManifest`, `verifyManifestWithOptions`, `unpack`, `splitCmdline`,
+  `decideDestPath`, `isUnderDir`, `Manifest`, `Semver`, `State`,
+  `MAX_CMDLINE_LEN`, `MAX_ARGV_COUNT`, `core`, `backend` and
+  `update_manifest` are internal now; `checkForUpdate` verifies the manifest.
 
 # [Troubleshooting]($heading.id('troubleshooting'))
 

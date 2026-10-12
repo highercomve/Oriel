@@ -138,10 +138,14 @@ const internal = @import("core/internal.zig");
 /// that parses its own arguments does so before calling it; any config
 /// chosen at runtime is a `comptime` choice between two calls.
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
+    // The updater captures $APPIMAGE / $APPDIR here, on the main thread
+    // (worker threads never read the environment), and on Windows deletes
+    // the `<exe>.old` a previous update left.
+    const updater_core = @import("updater_core.zig");
     if (options.updater) {
-        try updater.init(init.io, init.gpa, init.environ_map);
+        try updater_core.init(init.io, init.gpa, init.environ_map);
     }
-    defer if (options.updater) updater.deinit(init.io);
+    defer if (options.updater) updater_core.deinit(init.io);
 
     var it = try init.minimal.args.iterateAllocator(init.gpa);
     defer it.deinit();

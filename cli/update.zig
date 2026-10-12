@@ -65,9 +65,6 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
     } else try std.fmt.allocPrint(ctx.gpa, "{s}/latest/download", .{trimmed_releases});
     defer ctx.gpa.free(release_base);
 
-    const allow_test_http = std.mem.startsWith(u8, releases_url, "http://127.0.0.1") or
-        std.mem.startsWith(u8, releases_url, "http://localhost");
-
     // An explicit version is installed even when older or the same; the
     // manifest must then name exactly that version (checked below).
     const is_forced = cmd.version != null;
@@ -77,7 +74,6 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
         .current_version = build_options.version,
         .public_key_b64 = public_key,
         .target = core.DEFAULT_TARGET,
-        .allow_http_for_test = allow_test_http,
         .force = is_forced,
         .allow_downgrade = is_forced,
     };
@@ -143,7 +139,7 @@ pub fn runWithKey(ctx: Context, cmd: Command, public_key_opt: ?[]const u8) !u8 {
 
     const dest_override = ctx.environ.get("ORIEL_UPDATE_TARGET");
 
-    const installed_path = core.download(ctx.io, ctx.gpa, update, dest_override, null) catch |err| {
+    const installed_path = core.download(ctx.io, ctx.gpa, update, .{ .dest_path = dest_override }) catch |err| {
         try ctx.err.print("error: failed to install update: {s}\n", .{@errorName(err)});
         return 1;
     };
@@ -284,6 +280,10 @@ test "oriel update end-to-end against local HTTP server" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
+    // The local server answers over http://.
+    core.testing.allow_loopback_http = true;
+    defer core.testing.allow_loopback_http = false;
+
     // 1. Generate throwaway Ed25519 keypair
     const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{42} ** 32);
     var pk_b64: [core.update_manifest.PUBLIC_KEY_B64_LEN]u8 = undefined;
@@ -311,7 +311,7 @@ test "oriel update end-to-end against local HTTP server" {
     }
 
     // 3. Start local mock HTTP server
-    var server = try core.MockServer.start(io, 0, "", new_cli_payload, null);
+    var server = try core.testing.MockServer.start(io, 0, "", new_cli_payload, null);
     defer server.stop();
 
     const payload_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/payload", .{server.port});
@@ -407,6 +407,10 @@ test "oriel update rejects tampered manifest and payload" {
 
     const wrong_kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{99} ** 32);
 
+    // The local server answers over http://.
+    core.testing.allow_loopback_http = true;
+    defer core.testing.allow_loopback_http = false;
+
     const payload = "unaltered payload";
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(payload, &digest, .{});
@@ -428,7 +432,7 @@ test "oriel update rejects tampered manifest and payload" {
         try f.writeStreamingAll(io, original_content);
     }
 
-    var server = try core.MockServer.start(io, 0, "", payload, null);
+    var server = try core.testing.MockServer.start(io, 0, "", payload, null);
     defer server.stop();
 
     const payload_url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/payload", .{server.port});
