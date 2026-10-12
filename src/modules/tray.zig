@@ -10,7 +10,7 @@ pub const available = true;
 
 const builtin = @import("builtin");
 const target = @import("../core/target.zig");
-pub const common = @import("tray/common.zig");
+const common = @import("tray/common.zig");
 
 pub const MenuItem = common.MenuItem;
 pub const Icon = common.Icon;
@@ -19,16 +19,13 @@ pub const Menu = common.Menu;
 pub const Tray = impl.Tray;
 pub const check = impl.check;
 
-pub const impl = switch (target.os) {
+const impl = switch (target.os) {
     .linux => @import("tray/linux.zig"),
     .windows => @import("tray/windows.zig"),
     .macos => @import("tray/macos.zig"),
     // No system tray: never built there (src/core/module_table.zig).
     .android, .ios, .other => @compileError("tray is not available on " ++ target.name),
 };
-
-// Re-export Linux-specific watcher_name if on Linux
-pub const watcher_name = if (@hasDecl(impl, "watcher_name")) impl.watcher_name else "";
 
 test {
     const std = @import("std");

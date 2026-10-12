@@ -11,16 +11,16 @@ const zwp = wayland.client.zwp;
 const wl = wayland.client.wl;
 const Globals = @import("../wayland_globals.zig").Globals;
 const oriel = @import("../../oriel.zig");
-const global_shortcut = @import("../global_shortcut.zig");
+const global_shortcut = @import("../global_shortcut/common.zig");
 
-pub const xkb = @cImport(@cInclude("xkbcommon/xkbcommon.h"));
-pub const x11 = @cImport({
+const xkb = @cImport(@cInclude("xkbcommon/xkbcommon.h"));
+const x11 = @cImport({
     @cInclude("X11/Xlib.h");
     @cInclude("X11/keysym.h");
     @cInclude("X11/extensions/XTest.h");
 });
 
-pub const EVDEV = struct {
+const EVDEV = struct {
     pub const KEY_RESERVED = 0;
     pub const KEY_ESC = 1;
     pub const KEY_1 = 2;
@@ -102,7 +102,7 @@ pub const EVDEV = struct {
 };
 
 /// The default XKB keymap as text, ready to hand to the virtual keyboard.
-pub fn defaultKeymap(gpa: std.mem.Allocator) ![:0]u8 {
+fn defaultKeymap(gpa: std.mem.Allocator) ![:0]u8 {
     const ctx = xkb.xkb_context_new(xkb.XKB_CONTEXT_NO_FLAGS) orelse return error.XkbContext;
     defer xkb.xkb_context_unref(ctx);
     const keymap = xkb.xkb_keymap_new_from_names(ctx, null, xkb.XKB_KEYMAP_COMPILE_NO_FLAGS) orelse return error.XkbKeymap;
@@ -113,7 +113,7 @@ pub fn defaultKeymap(gpa: std.mem.Allocator) ![:0]u8 {
 }
 
 /// Whether the X server (or XWayland) supports XTest.
-pub fn xtestAvailable() bool {
+fn xtestAvailable() bool {
     const display = x11.XOpenDisplay(null) orelse return false;
     defer _ = x11.XCloseDisplay(display);
     var ev: c_int = 0;
@@ -123,7 +123,7 @@ pub fn xtestAvailable() bool {
     return x11.XTestQueryExtension(display, &ev, &er, &major, &minor) != 0;
 }
 
-pub fn evdevForKey(name: []const u8) ?u32 {
+fn evdevForKey(name: []const u8) ?u32 {
     if (std.ascii.eqlIgnoreCase(name, "a")) return EVDEV.KEY_A;
     if (std.ascii.eqlIgnoreCase(name, "b")) return EVDEV.KEY_B;
     if (std.ascii.eqlIgnoreCase(name, "c")) return EVDEV.KEY_C;
@@ -174,7 +174,7 @@ pub fn evdevForKey(name: []const u8) ?u32 {
     return null;
 }
 
-pub const WaylandInput = struct {
+const WaylandInput = struct {
     globals: Globals,
     manager: *zwp.VirtualKeyboardManagerV1,
     seat: *wl.Seat,
@@ -283,7 +283,7 @@ pub fn keyCombo(combo: []const u8) !void {
     return keyComboX11(combo);
 }
 
-pub fn keyComboX11(combo: []const u8) !void {
+fn keyComboX11(combo: []const u8) !void {
     const disp = x11.XOpenDisplay(null) orelse return error.XOpenDisplay;
     defer _ = x11.XCloseDisplay(disp);
 
@@ -372,7 +372,7 @@ pub fn typeText(text: []const u8) !void {
     return typeTextX11(text);
 }
 
-pub fn typeTextX11(text: []const u8) !void {
+fn typeTextX11(text: []const u8) !void {
     const disp = x11.XOpenDisplay(null) orelse return error.XOpenDisplay;
     defer _ = x11.XCloseDisplay(disp);
 
