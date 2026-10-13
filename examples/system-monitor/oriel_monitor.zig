@@ -471,8 +471,15 @@ fn open_settings(e: *ui.Engine) !void {
     try visibility(e);
     inline for (.{ 1, 2, 5 }) |seconds| {
         const id = Settings.id(std.fmt.comptimePrint("interval-{d}", .{seconds}), settings_id);
+        // As the web page's .btn-toggle: the chosen one raised, in bright text.
+        const chosen = s.settings.interval_ms == seconds * 1000;
         var props = e.tree.get(id).?.props;
-        props.bg = .{ .color = oriel.canvas.rgb(if (s.settings.interval_ms == seconds * 1000) 0x21262d else 0x0e1117) };
+        props.bg = .{ .color = if (chosen) oriel.canvas.rgb(0x21262d) else .{ 0, 0, 0, 0 } };
+        const ink = oriel.canvas.rgb(if (chosen) 0xf0f6fc else 0x8b949e);
+        props.col = ink;
+        var run = props.runs.?[0];
+        run.c = ink;
+        props.runs = &.{run};
         try e.tree.updateUiProps(id, props);
     }
 }
