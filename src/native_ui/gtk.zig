@@ -62,6 +62,7 @@ extern fn gtk_text_view_set_input_purpose(w: *Widget, purpose: c_int) void;
 extern fn gtk_text_view_set_input_hints(w: *Widget, hints: c_uint) void;
 extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
 extern fn gtk_widget_has_focus(w: *Widget) c_int;
+extern fn gtk_widget_set_tooltip_text(w: *Widget, text: ?[*:0]const u8) void;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
 extern fn gtk_widget_add_css_class(w: *Widget, class: [*:0]const u8) void;
 extern fn gtk_widget_create_pango_layout(w: *Widget, text: ?[*:0]const u8) *PangoLayout;
@@ -366,6 +367,8 @@ pub const Surface = struct {
     trim_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
+    /// The node whose `tip` the drawing area's tooltip shows (0: none).
+    tip_node: i64 = 0,
     /// A wheel scroll is moving the page: :hover waits until it settles
     /// (onScrollSettled), as in browsers. The compositor's motion after
     /// each wheel step (same point) would hover a new row each step: a
@@ -1907,11 +1910,27 @@ fn hoverAt(s: *Surface) void {
     const at = targetAt(s, s.pointer[0], s.pointer[1]);
     const n = at.node;
     gtk_widget_set_cursor_from_name(s.area, if (at.link or (n != null and clickableUp(n.?))) "pointer" else null);
+    tooltipFor(s, n);
     const id: i64 = at.id;
     if (id != s.hovered) {
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
     }
+}
+
+/// The tooltip of the node under the pointer, or of the nearest node
+/// around it with one (Props.tip): GTK shows it after its hover delay.
+fn tooltipFor(s: *Surface, under: ?*Node) void {
+    var at = under;
+    const owner: ?*Node = while (at) |x| : (at = x.parent) {
+        if (x.props.tip != null) break x;
+    } else null;
+    const id: i64 = if (owner) |o| o.id else 0;
+    if (id == s.tip_node) return;
+    s.tip_node = id;
+    var buf: [1024]u8 = undefined;
+    const text: ?[*:0]const u8 = if (owner) |o| (std.fmt.bufPrintZ(&buf, "{s}", .{o.props.tip.?}) catch null) else null;
+    gtk_widget_set_tooltip_text(s.area, text);
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ pub const Tree = @import("tree.zig").Tree;
 pub const Node = @import("tree.zig").Node;
 pub const Asset = @import("../core/App.zig").Asset;
 pub const drop = @import("drop.zig");
+const focus = @import("focus.zig");
 pub const Backend = @import("backend.zig").Backend(Engine);
 pub const FontSpec = @import("backend.zig").FontSpec;
 const log = std.log.scoped(.zig_ui);
@@ -40,13 +41,15 @@ pub const Engine = struct {
     relaid: bool = false,
     frame_hooks: std.ArrayList(FrameHook) = .empty,
     frame_number: u64 = 0,
+    /// Keyboard focus (focus.zig).
+    focus: focus.State = .{},
     pub const FrameHook = struct { ctx: *anyopaque, func: *const fn (*anyopaque, *Engine, f64) bool, run_after: u64 = 0, cancelled: bool = false };
     pub const drag_copy: u8 = 1;
     pub const drag_move: u8 = 2;
     pub const drag_link: u8 = 4;
     const frame_timer: u32 = std.math.maxInt(u32) - 1;
 
-    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, _: [:0]const u8, _: [:0]const u8, _: [:0]const u8, width: f32, height: f32) !*Engine {
+    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, _: [:0]const u8, _: [:0]const u8, width: f32, height: f32) !*Engine {
         const driver = configured_driver orelse return error.MissingZigUiDriver;
         const e = try gpa.create(Engine);
         errdefer gpa.destroy(e);
@@ -54,6 +57,7 @@ pub const Engine = struct {
         errdefer e.tree.deinit();
         e.tree.width = width;
         e.tree.height = height;
+        e.tree.controls = nativeControls(gpa, platform_json);
         e.tree.on_remove = backend.removed;
         e.tree.on_props = backend.props;
         e.tree.on_ax = backend.ax_changed;
@@ -94,13 +98,128 @@ pub const Engine = struct {
         e.paintNow();
         log.info(".oriel view booted: {d} nodes, no JavaScript runtime", .{e.tree.nodes.count()});
     }
+    /// A backend event: the engine's own bookkeeping (focus, field values,
+    /// checkboxes), then the app's `Driver.event`, then the default action
+    /// it didn't prevent (Tab, Enter/Space, scrolling keys). True: handled.
     pub fn event(e: *Engine, id: i64, kind: []const u8, data: []const u8) bool {
-        const cb = e.driver.event orelse return false;
         e.in_call += 1;
-        const handled = cb(e, id, kind, data);
-        e.in_call -= 1;
-        e.paintNow();
+        defer {
+            e.in_call -= 1;
+            e.paintNow();
+        }
+        const handled = e.dispatch(id, kind, data) catch |err| blk: {
+            log.err("event {s}: {s}", .{ kind, @errorName(err) });
+            break :blk false;
+        };
+        e.focus.visible = e.focus.visible and e.tree.get(e.focus.id) != null;
+        e.updateRing();
         return handled;
+    }
+
+    fn appEvent(e: *Engine, id: i64, kind: []const u8, data: []const u8) bool {
+        const cb = e.driver.event orelse return false;
+        return cb(e, id, kind, data);
+    }
+
+    fn dispatch(e: *Engine, id: i64, kind: []const u8, data: []const u8) !bool {
+        const eq = std.mem.eql;
+        const n = e.tree.get(id);
+        if (eq(u8, kind, "accent")) {
+            const v = std.json.parseFromSlice([3]f32, e.gpa, data, .{}) catch null;
+            if (v) |c| {
+                defer c.deinit();
+                e.focus.accent = c.value;
+                if (e.focus.ring != 0) {
+                    const ring_id = e.focus.ring;
+                    e.focus.ring = 0;
+                    if (e.tree.get(ring_id)) |r| {
+                        var props = r.props;
+                        props.ol = null;
+                        try e.tree.updateUiProps(ring_id, props);
+                    }
+                }
+            }
+            return e.appEvent(id, kind, data);
+        }
+        // A field's edit: its value is the node's before the app hears of it.
+        if ((eq(u8, kind, "input") or eq(u8, kind, "change")) and n != null and (n.?.kind == .input or n.?.kind == .textarea or n.?.kind == .select)) {
+            if (try focus.editedValue(e.gpa, data)) |v| {
+                defer v.deinit();
+                try e.tree.acceptUiValue(id, focus.valueOf(v.value));
+            }
+            return e.appEvent(id, kind, data);
+        }
+        if (eq(u8, kind, "focus") and n != null) {
+            e.focus.id = id;
+            e.focus.visible = true;
+            return e.appEvent(id, kind, data);
+        }
+        if (eq(u8, kind, "blur")) {
+            if (e.focus.id == id) e.focus.id = 0;
+            return e.appEvent(id, kind, data);
+        }
+        if (eq(u8, kind, "click")) {
+            // A click focuses what it lands in, without a ring.
+            if (focus.focusTarget(&e.tree, id)) |target| {
+                if (!focus.isNative(target)) {
+                    e.focus.id = target.id;
+                    e.focus.visible = false;
+                }
+            }
+            if (n) |node| if (node.kind == .check or node.props.ctl != null) {
+                // A checkbox or radio checks itself; the app hears "change".
+                const on = try focus.toggle(&e.tree, node);
+                return e.appEvent(id, "change", if (on) "true" else "false");
+            };
+            return e.appEvent(id, kind, data);
+        }
+        if (eq(u8, kind, "key") or eq(u8, kind, "keyup")) {
+            if (e.appEvent(id, kind, data)) return true;
+            var name: [32]u8 = undefined;
+            const key = focus.keyOf(e.gpa, data, &name) orelse return false;
+            return e.keyDefault(eq(u8, kind, "key"), key.key, key.mods);
+        }
+        return e.appEvent(id, kind, data);
+    }
+
+    /// What a key does when the app didn't prevent it.
+    fn keyDefault(e: *Engine, down: bool, key: []const u8, mods: i64) !bool {
+        const eq = std.mem.eql;
+        const focused = e.tree.get(e.focus.id);
+        if (down and eq(u8, key, "Tab")) {
+            const target = try focus.next(&e.tree, e.gpa, e.focus.id, focus.isShift(mods)) orelse return false;
+            e.focus.id = target.id;
+            e.focus.visible = true;
+            e.backend.focus(e.backend.ctx, target);
+            e.tree.scrollIntoView(target, "nearest");
+            return true;
+        }
+        // Keys typed in a field are the field's.
+        if (focused) |f| if (f.kind == .input or f.kind == .textarea or f.kind == .select) return false;
+        // Enter (on press) and Space (on release) activate a drawn element;
+        // a native widget handles its own.
+        if (focused) |f| if (!focus.isNative(f)) {
+            const enter = eq(u8, key, "Enter");
+            const space = eq(u8, key, " ");
+            if (space and down) return true; // not a page scroll
+            if ((enter and down) or (space and !down)) {
+                e.focus.visible = true;
+                if (f.props.ctl != null) {
+                    const on = try focus.toggle(&e.tree, f);
+                    _ = e.appEvent(f.id, "change", if (on) "true" else "false");
+                } else _ = e.appEvent(f.id, "click", "0");
+                return true;
+            }
+        };
+        if (!down) return false;
+        const scroller = focus.scrollerFor(&e.tree, e.focus.id) orelse return false;
+        const dy = focus.scrollDelta(scroller, key) orelse return false;
+        _ = e.scrollBy(scroller, dy);
+        return true;
+    }
+
+    fn updateRing(e: *Engine) void {
+        focus.updateRing(&e.tree, &e.focus) catch |err| log.err("focus ring: {s}", .{@errorName(err)});
     }
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == frame_timer) return e.displayFrame(1000.0 / 60.0);
@@ -239,6 +358,29 @@ pub const Engine = struct {
         return error.UnsupportedInZigUi;
     }
 };
+
+/// Which of `.check` and `.button` the backend hosts as platform widgets
+/// (its platform JSON's `controls`, as render.js reads it).
+fn nativeControls(gpa: std.mem.Allocator, platform_json: []const u8) @FieldType(Tree, "controls") {
+    var out: @FieldType(Tree, "controls") = .{ .check = false, .button = false };
+    const parsed = std.json.parseFromSlice(struct { controls: []const []const u8 = &.{} }, gpa, platform_json, .{ .ignore_unknown_fields = true }) catch return out;
+    defer parsed.deinit();
+    for (parsed.value.controls) |c| {
+        if (std.mem.eql(u8, c, "check")) out.check = true;
+        if (std.mem.eql(u8, c, "button")) out.button = true;
+    }
+    return out;
+}
+
+test nativeControls {
+    const gpa = std.testing.allocator;
+    const both = nativeControls(gpa, "{\"os\":\"linux\",\"controls\":[\"check\",\"button\"]}");
+    try std.testing.expect(both.check and both.button);
+    const ios = nativeControls(gpa, "{\"controls\":[\"button\"]}");
+    try std.testing.expect(!ios.check and ios.button);
+    const none = nativeControls(gpa, "{}");
+    try std.testing.expect(!none.check and !none.button);
+}
 
 test "a display callback added during a frame runs on the following frame" {
     const Fake = struct {
