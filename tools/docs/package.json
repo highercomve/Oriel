@@ -1,0 +1,9 @@
+{
+  "name": "oriel-docs-tools",
+  "private": true,
+  "type": "module",
+  "description": "Docs tooling: diagrams.mjs renders the docs' Mermaid diagrams to SVG (gen-md.mjs needs nothing).",
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.4.2"
+  }
+}

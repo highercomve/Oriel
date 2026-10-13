@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import { withEngine } from "./engine-host.mjs";
 
 let maps = 0;
 class CountedMap extends Map { constructor(...args) { super(...args); maps++; } }
@@ -10,7 +11,7 @@ const host = {
   log() {}, now: () => 0, timer() {}, invoke() {}, frame() {}, focus() {}, scrollIntoView() {}, scrollTo() {}, ops() {},
   platform: '{"os":"linux"}', label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host, Map: CountedMap });
+const ctx = vm.createContext({ __host: withEngine(host), Map: CountedMap });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx);
 ctx.__oriel.boot(800, 600, false, false);
 ctx.__oriel.render();

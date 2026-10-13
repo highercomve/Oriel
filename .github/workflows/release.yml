@@ -44,6 +44,9 @@ jobs:
         run: node tools/test_isolation_runtime.mjs
       - name: docs/ matches the site's pages
         run: node tools/docs/gen-md.mjs --check
+
+      - name: The docs' diagram images match their Mermaid text
+        run: node tools/docs/diagrams.mjs --check
       - name: Type-check macOS without an SDK
         run: |
           zig build check -Dtarget=aarch64-macos

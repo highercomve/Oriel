@@ -274,7 +274,7 @@ pub const Canvas = struct {
         p.last_len = p.cmds.items.len;
         p.cmds = .empty;
         // Outside a frame callback: show it now.
-        if (r.e.in_call == 0 and !r.e.in_frame_hooks) r.e.paintNow();
+        if (r.e.in_call == 0 and !r.e.frame_hooks.running) r.e.paintNow();
         return true;
     }
 

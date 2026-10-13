@@ -14,6 +14,7 @@
 				<a href="$site.page('docs/examples').link()">Examples</a>
 				<h4>Core</h4>
 				<a href="$site.page('docs/concepts').link()">Concepts</a>
+				<a href="$site.page('docs/architecture').link()">Architecture</a>
 				<a href="$site.page('docs/commands').link()">Commands and events</a>
 				<a href="$site.page('docs/windows').link()">Windows</a>
 				<a href="$site.page('docs/security').link()">Security</a>

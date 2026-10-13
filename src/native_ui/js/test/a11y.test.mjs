@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body>
 <h2 id="h">Settings</h2>
@@ -27,7 +28,7 @@ const host = {
   ops: (json) => { for (const op of JSON.parse(json)) if (op[0] === "a") ops.push(op); },
   platform: JSON.stringify({ os: "macos" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();

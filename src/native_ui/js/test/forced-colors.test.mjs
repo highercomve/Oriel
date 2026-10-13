@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><head><style>
 body { color: #336699; background: #fafafa; }
@@ -39,7 +40,7 @@ function boot(platform) {
     ops: (json) => { for (const [k, id, x] of JSON.parse(json)) if (k === "p" || k === "c") if (x && typeof x === "object" && !Array.isArray(x)) props.set(id, { ...(props.get(id) || {}), ...x }); },
     platform: JSON.stringify(platform), label: "main", url: "index.html",
   };
-  const ctx = vm.createContext({ __host: host });
+  const ctx = vm.createContext({ __host: withEngine(host) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 900, false, false);
   ctx.__oriel.render();

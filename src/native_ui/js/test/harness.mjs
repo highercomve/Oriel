@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { withEngine } from "./engine-host.mjs";
 
 const dir = process.argv[2] || "../../../examples/showcase/web";
 const [w, h] = [+(process.argv[3] || 1120), +(process.argv[4] || 780)];
@@ -34,7 +35,7 @@ const host = {
 const calls = [];
 process.on("unhandledRejection", (e) => console.log("page: unhandled rejection:", e?.message || e));
 let opsCount = 0;
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 const t0 = performance.now();
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 const t1 = performance.now();

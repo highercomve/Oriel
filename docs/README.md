@@ -14,6 +14,7 @@ The same pages as the website, https://highercomve.github.io/Oriel/docs/.
 ## Core
 
 - [Concepts](concepts.md): How an Oriel app is put together: one native process, its windows and web views, the bridge between the page and Zig, modules, the build and the platform layer.
+- [Architecture](architecture.md): How Oriel is layered so one app, its modules and its Zig code run under three renderers that share everything below their front end.
 - [Commands and events](commands.md): The typed IPC between the page and Zig: commands the page invokes, events Zig emits, their JSON mapping, threads, errors, limits and the generated TypeScript.
 - [Windows](windows.md): The main window and any others: every WindowOptions field, labels, placement and overlays, the page's oriel.window API, and how each platform shows them.
 - [Security](security.md): What a page may load and call: the navigation policy, IPC tokens and capabilities, the Content-Security-Policy, response headers, external URLs and the isolation pattern.
