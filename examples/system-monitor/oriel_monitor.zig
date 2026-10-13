@@ -380,7 +380,7 @@ fn render_rows(e: *ui.Engine) !void {
         var buf: [2000]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buf);
         const fields = .{ .{ "pid", row.pid }, .{ "threads", row.threads } };
-        var bindings: [8]ui.Binding = undefined;
+        var bindings: [9]ui.Binding = undefined;
         var offset: usize = 0;
         inline for (fields, 0..) |field, j| {
             try writer.print("{d}", .{field[1]});
@@ -397,6 +397,9 @@ fn render_rows(e: *ui.Engine) !void {
         bindings[5] = .{ .name = "user", .value = row.user };
         bindings[6] = .{ .name = "state", .value = row.state };
         bindings[7] = .{ .name = "command", .value = row.command };
+        offset = writer.end;
+        try writer.print("Send SIGTERM to {s} ({d})", .{ row.name, row.pid });
+        bindings[8] = .{ .name = "kill_tip", .value = buf[offset..writer.end] };
         ids[i] = try Row.mount(&e.tree, rows_base + @as(i64, @intCast(i)) * 20, 11000, &bindings);
     }
     if (!try e.tree.stampKids(sid("rows"), ids[0..count])) return error.InvalidTemplate;
