@@ -2,6 +2,14 @@
 
 Notable changes in Oriel releases.
 
+## [0.14.1] — 2026-10-13
+
+### Fixed
+
+- The system monitor's packages (.deb, .rpm, .AppImage, .dmg, Windows
+  installer and zip) are back on the release: 0.14.0's moved the example's
+  sources to `src/` and its package builds still looked for the old files.
+
 ## [0.14.0] — 2026-10-13
 
 The Oriel renderer grows up enough to run a real interface: `.oriel` views
