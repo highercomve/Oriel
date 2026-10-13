@@ -314,6 +314,29 @@ tr:last-child td { border-bottom: 0; }
 .prose pre code { background: none; border: 0; padding: 0; font-size: inherit; color: inherit; }
 .prose pre .copy-btn { position: absolute; top: 8px; right: 8px; opacity: 0; transition: opacity .15s; }
 .prose pre:hover .copy-btn { opacity: 1; }
+/* Diagrams (site.js): the rendered image in the column, a tap enlarges it. */
+.prose figure.diagram { margin: 24px 0; }
+.diagram-open {
+  display: block; width: 100%; padding: 16px; cursor: zoom-in;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+}
+.diagram-open:focus-visible { outline: 2px solid var(--accent, #e8a33d); outline-offset: 2px; }
+.diagram-open img { display: block; width: 100%; height: auto; margin: 0 auto; border: 0; border-radius: 0; }
+.prose figure.diagram figcaption { margin-top: 6px; text-align: right; font-size: 13px; color: var(--faint); }
+@media (hover: hover) { .prose figure.diagram figcaption { visibility: hidden; } .diagram-open:hover + figcaption { visibility: visible; } }
+body.viewing-diagram { overflow: hidden; }
+.diagram-viewer {
+  position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+  background: var(--bg);
+}
+.diagram-bar { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.diagram-bar button {
+  min-width: 44px; height: 44px; font-size: 22px; line-height: 1; cursor: pointer;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+}
+.diagram-stage { flex: 1; display: flex; overflow: auto; padding: 16px; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y pinch-zoom; }
+/* Centered by auto margins: a diagram wider or taller than the screen still scrolls to its start. */
+.diagram-stage img { display: block; flex: none; max-width: none; height: auto; margin: auto; border: 0; }
 .doc-foot { margin-top: 48px; font-size: 14px; }
 .edit-link { color: var(--faint); }
 .pager { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px; }
@@ -449,5 +472,3 @@ tr:last-child td { border-bottom: 0; }
 
 /* Diagrams (site.js renders them with Mermaid). */
 .prose .block.mermaid { margin: 1.4em 0; }
-.prose pre.mermaid { background: var(--code-bg); border: 1px solid var(--border-strong); border-radius: 10px; padding: 18px; text-align: center; color: inherit; overflow-x: auto; }
-.prose pre.mermaid svg { max-width: 100%; height: auto; }

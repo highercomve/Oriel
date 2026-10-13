@@ -65,9 +65,17 @@ flowchart LR
 ```
 ````
 
-The site draws it (site/assets/site.js loads Mermaid only on pages that
-have one); the generator turns it into a ```` ```mermaid ```` block, which
-GitHub draws. Prefer `flowchart` and `sequenceDiagram`; keep a diagram to
+The site shows it as an image rendered ahead of time, readable on a phone
+(tap to enlarge): after adding or changing a diagram, run
+
+```sh
+(cd tools/docs && npm install)   # once: mermaid-cli, uses the system's Chrome
+node tools/docs/diagrams.mjs     # renders what changed into site/assets/diagrams/
+```
+
+and commit the SVGs, `manifest.json` and `zine.ziggy` with the page (CI
+runs `node tools/docs/diagrams.mjs --check`). `gen-md.mjs` turns the block
+into a ```` ```mermaid ```` block, which GitHub draws. Prefer `flowchart` and `sequenceDiagram`; keep a diagram to
 what the prose then explains, and label arrows with what crosses them.
 
 ## SuperMD the generator understands

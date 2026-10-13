@@ -135,7 +135,7 @@ flowchart TB
   Zig -->|"replies, events"| Runtime
 ```
 
-**One engine per window.** `src/native_ui/engine.zig` owns a window's
+**One engine per window.** `src/native_ui/engine_js.zig` owns a window's
 QuickJS context, its node tree and its backend, and everything it does runs
 on the UI thread, as a browser's main thread: the page's JavaScript,
 styling, layout and drawing. Async commands run on Oriel's worker pool, as
@@ -258,11 +258,12 @@ page can't get around it by replacing globals.
 
 | Part | Source | What it does |
 |---|---|---|
-| JavaScript engine | `src/native_ui/vendor/quickjs-ng`, `qjs_shim.c` | QuickJS-ng and the `__host` functions the runtime calls (`ops`, `text`, `leaf`, `stamp`, `frame`, `invoke`, `timer`, `focus`, `scrollTo`, `fileRead`, ...) |
-| Runtime | `src/native_ui/js/src/main.js`, bundled into `src/native_ui/runtime.js` | Timers, `requestAnimationFrame`, events and their default actions, forms, focus and Tab order, `location.hash`, `matchMedia`, storage |
+| JavaScript engine | `src/native_ui/vendor/quickjs-ng`, `qjs_shim.c` | QuickJS-ng and the `__host` functions the runtime calls (`ops`, `text`, `leaf`, `stamp`, `frame`, `invoke`, `timer`, `focus`, `scrollTo`, `tabNext`, `keyScroll`, `focusRing`, `fileRead`, ...) |
+| Runtime | `src/native_ui/js/src/main.js`, bundled into `src/native_ui/runtime.js` | Timers, `requestAnimationFrame`, events and their default actions, forms, focus, `location.hash`, `matchMedia`, storage |
+| Input rules | `src/native_ui/interaction.zig` (shared with the Oriel renderer) | Tab's order, what a click focuses, which keys activate, the focus ring, key scrolling and its glide ([Architecture]($link.page('docs/architecture').ref('shared'))) |
 | Page API | `src/core/bridge_api.js` | `window.oriel`, shared with the web view's bridge |
 | Native DOM | `src/native_ui/dom` (`store.zig`, `html.zig`, `selector.zig`, `serialize.zig`, `dom_qjs.c`), `js/src/dom/native.js` | The document in a Zig store; design in `docs/design/native-dom.md` |
-| Test DOM | `js/vendor/linkedom`, `js/src/dom/linkedom.js`, `js/test/runtime-linkedom.js` | The runtime on linkedom, for its Node tests (`npm test`); not in apps |
+| Test DOM | `js/vendor/linkedom`, `js/src/dom/linkedom.js`, `js/test/runtime-linkedom.js`, `js/test/engine-host.mjs` | The runtime on linkedom, for its Node tests (`npm test`), with the engine's input rules as WebAssembly (`zig build interaction-wasm`); not in apps |
 | Style engine | `js/src/css.js` | Sheets, the cascade, custom properties, `@media`, `@keyframes` |
 | Flattener | `js/src/render.js`, `html.js`, `icons.js` | Styled DOM to native nodes, incrementally; inline SVG as vector shapes |
 | Transitions, animations | `js/src/transitions.js`, `animations.js` | CSS transitions and `@keyframes`, only the animated nodes each frame |
@@ -270,7 +271,7 @@ page can't get around it by replacing globals.
 | Accessibility | `js/src/a11y.js`, `appkit.zig`, `uikit.zig` | Roles, names and states for the platform's screen reader |
 | Drag and drop | `js/src/dnd.js`, `blob.js`, `drop.zig` | `DragEvent`, `DataTransfer`, `File` for drops into the page |
 | Web storage | `src/native_ui/web_storage.zig` | `localStorage`, shared by the app's windows |
-| Engine | `src/native_ui/engine.zig` | One per window: QuickJS, the tree and the backend; commands, timers, frames |
+| Engine | `src/native_ui/engine_js.zig` on `engine_core.zig` | One per window: QuickJS, the tree and the backend; commands, timers; frames, painting and scrolling shared with the Oriel renderer |
 | Commands | `src/core/native_commands.zig` | A native page's command, dispatched the same way by every platform's bridge |
 | Node tree | `tree.zig`, `dom_stamp.zig`, `slab_pool.zig` | Yoga layout, paint order, sticky, tables, scrolling, hit testing, stamped rows |
 | Backends | `gtk.zig`, `win32.zig`, `appkit.zig`, `uikit.zig` with `apple_draw.zig`, `android.zig` with `OrielNative.kt` | One view draws the page; platform widgets for the fields |
@@ -618,6 +619,7 @@ an app is built:
 
 # [Related]($heading.id('related'))
 
+- [Architecture]($link.page('docs/architecture')): what the renderer shares with the others, layer by layer.
 - [Native UI reference]($link.page('docs/native-ui-reference')): every element, CSS property, event and API the renderer supports.
 - [Drag and drop]($link.page('docs/drag-and-drop')): files and text dropped into the page.
 - [Commands]($link.page('docs/commands')): how the page calls Zig, the same in both renderers.

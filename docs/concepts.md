@@ -371,5 +371,6 @@ Generated into `oriel_app.build`; an app doesn't write it by hand.
 - [Windows](windows.md), [Security](security.md),
   [Development](development.md), [CLI](cli.md).
 - [Modules](modules.md): everything an app can switch on.
+- [Architecture](architecture.md): the layers the renderers share, and where new behavior goes.
 - [Native renderer](native-renderer.md): the page without a web view.
 - [Comparison](comparison.md): Oriel next to Tauri and Vercel native.
