@@ -186,7 +186,7 @@ pub const Call = struct {
         const m = try gpa.dupe(u8, method);
         errdefer gpa.free(m);
         const in = try gpa.dupe(u8, input);
-        c.* = .{ .id = next_call_id.fetchAdd(1, .monotonic), .method = m, .input = in };
+        c.* = .{ .id = @as(u64, next_call_id.fetchAdd(1, .monotonic)), .method = m, .input = in };
         return c;
     }
 
@@ -200,7 +200,8 @@ pub const Call = struct {
     }
 };
 
-var next_call_id: std.atomic.Value(u64) = .init(1);
+// usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add.
+var next_call_id: std.atomic.Value(usize) = .init(1);
 
 /// How often a waiting caller looks at its cancel token.
 const poll_ms = 50;
