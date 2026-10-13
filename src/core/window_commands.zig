@@ -49,7 +49,7 @@ pub const WindowInfo = struct {
 /// Watches the page's `<meta name="theme-color">` (the first one whose
 /// `media` matches) and reports it as [r, g, b, a] (0-255), or null when
 /// there is none, through `oriel:window:setThemeColor`. Spliced into every
-/// WebView bridge, inside its closure (`invoke`, `windowApi`). The native
+/// WebView bridge, inside its closure (`invoke`; the label is `window.__oriel_window_label`). The native
 /// renderer does the same in main.js.
 pub const theme_color_js =
     \\  {
@@ -74,7 +74,7 @@ pub const theme_color_js =
     \\      const key = JSON.stringify(color);
     \\      if (key === sent) return;
     \\      sent = key;
-    \\      Promise.resolve(invoke("oriel:window:setThemeColor", { label: windowApi.current().label, color })).catch(() => {});
+    \\      Promise.resolve(invoke("oriel:window:setThemeColor", { label: window.__oriel_window_label, color })).catch(() => {});
     \\    };
     \\    const start = () => {
     \\      update();
@@ -336,4 +336,11 @@ test "emitTo rejects cross-window events without modification permission" {
     const a = arena_state.allocator();
     const args = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"label\":\"main\",\"event\":\"deep-link\"}", .{});
     try std.testing.expectError(error.PermissionDenied, dispatch(.{}, .{}, a, security.app_origin, "child", "oriel:window:emitTo", args));
+}
+
+test "theme_color_js uses only what the bridge's closure has" {
+    // The page API (windowApi, ...) lives inside orielApi() in bridge_api.js,
+    // not in the bridge closure this is spliced into.
+    try std.testing.expect(std.mem.indexOf(u8, theme_color_js, "windowApi") == null);
+    try std.testing.expect(std.mem.indexOf(u8, theme_color_js, "window.__oriel_window_label") != null);
 }
