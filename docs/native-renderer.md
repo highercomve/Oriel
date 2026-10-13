@@ -503,6 +503,8 @@ Debugging aids; on Android set them with `debug.oriel.env`
 |---|---|---|
 | `ORIEL_NUI_TRACE=1` | all | Log the ops; on Android also each draw and every 120th display frame (tag `OrielNui`); on macOS clicks. |
 | `ORIEL_NUI_DUMP=1` | all | The laid-out tree after each layout (Android: what `NuiView` holds: kind, frame, colors, text). |
+| `ORIEL_NUI_DUMP=props` | desktop | The laid-out tree with each node's props as JSON (what the page computed: porting it to `.oriel` views). |
+| `ORIEL_NUI_DUMP_AT=<seconds>` | desktop | One dump that many seconds after boot (after the UI changed: a panel opened); both renderers. |
 | `ORIEL_NUI_MEM=1` | Android | The JavaScript heap and the node count. |
 | `ORIEL_NUI_AXDUMP=1` | all | The accessibility tree as a backend builds it, after each change. |
 | `ORIEL_NUI_SNAPSHOT=<dir>` | macOS | Each window as drawn, fields included, to `<dir>/<label>.png` after each layout. |

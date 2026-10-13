@@ -16,14 +16,23 @@ pub fn build(b: *std.Build) void {
         .clipboard = true,
     });
     const model_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("monitor_model.zig"),
+        .root_source_file = b.path("src/monitor_model.zig"),
         .target = target,
         .optimize = optimize,
     }) });
     b.step("test", "Test histories and process filtering/sorting").dependOn(&b.addRunArtifact(model_tests).step);
+    // The .oriel views, embedded by name (@embedFile("monitor.oriel")):
+    // views/ is outside src/, the app module's root.
+    const view_names = [_][]const u8{ "monitor", "process", "disk", "settings", "actions", "confirm" };
+    var views: [view_names.len]std.Build.Module.Import = undefined;
+    for (view_names, &views) |name, *view| view.* = .{
+        .name = b.fmt("{s}.oriel", .{name}),
+        .module = b.createModule(.{ .root_source_file = b.path(b.fmt("views/{s}.oriel", .{name})) }),
+    };
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-system-monitor",
-        .root_source_file = b.path("main.zig"),
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &views,
         .frontend = .{
             .dir = if (renderer == .oriel) "views" else "web",
             .dist = ".",

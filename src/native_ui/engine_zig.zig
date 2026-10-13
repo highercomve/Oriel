@@ -81,12 +81,15 @@ pub const Engine = struct {
     }
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
         e.dark = dark;
+        e.tree.dark = dark;
         e.coarse = coarse;
         e.driver.boot(e) catch |err| {
             log.err("boot: {s}", .{@errorName(err)});
             return;
         };
         e.booted = true;
+        core.scheduleDump(e);
+        if (std.c.getenv("ORIEL_NUI_DUMP") != null and std.c.getenv("ORIEL_NUI_DUMP_AT") == null) core.dumpNow(e);
         e.paintNow();
         log.info(".oriel view booted: {d} nodes, no JavaScript runtime", .{e.tree.nodes.count()});
     }
@@ -231,6 +234,7 @@ pub const Engine = struct {
     }
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == core.display_frame_timer) return e.displayFrame(1000.0 / 60.0);
+        if (id == core.dump_timer) return core.dumpNow(e);
         e.in_call += 1;
         if (e.driver.timer) |cb| cb(e, id) catch |err| log.err("timer: {s}", .{@errorName(err)});
         e.in_call -= 1;
@@ -271,7 +275,10 @@ pub const Engine = struct {
         e.tree.width = width;
         e.tree.height = height;
         e.dark = dark;
+        e.tree.dark = dark;
         e.tree.dirty = true;
+        // .oriel media blocks first: the app's resized sees the new styles.
+        e.tree.refreshMedia() catch |err| log.err("media: {s}", .{@errorName(err)});
         if (e.driver.resized) |cb| cb(e) catch |err| log.err("resize: {s}", .{@errorName(err)});
         e.paintNow();
     }

@@ -30,12 +30,7 @@ pub fn View(comptime source: []const u8) type {
         pub fn prepare(t: *tree.Tree, style_base: i64) !void {
             @setEvalBranchQuota(1000000);
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
-                const props = comptime blk: {
-                    var p = n.props;
-                    if (n.kind == .button) p.runs = &.{.{ .t = p.val orelse "", .sz = p.fz orelse 14, .w = p.fwt orelse 400, .ff = p.ff, .mono = p.mono, .lh = p.lh, .c = p.col orelse .{ 230, 232, 236, 1 }, .i = p.it }};
-                    if (n.kind == .text) p.runs = &.{.{ .t = "", .sz = p.fz orelse 14, .w = p.fwt orelse 400, .ff = p.ff, .mono = p.mono, .lh = p.lh, .c = p.col orelse .{ 230, 232, 236, 1 }, .i = p.it }};
-                    break :blk p;
-                };
+                const props = comptime propsOf(n);
                 // A push button the platform doesn't host is drawn: a
                 // clickable text with its label.
                 const drawn_button = comptime blk: {
@@ -51,6 +46,7 @@ pub fn View(comptime source: []const u8) type {
             // Call prepare outside a timed construction loop.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (n.kind == .text) _ = try resolve(n.text, bindings);
+                inline for (n.runs) |r| _ = try resolve(r.t, bindings);
                 if (comptime isBinding(n.props.tip)) _ = try resolve(n.props.tip.?, bindings);
                 if (comptime isBinding(n.props.al)) _ = try resolve(n.props.al.?, bindings);
                 if (t.get(base + @as(i64, i))) |existing| {
@@ -64,8 +60,8 @@ pub fn View(comptime source: []const u8) type {
                 const text = if (n.kind == .text) try resolve(n.text, bindings) else if (n.kind == .button) n.props.val orelse "" else "";
                 if (t.get(node_id)) |existing| {
                     if (existing.kind != kind or existing.leaf_style != style_id) return error.IdentityChanged;
-                    if (n.kind == .text and !try t.updateText(node_id, text)) return error.InvalidTextNode;
-                } else if (kind != .view and kind != .text) {
+                    if (n.kind == .text and n.runs.len == 0 and !try t.updateText(node_id, text)) return error.InvalidTextNode;
+                } else if ((kind != .view and kind != .text) or n.runs.len > 0) {
                     try t.createUiNode(node_id, kind, style_id);
                 } else if (!try t.createLeaf(node_id, kind, style_id, text)) return error.InvalidTemplate;
                 // The template owns its native subtree. Removing a view
@@ -89,6 +85,20 @@ pub fn View(comptime source: []const u8) type {
                 inline for (children, 0..) |j, at| ids[at] = base + @as(i64, j);
                 if (children.len > 0 and !try t.stampKids(base + @as(i64, i), &ids)) return error.InvalidTemplate;
             }
+            // Text with spans: their bound runs.
+            inline for (plan.nodes[0..plan.len], 0..) |n, i| {
+                if (comptime hasBoundRun(n.runs)) try setRuns(t, base + @as(i64, i), n.runs, bindings);
+            }
+            // The media blocks the window matches (a remount keeps the
+            // variant it shows).
+            if (comptime plan.media_len > 0) {
+                var shown: u32 = 0;
+                for (t.media_views.items) |v| if (v.base == base) {
+                    shown = v.mask;
+                };
+                shown = try refresh(t, base, shown);
+                try t.addMediaView(.{ .base = base, .refresh = refresh, .mask = shown });
+            }
             // Bound tooltips and labels.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (comptime isBinding(n.props.tip)) try t.setBound(base + @as(i64, i), .tip, try resolve(n.props.tip.?, bindings));
@@ -102,7 +112,134 @@ pub fn View(comptime source: []const u8) type {
             }
             return base;
         }
+
+        // --- Media blocks: each combination is a compiled variant ----------
+
+        const variant_count: u32 = @as(u32, 1) << @intCast(plan.media_len);
+
+        /// Every variant, parsed once (bit i of the index: media block i).
+        const variants: [variant_count]markup.Plan = blk: {
+            var out: [variant_count]markup.Plan = undefined;
+            out[0] = plan;
+            for (1..variant_count) |m| out[m] = markup.parseVariant(source, m);
+            break :blk out;
+        };
+
+        /// The variant the window matches: bit i, media block i.
+        fn maskOf(t: *const tree.Tree) u32 {
+            var m: u32 = 0;
+            inline for (plan.media[0..plan.media_len], 0..) |c, i| {
+                if (c.matches(t.width, t.dark)) m |= @as(u32, 1) << i;
+            }
+            return m;
+        }
+
+        /// Switch the view at `base` to the variant the window matches (it
+        /// shows `shown`); the variant it shows now.
+        fn refresh(t: *tree.Tree, base: i64, shown: u32) anyerror!u32 {
+            const m = maskOf(t);
+            if (m == shown) return m;
+            switch (m) {
+                inline 0...variant_count - 1 => |cm| try applyVariant(t, base, cm),
+                else => unreachable,
+            }
+            return m;
+        }
+
+        /// The props some variant sets otherwise, from variant `m` (a
+        /// text's runs keep their texts).
+        fn applyVariant(t: *tree.Tree, base: i64, comptime m: u32) !void {
+            @setEvalBranchQuota(4000000);
+            inline for (0..plan.len) |i| {
+                const fields = comptime styledFields(i);
+                const runs_change = comptime runsChange(i);
+                if (fields.len > 0 or runs_change) if (t.get(base + @as(i64, @intCast(i)))) |n| {
+                    const want = comptime propsOf(variants[m].nodes[i]);
+                    var props = n.props;
+                    inline for (fields) |f| @field(props, f) = @field(want, f);
+                    var runs: [if (want.runs) |r| r.len else 0]tree.Run = undefined;
+                    if (runs_change) if (n.props.runs) |current| if (current.len == runs.len) {
+                        inline for (want.runs.?, 0..) |r, j| {
+                            runs[j] = r;
+                            runs[j].t = current[j].t;
+                        }
+                        props.runs = &runs;
+                    };
+                    try t.updateUiProps(n.id, props);
+                };
+            }
+        }
+
+        /// The props (but runs) of node `i` that differ in some variant.
+        fn styledFields(comptime i: usize) []const []const u8 {
+            var out: []const []const u8 = &.{};
+            const base_props = propsOf(plan.nodes[i]);
+            for (std.meta.fields(tree.Props)) |f| {
+                if (std.mem.eql(u8, f.name, "runs")) continue;
+                for (1..variant_count) |m| {
+                    if (!same(f.type, @field(base_props, f.name), @field(propsOf(variants[m].nodes[i]), f.name))) {
+                        out = out ++ &[_][]const u8{f.name};
+                        break;
+                    }
+                }
+            }
+            return out;
+        }
+
+        fn runsChange(comptime i: usize) bool {
+            const a = propsOf(plan.nodes[i]).runs orelse return false;
+            for (1..variant_count) |m| {
+                const b = propsOf(variants[m].nodes[i]).runs orelse continue;
+                if (a.len != b.len) return true;
+                for (a, b) |x, y| {
+                    var y2 = y;
+                    y2.t = x.t;
+                    if (!same(tree.Run, x, y2)) return true;
+                }
+            }
+            return false;
+        }
     };
+}
+
+/// A template element's props as the tree takes them: a text's or a push
+/// button's runs from its style.
+fn propsOf(comptime n: markup.Spec) tree.Props {
+    var p = n.props;
+    if (n.kind == .button) p.runs = &.{.{ .t = p.val orelse "", .sz = p.fz orelse 14, .w = p.fwt orelse 400, .ff = p.ff, .mono = p.mono, .lh = p.lh, .c = p.col orelse .{ 230, 232, 236, 1 }, .i = p.it }};
+    if (n.kind == .text) p.runs = if (n.runs.len > 0) runsOf(n.runs, p) else &.{.{ .t = "", .sz = p.fz orelse 14, .w = p.fwt orelse 400, .ff = p.ff, .mono = p.mono, .lh = p.lh, .c = p.col orelse .{ 230, 232, 236, 1 }, .i = p.it }};
+    return p;
+}
+
+/// Two compile-time values alike, deeply (slices by content).
+fn same(comptime T: type, comptime a: T, comptime b: T) bool {
+    switch (@typeInfo(T)) {
+        .optional => |o| {
+            if (a == null or b == null) return a == null and b == null;
+            return same(o.child, a.?, b.?);
+        },
+        .pointer => |ptr| {
+            if (ptr.size != .slice) return a == b;
+            if (a.len != b.len) return false;
+            for (a, b) |x, y| if (!same(ptr.child, x, y)) return false;
+            return true;
+        },
+        .array => |arr| {
+            for (a, b) |x, y| if (!same(arr.child, x, y)) return false;
+            return true;
+        },
+        .@"struct" => |st| {
+            inline for (st.fields) |f| if (!same(f.type, @field(a, f.name), @field(b, f.name))) return false;
+            return true;
+        },
+        .@"union" => {
+            if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+            return switch (a) {
+                inline else => |x, tag| same(@TypeOf(x), x, @field(b, @tagName(tag))),
+            };
+        },
+        else => return a == b,
+    }
 }
 
 /// The node kind a template element gets on this platform: a checkbox or
@@ -178,12 +315,73 @@ fn contentText(n: *const tree.Node, buf: []u8, len: *usize, depth: usize) void {
     for (n.kids.items) |k| contentText(k, buf, len, depth + 1);
 }
 
+/// Show or hide a view part: the node and what's in it (`visible` is
+/// inherited, as in the markup; the platform's widgets in it hide too).
+pub fn setVisible(t: *tree.Tree, id: i64, on: bool) !void {
+    const n = t.get(id) orelse return error.UnknownNode;
+    try setVisibleIn(t, n, on, 0);
+}
+
+fn setVisibleIn(t: *tree.Tree, n: *tree.Node, on: bool, depth: usize) !void {
+    if (depth > tree.max_walk_depth) return tree.warnTooDeep("setVisible");
+    if ((n.props.vis orelse true) != on) {
+        var props = n.props;
+        props.vis = on;
+        try t.updateUiProps(n.id, props);
+    }
+    for (n.kids.items) |k| try setVisibleIn(t, k, on, depth + 1);
+}
+
 /// Uses the existing platform command pool. Arguments are copied by the
 /// backend before returning; completion retains request identity and status.
 pub fn invoke(e: *Engine, id: u32, command: []const u8, args: anytype) !void {
     const json = try std.json.Stringify.valueAlloc(e.gpa, args, .{});
     defer e.gpa.free(json);
     e.backend.invoke(e.backend.ctx, e, id, command, json);
+}
+
+/// A <text>'s runs as the tree draws them: each span's style over the
+/// text's own (a bound run's text comes at mount: setRuns).
+fn runsOf(comptime runs: []const markup.RunSpec, comptime p: tree.Props) []const tree.Run {
+    var out: [runs.len]tree.Run = undefined;
+    for (runs, 0..) |r, i| out[i] = .{
+        .t = if (isBinding(r.t)) "" else r.t,
+        .sz = if (r.fz) |v| v else p.fz orelse 14,
+        .w = if (r.fwt) |v| v else p.fwt orelse 400,
+        .ff = r.ff orelse p.ff,
+        .mono = r.mono orelse p.mono,
+        .i = r.it orelse p.it,
+        .lh = p.lh,
+        .c = if (r.col) |c| c else p.col orelse .{ 230, 232, 236, 1 },
+    };
+    const final = out;
+    return &final;
+}
+
+fn hasBoundRun(comptime runs: []const markup.RunSpec) bool {
+    for (runs) |r| if (isBinding(r.t)) return true;
+    return false;
+}
+
+/// A text's runs with its bindings' values, sent only when one changed.
+fn setRuns(t: *tree.Tree, id: i64, comptime specs: []const markup.RunSpec, bindings: []const Binding) !void {
+    const n = t.get(id) orelse return;
+    const current = n.props.runs orelse return;
+    if (current.len != specs.len) return error.InvalidTextNode;
+    var runs: [specs.len]tree.Run = undefined;
+    var changed = false;
+    inline for (specs, 0..) |spec, i| {
+        runs[i] = current[i];
+        if (comptime isBinding(spec.t)) {
+            const value = try resolve(spec.t, bindings);
+            if (!std.mem.eql(u8, value, current[i].t)) changed = true;
+            runs[i].t = value;
+        }
+    }
+    if (!changed) return;
+    var props = n.props;
+    props.runs = &runs;
+    try t.updateUiProps(id, props);
 }
 
 fn isBinding(comptime v: ?[]const u8) bool {
@@ -258,6 +456,74 @@ test "bound tooltips and labels are owned and follow the bindings" {
     try std.testing.expectEqualStrings("stop", n.props.tip.?);
     try std.testing.expectEqualStrings("Terminate bash", t.ax.get(100).?.n.?);
     try std.testing.expectError(error.MissingBinding, V.mount(&t, 100, 10, &.{}));
+}
+
+test "text with spans: styled runs, bound ones updated only when they change" {
+    const measure = struct {
+        fn f(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    }.f;
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, measure);
+    defer t.deinit();
+    const V = View("<text id=\"score\" color=\"#8f97a8\">Score <span color=\"#e8eaee\" font-weight=\"700\">{score}</span></text>");
+    try V.prepare(&t, 10);
+    var value = [_]u8{'7'};
+    _ = try V.mount(&t, 100, 10, &.{.{ .name = "score", .value = &value }});
+    value[0] = 'x';
+    const n = t.get(100).?;
+    const runs = n.props.runs.?;
+    try std.testing.expectEqual(@as(usize, 2), runs.len);
+    try std.testing.expectEqualStrings("Score ", runs[0].t);
+    try std.testing.expectEqual(tree.Color{ 143, 151, 168, 1 }, runs[0].c);
+    try std.testing.expectEqualStrings("7", runs[1].t);
+    try std.testing.expectEqual(@as(f32, 700), runs[1].w);
+    _ = try V.mount(&t, 100, 10, &.{.{ .name = "score", .value = "42" }});
+    try std.testing.expectEqualStrings("42", t.get(100).?.props.runs.?[1].t);
+}
+
+test "media blocks switch a mounted view's styles with the window's width" {
+    const measure = struct {
+        fn f(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    }.f;
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, measure);
+    defer t.deinit();
+    const V = View(
+        \\<style>
+        \\  top: padding=10 column-gap=14
+        \\  title: font-size=16
+        \\  @media (max-width: 520) { top: padding=8 column-gap=10  title: display=none font-size=12 }
+        \\</style>
+        \\<row id="top" class="top"><text id="title" class="title">Breakout</text><text id="score">{score}</text></row>
+    );
+    t.width = 600;
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{.{ .name = "score", .value = "7" }});
+    const top = t.get(V.id("top", 100)).?;
+    const title = t.get(V.id("title", 100)).?;
+    try std.testing.expectEqual(@as(?f32, 14), top.props.cg);
+    try std.testing.expect(!title.props.none);
+    t.width = 400;
+    try t.refreshMedia();
+    try std.testing.expectEqual(@as(?f32, 10), t.get(top.id).?.props.cg);
+    try std.testing.expectEqual(@as(f32, 8), t.get(top.id).?.props.pad.?[0].px);
+    try std.testing.expect(t.get(title.id).?.props.none);
+    // A text's runs follow, keeping their text.
+    try std.testing.expectEqual(@as(f32, 12), t.get(title.id).?.props.runs.?[0].sz);
+    try std.testing.expectEqualStrings("Breakout", t.get(title.id).?.props.runs.?[0].t);
+    // A remount keeps the variant (and a bound text keeps its value).
+    _ = try V.mount(&t, 100, 10, &.{.{ .name = "score", .value = "8" }});
+    try std.testing.expect(t.get(title.id).?.props.none);
+    t.width = 900;
+    try t.refreshMedia();
+    try std.testing.expectEqual(@as(?f32, 14), t.get(top.id).?.props.cg);
+    try std.testing.expect(!t.get(title.id).?.props.none);
+    try std.testing.expectEqual(@as(f32, 16), t.get(title.id).?.props.runs.?[0].sz);
+    try std.testing.expectEqualStrings("8", t.get(V.id("score", 100)).?.props.runs.?[0].t);
 }
 
 test "typed controls own dynamic values and retain template identity" {

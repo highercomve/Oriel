@@ -116,7 +116,10 @@ small { font-size: 12px; }
 #help { padding: 0 14px 10px; font-size: 12px; text-align: center; }
 
 @media (max-width: 520px) {
-  #top { gap: 10px; padding: 8px 10px; }
+  /* One line: Settings never drops below the score as it grows. */
+  #top { flex-wrap: nowrap; gap: 6px; padding: 8px 10px; }
+  #top button { padding: 6px 10px; }
   .title { display: none; }
   #board { margin: 6px; }
+  .panel { left: 10px; width: auto; }
 }
