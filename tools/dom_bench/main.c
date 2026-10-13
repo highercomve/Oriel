@@ -81,6 +81,20 @@ int main(int argc, char **argv) {
     }
     JS_FreeValue(ctx, global);
     if (!status) status = eval_file(ctx, argv[1]);
+    // MutationObserver callbacks and other promise jobs run after the script,
+    // as they do after each call into a real native page.
+    JSContext *job_ctx;
+    int job;
+    while (!status && (job = JS_ExecutePendingJob(rt, &job_ctx)) != 0) {
+        if (job < 0) {
+            JSValue e = JS_GetException(job_ctx);
+            const char *s = JS_ToCString(job_ctx, e);
+            fprintf(stderr, "pending job: %s\n", s ? s : "?");
+            JS_FreeCString(job_ctx, s);
+            JS_FreeValue(job_ctx, e);
+            status = -1;
+        }
+    }
     // The page's references first, then the DOM, then the context.
     JSValue g = JS_GetGlobalObject(ctx);
     JSAtom doc = JS_NewAtom(ctx, "document");

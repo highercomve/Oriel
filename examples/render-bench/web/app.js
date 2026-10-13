@@ -12,6 +12,10 @@ const NATIVE = /^Oriel native/.test(navigator.userAgent);
 // ORIEL_NUI_TRACE: a log line right before each timed row change (the native
 // renderer logs each draw after it: logcat's timestamps give the on-screen time).
 let trace = false;
+let rowsOnly = false;
+let memoryScope = "all processes";
+const memoryKey = (when) => `memory ${when} (PSS, ${memoryScope})`;
+const privateMemoryKey = (when) => `private memory ${when} (${memoryScope})`;
 const mark = (name, r) => { if (trace) console.info(`bench mark: ${name} #${r}`); };
 
 const results = {};
@@ -255,7 +259,17 @@ async function runPower(seconds) {
     do { await new Promise((d) => setTimeout(d, 250)); res = await invoke("zig_balls_result"); } while (!res.done);
     return res.frames;
   }]);
-  const out = [];
+  // Hold a visible, identical drawing area for all power scenarios. A growing
+  // results table used to shrink the canvas and could push it off-screen.
+  const stage = $("stage"), rows = $("rows");
+  const previousRows = rows.innerHTML;
+  const previousStyle = stage.getAttribute("style");
+  rows.textContent = "";
+  stage.style.flex = "0 0 240px";
+  stage.style.width = "320px";
+  stage.style.height = "240px";
+  await frame();
+  const out = [], powerRows = [];
   for (const [i, [name, work]] of scenarios.entries()) {
     $("status").textContent = `Power ${i + 1} of ${scenarios.length}: ${name} (${seconds} s)…`;
     const r = await measurePower(name, work);
@@ -264,9 +278,12 @@ async function runPower(seconds) {
     tr.innerHTML = r.error
       ? `<td>power: ${name}</td><td colspan="2" class="muted">${r.error}</td>`
       : `<td>power: ${name}</td><td>${r.mw} mW</td><td class="muted">${r.joules} J in ${r.seconds} s${r.fps !== undefined ? ` · ${r.fps} fps · ${r.mj_per_frame} mJ/frame` : ""}${r.charge_uah !== undefined ? ` · ${r.charge_uah} µAh` : ""} · ${r.source}${r.plugged ? " · ON A CHARGER: not meaningful" : ""}</td>`;
-    $("rows").append(tr);
+    powerRows.push(tr);
   }
-  $("stage").textContent = "";
+  stage.textContent = "";
+  if (previousStyle === null) stage.removeAttribute("style"); else stage.setAttribute("style", previousStyle);
+  rows.innerHTML = previousRows;
+  for (const tr of powerRows) rows.append(tr);
   $("status").textContent = "Power done.";
   results.power = out;
   return out;
@@ -281,6 +298,7 @@ async function run() {
     () => timeAnimation(200, 2000),
     () => timeCanvasBalls(200, 2000), () => timeCanvasBalls(1000, 2000),
   ];
+  if (rowsOnly) steps.length = 4;
   for (const [i, step] of steps.entries()) {
     $("status").textContent = `Running ${i + 1} of ${steps.length}…`;
     await step();
@@ -290,8 +308,8 @@ async function run() {
   // As a window that has been idle a moment: the native renderer gives a
   // removed list's memory back a while after (Tree.trimPools).
   await new Promise((r) => setTimeout(r, 2500));
-  show("memory after the tests (PSS, all processes)", [await invoke("pss_mb")], "MB");
-  show("private memory after the tests (all processes)", [await invoke("private_mb")], "MB");
+  show(memoryKey("after the tests"), [await invoke("pss_mb")], "MB");
+  show(privateMemoryKey("after the tests"), [await invoke("private_mb")], "MB");
   $("status").textContent = "Done.";
   $("run").disabled = false;
   return results;
@@ -300,28 +318,35 @@ async function run() {
 (async () => {
   const startup = await invoke("since_start");
   trace = await invoke("trace_on").catch(() => false);
+  rowsOnly = await invoke("rows_only_on").catch(() => false);
+  memoryScope = await invoke("memory_scope").catch(() => "all processes");
+  if (memoryScope === "app process tree") {
+    $("memory-note").textContent = "For WebView comparisons, memory excludes Android’s isolated renderer.";
+    $("memory-note").style.display = "block";
+  }
   const renderer = NATIVE ? "native" : "WebView";
   $("renderer").textContent = renderer;
   show("startup → page script", [startup]);
   await frame();
   show("startup → first frame", [await invoke("since_start")]);
-  show("memory at start (PSS, all processes)", [await invoke("pss_mb")], "MB");
-  show("private memory at start (all processes)", [await invoke("private_mb")], "MB");
-  await run();
+  show(memoryKey("at start"), [await invoke("pss_mb")], "MB");
+  show(privateMemoryKey("at start"), [await invoke("private_mb")], "MB");
+  const powerOnly = await invoke("power_only_on").catch(() => false);
+  if (!powerOnly) await run();
   // A second round: memory that grows again is a leak, memory reused from the
   // first round isn't.
-  if (await invoke("bench_mode_on")) {
-    const first = results["memory after the tests (PSS, all processes)"];
-    const firstPrivate = results["private memory after the tests (all processes)"];
+  if (!powerOnly && await invoke("bench_mode_on")) {
+    const first = results[memoryKey("after the tests")];
+    const firstPrivate = results[privateMemoryKey("after the tests")];
     await run();
-    results["memory after a second round (PSS, all processes)"] = results["memory after the tests (PSS, all processes)"];
-    results["private memory after a second round (all processes)"] = results["private memory after the tests (all processes)"];
-    results["memory after the tests (PSS, all processes)"] = first;
-    results["private memory after the tests (all processes)"] = firstPrivate;
+    results[memoryKey("after a second round")] = results[memoryKey("after the tests")];
+    results[privateMemoryKey("after a second round")] = results[privateMemoryKey("after the tests")];
+    results[memoryKey("after the tests")] = first;
+    results[privateMemoryKey("after the tests")] = firstPrivate;
   }
   $("run").addEventListener("click", run);
   $("power").addEventListener("click", async () => { $("power").disabled = true; await runPower(60); $("power").disabled = false; });
   const powerSecs = await invoke("power_seconds_set").catch(() => 0);
   if (powerSecs > 0) await runPower(powerSecs);
-  if (await invoke("bench_mode_on")) await invoke("report", { json: JSON.stringify({ renderer, results }) });
+  if (await invoke("bench_mode_on")) await invoke("report", { json: JSON.stringify({ renderer, memory_scope: memoryScope, ...(powerOnly ? { workload: "power" } : rowsOnly ? { workload: "rows" } : {}), ...(powerSecs > 0 ? { power_viewport: { width: 320, height: 240 } } : {}), results }) });
 })();

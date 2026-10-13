@@ -134,7 +134,6 @@ pub const Gradient = struct {
     /// position, -20 here), one per stop.
     sp: ?[]const f32 = null,
 
-
     pub const Stop = [5]f32;
     /// Stops past this many are dropped (resolve's scratch is sized by it).
     pub const max_stops = 256;
@@ -676,6 +675,18 @@ pub const Dim = union(enum) {
         return if (d) |x| x == .calc else false;
     }
 
+    /// Typed templates use the same wire representation as the native bridge.
+    pub fn jsonStringify(d: Dim, writer: anytype) !void {
+        var buf: [96]u8 = undefined;
+        switch (d) {
+            .px => |x| try writer.write(x),
+            .pct => |x| try writer.write(std.fmt.bufPrint(&buf, "{d}%", .{x}) catch unreachable),
+            .calc => |c| try writer.write(std.fmt.bufPrint(&buf, "{d}%{s}{d}px", .{ c.pct, if (c.px >= 0) "+" else "", c.px }) catch unreachable),
+            .auto => try writer.write("auto"),
+            .none => try writer.write("none"),
+        }
+    }
+
     pub fn jsonParse(a: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Dim {
         return fromValue(try std.json.innerParse(std.json.Value, a, source, options));
     }
@@ -696,6 +707,10 @@ pub const Corner = struct {
         if (v == .array and v.array.items.len == 2) return .{ .x = Dim.fromValue(v.array.items[0]), .y = Dim.fromValue(v.array.items[1]) };
         const d = Dim.fromValue(v);
         return .{ .x = d, .y = d };
+    }
+
+    pub fn jsonStringify(c: Corner, writer: anytype) !void {
+        try writer.write(.{ c.x, c.y });
     }
 
     pub fn jsonParse(a: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Corner {
@@ -1233,6 +1248,8 @@ pub const Node = struct {
     props: Props = .{},
     /// The value the page last set (fields); null once the backend took it.
     pending_value: ?[]const u8 = null,
+    /// A value already edited by the native control; never echoed back.
+    ui_value: ?[]u8 = null,
     /// For a canvas node: its drawing program, from props `cv` (in the
     /// props arena) or host.canvas (in canvas_arena, kept across props).
     canvas: ?[]const CanvasCmd = null,
@@ -1626,6 +1643,7 @@ pub const Tree = struct {
             t.gpa.destroy(ar);
         }
         t.dropTextOverride(n);
+        if (n.ui_value) |value| t.gpa.free(value);
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
         n.arena.deinit();
@@ -1660,6 +1678,52 @@ pub const Tree = struct {
         t.leaf_style_bytes += json.len;
         if (t.on_leaf_style) |cb| cb(t.measure_ctx, id, json);
         return true;
+    }
+
+    /// .oriel styles are compile-time values: their slices live with the
+    /// executable. Register them directly, without a JSON round trip.
+    pub fn defineStaticStyle(t: *Tree, id: i64, comptime props: Props) !void {
+        if (t.leaf_styles.contains(id)) return;
+        if (t.leaf_styles.count() >= 1024) return error.TooManyStyles;
+        const style = try t.gpa.create(LeafStyle);
+        errdefer t.gpa.destroy(style);
+        style.* = .{ .arena = .init(t.gpa), .props = props, .yn = yg.YGNodeNewWithConfig(t.config) };
+        errdefer yg.YGNodeFree(style.yn);
+        applyYogaStyle(style.yn, props);
+        const json = if (t.on_leaf_style != null) try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false }) else null;
+        defer if (json) |bytes| t.gpa.free(bytes);
+        try t.leaf_styles.put(t.gpa, id, style);
+        // Existing Android hosts mirror each immutable style once. Nodes
+        // and text updates still use their packed native records.
+        if (t.on_leaf_style) |cb| {
+            cb(t.measure_ctx, id, json.?);
+        }
+    }
+
+    /// A canvas has typed static props too, while existing backends receive
+    /// its initial metadata through their usual property hook.
+    pub fn createUiCanvas(t: *Tree, id: i64, style_id: i64) !void {
+        try t.createUiNode(id, .canvas, style_id);
+    }
+
+    pub fn createUiNode(t: *Tree, id: i64, kind: Kind, style_id: i64) !void {
+        if (t.nodes.contains(id)) return error.DuplicateNode;
+        const style = t.leaf_styles.get(style_id) orelse return error.UnknownStyle;
+        try t.create(id, kind);
+        errdefer t.destroy(id);
+        const n = t.get(id).?;
+        n.props = style.props;
+        n.pending_value = n.props.val;
+        yg.YGNodeCopyStyle(n.yn, style.yn);
+        n.leaf_style = style_id;
+        if (t.on_props) |cb| {
+            const json = try std.json.Stringify.valueAlloc(t.gpa, n.props, .{ .emit_null_optional_fields = false });
+            defer t.gpa.free(json);
+            const value = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
+            defer value.deinit();
+            cb(t.measure_ctx, n, value.value);
+        }
+        t.dirty = true;
     }
 
     /// Create a new text/view node without reparsing and copying its style.
@@ -1791,6 +1855,11 @@ pub const Tree = struct {
     /// the tree stamped, after the first, which the page's ops made).
     pub fn stampKids(t: *Tree, list_id: i64, ids: []const i64) !bool {
         const list = t.nodes.get(list_id) orelse return false;
+        same: {
+            if (list.kids.items.len != ids.len) break :same;
+            for (list.kids.items, ids) |child, id| if (child.id != id) break :same;
+            return true;
+        }
         const Ids = struct {
             ids: []const i64,
             fn len(x: @This()) usize {
@@ -2207,6 +2276,8 @@ pub const Tree = struct {
     pub fn destroy(t: *Tree, id: i64) void {
         t.dropAx(id);
         const n = t.nodes.get(id) orelse return;
+        t.dirty = true;
+        t.paint_dirty = true;
         _ = t.nodes.remove(id);
         t.deleted_nodes += 1;
         if (n.parent) |p| {
@@ -2289,7 +2360,7 @@ pub const Tree = struct {
         return if (n.kind == .canvas) n else null;
     }
 
-    fn noteCanvasEid(t: *Tree, id: i64, eid: []const u8) void {
+    pub fn noteCanvasEid(t: *Tree, id: i64, eid: []const u8) void {
         if (t.canvas_eids.get(eid)) |have| if (have == id) return;
         t.forgetCanvasEid(id);
         if (eid.len == 0) return;
@@ -2363,6 +2434,30 @@ pub const Tree = struct {
         };
     }
 
+    /// Record a native edit without setting pending_value or moving the
+    /// control cursor. Replaces the previous allocation on every edit.
+    pub fn acceptUiValue(t: *Tree, id: i64, value: []const u8) !void {
+        const n = t.get(id) orelse return error.UnknownNode;
+        if (n.kind != .input and n.kind != .textarea and n.kind != .select) return error.InvalidField;
+        const owned = try t.gpa.dupe(u8, value);
+        if (n.ui_value) |old| t.gpa.free(old);
+        n.ui_value = owned;
+        n.props.val = owned;
+        n.pending_value = null;
+    }
+
+    /// A typed update owns every slice and uses the same host notifications as
+    /// DOM updates. Immutable template identity is retained across edits.
+    pub fn updateUiProps(t: *Tree, id: i64, props: Props) !void {
+        const n = t.get(id) orelse return error.UnknownNode;
+        const json = try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false });
+        defer t.gpa.free(json);
+        const value = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
+        defer value.deinit();
+        try t.setProps(n, value.value);
+        t.dirty = true;
+    }
+
     fn setProps(t: *Tree, n: *Node, value: std.json.Value) !void {
         // A value the backend hasn't taken yet lives in the arena reset
         // below: keep a copy, or it would point into reused memory when the
@@ -2385,6 +2480,8 @@ pub const Tree = struct {
             log.warn("node {d}: bad props ({s})", .{ n.id, @errorName(err) });
             break :blk .{};
         };
+        if (n.ui_value) |old| t.gpa.free(old);
+        n.ui_value = null;
         // A box with its own baseline (blb: a macOS checkbox) says it.
         if (n.kind == .view) yg.YGNodeSetBaselineFunc(n.yn, if (n.props.blb != null) baselineFn else null);
         if (n.props.val) |v| {
@@ -2441,6 +2538,8 @@ pub const Tree = struct {
     /// tree stamped itself that aren't among them go (nothing else names them).
     fn attachKids(t: *Tree, n: *Node, ids: anytype) !void {
         try n.kids.ensureTotalCapacity(t.gpa, ids.len());
+        t.dirty = true;
+        t.paint_dirty = true;
         var stale: std.ArrayList(i64) = .empty;
         defer stale.deinit(t.gpa);
         for (n.kids.items) |k| if (k.stamp_owned) try stale.append(t.gpa, k.id);
@@ -2703,6 +2802,13 @@ pub const Tree = struct {
         // Tables need the first pass's widths, then fix their cells' widths
         // and lay out again (every layout: a cell's content may have changed).
         if (sizeTables(t, root)) yg.YGNodeCalculateLayout(root.yn, t.width, t.height, yg.YGDirectionLTR);
+        // Retained but detached subtrees must not leave native fields at
+        // their previous on-screen rectangles. place restores connected nodes.
+        var frames = t.nodes.valueIterator();
+        while (frames.next()) |node| {
+            node.*.frame = .{};
+            node.*.clip = .{};
+        }
         const window: Rect = .{ .w = t.width, .h = t.height };
         place(root, 0, 0, window, window);
         // Scrollers that overflow (or always show one) keep their
@@ -3029,6 +3135,13 @@ pub const Tree = struct {
     /// Re-place after a scroll (no new layout).
     pub fn replace(t: *Tree) void {
         const root = t.root orelse return;
+        // Retained but detached subtrees must not leave native fields at
+        // their previous on-screen rectangles. place restores connected nodes.
+        var frames = t.nodes.valueIterator();
+        while (frames.next()) |node| {
+            node.*.frame = .{};
+            node.*.clip = .{};
+        }
         const window: Rect = .{ .w = t.width, .h = t.height };
         place(root, 0, 0, window, window);
     }
@@ -4665,4 +4778,22 @@ test "the a op keeps accessibility entries apart from the nodes" {
         \\[["a",-2]]
     );
     try std.testing.expectEqual(@as(u32, 0), t.ax.count());
+}
+
+test "typed dimensions and corners round trip through the native property wire format" {
+    const a = std.testing.allocator;
+    const dims = [_]Dim{ .{ .px = 48 }, .{ .pct = 50 }, .{ .calc = .{ .pct = 50, .px = -8 } }, .{ .calc = .{ .pct = 25, .px = 4 } }, .auto, .none };
+    for (dims) |d| {
+        const encoded = try std.json.Stringify.valueAlloc(a, d, .{});
+        defer a.free(encoded);
+        const decoded = try std.json.parseFromSlice(Dim, a, encoded, .{});
+        defer decoded.deinit();
+        try std.testing.expectEqualDeep(d, decoded.value);
+    }
+    const corner: Corner = .{ .x = .{ .pct = 50 }, .y = .{ .px = 10 } };
+    const encoded = try std.json.Stringify.valueAlloc(a, corner, .{});
+    defer a.free(encoded);
+    const decoded = try std.json.parseFromSlice(Corner, a, encoded, .{});
+    defer decoded.deinit();
+    try std.testing.expectEqualDeep(corner, decoded.value);
 }

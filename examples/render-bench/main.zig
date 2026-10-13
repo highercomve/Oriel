@@ -42,11 +42,18 @@ pub const Commands = struct {
 
     /// Proportional memory (PSS: shared pages split between the processes
     /// using them) in MB of this process and its children, children's
-    /// children…: a WebView's page runs in WebKit's own processes. Linux
+    /// children…: on Linux a WebView's page runs in WebKit's child processes.
+    /// Android's isolated WebView renderer is outside this tree and cannot
+    /// be included by reading the app's /proc files. Linux/Android
     /// /proc; 0 elsewhere. It moves with what else on the desktop maps the
     /// same libraries (a GL driver's are tens of MB): private_mb doesn't.
     pub fn pss_mb(_: std.mem.Allocator) f64 {
         return treeMb("\nPss:");
+    }
+
+    /// Android's renderer is spawned by webview_zygote, not by the app.
+    pub fn memory_scope(_: std.mem.Allocator) []const u8 {
+        return if (@import("builtin").abi.isAndroid()) "app process tree" else "all processes";
     }
 
     /// The same processes' private memory (Pss_Anon: their heaps and other
@@ -225,6 +232,16 @@ pub const Commands = struct {
         return bench_mode;
     }
 
+    /// Profile row construction and updates without the display-paced loops.
+    pub fn rows_only_on(_: std.mem.Allocator) bool {
+        return std.c.getenv("RENDER_BENCH_ROWS_ONLY") != null;
+    }
+
+    /// Power-only diagnostic: no row/animation benchmark before sampling.
+    pub fn power_only_on(_: std.mem.Allocator) bool {
+        return std.c.getenv("RENDER_BENCH_POWER_ONLY") != null and power_seconds > 0;
+    }
+
     /// Whether ORIEL_NUI_TRACE is set (on Android: `debug.oriel.env`): the
     /// page then logs a line before each timed row change, and the native
     /// renderer one after each draw, so logcat's timestamps give the
@@ -271,6 +288,7 @@ pub fn main(init: std.process.Init) !u8 {
     started = std.Io.Clock.Timestamp.now(io, .awake);
     bench_mode = init.environ_map.get("RENDER_BENCH") != null;
     if (init.environ_map.get("RENDER_BENCH_POWER")) |v| power_seconds = std.fmt.parseInt(u32, v, 10) catch 60;
+    if (comptime oriel.options.zig_ui) @import("zig_ui_bench.zig").configure(io, started, bench_mode, power_seconds);
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .app = app.build,
         .window = .{ .title = "Oriel render bench", .width = 900, .height = 700 },

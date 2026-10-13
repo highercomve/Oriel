@@ -1,0 +1,1318 @@
+{
+  "date": "2026-10-12",
+  "baseline_revision": "69a47ec",
+  "historical_revision": "c0615af",
+  "change": "Internal theme-color observer ignores detached mutations",
+  "conditions": {
+    "platform": "Linux-6.18.55-1-lts-x86_64-with-glibc2.44",
+    "cpu": "AMD Ryzen 7 7800X3D 8-Core Processor",
+    "optimization": "ReleaseFast",
+    "renderer": "GTK native, GSK_RENDERER=cairo",
+    "display": "Private Xvfb 1024x768, 900x700 application window, approximately 60 Hz",
+    "method": "Three serial processes per variant in rotated order; each runs two rounds, three trials per workload. Reported row samples come from the second round. Synchronous offsetHeight layout read remains timed. All builds finished before timing.",
+    "workload": "Rows only; animation/canvas loops omitted. Historical scratch checkout skips only those same loops.",
+    "counters": "perf stat cycles:u,instructions:u across the whole application process, including startup and both rounds; these are not per-row counts.",
+    "limitations": "Linux measurements do not establish Pixel 8 timings or power savings. Memory after rows only is not comparable to full-suite memory. No confidence interval is estimated."
+  },
+  "runs": {
+    "before": [
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 187.65,
+            "runs": [
+              187.65
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 236.08,
+            "runs": [
+              236.08
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.81,
+            "runs": [
+              109.81
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.22,
+            "runs": [
+              61.22
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18.15,
+            "runs": [
+              21.66,
+              18.15,
+              18.15
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 53.6,
+            "runs": [
+              60.67,
+              53.6,
+              53.05
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.22,
+            "runs": [
+              7.74,
+              4.18,
+              4.22
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 14.48,
+            "runs": [
+              23.85,
+              14.48,
+              13.86
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 119.47,
+            "runs": [
+              119.47
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 70.59,
+            "runs": [
+              70.59
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 120.37,
+            "runs": [
+              120.37
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 71.49,
+            "runs": [
+              71.49
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:31:33 2026\n\n5048007542,,cycles:u,2625767808,100.00,,\n15507331365,,instructions:u,2625767808,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 178.37,
+            "runs": [
+              178.37
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 225.72,
+            "runs": [
+              225.72
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 110.12,
+            "runs": [
+              110.12
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.98,
+            "runs": [
+              61.98
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18.62,
+            "runs": [
+              21.96,
+              18.62,
+              18.4
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 54.85,
+            "runs": [
+              61.42,
+              54.85,
+              54.23
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.35,
+            "runs": [
+              7.86,
+              4.04,
+              4.35
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 13.52,
+            "runs": [
+              23.45,
+              12.49,
+              13.52
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 119.75,
+            "runs": [
+              119.75
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 71.27,
+            "runs": [
+              71.27
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 120.84,
+            "runs": [
+              120.84
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 72.36,
+            "runs": [
+              72.36
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:15 2026\n\n5081958044,,cycles:u,2618048203,100.00,,\n15514018419,,instructions:u,2618048203,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 180,
+            "runs": [
+              180
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 228.91,
+            "runs": [
+              228.91
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.47,
+            "runs": [
+              109.47
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.22,
+            "runs": [
+              61.22
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18.64,
+            "runs": [
+              22.15,
+              18.64,
+              18.12
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 54.91,
+            "runs": [
+              61.16,
+              54.47,
+              54.91
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.19,
+            "runs": [
+              7.91,
+              4.11,
+              4.19
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.54,
+            "runs": [
+              23.58,
+              12.54,
+              12.32
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 119.07,
+            "runs": [
+              119.07
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 70.52,
+            "runs": [
+              70.52
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 120.1,
+            "runs": [
+              120.1
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 71.55,
+            "runs": [
+              71.55
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:31 2026\n\n5075549371,,cycles:u,2620223231,100.00,,\n15516653803,,instructions:u,2620223231,100.00,,\n"
+      }
+    ],
+    "after": [
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 184.02,
+            "runs": [
+              184.02
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 232.21,
+            "runs": [
+              232.21
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 110.61,
+            "runs": [
+              110.61
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 62.05,
+            "runs": [
+              62.05
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.62,
+            "runs": [
+              10.22,
+              7.62,
+              7.21
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.95,
+            "runs": [
+              27.91,
+              21.95,
+              20.97
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.09,
+            "runs": [
+              7.61,
+              4.02,
+              4.09
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.14,
+            "runs": [
+              23.13,
+              11.91,
+              12.14
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 116.66,
+            "runs": [
+              116.66
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 67.79,
+            "runs": [
+              67.79
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 117.48,
+            "runs": [
+              117.48
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 68.61,
+            "runs": [
+              68.61
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:31:44 2026\n\n3079373289,,cycles:u,2232529284,100.00,,\n9751849254,,instructions:u,2232529284,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 182.34,
+            "runs": [
+              182.34
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 228.57,
+            "runs": [
+              228.57
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.49,
+            "runs": [
+              109.49
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.21,
+            "runs": [
+              61.21
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.71,
+            "runs": [
+              10.6,
+              7.71,
+              7.16
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.43,
+            "runs": [
+              27.26,
+              21.43,
+              20.74
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 3.96,
+            "runs": [
+              7.59,
+              3.94,
+              3.96
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 11.92,
+            "runs": [
+              22.89,
+              11.92,
+              11.87
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 115.95,
+            "runs": [
+              115.95
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 67.36,
+            "runs": [
+              67.36
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 116.5,
+            "runs": [
+              116.5
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 67.91,
+            "runs": [
+              67.91
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:00 2026\n\n3112787968,,cycles:u,2219692517,100.00,,\n9754424492,,instructions:u,2219692517,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 180.35,
+            "runs": [
+              180.35
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 228.35,
+            "runs": [
+              228.35
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.54,
+            "runs": [
+              109.54
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.2,
+            "runs": [
+              61.2
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.75,
+            "runs": [
+              10.45,
+              7.75,
+              7.43
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.38,
+            "runs": [
+              27.23,
+              21.38,
+              20.79
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.22,
+            "runs": [
+              7.67,
+              4.22,
+              4.2
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.45,
+            "runs": [
+              24.08,
+              12.45,
+              12.45
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 115.81,
+            "runs": [
+              115.81
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 67.17,
+            "runs": [
+              67.17
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 116.5,
+            "runs": [
+              116.5
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 67.86,
+            "runs": [
+              67.86
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:41 2026\n\n3115539745,,cycles:u,2236494914,100.00,,\n9752876493,,instructions:u,2236494914,100.00,,\n"
+      }
+    ],
+    "historical": [
+      {
+        "renderer": "native",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 183.27,
+            "runs": [
+              183.27
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 222.18,
+            "runs": [
+              222.18
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 116.22,
+            "runs": [
+              116.22
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 6.85,
+            "runs": [
+              8.67,
+              6.85,
+              6.75
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 19.92,
+            "runs": [
+              22.51,
+              19.92,
+              19.09
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 3.23,
+            "runs": [
+              3.23,
+              3.15,
+              3.31
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 9.5,
+            "runs": [
+              9.98,
+              9.47,
+              9.5
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 140.51,
+            "runs": [
+              140.51
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 141.05,
+            "runs": [
+              141.05
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:31:55 2026\n\n2522279609,,cycles:u,1359402729,100.00,,\n7817903788,,instructions:u,1359402729,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 179.62,
+            "runs": [
+              179.62
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 219.73,
+            "runs": [
+              219.73
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 116.29,
+            "runs": [
+              116.29
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 6.91,
+            "runs": [
+              8.47,
+              6.91,
+              6.64
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 19.39,
+            "runs": [
+              20.84,
+              19.39,
+              19.08
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 3.23,
+            "runs": [
+              3.23,
+              3.16,
+              3.23
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 9.5,
+            "runs": [
+              9.9,
+              9.42,
+              9.5
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 140.61,
+            "runs": [
+              140.61
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 141.13,
+            "runs": [
+              141.13
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:10 2026\n\n2516485150,,cycles:u,1356098744,100.00,,\n7815601902,,instructions:u,1356098744,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 181.15,
+            "runs": [
+              181.15
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 219.73,
+            "runs": [
+              219.73
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 116.13,
+            "runs": [
+              116.13
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.02,
+            "runs": [
+              8.06,
+              7.02,
+              6.58
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 19.7,
+            "runs": [
+              20.93,
+              19.7,
+              19.15
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 3.22,
+            "runs": [
+              3.85,
+              3.05,
+              3.22
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 9.69,
+            "runs": [
+              10.18,
+              9.69,
+              9.37
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 140.39,
+            "runs": [
+              140.39
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 141,
+            "runs": [
+              141
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 22:32:26 2026\n\n2507629010,,cycles:u,1368740155,100.00,,\n7813350570,,instructions:u,1368740155,100.00,,\n"
+      }
+    ]
+  },
+  "order": [
+    "0-before",
+    "0-after",
+    "0-historical",
+    "1-after",
+    "1-historical",
+    "1-before",
+    "2-historical",
+    "2-before",
+    "2-after"
+  ],
+  "summary_ms": {
+    "before": {
+      "build 1000 rows": 18.62,
+      "build 3000 rows": 54.85,
+      "update 1000 rows": 4.22,
+      "update 3000 rows": 13.86
+    },
+    "after": {
+      "build 1000 rows": 7.71,
+      "build 3000 rows": 21.43,
+      "update 1000 rows": 4.2,
+      "update 3000 rows": 12.45
+    },
+    "historical": {
+      "build 1000 rows": 6.91,
+      "build 3000 rows": 19.7,
+      "update 1000 rows": 3.23,
+      "update 3000 rows": 9.5
+    }
+  },
+  "profiled_pairs": {
+    "before": {
+      "renderer": "native",
+      "workload": "rows",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 187.24,
+          "runs": [
+            187.24
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 236.43,
+          "runs": [
+            236.43
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 107.18,
+          "runs": [
+            107.18
+          ],
+          "unit": "MB"
+        },
+        "private memory at start (all processes)": {
+          "median": 61.25,
+          "runs": [
+            61.25
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 18.7,
+          "runs": [
+            22.02,
+            18.7,
+            18.12
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 61.22,
+          "runs": [
+            61.26,
+            61.22,
+            54.94
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 4.14,
+          "runs": [
+            7.82,
+            4.14,
+            4.1
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 12.72,
+          "runs": [
+            23.33,
+            12.32,
+            12.72
+          ],
+          "unit": "ms"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 116.77,
+          "runs": [
+            116.77
+          ],
+          "unit": "MB"
+        },
+        "private memory after the tests (all processes)": {
+          "median": 70.51,
+          "runs": [
+            70.51
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 117.8,
+          "runs": [
+            117.8
+          ],
+          "unit": "MB"
+        },
+        "private memory after a second round (all processes)": {
+          "median": 71.54,
+          "runs": [
+            71.54
+          ],
+          "unit": "MB"
+        }
+      },
+      "perf_record": "perf record -m 32 -F 999 -g --call-graph dwarf,4096"
+    },
+    "after": {
+      "renderer": "native",
+      "workload": "rows",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 190.12,
+          "runs": [
+            190.12
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 236.98,
+          "runs": [
+            236.98
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 109.89,
+          "runs": [
+            109.89
+          ],
+          "unit": "MB"
+        },
+        "private memory at start (all processes)": {
+          "median": 61.19,
+          "runs": [
+            61.19
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 7.56,
+          "runs": [
+            10.12,
+            7.56,
+            7.25
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 21.46,
+          "runs": [
+            27.08,
+            21.46,
+            21.08
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 4.03,
+          "runs": [
+            7.76,
+            4.03,
+            4.03
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 12.12,
+          "runs": [
+            23.3,
+            12.07,
+            12.12
+          ],
+          "unit": "ms"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 116.34,
+          "runs": [
+            116.34
+          ],
+          "unit": "MB"
+        },
+        "private memory after the tests (all processes)": {
+          "median": 67.35,
+          "runs": [
+            67.35
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 116.93,
+          "runs": [
+            116.93
+          ],
+          "unit": "MB"
+        },
+        "private memory after a second round (all processes)": {
+          "median": 67.94,
+          "runs": [
+            67.94
+          ],
+          "unit": "MB"
+        }
+      },
+      "perf_record": "perf record -m 32 -F 999 -g --call-graph dwarf,4096"
+    }
+  },
+  "counter_medians": {
+    "before": {
+      "cycles:u": 5075549371,
+      "instructions:u": 15514018419
+    },
+    "after": {
+      "cycles:u": 3112787968,
+      "instructions:u": 9752876493
+    },
+    "historical": {
+      "cycles:u": 2516485150,
+      "instructions:u": 7815601902
+    }
+  },
+  "sampling": {
+    "event": "cycles (user space)",
+    "frequency_hz": 999,
+    "call_graph": "DWARF, 4096-byte stacks",
+    "before": {
+      "samples": 1466,
+      "lost_samples": 0,
+      "JS_CallInternal_self_percent": 21.29,
+      "Yoga_calculateLayoutImpl_self_percent": 3.16
+    },
+    "after": {
+      "samples": 1059,
+      "lost_samples": 0,
+      "JS_CallInternal_self_percent": 8.81,
+      "Yoga_calculateLayoutImpl_self_percent": 6.18
+    },
+    "limits": "Whole row-only process, including startup and both rounds. Self percentages change with the total; they are not per-workload timings. Partial stacks and unsymbolized system libraries limit attribution."
+  },
+  "diagnostic_stage_lines_before": [
+    "info(native_ui): PROF yoga 13.35, 12000 measures 1.58",
+    "info(native_ui): PROF yoga 12.36, 12000 measures 0.70",
+    "info(native_ui): PROF yoga 12.10, 12000 measures 0.59",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 1.57, apply 0.00",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 1.55, apply 0.00",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 1.54, apply 0.00",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 5.30, apply 0.00",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 5.77, apply 0.00",
+    "info(native_ui): page: PROF text: 0 leaves, 0 direct, prepare 4.91, apply 0.00",
+    "info(native_ui): PROF yoga 13.42, 12000 measures 0.65",
+    "info(native_ui): PROF yoga 12.64, 12000 measures 0.80",
+    "info(native_ui): PROF yoga 12.33, 12000 measures 0.58"
+  ],
+  "dom_only_before": {
+    "rows": 3000,
+    "runs": 7,
+    "build_ms": 4.11,
+    "walk_ms": 5.78,
+    "update_ms": 1.15,
+    "clear_ms": 1.5,
+    "limits": "Bindings/store without the installed production JS runtime or renderer; cannot measure the theme-color observer regression."
+  },
+  "full_suite_after_diagnostic": {
+    "conditions": "Final bundle including corrected stamp profiling, ReleaseFast with native_ui_prof, private Xvfb/Cairo; one process, two rounds. Instrumented diagnostic, separate from the serial row-only comparison.",
+    "report": {
+      "renderer": "native",
+      "results": {
+        "startup \u2192 page script": {
+          "median": 181.86,
+          "runs": [
+            181.86
+          ],
+          "unit": "ms"
+        },
+        "startup \u2192 first frame": {
+          "median": 228.87,
+          "runs": [
+            228.87
+          ],
+          "unit": "ms"
+        },
+        "memory at start (PSS, all processes)": {
+          "median": 109.78,
+          "runs": [
+            109.78
+          ],
+          "unit": "MB"
+        },
+        "private memory at start (all processes)": {
+          "median": 61.2,
+          "runs": [
+            61.2
+          ],
+          "unit": "MB"
+        },
+        "build 1000 rows": {
+          "median": 7.83,
+          "runs": [
+            10.67,
+            7.83,
+            7.42
+          ],
+          "unit": "ms"
+        },
+        "build 3000 rows": {
+          "median": 22.29,
+          "runs": [
+            27.43,
+            22.29,
+            21.51
+          ],
+          "unit": "ms"
+        },
+        "update 1000 rows": {
+          "median": 5.21,
+          "runs": [
+            7.93,
+            5.21,
+            4.13
+          ],
+          "unit": "ms"
+        },
+        "update 3000 rows": {
+          "median": 13.07,
+          "runs": [
+            25,
+            12.28,
+            13.07
+          ],
+          "unit": "ms"
+        },
+        "animate 200 boxes": {
+          "median": 60.15,
+          "runs": [
+            60.23,
+            60.15,
+            60.15
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls": {
+          "median": 60.01,
+          "runs": [
+            60.08,
+            60.01,
+            60.01
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig)": {
+          "median": 60,
+          "runs": [
+            60,
+            60,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 200 balls (Zig), Zig work per frame": {
+          "median": 3.96,
+          "runs": [
+            4.08,
+            3.96,
+            3.85
+          ],
+          "unit": "\u00b5s"
+        },
+        "canvas 1000 balls": {
+          "median": 60.02,
+          "runs": [
+            60.18,
+            60.02,
+            60.02
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig)": {
+          "median": 60,
+          "runs": [
+            60,
+            60,
+            60
+          ],
+          "unit": "fps"
+        },
+        "canvas 1000 balls (Zig), Zig work per frame": {
+          "median": 17.62,
+          "runs": [
+            15.04,
+            17.62,
+            17.63
+          ],
+          "unit": "\u00b5s"
+        },
+        "memory after the tests (PSS, all processes)": {
+          "median": 128.27,
+          "runs": [
+            128.27
+          ],
+          "unit": "MB"
+        },
+        "private memory after the tests (all processes)": {
+          "median": 79.41,
+          "runs": [
+            79.41
+          ],
+          "unit": "MB"
+        },
+        "memory after a second round (PSS, all processes)": {
+          "median": 130.07,
+          "runs": [
+            130.07
+          ],
+          "unit": "MB"
+        },
+        "private memory after a second round (all processes)": {
+          "median": 81.2,
+          "runs": [
+            81.2
+          ],
+          "unit": "MB"
+        }
+      }
+    },
+    "text_stage_samples": [
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 1000 stamped rows, prepare 0.74, apply 0.87",
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 1000 stamped rows, prepare 0.73, apply 0.83",
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 1000 stamped rows, prepare 0.73, apply 0.83",
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 3000 stamped rows, prepare 2.25, apply 3.30",
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 3000 stamped rows, prepare 2.66, apply 3.29",
+      "info(native_ui): page: PROF text: 0 leaves, 0 direct, 3000 stamped rows, prepare 2.25, apply 2.76"
+    ]
+  },
+  "validation": {
+    "npm_test": "passed",
+    "zig_build_test_native_ui_ReleaseFast": "passed",
+    "dom_test": "passed",
+    "dom_js_test": "passed",
+    "test_native_dispatch": "passed",
+    "test_native_runtime": "passed",
+    "native_runtime_test_against_old_bundle": "failed as expected on detached mutation suppression",
+    "full_suite_final_instrumented": "completed both rounds, animation and JS/Zig canvas at approximately 60 Hz display limit",
+    "diff_and_zig_format_checks": "passed"
+  }
+}
