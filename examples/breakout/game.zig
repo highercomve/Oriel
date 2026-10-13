@@ -100,6 +100,17 @@ pub const World = struct {
     }
 
     /// A new brick grid: the top rows take more hits as levels go by.
+    /// Autoplay: under the lowest ball coming down (a sway by the time, ms).
+    pub fn autoTarget(world: *const World, t_ms: f64) ?f32 {
+        var best: ?Ball = null;
+        for (world.balls.items) |b| {
+            if (!b.stuck and b.vy > 0 and (best == null or b.y > best.?.y)) best = b;
+        }
+        if (best == null and world.balls.items.len > 0) best = world.balls.items[0];
+        const b = best orelse return null;
+        return b.x + @as(f32, @floatCast(@sin(t_ms / 700))) * world.paddle.w * 0.3;
+    }
+
     pub fn buildLevel(world: *World) !void {
         const cols: usize = @intFromFloat(@max(6, @min(16, @floor(world.w / 56))));
         const rows = world.rows;
@@ -343,7 +354,10 @@ fn clamp(v: f32, lo: f32, hi: f32) f32 {
 
 const bg = canvas.rgb(0x0d1119);
 
-fn draw(p: *canvas.Program, world: *const World, cw: f32, ch: f32, dpr: f32, hint: ?[]const u8) void {
+/// The board drawn into `p` (`cw`×`ch` device px at `dpr`), with the
+/// launch hint while balls wait on the paddle. Both the page's Zig mode and
+/// the .oriel version (oriel_breakout.zig) draw with it.
+pub fn draw(p: *canvas.Program, world: *const World, cw: f32, ch: f32, dpr: f32, hint: ?[]const u8) void {
     p.begin();
     p.globalAlpha(1);
     p.fillStyle(bg);
@@ -487,15 +501,8 @@ pub const Game = struct {
         g.redraw = true;
     }
 
-    /// Autoplay: under the lowest ball coming down.
     fn autoTarget(g: *Game) ?f32 {
-        var best: ?Ball = null;
-        for (g.world.balls.items) |b| {
-            if (!b.stuck and b.vy > 0 and (best == null or b.y > best.?.y)) best = b;
-        }
-        if (best == null and g.world.balls.items.len > 0) best = g.world.balls.items[0];
-        const b = best orelse return null;
-        return b.x + @as(f32, @floatCast(@sin(g.nowMs() / 700))) * g.world.paddle.w * 0.3;
+        return g.world.autoTarget(g.nowMs());
     }
 
     pub fn frame(g: *Game, _: canvas.Frame) bool {

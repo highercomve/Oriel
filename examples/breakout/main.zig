@@ -94,6 +94,8 @@ pub const Events = @import("game.zig").Events;
 
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;
+    // -Drenderer=oriel: views/breakout.oriel and oriel_breakout.zig, no page.
+    if (oriel.options.zig_ui) @import("oriel_breakout.zig").configure(io);
     if (init.environ_map.get("BREAKOUT_DEMO")) |n| {
         if (n.len > 0) demo_balls = try init.arena.allocator().dupe(u8, n);
     }

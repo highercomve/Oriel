@@ -2,6 +2,45 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- `.oriel` text with `<span>`s: runs in their own color, weight, size,
+  font or monospace, with `{binding}` text, spaces collapsed as HTML does
+  ("Score **0**" as one text, the way the native renderer flattens it).
+- `.oriel` colors as `rgba(r, g, b, a)`, `clickable` and
+  `box-sizing="content-box"` attributes; `visible` is inherited as CSS's
+  visibility (a hidden panel hides the platform's widgets in it), and
+  `ui.setVisible` shows or hides a part and what's in it.
+- `.oriel` views take a `<style>` sheet: `$tokens`, named styles applied with
+  `class`, and up to four `@media (max-width: …)` / `(prefers-color-scheme:
+  …)` blocks, switched as the window's width or theme changes.
+- `oriel fmt` formats `.oriel` views (`--check` for CI, `--stdin` for
+  editors); apps get it as `zig build fmt-views`.
+- `ORIEL_NUI_DUMP=props` dumps each node's props, and `ORIEL_NUI_DUMP_AT`
+  dumps once after that many seconds, in both renderers.
+- The Breakout example runs in the Oriel renderer (`-Drenderer=oriel`),
+  looking the same as the native renderer's page.
+
+### Changed
+
+- The Breakout example picks its renderer with
+  `-Drenderer=webview|native|oriel`; its `-Dnative_ui` option is gone.
+
+### Fixed
+
+- `.oriel` `display="none"` hides what's in it on every backend: Android
+  still drew a hidden text, laid out at width 0 (a letter a line).
+- Breakout: a narrow window keeps the header on one line (Settings no
+  longer drops below the score as it grows); the Oriel renderer's view
+  carries the page's `@media (max-width: 520px)` in its `<style>`.
+- Native renderer (Linux): text fields and buttons partly scrolled out or
+  drawn over show the part in view, instead of disappearing whole.
+- Native renderer (Linux): text with `letter-spacing` broke before its last
+  letter ("Breako-ut"): its width now includes the spacing after the last
+  letter, as CSS's does.
+
 ## [0.13.0] — 2026-10-13
 
 Oriel's two native front ends now stand on shared layers: one engine core

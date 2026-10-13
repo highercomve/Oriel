@@ -137,6 +137,7 @@ Options:
 | [`init`](#init) | Create a new Oriel app in `./<name>` |
 | [`wrap`](#wrap) | Wrap a web page or web app into a desktop application |
 | [`doctor`](#doctor) | Check that this system can build Oriel apps |
+| [`fmt`](#fmt) | Format .oriel views (--check to only check, --stdin for editors) |
 | [`setup`](#setup) | Install managed tools (`~/.oriel/<tool>`) without admin rights |
 | [`update`](#update) | Update the oriel CLI in place |
 | [`webview2`](#webview2) | Download and cache WebView2Loader.dll for Windows |
@@ -217,6 +218,28 @@ libraries; the tray host and the GlobalShortcuts portal are reported for
 information only. macOS: the Xcode command-line tools (Apple SDK). Windows:
 the WebView2 runtime; NSIS (`makensis`) for installers. Exits with 1 when
 something required is missing.
+
+### `oriel fmt`
+
+```
+Usage: oriel fmt [--check] [--stdin] [paths...]
+```
+
+| Option | Meaning |
+|---|---|
+| `--check` | Change nothing: list the unformatted files, exit 1 if any |
+| `--stdin` | Format standard input to standard output (editors' format-on-save) |
+
+Formats `.oriel` views in place, as `zig fmt` does Zig: one element per
+line, indented two spaces, attributes as written. A `<text>` keeps its
+content exactly as written, on its open element's line (the spaces in it
+are text). A directory means every `.oriel` file under it, skipping hidden
+directories, `zig-out*`, `zig-pkg` and `node_modules`. Prints the files it
+changed; a view that doesn't parse is reported as `path:line:column` and
+left alone (exit 1).
+
+Apps get the same command as a build step, over the project's directory:
+`zig build fmt-views`, and `zig build fmt-views -- --check` in CI.
 
 ### `oriel setup`
 
