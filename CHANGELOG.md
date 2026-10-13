@@ -2,6 +2,60 @@
 
 Notable changes in Oriel releases.
 
+## [0.13.0] — 2026-10-13
+
+Oriel's two native front ends now stand on shared layers: one engine core
+and one set of input rules under the native renderer (your HTML, CSS and
+JavaScript) and the experimental Oriel renderer (`.oriel` views run from
+Zig). A fix or feature in a shared layer reaches both. The new
+[Architecture](docs/architecture.md) page maps the layers and where new
+behavior belongs. **Breaking** only for the example apps' build flags (see
+Changed).
+
+### Added
+
+- **Oriel renderer (experimental, `-Dzig_ui`)**: `.oriel` markup compiled at
+  build time into native views driven from Zig (`oriel.ui`), without
+  QuickJS or the DOM. Elements: `row`, `column`, `view`, `text`, `button`
+  (drawn), `control` (the platform's button), `input`, `textarea`,
+  `select`/`option`, `checkbox`, `radio`, `slider`, `image`, `canvas`;
+  attributes for layout, drawing, text, accessibility (`role`, `label`,
+  `description`, `level`, `alt`) and `tooltip`, with `{binding}` text,
+  labels and tooltips. Drawn elements get accessibility entries; Tab,
+  focus rings, Enter/Space, checkboxes, radios and key scrolling behave as
+  the platform's WebView. Linux; builds for Android. Not yet for apps.
+- **Tooltips** on native-renderer nodes (`Props.tip`), shown by GTK.
+- **Docs:** an Architecture page; diagrams are images rendered ahead of
+  time (`tools/docs/diagrams.mjs`), readable on a phone, and a tap opens
+  one full size.
+
+### Changed
+
+- **One engine core** (`src/native_ui/engine_core.zig`) for both front
+  ends: frame callbacks, painting at most once per display frame (the Zig
+  engine now coalesces events as the JavaScript one did), a timer when a
+  backend has no frame clock, scrolling.
+- **One set of input rules** (`src/native_ui/interaction.zig`), moved out of
+  the runtime's JavaScript: focus rings by element and platform, Tab's
+  order (macOS without Full Keyboard Access, iOS, radio groups, positive
+  tabindex), what a click focuses, Enter/Space activation, key scroll steps.
+  A key scroll's glide runs in Zig on display frames, with no JavaScript
+  each frame. Pages see no API change.
+- **Example apps** (`render-bench`, `system-monitor`) pick their renderer
+  with `-Drenderer=webview|native|oriel`; their `-Dnative_ui` option is
+  gone (`zig build -Drenderer=native`).
+- The runtime's Node tests take the input rules from the engine, compiled
+  to WebAssembly (`zig build interaction-wasm`, run by `npm test`).
+
+### Fixed
+
+- Native renderer: a frame callback (`oriel.canvas`'s `onFrame`) that
+  cancelled itself during a frame could crash or skip the next callback.
+- 32-bit Android (armv7, x86) builds again.
+- Native renderer: Tab with thousands of radios or a huge tabindex no
+  longer stalls or stops working; host functions report a page's thrown
+  conversions instead of ignoring them.
+
 ## [0.12.1] — 2026-10-13
 
 ### Fixed
