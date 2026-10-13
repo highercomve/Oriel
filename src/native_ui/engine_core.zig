@@ -158,6 +158,28 @@ pub fn deferToFrame(e: anytype) bool {
 /// frame clock (`Backend.request_display_frame`): 60 Hz.
 pub const display_frame_timer: u32 = std.math.maxInt(u32) - 2;
 
+/// The timer of ORIEL_NUI_DUMP_AT=<seconds>: the tree dumped once then
+/// (Tree.dump; with ORIEL_NUI_DUMP=props, the props too), to see it after
+/// the UI changed (a panel opened).
+pub const dump_timer: u32 = std.math.maxInt(u32) - 3;
+
+/// Boot: schedule ORIEL_NUI_DUMP_AT's dump, if it's set.
+pub fn scheduleDump(e: anytype) void {
+    const at = std.c.getenv("ORIEL_NUI_DUMP_AT") orelse return;
+    const seconds = std.fmt.parseFloat(f64, std.mem.span(at)) catch return;
+    if (!(seconds >= 0 and seconds < 3600)) return;
+    e.backend.add_timer(e.backend.ctx, e, dump_timer, @intFromFloat(seconds * 1000));
+}
+
+/// The dump's turn: laid out first.
+pub fn dumpNow(e: anytype) void {
+    if (e.tree.needsLayout()) {
+        e.tree.layout();
+        e.relaid = true;
+    }
+    e.tree.dump();
+}
+
 /// Ask for the next display frame (frame callbacks are waiting): the
 /// backend's frame clock, else a timer (`display_frame_timer`, which the
 /// engine's timerFired turns into `displayFrame`).

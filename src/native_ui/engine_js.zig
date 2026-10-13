@@ -460,7 +460,7 @@ pub const Engine = struct {
     pub const reload_timer_id: u32 = std.math.maxInt(u32);
     /// The timer id of a turn for the promise jobs one settle left (runJobs).
     pub const jobs_timer_id: u32 = std.math.maxInt(u32) - 1;
-    // (std.math.maxInt(u32) - 2: core.display_frame_timer.)
+    // (std.math.maxInt(u32) - 2: core.display_frame_timer; - 3: core.dump_timer.)
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -612,6 +612,7 @@ pub const Engine = struct {
         e.coarse = coarse;
         _ = e.callf("__oriel.boot({d},{d},{},{})", .{ e.tree.width, e.tree.height, dark, coarse });
         e.booted = true;
+        core.scheduleDump(e);
         log.info("native ui: page booted, {d} nodes, JS heap {d} KB", .{ e.tree.nodes.count(), oqjs_memory(e.js) / 1024 });
         if (std.c.getenv("ORIEL_NUI_DUMP") != null) {
             e.tree.layout();
@@ -684,6 +685,7 @@ pub const Engine = struct {
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == task_timer_id) return e.runFileReads();
         if (id == core.display_frame_timer) return e.displayFrame(1000.0 / 60.0);
+        if (id == core.dump_timer) return core.dumpNow(e);
         if (id == reload_timer_id) return e.reloadNow();
         if (id == jobs_timer_id) {
             e.jobs_pending = false;
@@ -1039,7 +1041,7 @@ export fn oriel_nui_timer(p: *anyopaque, id: u32, ms: f64) void {
     // Past the ids every earlier page used (timer_base), clear of the
     // engine's own (task 0, the display frame's, jobs and reload).
     const backend_id = std.math.add(u32, e.timer_base, id) catch return;
-    if (backend_id >= core.display_frame_timer) return;
+    if (backend_id >= core.dump_timer) return;
     if (backend_id >= e.timer_next) e.timer_next = backend_id + 1;
     e.backend.add_timer(e.backend.ctx, e, backend_id, @intFromFloat(@max(0, @min(ms, 1e9))));
 }

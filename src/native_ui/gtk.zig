@@ -44,6 +44,7 @@ extern fn gtk_widget_queue_allocate(w: *Widget) void;
 extern fn gtk_widget_set_focusable(w: *Widget, focusable: c_int) void;
 extern fn gtk_widget_grab_focus(w: *Widget) c_int;
 extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
+extern fn gtk_widget_set_overflow(w: *Widget, overflow: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
 extern fn gtk_editable_set_editable(w: *Widget, editable: c_int) void;
 extern fn gtk_check_button_new() *Widget;
@@ -302,6 +303,9 @@ pub const Surface = struct {
     overlay: *Widget,
     area: *Widget,
     fields: std.AutoHashMap(i64, *Widget),
+    /// Where each field's widget shows (clipField): the part of its box in
+    /// view and not drawn over, and the box.
+    field_rects: std.AutoHashMap(i64, FieldRect),
     /// Decoded <img> pictures, one per image node (a clipboard preview is a
     /// new data: URI each time: keyed by node, replaced when its src changes).
     images: std.AutoHashMap(i64, Image),
@@ -417,6 +421,7 @@ pub const Surface = struct {
             .overlay = overlay,
             .area = area,
             .fields = .init(gpa),
+            .field_rects = .init(gpa),
             .images = .init(gpa),
             .canvases = .init(gpa),
             .css = gtk_css_provider_new(),
@@ -537,8 +542,9 @@ pub const Surface = struct {
         clearPaintLayouts(s);
         s.paint_layouts.deinit(s.gpa);
         var rest = s.fields.valueIterator();
-        while (rest.next()) |w| gtk_overlay_remove_overlay(s.overlay, w.*);
+        while (rest.next()) |w| gtk_overlay_remove_overlay(s.overlay, clipOf(w.*));
         s.fields.deinit();
+        s.field_rects.deinit();
         var imgs = s.images.valueIterator();
         while (imgs.next()) |img| img.deinit();
         s.images.deinit();
@@ -1040,7 +1046,8 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     dropPaintLayout(s, node.id);
-    if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, kv.value);
+    if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, clipOf(kv.value));
+    _ = s.field_rects.remove(node.id);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
 }
@@ -1079,31 +1086,105 @@ fn laidOut(ctx: *anyopaque) void {
 /// tree's paint order, so not one of its ancestors) overlaps it: a sticky
 /// footer over a field scrolled under it. The field is a widget above the
 /// whole page and would show through, so it's hidden instead.
-fn coveredLater(s: *Surface, field: *Node) bool {
-    const root = s.engine.tree.root orelse return false;
+const FieldRect = struct { vis: Rect, box: Rect };
+
+/// A field widget's box: a native button is the whole box (its bezel is
+/// the border, its CSS padding room inside it); fields sit in their content
+/// box.
+fn fieldBox(n: *const Node) Rect {
+    return if (n.kind == .button) n.frame else n.content();
+}
+
+/// The part of `box` a field shows: inside its scroll container's view,
+/// less what boxes with a background painted after it cover (the largest
+/// part left each time: an × at its end leaves the rest). Null: none.
+fn uncovered(s: *Surface, field: *Node, box: Rect) ?Rect {
+    var vis = box.intersect(field.clip);
+    if (vis.w <= 1 or vis.h <= 1) return null;
+    const root = s.engine.tree.root orelse return vis;
     const Walk = struct {
         field: *Node,
+        vis: *Rect,
         seen: bool = false,
-        covered: bool = false,
+        gone: bool = false,
+        depth: usize = 0,
         fn visit(w: *@This(), n: *Node) void {
-            if (w.covered or n.props.vis == false) return;
+            if (w.gone or n.props.vis == false) return;
             if (n == w.field) {
                 w.seen = true;
                 return;
             }
             if (w.seen and n.props.bg != null) {
-                const r = n.clip.intersect(n.frame).intersect(w.field.frame);
-                if (r.w > 1 and r.h > 1) {
-                    w.covered = true;
-                    return;
+                const cover = n.clip.intersect(n.frame);
+                const hit = cover.intersect(w.vis.*);
+                if (hit.w > 1 and hit.h > 1) {
+                    w.vis.* = restOf(w.vis.*, cover) orelse {
+                        w.gone = true;
+                        return;
+                    };
                 }
             }
+            w.depth += 1;
+            defer w.depth -= 1;
+            if (w.depth > tree_mod.max_walk_depth) return;
             for (n.kids.items) |k| w.visit(k);
         }
     };
-    var w: Walk = .{ .field = field };
+    var w: Walk = .{ .field = field, .vis = &vis };
     w.visit(root);
-    return w.covered;
+    return if (w.gone) null else vis;
+}
+
+/// The largest part of `r` left beside `cover` (to its left, right, above
+/// or below), or null when less than a pixel is.
+fn restOf(r: Rect, cover: Rect) ?Rect {
+    const parts = [_]Rect{
+        .{ .x = r.x, .y = r.y, .w = cover.x - r.x, .h = r.h },
+        .{ .x = cover.x + cover.w, .y = r.y, .w = (r.x + r.w) - (cover.x + cover.w), .h = r.h },
+        .{ .x = r.x, .y = r.y, .w = r.w, .h = cover.y - r.y },
+        .{ .x = r.x, .y = cover.y + cover.h, .w = r.w, .h = (r.y + r.h) - (cover.y + cover.h) },
+    };
+    var best: ?Rect = null;
+    for (parts) |p| {
+        if (p.w <= 1 or p.h <= 1) continue;
+        if (best == null or p.w * p.h > best.?.w * best.?.h) best = p;
+    }
+    return best;
+}
+
+/// A field widget in its clip: an overlay as large as the part of the field
+/// that shows (onChildPosition), the field at its whole box inside it
+/// (onClipChildPosition), the rest cut off. What the page lays over a field,
+/// or what its scroll container hides, the widget doesn't cover.
+fn clipField(s: *Surface, w: *Widget, key: usize) *Widget {
+    const clip = gtk_overlay_new();
+    gtk_widget_set_overflow(clip, 1); // hidden
+    g_object_set_data(@ptrCast(clip), "oriel-node", @ptrFromInt(key));
+    gtk_overlay_add_overlay(clip, w);
+    _ = g_signal_connect_data(@ptrCast(clip), "get-child-position", @ptrCast(&onClipChildPosition), s, null, 0);
+    g_object_set_data(@ptrCast(w), "oriel-clip", clip);
+    return clip;
+}
+
+fn clipOf(w: *Widget) *Widget {
+    return @ptrCast(@alignCast(g_object_get_data(@ptrCast(w), "oriel-clip") orelse return w));
+}
+
+/// The field inside its clip: its whole box, from the clip's corner.
+fn onClipChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?*anyopaque) callconv(.c) c_int {
+    const s = surfaceOf(data);
+    const n = nodeOfWidget(s, child) orelse return 0;
+    const fr = s.field_rects.get(n.id) orelse return 0;
+    alloc.* = .{ .x = gdkInt(fr.box.x - fr.vis.x), .y = gdkInt(fr.box.y - fr.vis.y), .width = @max(1, gdkInt(fr.box.w)), .height = @max(1, gdkInt(fr.box.h)) };
+    return 1;
+}
+
+/// Page geometry as GDK's ints: it can be huge (a 1e10px width, a far
+/// transform) or NaN.
+fn gdkInt(v: f32) c_int {
+    const lim = 1 << 30;
+    if (std.math.isNan(v)) return 0;
+    return tree_mod.sat(c_int, std.math.clamp(@round(v), -lim, lim));
 }
 
 fn syncFields(s: *Surface) void {
@@ -1122,7 +1203,7 @@ fn syncFields(s: *Surface) void {
                 g_object_unref(w);
                 continue;
             };
-            gtk_overlay_add_overlay(s.overlay, w);
+            gtk_overlay_add_overlay(s.overlay, clipField(s, w, std.math.cast(usize, n.id) orelse continue));
             css_changed = true;
             break :blk w;
         };
@@ -1178,15 +1259,15 @@ fn syncFields(s: *Surface) void {
             defer s.gpa.free(ph);
             gtk_entry_set_placeholder_text(w, ph.ptr);
         }
-        // A field is a GTK widget over the page, not clipped by its scroll
-        // container: shown only while it lies entirely inside the visible
-        // area (else it was drawn over a sticky footer, half scrolled out).
-        const shown = n.clip.intersect(n.frame);
-        const visible = n.frame.w > 1 and n.frame.h > 1 and n.props.vis != false and
-            shown.h >= n.frame.h - 1 and shown.w >= n.frame.w - 1 and
-            !coveredLater(s, n);
-        if (std.c.getenv("ORIEL_NUI_FIELDS") != null) log.info("field {d} {s}: frame {d:.0},{d:.0} {d:.0}x{d:.0} clip {d:.0},{d:.0} {d:.0}x{d:.0} visible {}", .{ n.id, @tagName(n.kind), n.frame.x, n.frame.y, n.frame.w, n.frame.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, visible });
-        gtk_widget_set_visible(w, @intFromBool(visible));
+        // A field is a GTK widget over the page, in a clip of its own: it
+        // shows the part of its box inside its scroll container's view and
+        // not drawn over by a later box (a sticky footer, an icon or a
+        // clear button laid over it), and that part takes its clicks.
+        const box = fieldBox(n);
+        const vis: ?Rect = if (n.frame.w > 1 and n.frame.h > 1 and n.props.vis != false) uncovered(s, n, box) else null;
+        if (vis) |v| s.field_rects.put(n.id, .{ .vis = v, .box = box }) catch {};
+        if (std.c.getenv("ORIEL_NUI_FIELDS") != null) log.info("field {d} {s}: frame {d:.0},{d:.0} {d:.0}x{d:.0} clip {d:.0},{d:.0} {d:.0}x{d:.0} visible {}", .{ n.id, @tagName(n.kind), n.frame.x, n.frame.y, n.frame.w, n.frame.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, vis != null });
+        gtk_widget_set_visible(clipOf(w), @intFromBool(vis != null));
         css_changed = true;
     }
     if (css_changed) updateCss(s);
@@ -1535,18 +1616,9 @@ fn gtkWidgetOfController(c: *anyopaque) ?*Widget {
 fn onChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?*anyopaque) callconv(.c) c_int {
     const s = surfaceOf(data);
     const n = nodeOfWidget(s, child) orelse return 0;
-    // A native button is the whole box (its bezel is the border, its CSS
-    // padding room inside it); fields sit in their content box.
-    const r = if (n.kind == .button) n.frame else n.content();
-    // Page geometry can be huge (a 1e10px width, a far transform) or NaN.
-    const px = struct {
-        fn f(v: f32) c_int {
-            const lim = 1 << 30;
-            if (std.math.isNan(v)) return 0;
-            return tree_mod.sat(c_int, std.math.clamp(@round(v), -lim, lim));
-        }
-    }.f;
-    alloc.* = .{ .x = px(r.x), .y = px(r.y), .width = @max(1, px(r.w)), .height = @max(1, px(r.h)) };
+    // A field's clip: the part of the field that shows (syncFields).
+    const r = if (s.field_rects.get(n.id)) |fr| fr.vis else fieldBox(n);
+    alloc.* = .{ .x = gdkInt(r.x), .y = gdkInt(r.y), .width = @max(1, gdkInt(r.w)), .height = @max(1, gdkInt(r.h)) };
     return 1;
 }
 
@@ -2635,7 +2707,11 @@ fn measuredText(s: *Surface, n: *Node, width: f32) ?[2]f32 {
         n.baseline = e[0].top;
         break :blk extentsHeight(e);
     } else cssHeight(s, &n.props, pango_layout_get_line_count(layout));
-    const size: [2]f32 = .{ textWidth(wu), css_h orelse @floatFromInt(h) };
+    // CSS's letter-spacing follows every letter, the last too; Pango's
+    // width leaves the last one's out. Without it a line laid out at its own
+    // width breaks before its last letter ("Breako-ut").
+    const trailing: f32 = if (n.props.ls) |ls| @max(0, ls) else 0;
+    const size: [2]f32 = .{ textWidth(wu) + trailing, css_h orelse @floatFromInt(h) };
     if (key) |k| s.text_measurements.put(s.gpa, k, size) catch {};
     return size;
 }
@@ -4412,6 +4488,7 @@ test "shared measurements match fresh Pango layouts after text, width and font c
         .area = area,
         .overlay = area,
         .fields = .init(gpa),
+        .field_rects = .init(gpa),
         .images = .init(gpa),
         .canvases = .init(gpa),
         .css = undefined,
@@ -4467,7 +4544,8 @@ test "shared measurements match fresh Pango layouts after text, width and font c
     var wu: c_int = 0;
     var hu: c_int = 0;
     pango_layout_get_size(fresh, &wu, &hu);
-    try std.testing.expectEqual(textWidth(wu), cached[0]);
+    // ls 2: CSS's spacing after the last letter, which Pango's width leaves out.
+    try std.testing.expectEqual(textWidth(wu) + 2, cached[0]);
     try std.testing.expectEqual(cssHeight(&s, &n.props, pango_layout_get_line_count(fresh)) orelse @as(f32, @floatFromInt(h)), cached[1]);
     const old_count = s.text_measurements.entries.count();
     pango_context_changed(gtk_widget_get_pango_context(area));

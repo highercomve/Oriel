@@ -1262,9 +1262,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private fun isField(kind: String) = kind == "input" || kind == "textarea" || kind == "select"
 
     private fun syncFields() {
-        // What's drawn over the page: the root's children after the scroll view (fixed elements).
+        // What's drawn over the page: the root's children after the scroll
+        // view (fixed elements), in a page's tree (its window scroller, id
+        // -1, first). An .oriel view's root holds the view's own parts: none
+        // of them is drawn over the rest.
         val fixed = ArrayList<RectF>()
-        if (frames.size >= REC * 2) {
+        if (frames.size >= REC * 2 && ids[REC] == -1) {
             var k = REC + REC * (1 + frames[REC + 13].toInt())
             val end = REC * (1 + frames[13].toInt())
             while (k < end) {

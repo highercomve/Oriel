@@ -7,19 +7,19 @@ const tm = @import("telemetry.zig");
 const model = @import("monitor_model.zig");
 const fmt = @import("monitor_format.zig");
 const charts = @import("monitor_charts.zig");
-const Shell = ui.View(@embedFile("views/monitor.oriel"));
-const Row = ui.View(@embedFile("views/process.oriel"));
-const Disk = ui.View(@embedFile("views/disk.oriel"));
-const Settings = ui.View(@embedFile("views/settings.oriel"));
-const Actions = ui.View(@embedFile("views/actions.oriel"));
-const Confirm = ui.View(@embedFile("views/confirm.oriel"));
+const Shell = ui.View(@embedFile("monitor.oriel"));
+const Row = ui.View(@embedFile("process.oriel"));
+const Disk = ui.View(@embedFile("disk.oriel"));
+const Settings = ui.View(@embedFile("settings.oriel"));
+const Actions = ui.View(@embedFile("actions.oriel"));
+const Confirm = ui.View(@embedFile("confirm.oriel"));
 const root_id: i64 = 10;
 const settings_id: i64 = 1000;
 const actions_id: i64 = 2000;
 const confirm_id: i64 = 3000;
 const rows_base: i64 = 10000;
 const disk_base: i64 = 20000;
-const row_capacity = 32;
+const row_capacity = 96;
 const row_height = 34;
 const sample_request = 1;
 const info_request = 2;
@@ -95,6 +95,7 @@ fn boot(e: *ui.Engine) !void {
     inline for (model.sections) |name| e.tree.get(sid(name)).?.stamp_owned = false;
     e.tree.get(sid("panels-row")).?.stamp_owned = false;
     try visibility(e);
+    try sort_labels(e);
     try ui.invoke(e, info_request, "system_info", .{});
     try request_sample(e);
 }
@@ -371,10 +372,12 @@ fn render_processes(e: *ui.Engine, reset_scroll: bool) !void {
 }
 fn render_rows(e: *ui.Engine) !void {
     const scroll = e.tree.get(sid("proc-scroll")).?;
-    const max_scroll = @max(0, @as(f32, @floatFromInt(s.selected_len * row_height)) - (scroll.props.h.?.px));
+    const max_scroll = @max(0, @as(f32, @floatFromInt(s.selected_len * row_height)) - scroll.frame.h);
     scroll.scroll_y = std.math.clamp(scroll.scroll_y, 0, max_scroll);
     const start = @min(s.selected_len, @as(usize, @intFromFloat(scroll.scroll_y / row_height)));
-    const count = @min(row_capacity, s.selected_len - start);
+    // The rows the viewport shows, and one partly scrolled in.
+    const shown: usize = @intFromFloat(@ceil(scroll.frame.h / row_height) + 1);
+    const count = @min(row_capacity, shown, s.selected_len - start);
     var ids: [row_capacity]i64 = undefined;
     for (s.selected[start..][0..count], 0..) |row, i| {
         var buf: [2000]u8 = undefined;
@@ -548,6 +551,11 @@ fn set_filter(e: *ui.Engine, value: []const u8, echo: bool) !void {
         props.val = s.filter[0..s.filter_len];
         try e.tree.updateUiProps(sid("search"), props);
     } else try e.tree.acceptUiValue(sid("search"), s.filter[0..s.filter_len]);
+    var clear = e.tree.get(sid("clear")).?.props;
+    if (clear.vis != (s.filter_len > 0)) {
+        clear.vis = s.filter_len > 0;
+        try e.tree.updateUiProps(sid("clear"), clear);
+    }
     if (s.sample != null) try render_processes(e, true);
     s.filter_timer = new_timer();
     e.backend.add_timer(e.backend.ctx, e, s.filter_timer, 250);
@@ -750,10 +758,15 @@ fn cap_overlay(e: *ui.Engine, id: i64, top: f32) !void {
 }
 
 fn sort_labels(e: *ui.Engine) !void {
-    inline for (.{ "cpu", "mem", "threads", "pid", "name" }) |field| {
-        var props = e.tree.get(sid("sort-" ++ field)).?.props;
-        props.bg = .{ .color = oriel.canvas.rgb(if (s.order.field == @field(model.Sort, field)) 0x21262d else 0x0e1117) };
-        try e.tree.updateUiProps(sid("sort-" ++ field), props);
+    inline for (.{ .{ "cpu", "CPU" }, .{ "mem", "Memory" }, .{ "threads", "Threads" }, .{ "pid", "PID" }, .{ "name", "Name" } }) |chip| {
+        const id = sid("sort-" ++ chip[0]);
+        const active = s.order.field == @field(model.Sort, chip[0]);
+        var props = e.tree.get(id).?.props;
+        props.bg = .{ .color = oriel.canvas.rgb(if (active) 0x21262d else 0x0e1117) };
+        props.col = oriel.canvas.rgb(if (active) 0xf0f6fc else 0x8b949e);
+        try e.tree.updateUiProps(id, props);
+        // The label's run carries the color.
+        try label(e, id, chip[1]);
     }
     try label(e, sid("sort-dir"), if (s.order.descending) "▼" else "▲");
 }
@@ -793,7 +806,16 @@ fn responsive(e: *ui.Engine, panels: []const i64, processes_only: bool) !void {
     }
     const system_cols: usize = if (e.tree.width > 1400) 3 else if (e.tree.width > 1000) 2 else 1;
     try height(e, sid("system-info"), @floatFromInt(6 / system_cols * 24 - 6));
-    try height(e, sid("proc-scroll"), if (processes_only) @max(160, e.tree.height - 200) else 329);
+    // Processes alone: the list fills the window (#body stops scrolling, so
+    // flex bounds it); else a fixed list in the scrolling page.
+    var page = e.tree.get(sid("body")).?.props;
+    if (page.scroll == processes_only) {
+        page.scroll = !processes_only;
+        try e.tree.updateUiProps(sid("body"), page);
+    }
+    var list = e.tree.get(sid("proc-scroll")).?.props;
+    list.h = if (processes_only) null else .{ .px = 329 };
+    try e.tree.updateUiProps(sid("proc-scroll"), list);
 }
 fn settings_state(e: *ui.Engine) !void {
     layout(e);

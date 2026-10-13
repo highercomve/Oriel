@@ -276,6 +276,18 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(update_tool);
     addUpdaterSteps(b, update_tool);
 
+    // Host tool for `zig build fmt-views`: `oriel fmt` on its own (cli/fmt.zig).
+    const fmt_tool = b.addExecutable(.{
+        .name = "fmt_tool",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("cli/fmt.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    b.installArtifact(fmt_tool);
+    addFmtViewsStep(b, fmt_tool);
+
     const is_android = target.result.abi.isAndroid();
     const is_linux = target.result.os.tag == .linux and !is_android;
     // Unit tests run natively on Linux, macOS and Windows. Android targets
@@ -1526,6 +1538,18 @@ pub const App = struct {
     dev_exe: ?*std.Build.Step.Compile,
 };
 
+/// Add the `fmt-views` build step to `b`: `oriel fmt` over the project's
+/// .oriel views (`zig build fmt-views -- --check` only checks).
+/// Idempotent: a second call (e.g. from a second `addApp`) is a no-op.
+pub fn addFmtViewsStep(b: *std.Build, fmt_tool: *std.Build.Step.Compile) void {
+    if (b.top_level_steps.get("fmt-views") != null) return;
+    const run_fmt = b.addRunArtifact(fmt_tool);
+    run_fmt.has_side_effects = true;
+    if (b.args) |args| run_fmt.addArgs(args);
+    run_fmt.addDirectoryArg(b.path(""));
+    b.step("fmt-views", "Format the .oriel views (-- --check to only check)").dependOn(&run_fmt.step);
+}
+
 /// Add `keygen` and `sign-update` build steps to `b`.
 /// Idempotent: a second call (e.g. from a second `addApp`) is a no-op.
 pub fn addUpdaterSteps(b: *std.Build, update_tool: *std.Build.Step.Compile) void {
@@ -1825,6 +1849,7 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     checkExtensions(b, options);
     setExtensionTable(b, oriel_dep, options);
     setAppleHooksTable(b, oriel_dep, options);
+    addFmtViewsStep(b, oriel_dep.artifact("fmt_tool"));
     if (oriel_dep.module("oriel").resolved_target.?.result.abi.isAndroid()) return addAndroidApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
     if (oriel_dep.module("oriel").resolved_target.?.result.os.tag == .ios) return addIosApp(b, oriel_dep, withOrielExtensions(orielBuild(oriel_dep), options));
     addUpdaterSteps(b, oriel_dep.artifact("update_tool"));

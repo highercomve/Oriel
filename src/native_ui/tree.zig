@@ -923,6 +923,9 @@ pub const Props = struct {
     /// An explicit tabindex (.oriel `focusable="true"`: 0): Tab visits the
     /// node on every platform (interaction.zig).
     ti: ?i32 = null,
+    /// display: none: no box, no room taken (.oriel `display="none"`; the
+    /// native renderer leaves such elements out of the tree instead).
+    none: bool = false,
 };
 
 pub const Rect = struct {
@@ -1594,6 +1597,10 @@ pub const Tree = struct {
     /// The platform widgets the backend hosts for `.check` and `.button`
     /// (its platform JSON's `controls`); without one, oriel.ui draws it.
     controls: struct { check: bool = true, button: bool = true } = .{},
+    /// The window's color scheme (the engine's `dark`): .oriel media blocks
+    /// match it, and the window's width, through `media_views`.
+    dark: bool = false,
+    media_views: std.ArrayListUnmanaged(MediaView) = .empty,
     on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// A leaf style was defined (defineLeafStyle), with its props JSON, and a
     /// node was made from one (on_create: createLeaf, which host.leaf and
@@ -1635,6 +1642,7 @@ pub const Tree = struct {
     }
 
     pub fn deinit(t: *Tree) void {
+        t.media_views.deinit(t.gpa);
         t.clearAx();
         t.ax.deinit(t.gpa);
         t.scrolled.deinit(t.gpa);
@@ -2531,6 +2539,34 @@ pub const Tree = struct {
         n.pending_value = null;
     }
 
+    /// A mounted .oriel view with media blocks: `refresh` switches it to
+    /// the variant the window matches (ui.zig), `mask` the one it shows.
+    pub const MediaView = struct { base: i64, refresh: *const fn (t: *Tree, base: i64, shown: u32) anyerror!u32, mask: u32 };
+
+    /// Remember a mounted view with media blocks (once per base).
+    pub fn addMediaView(t: *Tree, view: MediaView) !void {
+        for (t.media_views.items) |*v| if (v.base == view.base) {
+            v.* = view;
+            return;
+        };
+        try t.media_views.append(t.gpa, view);
+    }
+
+    /// The window's width or color scheme changed: each view to the variant
+    /// it matches now (views no longer in the tree are forgotten).
+    pub fn refreshMedia(t: *Tree) !void {
+        var i: usize = 0;
+        while (i < t.media_views.items.len) {
+            const v = &t.media_views.items[i];
+            if (t.get(v.base) == null) {
+                _ = t.media_views.swapRemove(i);
+                continue;
+            }
+            v.mask = try v.refresh(t, v.base, v.mask);
+            i += 1;
+        }
+    }
+
     pub const Bound = enum { tip, label };
 
     /// Set a node's tooltip or accessible label to a copy of `value` (an
@@ -3164,8 +3200,11 @@ pub const Tree = struct {
             .h = yg.YGNodeLayoutGetHeight(n.yn),
         };
         if (p.sticky) |ins| if (n.parent) |parent| stick(&n.frame, ins, view, parent.frame);
-        n.clip = clip;
-        var child_clip = clip;
+        // display: none: nothing of it shows or takes a click. Yoga gives it
+        // no size, but backends paint a little past a box (its shadow) and
+        // a text laid out at width 0 would still draw, a letter a line.
+        n.clip = if (p.none) .{ .x = n.frame.x, .y = n.frame.y } else clip;
+        var child_clip = n.clip;
         var child_view = view;
         // Overflow is clipped at the padding box (inside the borders).
         if (p.scroll or p.scrollx or p.clip) child_clip = clip.intersect(n.paddingRect());
@@ -3240,12 +3279,16 @@ pub const Tree = struct {
     }
 
     /// Debugging (ORIEL_NUI_DUMP=1): the laid-out tree on stderr.
+    /// ORIEL_NUI_DUMP: the laid-out tree on stderr, a node a line (kind,
+    /// id, frame, its first text); ORIEL_NUI_DUMP=props adds each node's
+    /// props as JSON (porting a page to .oriel views: what it computed).
     pub fn dump(t: *Tree) void {
         const root = t.root orelse return;
-        dumpNode(root, 0);
+        const props = if (std.c.getenv("ORIEL_NUI_DUMP")) |v| std.mem.eql(u8, std.mem.span(v), "props") else false;
+        dumpNode(t.gpa, root, 0, props);
     }
 
-    fn dumpNode(n: *Node, depth: usize) void {
+    fn dumpNode(gpa: std.mem.Allocator, n: *Node, depth: usize, props: bool) void {
         var text: []const u8 = "";
         if (n.props.runs) |runs| if (runs.len > 0) {
             text = runs[0].t;
@@ -3253,7 +3296,12 @@ pub const Tree = struct {
         var pad: [64]u8 = undefined;
         @memset(&pad, ' ');
         std.debug.print("{s}{s}#{d} {d:.0},{d:.0} {d:.0}x{d:.0} \"{s}\"\n", .{ pad[0..@min(depth * 2, 64)], @tagName(n.kind), n.id, n.frame.x, n.frame.y, n.frame.w, n.frame.h, text[0..@min(text.len, 30)] });
-        for (n.kids.items) |k| dumpNode(k, depth + 1);
+        if (props) if (std.json.Stringify.valueAlloc(gpa, n.props, .{ .emit_null_optional_fields = false })) |json| {
+            defer gpa.free(json);
+            std.debug.print("{s}  {s}\n", .{ pad[0..@min(depth * 2, 64)], json });
+        } else |_| {};
+        if (depth >= max_walk_depth) return;
+        for (n.kids.items) |k| dumpNode(gpa, k, depth + 1, props);
     }
 
     /// Re-place after a scroll (no new layout).
@@ -3531,7 +3579,7 @@ fn applyYogaStyle(y: yg.YGNodeRef, p: Props) void {
     yg.YGNodeStyleSetPositionType(y, if (p.pos != null and std.mem.eql(u8, p.pos.?, "absolute")) yg.YGPositionTypeAbsolute else yg.YGPositionTypeRelative);
     yg.YGNodeStyleSetOverflow(y, if (p.scroll or p.scrollx) yg.YGOverflowScroll else if (p.clip) yg.YGOverflowHidden else yg.YGOverflowVisible);
     if (p.ar) |ar| yg.YGNodeStyleSetAspectRatio(y, ar) else yg.YGNodeStyleSetAspectRatio(y, std.math.nan(f32));
-    yg.YGNodeStyleSetDisplay(y, yg.YGDisplayFlex);
+    yg.YGNodeStyleSetDisplay(y, if (p.none) yg.YGDisplayNone else yg.YGDisplayFlex);
     // Border-box is Yoga's default: set only what differs from it, or was.
     if (p.cb) {
         yg.YGNodeStyleSetBoxSizing(y, yg.YGBoxSizingContentBox);
@@ -3936,6 +3984,27 @@ test "a bordered scroller scrolls to its content's end and clips at its padding 
     const kid = t.get(3).?;
     try std.testing.expectApproxEqAbs(s.frame.y + 2, kid.clip.y, 1e-3);
     try std.testing.expectApproxEqAbs(@as(f32, 100), kid.clip.h, 1e-3);
+}
+
+test "display: none leaves its subtree an empty clip" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    // A hidden panel with a text in it, beside a shown text.
+    try t.apply(
+        \\[["c",1,"view"],["p",1,{"fd":"row"}],["c",2,"view"],["p",2,{"none":true,"pad":[4,4,4,4]}],["c",3,"text"],["p",3,{"runs":[{"t":"Breakout","sz":16}]}],["k",2,[3]],["c",4,"text"],["p",4,{"runs":[{"t":"Score","sz":14}]}],["k",1,[2,4]],["r",1]]
+    );
+    t.width = 400;
+    t.height = 300;
+    t.layout();
+    // Backends paint a little past a box: a clip with room would let the
+    // text draw, laid out at width 0 (a letter a line).
+    for ([_]i64{ 2, 3 }) |id| {
+        const c = t.get(id).?.clip;
+        try std.testing.expect(c.w == 0 and c.h == 0);
+    }
+    try std.testing.expect(t.get(4).?.clip.w > 0);
 }
 
 test "flex: 1 labels in a row stay equal with room and keep whole words without" {
