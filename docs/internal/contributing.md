@@ -1,6 +1,6 @@
 # Building and contributing to Oriel
 
-[Back to Oriel](../README.md) · [Documentation](README.md)
+[Back to Oriel](../README.md) · [Documentation](../README.md)
 
 ## Building Oriel itself
 
@@ -93,7 +93,7 @@ scripts/wine.sh setup                    # one-time: .wine-test/ prefix + WebVie
 timeout 180 scripts/wine.sh run .wine-test/smoke/bin/oriel-smoke.exe --auto-quit
 ```
 
-See [docs/windows-testing.md](../docs/windows-testing.md) for setup details, Proton detection, and known Wine limitations.
+See [docs/windows-testing.md](windows-testing.md) for setup details, Proton detection, and known Wine limitations.
 
 ### Process cleanup verification (`test-dev-cleanup`)
 
@@ -115,7 +115,7 @@ zig build --fork=deps/gobject/bindings
 ### Memory-safety review checklist
 
 Every change must follow the read-only memory-safety review procedure detailed in
-[docs/memory-safety-review.md](../docs/memory-safety-review.md):
+[docs/memory-safety-review.md](memory-safety-review.md):
 1. **Leaks and double frees:** verify `defer`/`errdefer` on all allocation paths; ensure tests run with `std.testing.allocator`.
 2. **Ownership and lifetimes:** explicit slice ownership; no dangling pointers into stack memory or reset arenas; structs never copied after a pointer to them is retained.
 3. **Null and optionals:** check real contracts in GIR definitions and Win32 headers rather than trusting binding signatures.

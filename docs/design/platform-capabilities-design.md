@@ -1,5 +1,7 @@
 # Oriel platform capabilities: design
 
+Status: design record (2026-10-04); permissions, share, network/mDNS and file handles shipped in 0.9.x–0.10. The current APIs are documented in [Permissions](../permissions.md), [Share](../share.md), [Network](../network.md) and [Files](../files.md).
+
 *Architect, 2026-10-04, branch release-0.9.1. Motivated by GhostShare (ghostfile, branch dark-mode-and-android-discovery).*
 
 The guiding rule: **declare intent once in `build.zig`, call one runtime API.** The build turns the

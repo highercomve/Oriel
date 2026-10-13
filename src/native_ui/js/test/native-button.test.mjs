@@ -1,4 +1,4 @@
-// node test/native-button.test.mjs: rule 1.4 (docs/native-controls-a11y-design.md):
+// node test/native-button.test.mjs: rule 1.4 (docs/design/native-controls-a11y-design.md):
 // a backend listing "button" gets kind button for buttons whose box the page
 // left to the UA (color, padding and size don't count); a styled box, a
 // :hover rule touching it, rich content or appearance: none stay drawn.

@@ -294,7 +294,7 @@ Repeat the isolated harness from the repository root with QuickJS-NG:
 qjs src/native_ui/js/test/bench-qjs.js src/native_ui/js/test/runtime-linkedom.js examples/render-bench/web
 ```
 
-[Research and remaining implementation priorities](../../docs/native-renderer-performance.md)
+[Research and remaining implementation priorities](../../docs/internal/native-renderer-performance.md)
 describe the remaining construction/rendering cost and the WebView gap.
 
 ## Alternative JavaScript engines
@@ -342,7 +342,7 @@ zig build zjs -Doptimize=ReleaseFast -j4
 Both Zig builds use Zig 0.16.0. Engines are unchanged scratch checkouts;
 no node_modules modifications or new project dependencies are required.
 [Results](results/2026-10-02-rows-alternative-engines.json) and
-[analysis/compatibility limitations](../../docs/native-renderer-performance-history.md#alternative-engines-tested-2026-10-02).
+[analysis/compatibility limitations](../../docs/design/native-renderer-performance-history.md#alternative-engines-tested-2026-10-02).
 
 ## Historical results (before synchronous layout reads)
 

@@ -1,5 +1,5 @@
 //! Receiving what other apps share, and the system share sheet
-//! (docs/platform-capabilities-design.md, section 5).
+//! (docs/design/platform-capabilities-design.md, section 5).
 //!
 //!     oriel.share.onReceive(onShare); // also the page's "share:received"
 //!     try oriel.share.send(.{ .title = "Notes", .text = text }, null, null);

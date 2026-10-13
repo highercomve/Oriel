@@ -1,5 +1,5 @@
 //! Files the page may read without ever seeing a path: files dropped into a
-//! native-renderer page (docs/drag-and-drop-design.md, section 3: one table
+//! native-renderer page (docs/design/drag-and-drop-design.md, section 3: one table
 //! per engine, `Engine.drops`) and files other apps share (oriel.share).
 //!
 //! The capability is an open read-only descriptor, never a path: a backend

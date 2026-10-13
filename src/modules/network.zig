@@ -1,5 +1,5 @@
 //! The device's network: a multicast lock and mDNS/DNS-SD
-//! (docs/platform-capabilities-design.md, section 2).
+//! (docs/design/platform-capabilities-design.md, section 2).
 //!
 //!     const lock = try oriel.network.acquireMulticast(); // mDNS on Android
 //!     defer lock.release();

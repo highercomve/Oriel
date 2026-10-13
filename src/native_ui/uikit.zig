@@ -168,7 +168,7 @@ fn classes() void {
         .{ "pressesBegan:withEvent:", pressesBegan },
         .{ "pressesEnded:withEvent:", pressesEnded },
         .{ "pressesCancelled:withEvent:", pressesCancelled },
-        // Its accessibility (docs/native-controls-a11y-design.md 2.4, 3.5):
+        // Its accessibility (docs/design/native-controls-a11y-design.md 2.4, 3.5):
         // a container whose elements are the page's, a flat list in
         // reading order, made on demand.
         .{ "isAccessibilityElement", no },
@@ -1978,7 +1978,7 @@ test {
 }
 
 // ---------------------------------------------------------------------------
-// Accessibility (docs/native-controls-a11y-design.md 2.4 and 3.5, UIKit):
+// Accessibility (docs/design/native-controls-a11y-design.md 2.4 and 3.5, UIKit):
 // the page view is a container; its elements are the page's in reading
 // order, one flat list (VoiceOver moves through it linearly; its rotor
 // uses the traits): a UIAccessibilityElement per node with an entry
@@ -2205,7 +2205,7 @@ fn axActivate(self: id, _: SEL) callconv(.c) BOOL {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// Drag and drop (docs/design/drag-and-drop-design.md, sections 1 and 5): drops
 // into the page through a UIDropInteraction. The page answers each enter
 // and update with an effect mask (Engine.dragEvent), which UIKit gets as a
 // UIDropProposal (copy, move or cancel). A drop's data loads

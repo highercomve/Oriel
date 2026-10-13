@@ -957,7 +957,7 @@ fn nClickableAt(_: *Env, _: jclass, win: jint, x: f32, y: f32) callconv(.c) jboo
     return 0;
 }
 
-// Drag and drop (docs/drag-and-drop-design.md §1, §5): Android's DragEvent
+// Drag and drop (docs/design/drag-and-drop-design.md §1, §5): Android's DragEvent
 // has no source actions or modifiers: every operation is allowed and copy
 // suggested, as Chrome does for a drag from another app.
 const drag_allowed: u8 = 7;

@@ -656,7 +656,7 @@ fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:
     const body = trimmed[0 .. trimmed.len - 1];
     var sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     out.writer.writeAll(body) catch return null;
-    // The controls hosted as native widgets (docs/native-controls-a11y-design.md).
+    // The controls hosted as native widgets (docs/design/native-controls-a11y-design.md).
     out.writer.print("{s}\"controls\":[\"check\",\"button\"]", .{sep}) catch return null;
     sep = ",";
     var rgba: GdkRGBA = undefined;
@@ -1898,7 +1898,7 @@ fn hoverAt(s: *Surface) void {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// Drag and drop (docs/design/drag-and-drop-design.md, sections 1 and 5): drops
 // into the page. The page answers each enter and motion with an effect
 // mask (Engine.dragEvent), which GTK gets as one action. A drop's data
 // comes asynchronously: it's read (files opened into the engine's table,

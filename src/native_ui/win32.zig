@@ -1493,7 +1493,7 @@ fn sliderDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
     }
 }
 
-/// A native checkbox or radio (kind check, docs/native-controls-a11y-design.md
+/// A native checkbox or radio (kind check, docs/design/native-controls-a11y-design.md
 /// 1.5): a BUTTON that never changes itself (BS_3STATE or BS_RADIOBUTTON,
 /// not the auto styles; BS_NOTIFY for its focus). Its state is the page's
 /// (syncCheck); a click (each of a double click too) is
@@ -1555,7 +1555,7 @@ fn checkProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) call
     return callControl(old, hwnd, msg, wparam, lparam);
 }
 
-/// A native push button (kind button, docs/native-controls-a11y-design.md
+/// A native push button (kind button, docs/design/native-controls-a11y-design.md
 /// 1.4): a BUTTON (BS_PUSHBUTTON, its label wrapping, BS_NOTIFY for its
 /// focus) over the box's border box, the CSS border and padding only room.
 /// A click is the page's click; keys go to the page first (checkProc).
@@ -4870,7 +4870,7 @@ fn withAccent(gpa: std.mem.Allocator, platform_json: [:0]const u8, a: [3]u8, for
     }
     const body = body_buf.items;
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
-    // controls: the kinds made native here (docs/native-controls-a11y-design.md 1.1).
+    // controls: the kinds made native here (docs/design/native-controls-a11y-design.md 1.1).
     return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"accent\":[{d},{d},{d}],\"controls\":[\"check\",\"button\"]}}", .{ body, sep, a[0], a[1], a[2] }, 0) catch null;
 }
 
@@ -6549,7 +6549,7 @@ fn paintIcon(p: *Painter, n: *Node) void {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// Drag and drop (docs/design/drag-and-drop-design.md, sections 1 and 5): drops
 // into the page through OLE. The canvas registers an IDropTarget; the page
 // answers each enter and over with an effect mask (Engine.dragEvent), which
 // OLE gets as one DROPEFFECT (the same bits: copy 1, move 2, link 4). A

@@ -1,5 +1,5 @@
 //! A flex row's leaves read straight from the native DOM and stamped into
-//! the tree (docs/native-dom.md, phase 3): what render.js's useFlexShape
+//! the tree (docs/design/native-dom.md, phase 3): what render.js's useFlexShape
 //! did per child (its id, its text, its node), without JavaScript objects,
 //! maps or JSON. The page's runtime decides that a row has this shape and
 //! registers its plan (Tree.defineStampPlan): each child element's leaf

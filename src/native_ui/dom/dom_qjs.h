@@ -1,4 +1,4 @@
-// The native DOM's QuickJS bindings (dom_qjs.c, docs/native-dom.md).
+// The native DOM's QuickJS bindings (dom_qjs.c, docs/design/native-dom.md).
 #pragma once
 #include <stdint.h>
 #include "quickjs.h"

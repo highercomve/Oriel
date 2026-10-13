@@ -1,9 +1,6 @@
 # Drag and drop for Oriel: design
 
-Status: proposal (2026-10-04). Scope: drops into pages (files, text, URIs) in the native renderer on every
-backend, in-page HTML5 drag and drop, drags out of the page, and what WebView mode needs.
-Targets: Google's large-screen/desktop-Android checklist (drag and drop between windows and apps on
-ChromeOS) and parity with desktop browsers.
+Status: design record (2026-10-04). Drops into pages shipped on every native-renderer backend; drags out of the page and in-page HTML5 drag and drop haven't. What exists is documented in [Drag and drop](../drag-and-drop.md).
 
 ## 0. What exists today (findings)
 

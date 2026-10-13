@@ -82,7 +82,7 @@ typedef struct {
     JSRuntime *rt;
     JSContext *ctx;
     void *opaque;
-    DomCtx *dom; // the native DOM (docs/native-dom.md)
+    DomCtx *dom; // the native DOM (docs/design/native-dom.md)
     // Calls from Zig in progress (eval and jobs nest when a host function
     // calls back into the page).
     int depth;

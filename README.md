@@ -62,7 +62,7 @@ See [Platform hooks](docs/platform-hooks.md).
 - [Showcase](docs/examples.md#showcase): windows, local AI, dictation, text to speech, SQLite, notifications, and more on desktop and mobile.
 - [Breakout](docs/examples.md#breakout): the same canvas game in the WebView and native renderer, with JavaScript or Zig physics.
 - [System monitor](docs/examples.md#system-monitor): live CPU, memory, and process telemetry with direct kernel sampling and native rendering.
-- [Smoke test](docs/examples.md#smoke-test): end-to-end checks for modules and security.
+- [Smoke test](docs/examples.md#smoke): end-to-end checks for modules and security.
 - [Render bench](docs/examples.md#render-bench) and [canvas demo](docs/examples.md#canvas-demo): rendering measurements and 2D drawing.
 
 [GhostPen](https://github.com/highercomve/GhostPen) is a desktop AI editor built

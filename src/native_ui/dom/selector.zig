@@ -1,4 +1,4 @@
-//! CSS selectors on the document store (docs/native-dom.md): compiled once,
+//! CSS selectors on the document store (docs/design/native-dom.md): compiled once,
 //! matched right to left. Tag names, ids and class tokens are atoms, so the
 //! common tests are integer compares (elements keep their id and class
 //! tokens as atoms: store.zig). Attribute values are compared in place when

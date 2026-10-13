@@ -1,4 +1,4 @@
-// Drag and drop into the page (docs/drag-and-drop-design.md, section 2):
+// Drag and drop into the page (docs/design/drag-and-drop-design.md, section 2):
 // DataTransfer, DataTransferItemList, DataTransferItem, DragEvent, and the
 // HTML spec's processing model over the engine's "drag" events.
 //

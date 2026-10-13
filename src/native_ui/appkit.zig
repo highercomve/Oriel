@@ -166,7 +166,7 @@ fn classes() void {
         .{ "mouseDragged:", mouseDragged },
         .{ "mouseExited:", mouseExited },
         .{ "scrollWheel:", scrollWheel },
-        // Drops into the page (docs/drag-and-drop-design.md, section 5).
+        // Drops into the page (docs/design/drag-and-drop-design.md, section 5).
         .{ "draggingEntered:", draggingEntered },
         .{ "draggingUpdated:", draggingUpdated },
         .{ "draggingExited:", draggingExited },
@@ -176,7 +176,7 @@ fn classes() void {
         .{ "viewDidChangeEffectiveAppearance", appearanceChanged },
         .{ "nuiSystemColorsChanged:", systemColorsChanged },
         .{ "viewDidChangeBackingProperties", backingChanged },
-        // Its accessibility (docs/native-controls-a11y-design.md 2.x): not an
+        // Its accessibility (docs/design/native-controls-a11y-design.md 2.x): not an
         // element itself, its children the page's (a flat list in reading
         // order), built on demand.
         .{ "isAccessibilityElement", no },
@@ -2110,7 +2110,7 @@ test {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (docs/drag-and-drop-design.md, sections 1 and 5): drops
+// Drag and drop (docs/design/drag-and-drop-design.md, sections 1 and 5): drops
 // into the page. The page answers each enter and update with an effect
 // mask (Engine.dragEvent), which AppKit gets as one NSDragOperation. A
 // drop's data is on the pasteboard already: performDragOperation opens
@@ -2466,7 +2466,7 @@ fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), str: []cons
 }
 
 // ---------------------------------------------------------------------------
-// Accessibility (docs/native-controls-a11y-design.md 2.1, AppKit): the page
+// Accessibility (docs/design/native-controls-a11y-design.md 2.1, AppKit): the page
 // view's children are the page's elements in reading order, one flat list
 // (node order): an element per node with an accessibility entry (Tree.ax,
 // the "a" op), static text per text node with the links in it (their

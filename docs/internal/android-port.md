@@ -49,7 +49,7 @@ Platform contract mapping:
 | Permissions | New `permissions/android.zig` → runtime permissions (mic, camera, notifications). |
 | Global shortcuts | In-app only (Android has no system-wide hotkeys): `global_shortcut.register` works while one of the app's windows has focus, with a hardware keyboard. `OrielActivity.dispatchKeyEvent` matches the key before the WebView, and `onProvideKeyboardShortcuts` lists each shortcut's description in the system's Meta+/ helper. |
 | System AI | `-Dsystem_ai`: Gemini Nano through ML Kit's GenAI Prompt API (`com.google.mlkit:genai-prompt:1.0.0-beta4`, added to Gradle only with the flag), as Oriel's own extension `oriel.system_ai` (`OrielSystemAi.kt`). Text and one image, streaming, download with progress. Supported phones only (AICore with Gemini Nano: Pixel 9+, recent Galaxy S); elsewhere `status()` is `unavailable`. Needs Kotlin 2.3 in the Gradle project (the template's; ML Kit's metadata is 2.3): see [Upgrading an existing project](#upgrading-an-existing-project). |
-| Menus, tray, input, media server | Not available: an app's `.tray = true` resolves to `oriel.tray.available = false`, and calls under `if (oriel.tray.available)` aren't built ([Availability](modules.md#availability)). No stubs. |
+| Menus, tray, input, media server | Not available: an app's `.tray = true` resolves to `oriel.tray.available = false`, and calls under `if (oriel.tray.available)` aren't built ([Availability](../modules.md#availability)). No stubs. |
 
 ## Step zero: the silent-GTK trap
 
@@ -89,7 +89,7 @@ adb logcat -s Oriel chromium       # logs
 `oriel android build --abi arm64 --apk -Dnative_ui -Doptimize=ReleaseFast`.
 The native UI APK uses the same app sources, rendered by QuickJS and Oriel's
 native view layer. It remains experimental and implements a subset of browser
-HTML and CSS; see [Native renderer](native-renderer.md).
+HTML and CSS; see [Native renderer](../native-renderer.md).
 Explicit options such as `-Doptimize=ReleaseFast` replace the defaults.
 
 `oriel android dev` builds `zig-out/jniLibs/<abi>/liboriel.so`, installs a
@@ -120,7 +120,7 @@ Apps built with `.kokoro = true` ship espeak-ng's phoneme data as APK assets
 projects point Gradle at that directory; a project generated earlier needs
 `sourceSets["main"].assets.srcDirs("../../zig-out/android-assets")` (the
 path from the app module to `zig-out`) inside `android { }` in
-`app/build.gradle.kts`. See [Offline text to speech](tts.md).
+`app/build.gradle.kts`. See [Offline text to speech](../tts.md).
 
 For behavior beyond JNI helpers, register app-owned classes with
 `.android.hooks` (formerly `.android.extensions`, which still works). Oriel
@@ -128,7 +128,7 @@ regenerates the internal `OrielAppExtensions` registry on every Android build;
 implement `OrielAndroidHooks` (`OrielAndroidExtension` in Java) in your own
 Kotlin or Java sources. The generated runtime dispatches lifecycle, WebView,
 file-picker, permission and activity-result hooks without requiring edits to
-Oriel's files. See [Android platform hooks](android-extensions.md) for registration,
+Oriel's files. See [Android platform hooks](../platform-hooks.md) for registration,
 request-code namespaces and callback ownership.
 
 The manifest (`android/app/src/main/AndroidManifest.xml`) is yours, except
