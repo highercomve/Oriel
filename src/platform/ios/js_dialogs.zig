@@ -15,7 +15,7 @@
 //! the blocks, so no retain cycle.
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const window = @import("window.zig");
 
 const Object = apple.Object;

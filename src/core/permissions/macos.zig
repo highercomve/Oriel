@@ -24,17 +24,17 @@
 const std = @import("std");
 const internal = @import("../internal.zig");
 const common = @import("common.zig");
-const cocoa = @import("../../platform/macos/cocoa.zig");
-const bluetooth = @import("bluetooth_apple.zig").Bluetooth(cocoa);
+const apple = @import("../../platform/apple/apple.zig");
+const bluetooth = @import("bluetooth_apple.zig").Bluetooth;
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const Kind = common.Kind;
 const Status = common.Status;
 const Done = *const fn (Kind, Status) void;
 
 // AVFoundation
-extern const AVMediaTypeAudio: cocoa.id;
-extern const AVMediaTypeVideo: cocoa.id;
+extern const AVMediaTypeAudio: apple.id;
+extern const AVMediaTypeVideo: apple.id;
 const AVAuthorizationStatusNotDetermined: isize = 0;
 const AVAuthorizationStatusRestricted: isize = 1;
 const AVAuthorizationStatusDenied: isize = 2;
@@ -45,7 +45,7 @@ extern "c" fn CGPreflightScreenCaptureAccess() bool;
 extern "c" fn CGRequestScreenCaptureAccess() bool;
 extern "c" fn AXIsProcessTrusted() u8;
 extern "c" fn AXIsProcessTrustedWithOptions(options: ?*anyopaque) u8;
-extern const kAXTrustedCheckOptionPrompt: cocoa.id;
+extern const kAXTrustedCheckOptionPrompt: apple.id;
 
 // libdispatch
 extern "c" fn dispatch_semaphore_create(value: isize) ?*anyopaque;
@@ -64,7 +64,7 @@ const UNAuthorizationStatusEphemeral: isize = 4;
 
 pub fn status(kind: Kind) Status {
     // Callers may be off the run loop (tests, `oriel check`).
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     return switch (kind) {
         .microphone => captureStatus(AVMediaTypeAudio),
@@ -79,11 +79,11 @@ pub fn status(kind: Kind) Status {
 }
 
 pub fn request(kind: Kind, done: Done) void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     switch (kind) {
-        .microphone => requestCapture(kind, AVMediaTypeAudio, done),
-        .camera => requestCapture(kind, AVMediaTypeVideo, done),
+        .microphone => requestCapture(.microphone, AVMediaTypeAudio, done),
+        .camera => requestCapture(.camera, AVMediaTypeVideo, done),
         .screen_capture => {
             // Shows the system alert pointing to Settings the first time and
             // returns at once; the grant takes effect after the app restarts,
@@ -121,8 +121,8 @@ pub fn settingsUrl(kind: Kind) ?[:0]const u8 {
 
 // --- Camera and microphone -----------------------------------------------------
 
-fn captureStatus(media_type: cocoa.id) Status {
-    const device = cocoa.class("AVCaptureDevice");
+fn captureStatus(media_type: apple.id) Status {
+    const device = apple.class("AVCaptureDevice");
     const s = device.msgSend(isize, "authorizationStatusForMediaType:", .{media_type});
     return switch (s) {
         AVAuthorizationStatusAuthorized => .granted,
@@ -132,18 +132,19 @@ fn captureStatus(media_type: cocoa.id) Status {
     };
 }
 
-/// `done` travels in the block as an address (captures are plain values).
-const CaptureBlock = cocoa.objc.Block(struct { kind: u8, done: usize }, .{cocoa.c.BOOL}, void);
-
-fn onCaptureAccess(ctx: *const CaptureBlock.Context, granted: cocoa.c.BOOL) callconv(.c) void {
-    const done: Done = @ptrFromInt(ctx.done);
-    done(@enumFromInt(ctx.kind), if (cocoa.isTrue(granted)) .granted else .denied);
+fn CaptureAccess(comptime kind: Kind) type {
+    return struct {
+        fn invoke(block: *apple.ContextBlock, granted: apple.c.BOOL) callconv(.c) void {
+            const done: Done = @ptrCast(@alignCast(block.ctx.?));
+            done(kind, if (apple.isTrue(granted)) .granted else .denied);
+        }
+    };
 }
 
-fn requestCapture(kind: Kind, media_type: cocoa.id, done: Done) void {
+fn requestCapture(comptime kind: Kind, media_type: apple.id, done: Done) void {
     // Called on an arbitrary queue; AVFoundation copies the (stack) block.
-    var block = CaptureBlock.init(.{ .kind = @intFromEnum(kind), .done = @intFromPtr(done) }, &onCaptureAccess);
-    cocoa.class("AVCaptureDevice").msgSend(void, "requestAccessForMediaType:completionHandler:", .{ media_type, @as(cocoa.id, @ptrCast(&block)) });
+    var block = apple.contextBlock(CaptureAccess(kind).invoke, @ptrCast(@constCast(done)));
+    apple.class("AVCaptureDevice").msgSend(void, "requestAccessForMediaType:completionHandler:", .{ media_type, block.ptr() });
 }
 
 // --- Accessibility ----------------------------------------------------------------
@@ -151,8 +152,8 @@ fn requestCapture(kind: Kind, media_type: cocoa.id, done: Done) void {
 var ax_polling = std.atomic.Value(bool).init(false);
 
 fn requestAccessibility(done: Done) void {
-    const dict = cocoa.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{
-        cocoa.class("NSNumber").msgSend(Object, "numberWithBool:", .{cocoa.boolean(true)}),
+    const dict = apple.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{
+        apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(true)}),
         Object{ .value = kAXTrustedCheckOptionPrompt },
     });
     if (AXIsProcessTrustedWithOptions(dict.value) != 0) return done(.accessibility, .granted);
@@ -182,16 +183,16 @@ fn pollAccessibility(done: Done) void {
 /// Whether this process runs from an `.app` bundle with a bundle id (the
 /// UserNotifications framework raises an exception otherwise).
 fn bundled() bool {
-    const bundle = cocoa.class("NSBundle").msgSend(Object, "mainBundle", .{});
+    const bundle = apple.class("NSBundle").msgSend(Object, "mainBundle", .{});
     if (bundle.value == null) return false;
     if (bundle.msgSend(Object, "bundleIdentifier", .{}).value == null) return false;
-    const path = cocoa.utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
+    const path = apple.utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
     return std.mem.endsWith(u8, path, ".app");
 }
 
 fn notificationCenter() ?Object {
     if (!bundled()) return null;
-    const center = cocoa.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
+    const center = apple.class("UNUserNotificationCenter").msgSend(Object, "currentNotificationCenter", .{});
     return if (center.value == null) null else center;
 }
 
@@ -212,10 +213,8 @@ const SettingsQuery = struct {
     }
 };
 
-const SettingsBlock = cocoa.objc.Block(struct { query: usize }, .{cocoa.id}, void);
-
-fn onSettings(ctx: *const SettingsBlock.Context, settings: cocoa.id) callconv(.c) void {
-    const q: *SettingsQuery = @ptrFromInt(ctx.query);
+fn onSettings(block: *apple.ContextBlock, settings: apple.id) callconv(.c) void {
+    const q: *SettingsQuery = @ptrCast(@alignCast(block.ctx.?));
     if (settings != null) q.result.store((Object{ .value = settings }).msgSend(isize, "authorizationStatus", .{}), .release);
     _ = dispatch_semaphore_signal(q.sem);
     q.release();
@@ -228,8 +227,8 @@ fn notificationStatus() Status {
         std.heap.smp_allocator.destroy(q);
         return .unknown;
     } };
-    var block = SettingsBlock.init(.{ .query = @intFromPtr(q) }, &onSettings);
-    center.msgSend(void, "getNotificationSettingsWithCompletionHandler:", .{@as(cocoa.id, @ptrCast(&block))});
+    var block = apple.contextBlock(onSettings, q);
+    center.msgSend(void, "getNotificationSettingsWithCompletionHandler:", .{block.ptr()});
     const timed_out = dispatch_semaphore_wait(q.sem, dispatch_time(DISPATCH_TIME_NOW, 2 * std.time.ns_per_s)) != 0;
     const s = q.result.load(.acquire);
     q.release();
@@ -242,19 +241,17 @@ fn notificationStatus() Status {
     };
 }
 
-const AuthBlock = cocoa.objc.Block(struct { done: usize }, .{ cocoa.c.BOOL, cocoa.id }, void);
-
-fn onAuthorization(ctx: *const AuthBlock.Context, granted: cocoa.c.BOOL, _: cocoa.id) callconv(.c) void {
-    const done: Done = @ptrFromInt(ctx.done);
-    done(.notifications, if (cocoa.isTrue(granted)) .granted else .denied);
+fn onAuthorization(block: *apple.ContextBlock, granted: apple.c.BOOL, _: apple.id) callconv(.c) void {
+    const done: Done = @ptrCast(@alignCast(block.ctx.?));
+    done(.notifications, if (apple.isTrue(granted)) .granted else .denied);
 }
 
 fn requestNotifications(done: Done) void {
     const center = notificationCenter() orelse return done(.notifications, .unknown);
     const UNAuthorizationOptionSound: c_ulong = 1 << 1;
     const UNAuthorizationOptionAlert: c_ulong = 1 << 2;
-    var block = AuthBlock.init(.{ .done = @intFromPtr(done) }, &onAuthorization);
-    center.msgSend(void, "requestAuthorizationWithOptions:completionHandler:", .{ UNAuthorizationOptionAlert | UNAuthorizationOptionSound, @as(cocoa.id, @ptrCast(&block)) });
+    var block = apple.contextBlock(onAuthorization, @ptrCast(@constCast(done)));
+    center.msgSend(void, "requestAuthorizationWithOptions:completionHandler:", .{ UNAuthorizationOptionAlert | UNAuthorizationOptionSound, block.ptr() });
 }
 
 test settingsUrl {

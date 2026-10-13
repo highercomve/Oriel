@@ -10,11 +10,11 @@
 //! UIKit is main-thread only: operations from other threads are forwarded.
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const Object = apple.Object;
 const ShellMod = @import("Shell.zig");
-const scheme_mod = @import("scheme.zig");
-const bridge_mod = @import("bridge.zig");
+const scheme_mod = @import("../apple/scheme.zig");
+const bridge_mod = @import("../apple/bridge.zig");
 const js_dialogs = @import("js_dialogs.zig");
 const permissions = @import("../../core/permissions/gate.zig");
 const App = @import("../../core/App.zig");

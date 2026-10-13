@@ -8,12 +8,12 @@
 //! thread; check items toggle before the callback gets the new state.
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 
 pub const MenuItem = common.MenuItem;
 pub const ActionCallback = common.ActionCallback;
@@ -68,9 +68,9 @@ var ids: std.ArrayList([]const u8) = .empty;
 var ids_arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
 var callback: ?ActionCallback = null;
 /// The shared action target (+1 for the process lifetime).
-var target: Object = cocoa.nil;
+var target: Object = apple.nil;
 
-fn menuAction(_: cocoa.id, _: cocoa.c.SEL, sender_id: cocoa.id) callconv(.c) void {
+fn menuAction(_: apple.id, _: apple.c.SEL, sender_id: apple.id) callconv(.c) void {
     const sender: Object = .{ .value = sender_id };
     const tag = sender.msgSend(isize, "tag", .{});
     if (tag < 0 or tag >= ids.items.len) return;
@@ -94,23 +94,23 @@ fn menuAction(_: cocoa.id, _: cocoa.c.SEL, sender_id: cocoa.id) callconv(.c) voi
 
 fn ensureTarget() void {
     if (target.value != null) return;
-    const cls = cocoa.defineClass("OrielMenuTarget", &.{}, .{
+    const cls = apple.defineClass("OrielMenuTarget", &.{}, .{
         .{ "menuAction:", menuAction },
     });
-    target = cocoa.new(cls);
+    target = apple.new(cls);
 }
 
 // --- Building -------------------------------------------------------------------
 
 fn nsItem(title: []const u8, action: bool, key: ?KeyEquivalent) !Object {
-    const title_ns = cocoa.nsString(title) orelse return error.InvalidUtf8;
+    const title_ns = apple.nsString(title) orelse return error.InvalidUtf8;
     defer title_ns.release();
     var key_buf: [4]u8 = undefined;
     const key_len = if (key) |k| std.unicode.utf8Encode(k.char, &key_buf) catch 0 else 0;
-    const key_ns = cocoa.nsString(key_buf[0..key_len]) orelse return error.OutOfMemory;
+    const key_ns = apple.nsString(key_buf[0..key_len]) orelse return error.OutOfMemory;
     defer key_ns.release();
-    const sel: cocoa.c.SEL = if (action) cocoa.objc.sel("menuAction:").value else null;
-    const item = cocoa.class("NSMenuItem").msgSend(Object, "alloc", .{})
+    const sel: apple.c.SEL = if (action) apple.objc.sel("menuAction:").value else null;
+    const item = apple.class("NSMenuItem").msgSend(Object, "alloc", .{})
         .msgSend(Object, "initWithTitle:action:keyEquivalent:", .{ title_ns, sel, key_ns });
     if (item.value == null) return error.OutOfMemory;
     if (key) |k| item.msgSend(void, "setKeyEquivalentModifierMask:", .{k.modifiers});
@@ -129,7 +129,7 @@ fn fill(menu: Object, items: []const MenuItem) !void {
     for (items) |entry| {
         const item: Object = switch (entry) {
             .separator => {
-                menu.msgSend(void, "addItem:", .{cocoa.class("NSMenuItem").msgSend(Object, "separatorItem", .{})});
+                menu.msgSend(void, "addItem:", .{apple.class("NSMenuItem").msgSend(Object, "separatorItem", .{})});
                 continue;
             },
             .item => |it| blk: {
@@ -137,14 +137,14 @@ fn fill(menu: Object, items: []const MenuItem) !void {
                 const obj = try nsItem(it.label, true, key);
                 errdefer obj.release();
                 obj.msgSend(void, "setTag:", .{try addId(it.id)});
-                obj.msgSend(void, "setEnabled:", .{cocoa.boolean(it.enabled)});
+                obj.msgSend(void, "setEnabled:", .{apple.boolean(it.enabled)});
                 break :blk obj;
             },
             .check => |it| blk: {
                 const obj = try nsItem(it.label, true, null);
                 errdefer obj.release();
                 obj.msgSend(void, "setTag:", .{try addId(it.id)});
-                obj.msgSend(void, "setEnabled:", .{cocoa.boolean(it.enabled)});
+                obj.msgSend(void, "setEnabled:", .{apple.boolean(it.enabled)});
                 obj.msgSend(void, "setState:", .{if (it.checked) NSControlStateValueOn else NSControlStateValueOff});
                 // Marks a check item for menuAction (any non-nil object).
                 obj.msgSend(void, "setRepresentedObject:", .{target});
@@ -153,15 +153,15 @@ fn fill(menu: Object, items: []const MenuItem) !void {
             .submenu => |sub| blk: {
                 const obj = try nsItem(sub.label, false, null);
                 errdefer obj.release();
-                const title_ns = cocoa.nsString(sub.label) orelse return error.InvalidUtf8;
+                const title_ns = apple.nsString(sub.label) orelse return error.InvalidUtf8;
                 defer title_ns.release();
-                const submenu = cocoa.class("NSMenu").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTitle:", .{title_ns});
+                const submenu = apple.class("NSMenu").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTitle:", .{title_ns});
                 defer submenu.release(); // the item keeps it
                 // Items are enabled by their `enabled` flag, not by responder validation.
-                submenu.msgSend(void, "setAutoenablesItems:", .{cocoa.boolean(false)});
+                submenu.msgSend(void, "setAutoenablesItems:", .{apple.boolean(false)});
                 try fill(submenu, sub.items);
                 obj.msgSend(void, "setSubmenu:", .{submenu});
-                obj.msgSend(void, "setEnabled:", .{cocoa.boolean(sub.enabled)});
+                obj.msgSend(void, "setEnabled:", .{apple.boolean(sub.enabled)});
                 break :blk obj;
             },
         };
@@ -191,7 +191,7 @@ fn setOnMain(params: *SetParams) void {
 }
 
 fn setNow(items: []const MenuItem, on_action: ActionCallback) !void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     ensureTarget();
     const app = ShellMod.sharedApplication();
@@ -214,7 +214,7 @@ fn setNow(items: []const MenuItem, on_action: ActionCallback) !void {
         discard_arena.deinit();
     }
 
-    const bar = cocoa.new(cocoa.class("NSMenu"));
+    const bar = apple.new(apple.class("NSMenu"));
     defer bar.release(); // NSApp keeps it
     const keep = struct {
         fn take(from: Object, into: Object, tag: isize) void {
@@ -228,7 +228,7 @@ fn setNow(items: []const MenuItem, on_action: ActionCallback) !void {
         }
     };
     // Build the app's part first: a failure leaves the old bar untouched.
-    const middle = cocoa.new(cocoa.class("NSMenu"));
+    const middle = apple.new(apple.class("NSMenu"));
     defer middle.release();
     try fill(middle, items);
 
@@ -256,11 +256,11 @@ pub fn set(items: []const MenuItem, on_action: ActionCallback) !void {
 }
 
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     ensureTarget();
     // Build (not install) a menu with a shortcut and a check item.
-    const menu = cocoa.new(cocoa.class("NSMenu"));
+    const menu = apple.new(apple.class("NSMenu"));
     defer menu.release();
     const saved_len = ids.items.len;
     defer ids.shrinkRetainingCapacity(saved_len);
@@ -270,7 +270,7 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
         .{ .check = .{ .id = "dnd", .label = "Do not disturb", .checked = true } },
     });
     const first = menu.msgSend(Object, "itemAtIndex:", .{@as(isize, 0)});
-    const key = cocoa.utf8(first.msgSend(Object, "keyEquivalent", .{})) orelse "";
+    const key = apple.utf8(first.msgSend(Object, "keyEquivalent", .{})) orelse "";
     const mods = first.msgSend(c_ulong, "keyEquivalentModifierMask", .{});
     const third = menu.msgSend(Object, "itemAtIndex:", .{@as(isize, 2)});
     const ok = menu.msgSend(isize, "numberOfItems", .{}) == 3 and std.mem.eql(u8, key, "n") and

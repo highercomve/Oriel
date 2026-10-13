@@ -7,7 +7,7 @@
 //! reports progress from the task's byte counts.
 
 const std = @import("std");
-const apple = @import("../../platform/ios/apple.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const blocks = @import("../../platform/apple/blocks.zig");
 const Object = apple.objc.Object;
 
