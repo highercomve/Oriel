@@ -52,7 +52,7 @@ jobs:
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Sampler test (one full sample)
         # Zig's own glibc: the container's crt files can be newer than its linker reads.
-        run: zig test sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
+        run: zig test src/sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
       - name: Model tests (histories, process filtering and sorting)
         run: zig build test
       - name: Oriel renderer build (.oriel views)
@@ -86,7 +86,7 @@ jobs:
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
       - name: Sampler test (one full sample)
-        run: zig test sampler_windows.zig -OReleaseFast
+        run: zig test src/sampler_windows.zig -OReleaseFast
       - name: Build
         run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Installer (setup.exe) and portable zip
@@ -114,7 +114,7 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: Sampler test (one full sample)
-        run: zig test sampler_macos.zig -OReleaseFast
+        run: zig test src/sampler_macos.zig -OReleaseFast
       - name: Build
         run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Disk image (.app in a .dmg, unsigned)
