@@ -14,8 +14,8 @@
 
 const std = @import("std");
 const common = @import("common.zig");
-const apple = @import("../../platform/ios/apple.zig");
-const bluetooth = @import("bluetooth_apple.zig").Bluetooth(apple);
+const apple = @import("../../platform/apple/apple.zig");
+const bluetooth = @import("bluetooth_apple.zig").Bluetooth;
 
 const Object = apple.Object;
 const Kind = common.Kind;

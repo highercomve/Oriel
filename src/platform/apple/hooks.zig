@@ -12,17 +12,17 @@
 //!
 //! Main thread only (UIKit, AppKit and WebKit call the delegates there), so
 //! there is no locking. Blocks (decision handlers) are passed through as
-//! received: a hook that keeps one copies it (ARC and Swift do). Raw `id`s
-//! here, so the macOS backend (zig-objc) and the iOS one (objc.zig) share it.
+//! received: a hook that keeps one copies it (ARC and Swift do).
 
 const std = @import("std");
 const builtin = @import("builtin");
-const objc = @import("objc.zig");
+const apple = @import("apple.zig");
+const objc = apple.objc;
 const instances = @import("instances.zig");
 const spec = @import("hooks_spec.zig");
 const declared = @import("oriel_apple_hooks");
 
-pub const id = ?*anyopaque;
+const id = apple.id;
 pub const Method = spec.Method;
 const c = objc.c;
 const Object = objc.Object;
@@ -118,7 +118,7 @@ pub fn intercept(comptime m: Method, args: anytype) bool {
     defer pool.deinit();
     for (hooks[0..hook_count]) |h| {
         if (!h.responds.contains(m)) continue;
-        if (isTrue(h.obj.msgSend(c.BOOL, s, args))) return true;
+        if (apple.isTrue(h.obj.msgSend(c.BOOL, s, args))) return true;
     }
     return false;
 }
@@ -131,7 +131,7 @@ pub fn intercept(comptime m: Method, args: anytype) bool {
 /// Before a window's WKWebView is created.
 pub fn webViewConfiguration(configuration: id, label: []const u8) void {
     if (hook_count == 0) return;
-    const name = nsString(label) orelse return;
+    const name = apple.nsString(label) orelse return;
     defer name.release();
     notify(.web_view_configuration, .{ configuration, name });
 }
@@ -158,7 +158,7 @@ pub fn windowWillClose(window: id) void {
 
 fn created(comptime m: Method, obj: id, label: []const u8) void {
     if (hook_count == 0 or obj == null) return;
-    const name = nsString(label) orelse return;
+    const name = apple.nsString(label) orelse return;
     defer name.release();
     track(obj, name);
     notify(m, .{ obj, name });
@@ -238,32 +238,13 @@ fn newContext(cls: objc.Class, index: usize) ?Object {
 fn ctxName(self: c.id, _: c.SEL) callconv(.c) c.id {
     const slot: *const usize = @ptrCast(@alignCast(c.object_getIndexedIvars(self) orelse return null));
     if (slot.* >= declared.classes.len) return null;
-    const s = nsString(declared.classes[slot.*]) orelse return null;
+    const s = apple.nsString(declared.classes[slot.*]) orelse return null;
     return s.msgSend(Object, "autorelease", .{}).value;
 }
 
 fn ctxFront(_: c.id, _: c.SEL) callconv(.c) c.id {
     const f = front_fn orelse return null;
     return f();
-}
-
-// ---------------------------------------------------------------------------
-
-const NSUTF8StringEncoding: c_ulong = 4;
-
-fn nsString(bytes: []const u8) ?Object {
-    const alloc = (objc.getClass("NSString") orelse return null).msgSend(Object, "alloc", .{});
-    const s = alloc.msgSend(Object, "initWithBytes:length:encoding:", .{ bytes.ptr, @as(c_ulong, bytes.len), NSUTF8StringEncoding });
-    return if (s.value == null) null else s;
-}
-
-fn isTrue(v: c.BOOL) bool {
-    return if (c.BOOL == bool) v else v != 0;
-}
-
-/// Objective-C BOOL from a Zig bool (for hooks' BOOL arguments).
-pub fn boolean(value: bool) c.BOOL {
-    return if (c.BOOL == bool) value else @intFromBool(value);
 }
 
 test {

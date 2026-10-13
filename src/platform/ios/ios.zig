@@ -5,16 +5,17 @@
 //! - `Shell.zig`: UIApplicationMain, the app and scene delegates, the main
 //!   thread's task queue, `quit`.
 //! - `window.zig`: a view controller + WKWebView per window, scenes.
-//! - `bridge.zig`, `scheme.zig`, `js_dialogs.zig`: as on macOS.
+//! - `js_dialogs.zig`: alert/confirm/prompt as a UIAlertController.
+//! - `../apple/bridge.zig`, `../apple/scheme.zig`: shared with macOS.
 
 const std = @import("std");
 const App = @import("../../core/App.zig");
 
-pub const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 pub const window = @import("window.zig");
 pub const ShellMod = @import("Shell.zig");
-pub const bridge = @import("bridge.zig");
-pub const scheme = @import("scheme.zig");
+pub const bridge = @import("../apple/bridge.zig");
+pub const scheme = @import("../apple/scheme.zig");
 pub const js_dialogs = @import("js_dialogs.zig");
 
 pub const WindowHandle = window.WindowHandle;

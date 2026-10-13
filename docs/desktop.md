@@ -106,15 +106,17 @@ makes the app single-instance: a second launch finds the running one's
 hidden host window and sends it its arguments (`WM_COPYDATA`), then quits.
 `oriel.lifecycle`'s `terminating` comes at `WM_ENDSESSION`.
 
-**macOS** (`src/platform/macos/`). AppKit through the Objective-C runtime
-([zig-objc](https://github.com/mitchellh/zig-objc)): `Shell.zig` runs
+**macOS** (`src/platform/macos/`). AppKit through the Objective-C runtime,
+declared in plain Zig without SDK headers (`src/platform/apple/objc.zig`,
+shared with iOS, so `zig build check -Dtarget=aarch64-macos` runs on any
+host): `Shell.zig` runs
 `NSApplication` with main-thread tasks on the GCD main queue, a default
 app / Edit / Window menu bar, SIGTERM/SIGINT as a clean quit, and a Dock
 click that reopens a hidden main window. `window.zig` makes `NSWindow`s with
 a `WKWebView` and its navigation and UI delegates (JavaScript `alert` /
-`confirm` / `prompt` are `NSAlert` sheets); `scheme.zig` serves `app://`
-through a `WKURLSchemeHandler`; `bridge.zig` uses a
-`WKScriptMessageHandlerWithReply`. Launch Services sends a bundled app's
+`confirm` / `prompt` are `NSAlert` sheets); `apple/scheme.zig` serves
+`app://` through a `WKURLSchemeHandler` and `apple/bridge.zig` uses a
+`WKScriptMessageHandlerWithReply`, the same code as on iOS. Launch Services sends a bundled app's
 second launch to the running one; `single_instance.zig` also catches
 binaries run directly (a terminal, `open -n`) with an `flock` and a Unix
 socket in the per-user temp directory when the app sets

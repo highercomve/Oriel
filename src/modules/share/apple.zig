@@ -13,9 +13,9 @@ const common = @import("common.zig");
 const App = @import("../../core/App.zig");
 
 const is_macos = builtin.os.tag == .macos;
-const rt = if (is_macos) @import("../../platform/macos/cocoa.zig") else @import("../../platform/ios/apple.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = if (is_macos) @import("../../platform/macos/Shell.zig") else @import("../../platform/ios/Shell.zig");
-const Object = rt.Object;
+const Object = apple.Object;
 
 const log = std.log.scoped(.share);
 const gpa = std.heap.smp_allocator;
@@ -87,21 +87,21 @@ pub fn receive(paths: []const []const u8, text: ?[]const u8, url: ?[]const u8, s
 /// `service` share: its files, else its text and URL.
 pub fn receiveService(pboard: Object) void {
     if (!is_macos) return;
-    const pool = rt.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(gpa);
-    const url_class = rt.class("NSURL");
-    const classes = rt.class("NSArray").msgSend(Object, "arrayWithObject:", .{url_class.value});
-    const only_files = rt.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{
-        rt.class("NSNumber").msgSend(Object, "numberWithBool:", .{rt.boolean(true)}), NSPasteboardURLReadingFileURLsOnlyKey,
+    const url_class = apple.class("NSURL");
+    const classes = apple.class("NSArray").msgSend(Object, "arrayWithObject:", .{url_class.value});
+    const only_files = apple.class("NSDictionary").msgSend(Object, "dictionaryWithObject:forKey:", .{
+        apple.class("NSNumber").msgSend(Object, "numberWithBool:", .{apple.boolean(true)}), NSPasteboardURLReadingFileURLsOnlyKey,
     });
     const urls = pboard.msgSend(Object, "readObjectsForClasses:options:", .{ classes, only_files });
     if (urls.value != null) {
         const n = urls.msgSend(c_ulong, "count", .{});
         for (0..n) |i| {
             const u = urls.msgSend(Object, "objectAtIndex:", .{@as(c_ulong, i)});
-            if (rt.utf8(u.msgSend(Object, "path", .{}))) |p| paths.append(gpa, p) catch {};
+            if (apple.utf8(u.msgSend(Object, "path", .{}))) |p| paths.append(gpa, p) catch {};
         }
     }
     var text: ?[]const u8 = null;
@@ -109,17 +109,17 @@ pub fn receiveService(pboard: Object) void {
     if (paths.items.len == 0) {
         // A link's URL (public.url), else plain text (which may itself be one).
         const link = url_class.msgSend(Object, "URLFromPasteboard:", .{pboard});
-        if (link.value != null and !rt.isTrue(link.msgSend(rt.c.BOOL, "isFileURL", .{}))) url = rt.urlString(link);
-        if (rt.nsString("public.utf8-plain-text")) |ty| {
+        if (link.value != null and !apple.isTrue(link.msgSend(apple.c.BOOL, "isFileURL", .{}))) url = apple.urlString(link);
+        if (apple.nsString("public.utf8-plain-text")) |ty| {
             defer ty.release();
-            text = rt.utf8(pboard.msgSend(Object, "stringForType:", .{ty}));
+            text = apple.utf8(pboard.msgSend(Object, "stringForType:", .{ty}));
         }
         if (url != null and text != null and std.mem.eql(u8, url.?, text.?)) text = null;
     }
     receive(paths.items, text, url, .service, false);
 }
 
-extern const NSPasteboardURLReadingFileURLsOnlyKey: rt.id;
+extern const NSPasteboardURLReadingFileURLsOnlyKey: apple.id;
 
 fn dropFile(h: u32) void {
     received.release(h);
@@ -138,12 +138,12 @@ fn keepFile(path: []const u8) !?common.File {
     return .{ .handle = handle, .name = name, .mime = common.mimeOf(name), .size = e.size };
 }
 
-extern "c" fn NSHomeDirectory() rt.id;
+extern "c" fn NSHomeDirectory() apple.id;
 
 /// Unlink only a canonical direct child of this app's iOS Inbox.
 fn removeCopy(path: []const u8) void {
     if (is_macos) return; // Inbox copies belong to the iOS application container.
-    const home = rt.utf8(.{ .value = NSHomeDirectory() }) orelse return;
+    const home = apple.utf8(.{ .value = NSHomeDirectory() }) orelse return;
     const inbox = std.fmt.allocPrintSentinel(gpa, "{s}/Documents/Inbox", .{home}, 0) catch return;
     defer gpa.free(inbox);
     const z = gpa.dupeZ(u8, path) catch return;
@@ -207,17 +207,17 @@ fn start(item: common.Outgoing, anchor: ?common.Rect, done: ?common.DoneHandler)
         finish(false, null);
     }
     if (item.text == null and item.url == null and item.files.len == 0) return error.Unsupported;
-    const pool = rt.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     sweepTemp();
-    const items = rt.class("NSMutableArray").msgSend(Object, "array", .{});
-    if (item.text) |t| if (rt.nsString(t)) |str| {
+    const items = apple.class("NSMutableArray").msgSend(Object, "array", .{});
+    if (item.text) |t| if (apple.nsString(t)) |str| {
         defer str.release();
         items.msgSend(void, "addObject:", .{str});
     };
-    if (item.url) |u| if (rt.nsString(u)) |str| {
+    if (item.url) |u| if (apple.nsString(u)) |str| {
         defer str.release();
-        const url = rt.class("NSURL").msgSend(Object, "URLWithString:", .{str});
+        const url = apple.class("NSURL").msgSend(Object, "URLWithString:", .{str});
         if (url.value != null) items.msgSend(void, "addObject:", .{url}) else items.msgSend(void, "addObject:", .{str});
     };
     for (item.files) |f| {
@@ -229,9 +229,9 @@ fn start(item: common.Outgoing, anchor: ?common.Rect, done: ?common.DoneHandler)
             };
         };
         defer gpa.free(path);
-        const str = rt.nsString(path) orelse return error.Unsupported;
+        const str = apple.nsString(path) orelse return error.Unsupported;
         defer str.release();
-        items.msgSend(void, "addObject:", .{rt.class("NSURL").msgSend(Object, "fileURLWithPath:", .{str})});
+        items.msgSend(void, "addObject:", .{apple.class("NSURL").msgSend(Object, "fileURLWithPath:", .{str})});
     }
     if (items.msgSend(c_ulong, "count", .{}) == 0) return error.Unsupported;
     // Pending before it shows: an older macOS's picker is a menu whose
@@ -303,12 +303,12 @@ fn writeAll(fd: std.c.fd_t, bytes: []const u8) !void {
     }
 }
 
-extern "c" fn NSTemporaryDirectory() rt.id;
+extern "c" fn NSTemporaryDirectory() apple.id;
 
 /// A new file named `name` in its own folder under the temporary
 /// directory (oriel-share/<n>/): its descriptor and path (owned).
 fn createTemp(name: []const u8) !struct { std.c.fd_t, [:0]u8 } {
-    const tmp = rt.utf8(.{ .value = NSTemporaryDirectory() }) orelse return error.NoTempDir;
+    const tmp = apple.utf8(.{ .value = NSTemporaryDirectory() }) orelse return error.NoTempDir;
     const base = std.fs.path.basenamePosix(name);
     const safe = if (base.len == 0 or std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) "file" else base;
     const root = try std.fmt.allocPrintSentinel(gpa, "{s}/oriel-share", .{std.mem.trimEnd(u8, tmp, "/")}, 0);
@@ -381,17 +381,17 @@ fn removeFolderFiles(dir: [:0]const u8) void {
 const ui = if (is_macos) Mac else Ios;
 
 const Mac = struct {
-    const NSRect = rt.NSRect;
-    var delegate: Object = rt.nil;
+    const NSRect = apple.NSRect;
+    var delegate: Object = apple.nil;
 
     fn make(items: Object) ?Object {
-        if (delegate.value == null) delegate = rt.new(rt.defineClass("OrielSharingPickerDelegate", &.{ "NSSharingServicePickerDelegate", "NSSharingServiceDelegate" }, .{
+        if (delegate.value == null) delegate = apple.new(apple.defineClass("OrielSharingPickerDelegate", &.{ "NSSharingServicePickerDelegate", "NSSharingServiceDelegate" }, .{
             .{ "sharingServicePicker:didChooseSharingService:", didChoose },
             .{ "sharingServicePicker:delegateForSharingService:", delegateFor },
             .{ "sharingService:didShareItems:", didShare },
             .{ "sharingService:didFailToShareItems:error:", didFail },
         }));
-        const picker = rt.class("NSSharingServicePicker").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithItems:", .{items});
+        const picker = apple.class("NSSharingServicePicker").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithItems:", .{items});
         if (picker.value == null) return null;
         picker.msgSend(void, "setDelegate:", .{delegate});
         return picker;
@@ -404,12 +404,12 @@ const Mac = struct {
         const b = view.msgSend(NSRect, "bounds", .{});
         var r: NSRect = if (anchor) |a| .{ .origin = .{ .x = @floatFromInt(a.x), .y = @floatFromInt(a.y) }, .size = .{ .width = @floatFromInt(@max(1, a.width)), .height = @floatFromInt(@max(1, a.height)) } } else .{ .origin = .{ .x = b.size.width / 2, .y = b.size.height / 2 }, .size = .{ .width = 1, .height = 1 } };
         // The anchor is from the top; an unflipped view counts from the bottom.
-        if (anchor != null and !rt.isTrue(view.msgSend(rt.c.BOOL, "isFlipped", .{}))) r.origin.y = b.size.height - r.origin.y - r.size.height;
+        if (anchor != null and !apple.isTrue(view.msgSend(apple.c.BOOL, "isFlipped", .{}))) r.origin.y = b.size.height - r.origin.y - r.size.height;
         picker.msgSend(void, "showRelativeToRect:ofView:preferredEdge:", .{ r, view, @as(c_ulong, 1) }); // NSMinYEdge
         return true;
     }
 
-    fn didChoose(_: rt.id, _: rt.c.SEL, _: rt.id, service: rt.id) callconv(.c) void {
+    fn didChoose(_: apple.id, _: apple.c.SEL, _: apple.id, service: apple.id) callconv(.c) void {
         // Dismissed without a choice.
         if (service == null) return finish(false, null);
         // Its title is the Result's target once it shares.
@@ -417,30 +417,30 @@ const Mac = struct {
         p.chosen = true;
         if (p.target) |old| gpa.free(old);
         p.target = null;
-        if (rt.utf8((Object{ .value = service }).msgSend(Object, "title", .{}))) |t| p.target = gpa.dupe(u8, t) catch null;
+        if (apple.utf8((Object{ .value = service }).msgSend(Object, "title", .{}))) |t| p.target = gpa.dupe(u8, t) catch null;
     }
 
-    fn delegateFor(self: rt.id, _: rt.c.SEL, _: rt.id, _: rt.id) callconv(.c) rt.id {
+    fn delegateFor(self: apple.id, _: apple.c.SEL, _: apple.id, _: apple.id) callconv(.c) apple.id {
         return self;
     }
 
-    fn didShare(_: rt.id, _: rt.c.SEL, _: rt.id, _: rt.id) callconv(.c) void {
+    fn didShare(_: apple.id, _: apple.c.SEL, _: apple.id, _: apple.id) callconv(.c) void {
         finish(true, null);
     }
 
-    fn didFail(_: rt.id, _: rt.c.SEL, _: rt.id, _: rt.id, _: rt.id) callconv(.c) void {
+    fn didFail(_: apple.id, _: apple.c.SEL, _: apple.id, _: apple.id, _: apple.id) callconv(.c) void {
         finish(false, null);
     }
 };
 
 const Ios = struct {
-    const CGRect = rt.CGRect;
+    const CGRect = apple.CGRect;
     const window = @import("../../platform/ios/window.zig");
 
     fn make(items: Object) ?Object {
-        const vc = rt.class("UIActivityViewController").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithActivityItems:applicationActivities:", .{ items, rt.nil });
+        const vc = apple.class("UIActivityViewController").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithActivityItems:applicationActivities:", .{ items, apple.nil });
         if (vc.value == null) return null;
-        vc.msgSend(void, "setCompletionWithItemsHandler:", .{rt.globalBlock(completed)});
+        vc.msgSend(void, "setCompletionWithItemsHandler:", .{apple.globalBlock(completed)});
         return vc;
     }
 
@@ -455,16 +455,16 @@ const Ios = struct {
             pc.msgSend(void, "setSourceView:", .{view});
             pc.msgSend(void, "setSourceRect:", .{r});
         }
-        front.msgSend(void, "presentViewController:animated:completion:", .{ vc, rt.boolean(true), rt.nil });
+        front.msgSend(void, "presentViewController:animated:completion:", .{ vc, apple.boolean(true), apple.nil });
         return true;
     }
 
     /// completionWithItemsHandler: (activityType, completed, returnedItems, error).
-    fn completed(_: *anyopaque, activity: rt.id, done: rt.c.BOOL, _: rt.id, _: rt.id) callconv(.c) void {
+    fn completed(_: *anyopaque, activity: apple.id, done: apple.c.BOOL, _: apple.id, _: apple.id) callconv(.c) void {
         // A share extension the user closed: the sheet is still up.
-        if (!rt.isTrue(done) and activity != null) return;
-        const target = if (activity != null) rt.utf8(.{ .value = activity }) else null;
-        finish(rt.isTrue(done), target);
+        if (!apple.isTrue(done) and activity != null) return;
+        const target = if (activity != null) apple.utf8(.{ .value = activity }) else null;
+        finish(apple.isTrue(done), target);
     }
 };
 

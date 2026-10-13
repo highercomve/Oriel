@@ -8,7 +8,7 @@
 //! and exits the process, which Apple discourages outside of fatal errors.
 
 const std = @import("std");
-const apple = @import("apple.zig");
+const apple = @import("../apple/apple.zig");
 const Object = apple.Object;
 const window = @import("window.zig");
 const WindowHandle = window.WindowHandle;

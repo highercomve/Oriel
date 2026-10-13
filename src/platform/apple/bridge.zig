@@ -1,9 +1,9 @@
-//! WKWebView JS <-> Zig IPC bridge.
+//! WKWebView JS <-> Zig IPC bridge, on macOS and iOS.
 //!
 //! Injects the `window.oriel` API (core/bridge_js.zig with the WebKit transport:
 //! `postMessage` on a handler with reply returns a Promise) and routes
 //! commands through `ipc.dispatchRequest` / `ipc.dispatchAsync` via a
-//! `WKScriptMessageHandlerWithReply` (macOS 11+).
+//! `WKScriptMessageHandlerWithReply` (macOS 11+, iOS 14+).
 //!
 //! Every request is answered exactly once through WebKit's reply block,
 //! which we copy (`_Block_copy`) while a command is pending. Sync commands
@@ -14,8 +14,9 @@ const std = @import("std");
 const apple = @import("apple.zig");
 const objc = apple.objc;
 const Object = apple.Object;
-const window_mod = @import("window.zig");
-const ShellMod = @import("Shell.zig");
+const is_ios = @import("../../core/target.zig").is_ios;
+const window_mod = if (is_ios) @import("../ios/window.zig") else @import("../macos/window.zig");
+const ShellMod = if (is_ios) @import("../ios/Shell.zig") else @import("../macos/Shell.zig");
 const App = @import("../../core/App.zig");
 const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
@@ -23,7 +24,7 @@ const security = @import("../../core/security.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
-const native = if (build_opts.native_ui) @import("../../native_ui/uikit.zig") else struct {};
+const native = if (!build_opts.native_ui) struct {} else if (is_ios) @import("../../native_ui/uikit.zig") else @import("../../native_ui/appkit.zig");
 
 const log = std.log.scoped(.oriel);
 

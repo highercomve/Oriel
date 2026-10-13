@@ -1,14 +1,16 @@
-//! Small helpers over zig-objc for the AppKit / WebKit backend: class lookup,
-//! NSString conversion, geometry structs, Grand Central Dispatch and blocks.
+//! Helpers over the Objective-C runtime (`objc.zig`) for the AppKit and
+//! UIKit backends and the Apple modules: class lookup and definition,
+//! NSString conversion, geometry, Grand Central Dispatch and blocks. No SDK
+//! headers, so everything using it type-checks on any host.
 //!
 //! Memory rules (manual retain/release, no ARC): objects from `alloc`/`new`/
 //! `copy` are owned (+1) and must be released once; anything else is
 //! borrowed (autoreleased or owned by its container). Code that creates
-//! autoreleased objects outside the AppKit event loop runs inside an
+//! autoreleased objects outside the run loop runs inside an
 //! `objc.AutoreleasePool`.
 
 const std = @import("std");
-pub const objc = @import("objc");
+pub const objc = @import("objc.zig");
 
 pub const c = objc.c;
 pub const id = c.id;
@@ -17,29 +19,27 @@ pub const Class = objc.Class;
 
 pub const NSUTF8StringEncoding: c_ulong = 4;
 
-pub const NSPoint = extern struct { x: f64, y: f64 };
-pub const NSSize = extern struct { width: f64, height: f64 };
-pub const NSRect = extern struct { origin: NSPoint, size: NSSize };
+pub const CGPoint = extern struct { x: f64, y: f64 };
+pub const CGSize = extern struct { width: f64, height: f64 };
+pub const CGRect = extern struct { origin: CGPoint, size: CGSize };
+/// AppKit's names for the same structs (typedefs of the CG ones on 64-bit).
+pub const NSPoint = CGPoint;
+pub const NSSize = CGSize;
+pub const NSRect = CGRect;
 
-/// The class `name`. Every class used here ships with AppKit, Foundation or
-/// WebKit (linked by build.zig), so a missing one is a broken install.
+/// The class `name`. Every class used here ships with the frameworks the
+/// build links, so a missing one is a broken install.
 pub fn class(name: [:0]const u8) Class {
     return objc.getClass(name) orelse std.debug.panic("Objective-C class {s} not found", .{name});
 }
 
 /// Objective-C BOOL from a Zig bool (BOOL is `bool` on arm64, `i8` on x86_64).
 pub fn boolean(value: bool) c.BOOL {
-    return switch (c.BOOL) {
-        bool => value,
-        else => @intFromBool(value),
-    };
+    return if (c.BOOL == bool) value else @intFromBool(value);
 }
 
 pub fn isTrue(value: c.BOOL) bool {
-    return switch (c.BOOL) {
-        bool => value,
-        else => value != 0,
-    };
+    return if (c.BOOL == bool) value else value != 0;
 }
 
 pub const nil: Object = .{ .value = null };
@@ -60,14 +60,21 @@ pub fn utf8(str: Object) ?[:0]const u8 {
     return std.mem.span(p);
 }
 
-/// `obj.absoluteString` of an NSURL as UTF-8 (borrowed, see `utf8`).
+/// `url.absoluteString` of an NSURL as UTF-8 (borrowed, see `utf8`).
 pub fn urlString(url: Object) ?[:0]const u8 {
     if (url.value == null) return null;
     return utf8(url.msgSend(Object, "absoluteString", .{}));
 }
 
+/// `+[NSURL URLWithString:]` (autoreleased), or nil.
+pub fn nsUrl(text: []const u8) Object {
+    const s = nsString(text) orelse return nil;
+    defer s.release();
+    return class("NSURL").msgSend(Object, "URLWithString:", .{s});
+}
+
 /// Adopt a protocol if the runtime knows it (protocols without metadata in a
-/// loaded image aren't registered; AppKit/WebKit only check selectors).
+/// loaded image aren't registered; the frameworks only check selectors).
 pub fn addProtocol(cls: Class, name: [:0]const u8) void {
     if (objc.getProtocol(name)) |proto| _ = c.class_addProtocol(cls.value, proto.value);
 }
@@ -131,7 +138,7 @@ pub fn isMainThread() bool {
     return pthread_main_np() != 0;
 }
 
-/// Run `work(ctx)` on the main thread's queue (serviced by the AppKit run loop).
+/// Run `work(ctx)` on the main thread's queue (serviced by the run loop).
 pub fn asyncMain(ctx: ?*anyopaque, work: DispatchFn) void {
     dispatch_async_f(mainQueue(), ctx, work);
 }
@@ -215,46 +222,20 @@ pub const Semaphore = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Blocks received from AppKit/WebKit (Clang block ABI)
+// Blocks (Clang block ABI): blocks.zig
 // ---------------------------------------------------------------------------
 
-/// The common header of every block literal; `invoke` takes the block
-/// itself first, then the block's arguments.
-pub const BlockLiteral = extern struct {
-    isa: ?*anyopaque,
-    flags: c_int,
-    reserved: c_int,
-    invoke: *const anyopaque,
-};
-
-extern "c" fn _Block_copy(block: ?*const anyopaque) ?*anyopaque;
-extern "c" fn _Block_release(block: ?*const anyopaque) void;
-
-/// Call a block received as an `id` with `args`; `Args` are the block's
-/// parameter types (after the implicit block pointer).
-pub fn callBlock(block: id, comptime Args: type, args: Args) void {
-    const lit: *BlockLiteral = @ptrCast(@alignCast(block.?));
-    const params = @typeInfo(Args).@"struct".fields;
-    const Fn = switch (params.len) {
-        0 => fn (*BlockLiteral) callconv(.c) void,
-        1 => fn (*BlockLiteral, params[0].type) callconv(.c) void,
-        2 => fn (*BlockLiteral, params[0].type, params[1].type) callconv(.c) void,
-        else => @compileError("unsupported block arity"),
-    };
-    const f: *const Fn = @ptrCast(@alignCast(lit.invoke));
-    if (params.len == 0) return f(lit);
-    @call(.auto, f, .{lit} ++ args);
-}
-
-/// Keep a block received as an argument past the call (+1; `releaseBlock`
-/// it). Null only when out of memory.
-pub fn copyBlock(block: id) id {
-    return @ptrCast(@alignCast(_Block_copy(block)));
-}
-
-pub fn releaseBlock(block: id) void {
-    _Block_release(block);
-}
+const blocks = @import("blocks.zig");
+pub const BlockLiteral = blocks.BlockLiteral;
+pub const BlockDescriptor = blocks.BlockDescriptor;
+pub const globalBlock = blocks.globalBlock;
+pub const ContextBlock = blocks.ContextBlock;
+pub const contextBlock = blocks.contextBlock;
+pub const ManagedBlock = blocks.ManagedBlock;
+pub const managedBlock = blocks.managedBlock;
+pub const callBlock = blocks.callBlock;
+pub const copyBlock = blocks.copyBlock;
+pub const releaseBlock = blocks.releaseBlock;
 
 test {
     std.testing.refAllDecls(@This());

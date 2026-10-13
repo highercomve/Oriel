@@ -12,13 +12,13 @@
 //! which the main thread reads while building the menu and on clicks.
 
 const std = @import("std");
-const cocoa = @import("../../platform/macos/cocoa.zig");
+const apple = @import("../../platform/apple/apple.zig");
 const ShellMod = @import("../../platform/macos/Shell.zig");
 const App = @import("../../core/App.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
 
-const Object = cocoa.Object;
+const Object = apple.Object;
 const log = std.log.scoped(.oriel);
 
 pub const MenuItem = common.MenuItem;
@@ -36,7 +36,7 @@ const NSControlStateValueOn: isize = 1;
 
 /// The tray whose clicks the shared target routes (main thread only).
 var global_tray: ?*Tray = null;
-var target: Object = cocoa.nil;
+var target: Object = apple.nil;
 
 pub const Tray = struct {
     gpa: std.mem.Allocator,
@@ -44,7 +44,7 @@ pub const Tray = struct {
     strings: std.heap.ArenaAllocator,
     id: []const u8,
     title: []const u8, // owned (gpa); replaced on the main thread
-    status_item: Object = cocoa.nil, // retained
+    status_item: Object = apple.nil, // retained
     on_menu: ?*const fn (id: []const u8, checked: ?bool) void,
     on_activate: ?*const fn () void,
 
@@ -142,17 +142,17 @@ const IconParams = struct { tray: *Tray, icon: Icon, err: ?anyerror = null };
 
 fn ensureTarget() void {
     if (target.value != null) return;
-    target = cocoa.new(cocoa.defineClass("OrielTrayTarget", &.{}, .{
+    target = apple.new(apple.defineClass("OrielTrayTarget", &.{}, .{
         .{ "statusItemClicked:", statusItemClicked },
         .{ "menuItemClicked:", menuItemClicked },
     }));
 }
 
 fn createOnMain(p: *CreateParams) void {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     ensureTarget();
-    const bar = cocoa.class("NSStatusBar").msgSend(Object, "systemStatusBar", .{});
+    const bar = apple.class("NSStatusBar").msgSend(Object, "systemStatusBar", .{});
     // The status bar only keeps a weak reference: we hold the item.
     const item = bar.msgSend(Object, "statusItemWithLength:", .{NSVariableStatusItemLength});
     if (item.value == null) {
@@ -165,14 +165,14 @@ fn createOnMain(p: *CreateParams) void {
     applyIcon(btn, p.options.icon, tray.title) catch |err| {
         bar.msgSend(void, "removeStatusItem:", .{item});
         tray.status_item.release();
-        tray.status_item = cocoa.nil;
+        tray.status_item = apple.nil;
         p.err = err;
         return;
     };
     setText(btn, "setToolTip:", p.options.tooltip);
     setText(btn, "setAccessibilityTitle:", tray.title);
     btn.msgSend(void, "setTarget:", .{target});
-    btn.msgSend(void, "setAction:", .{cocoa.objc.sel("statusItemClicked:").value});
+    btn.msgSend(void, "setAction:", .{apple.objc.sel("statusItemClicked:").value});
     _ = btn.msgSend(isize, "sendActionOn:", .{NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp});
     if (global_tray != null) log.warn("a second tray replaces the first one's click handling", .{});
     global_tray = tray;
@@ -182,10 +182,10 @@ fn deinitOnMain(p: *DeinitParams) void {
     const tray = p.tray;
     if (global_tray == tray) global_tray = null;
     if (tray.status_item.value == null) return;
-    const bar = cocoa.class("NSStatusBar").msgSend(Object, "systemStatusBar", .{});
+    const bar = apple.class("NSStatusBar").msgSend(Object, "systemStatusBar", .{});
     bar.msgSend(void, "removeStatusItem:", .{tray.status_item});
     tray.status_item.release();
-    tray.status_item = cocoa.nil;
+    tray.status_item = apple.nil;
 }
 
 fn setTooltipOnMain(p: *TextParams) void {
@@ -226,7 +226,7 @@ fn onMain(comptime Ctx: type, ctx: *Ctx, comptime func: fn (*Ctx) void) void {
 
 fn setIconOnMain(p: *IconParams) void {
     if (p.tray.status_item.value == null) return;
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     applyIcon(p.tray.button(), p.icon, p.tray.title) catch |err| {
         p.err = err;
@@ -234,7 +234,7 @@ fn setIconOnMain(p: *IconParams) void {
 }
 
 fn setText(obj: Object, comptime setter: [:0]const u8, text: []const u8) void {
-    const str = cocoa.nsString(text) orelse return;
+    const str = apple.nsString(text) orelse return;
     defer str.release();
     obj.msgSend(void, setter, .{str});
 }
@@ -242,11 +242,11 @@ fn setText(obj: Object, comptime setter: [:0]const u8, text: []const u8) void {
 /// An 18 pt NSImage from PNG bytes (autoreleased), or null if AppKit can't
 /// decode them.
 fn imageFromPng(png: []const u8) ?Object {
-    const data = cocoa.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ png.ptr, @as(c_ulong, png.len) });
-    const image = cocoa.class("NSImage").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithData:", .{data});
+    const data = apple.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ png.ptr, @as(c_ulong, png.len) });
+    const image = apple.class("NSImage").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithData:", .{data});
     if (image.value == null) return null;
     _ = image.msgSend(Object, "autorelease", .{});
-    image.msgSend(void, "setSize:", .{cocoa.NSSize{ .width = icon_points, .height = icon_points }});
+    image.msgSend(void, "setSize:", .{apple.NSSize{ .width = icon_points, .height = icon_points }});
     return image;
 }
 
@@ -256,9 +256,9 @@ fn applyIcon(btn: Object, icon: Icon, title: []const u8) !void {
         // Icon theme names are a Linux concept: try an app/system image of
         // that name, else show the title as text.
         .name => |name| blk: {
-            const name_ns = cocoa.nsString(name) orelse break :blk null;
+            const name_ns = apple.nsString(name) orelse break :blk null;
             defer name_ns.release();
-            const img = cocoa.class("NSImage").msgSend(Object, "imageNamed:", .{name_ns});
+            const img = apple.class("NSImage").msgSend(Object, "imageNamed:", .{name_ns});
             break :blk if (img.value == null) null else img;
         },
     };
@@ -266,12 +266,12 @@ fn applyIcon(btn: Object, icon: Icon, title: []const u8) !void {
         btn.msgSend(void, "setImage:", .{img});
         setText(btn, "setTitle:", "");
     } else {
-        btn.msgSend(void, "setImage:", .{cocoa.nil});
+        btn.msgSend(void, "setImage:", .{apple.nil});
         setText(btn, "setTitle:", title);
     }
 }
 
-fn statusItemClicked(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void {
+fn statusItemClicked(_: apple.id, _: apple.c.SEL, _: apple.id) callconv(.c) void {
     const tray = global_tray orelse return;
     const event = ShellMod.sharedApplication().msgSend(Object, "currentEvent", .{});
     const secondary = event.value != null and (event.msgSend(c_ulong, "type", .{}) == NSEventTypeRightMouseUp or
@@ -280,7 +280,7 @@ fn statusItemClicked(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void
         if (tray.on_activate) |act| act() else if (App.getWindow("main")) |w| w.toggle();
         return;
     }
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     const menu = buildMenu(tray, 0) orelse return;
     // Deprecated but still the simple way to show a menu for a status item
@@ -290,26 +290,26 @@ fn statusItemClicked(_: cocoa.id, _: cocoa.c.SEL, _: cocoa.id) callconv(.c) void
 
 /// The NSMenu for model node `parent_id` (autoreleased).
 fn buildMenu(tray: *Tray, parent_id: i32) ?Object {
-    const menu = cocoa.new(cocoa.class("NSMenu"));
+    const menu = apple.new(apple.class("NSMenu"));
     _ = menu.msgSend(Object, "autorelease", .{});
-    menu.msgSend(void, "setAutoenablesItems:", .{cocoa.boolean(false)});
+    menu.msgSend(void, "setAutoenablesItems:", .{apple.boolean(false)});
     const parent = tray.menu.node(parent_id) orelse return menu;
     for (parent.children) |child_id| {
         const n = tray.menu.node(child_id) orelse continue;
         if (n.kind == .separator) {
-            menu.msgSend(void, "addItem:", .{cocoa.class("NSMenuItem").msgSend(Object, "separatorItem", .{})});
+            menu.msgSend(void, "addItem:", .{apple.class("NSMenuItem").msgSend(Object, "separatorItem", .{})});
             continue;
         }
-        const title = cocoa.nsString(n.label) orelse continue;
+        const title = apple.nsString(n.label) orelse continue;
         defer title.release();
-        const empty = cocoa.nsString("") orelse continue;
+        const empty = apple.nsString("") orelse continue;
         defer empty.release();
-        const action: cocoa.c.SEL = if (n.kind == .submenu) null else cocoa.objc.sel("menuItemClicked:").value;
-        const item = cocoa.class("NSMenuItem").msgSend(Object, "alloc", .{})
+        const action: apple.c.SEL = if (n.kind == .submenu) null else apple.objc.sel("menuItemClicked:").value;
+        const item = apple.class("NSMenuItem").msgSend(Object, "alloc", .{})
             .msgSend(Object, "initWithTitle:action:keyEquivalent:", .{ title, action, empty });
         if (item.value == null) continue;
         defer item.release();
-        item.msgSend(void, "setEnabled:", .{cocoa.boolean(n.enabled)});
+        item.msgSend(void, "setEnabled:", .{apple.boolean(n.enabled)});
         item.msgSend(void, "setTag:", .{@as(isize, child_id)});
         if (n.kind == .submenu) {
             if (buildMenu(tray, child_id)) |sub| item.msgSend(void, "setSubmenu:", .{sub});
@@ -322,7 +322,7 @@ fn buildMenu(tray: *Tray, parent_id: i32) ?Object {
     return menu;
 }
 
-fn menuItemClicked(_: cocoa.id, _: cocoa.c.SEL, sender: cocoa.id) callconv(.c) void {
+fn menuItemClicked(_: apple.id, _: apple.c.SEL, sender: apple.id) callconv(.c) void {
     const tray = global_tray orelse return;
     const tag = (Object{ .value = sender }).msgSend(isize, "tag", .{});
     const n = tray.menu.node(std.math.cast(i32, tag) orelse return) orelse return;
@@ -338,7 +338,7 @@ fn menuItemClicked(_: cocoa.id, _: cocoa.c.SEL, sender: cocoa.id) callconv(.c) v
 }
 
 pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
-    const pool = cocoa.objc.AutoreleasePool.init();
+    const pool = apple.objc.AutoreleasePool.init();
     defer pool.deinit();
     var menu: Menu = .init(gpa);
     defer menu.deinit();
