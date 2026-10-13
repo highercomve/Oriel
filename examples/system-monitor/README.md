@@ -15,7 +15,7 @@ zig build -Drenderer=oriel -Doptimize=ReleaseFast
 modes. All three use the same platform sampler and process commands.
 
 The Oriel frontend lives in [views/](views/) and
-[oriel_monitor.zig](oriel_monitor.zig). It includes the summary tiles, system
+[oriel_monitor.zig](src/oriel_monitor.zig). It includes the summary tiles, system
 information, 60-sample CPU/per-core histories, memory bars, disks, interface
 selection and network graphs, sensors, process filtering/sorting, pause/refresh,
 clipboard actions and confirmed process shutdown. It mounts at most 32 process

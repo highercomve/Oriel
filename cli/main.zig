@@ -2,6 +2,7 @@
 //!
 //!     oriel init <name> [--template react|vue|svelte|vanilla] ...
 //!     oriel doctor
+//!     oriel fmt [--check] [--stdin] [paths...]
 //!     oriel dev | build | run | package | types | check [zig build args...]
 //!     oriel zig install | uninstall | list | which [version]
 //!     oriel android init | dev | build | devices
@@ -27,6 +28,7 @@ const signing_cmd = @import("signing.zig");
 const android_cmd = @import("android.zig");
 const ios_cmd = @import("ios.zig");
 const wrap_cmd = @import("wrap.zig");
+const fmt_cmd = @import("fmt.zig");
 
 const program = "oriel";
 
@@ -34,6 +36,7 @@ pub const Commands = union(enum) {
     init: init_cmd.Command,
     wrap: wrap_cmd.Command,
     doctor: doctor.Command,
+    fmt: fmt_cmd.Command,
     setup: setup_cmd.Command,
     update: update_cmd.Command,
     webview2: webview2_cmd.Command,
@@ -106,6 +109,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .init => |c| return init_cmd.run(ctx, c),
             .wrap => |c| return wrap_cmd.run(ctx, c),
             .doctor => |c| return doctor.run(ctx, c),
+            .fmt => |c| return fmt_cmd.run(ctx, c),
             .setup => |c| return setup_cmd.run(ctx, c),
             .update => |c| return update_cmd.run(ctx, c),
             .webview2 => |c| return webview2_cmd.run(ctx, c),
@@ -127,6 +131,7 @@ test {
     _ = init_cmd;
     _ = wrap_cmd;
     _ = doctor;
+    _ = fmt_cmd;
     _ = setup_cmd;
     _ = update_cmd;
     _ = webview2_cmd;

@@ -1,17 +1,29 @@
 # Breakout
 
-A Breakout (Arkanoid) game for comparing Oriel's two renderers: the same
-page in the WebView and in the native renderer (`-Dnative_ui`). The board
-is a `<canvas>` drawn with the 2d context at the display's pixel ratio; the
-score, overlays, settings and stats around it are HTML and CSS, so the
-native widgets get exercised too.
+A Breakout (Arkanoid) game for comparing Oriel's renderers: the same page
+in the WebView and in the native renderer, and the same interface as
+`.oriel` views in the Oriel renderer. The board is a canvas; the score,
+overlays, settings and stats around it are HTML and CSS (views in the Oriel
+renderer), so the native widgets get exercised too.
 
 ```sh
-zig build                                   # WebView
-zig build -Dnative_ui -p zig-out-native     # native renderer
+zig build                                          # WebView
+zig build -Drenderer=native -p zig-out-native      # native renderer
+zig build -Drenderer=oriel -p zig-out-oriel        # Oriel renderer
 ./zig-out/bin/oriel-breakout
 ./zig-out-native/bin/oriel-breakout
+./zig-out-oriel/bin/oriel-breakout
 ```
+
+## Oriel renderer
+
+`views/breakout.oriel` is `web/index.html` and `style.css` as native views,
+with the props the native renderer computes for the page
+(`ORIEL_NUI_DUMP=props`); `oriel_breakout.zig` is `web/game.js` in Zig (the
+HUD, overlays, settings, stats, keys and pointer), and the game itself is
+`game.zig`'s, drawn into the view's canvas each display frame. It looks the
+same as the native renderer's page, pixel for pixel on Linux, but for the
+stats' renderer line and the renderer-mode note (no JS mode here).
 
 For iOS add `-Dtarget=aarch64-ios-simulator -Dapple_sdk=$(xcrun --sdk
 iphonesimulator --show-sdk-path)` (or `aarch64-ios` and the iPhoneOS SDK).
@@ -46,7 +58,7 @@ Speed increases with levels up to three times the base speed, keeping
 collision substeps bounded during extended autoplay. Both modes use the
 current balls setting after slider edits; the demo sets its initial value.
 Check the physics rules with `node test/physics.test.mjs` and
-`zig build test-game -Dnative_ui`.
+`zig build test-game -Drenderer=native`.
 
 `BREAKOUT_MODE=zig` (native renderer) runs the demo in the Zig mode; its
 lines end in `mode zig` (the page's, `mode js`).

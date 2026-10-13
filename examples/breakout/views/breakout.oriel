@@ -1,0 +1,107 @@
+<style>
+  top: wrap=wrap padding=10,14,10,14 row-gap=8 column-gap=14
+  title: letter-spacing=0.5
+  hbtn: padding=6,12,6,12
+  board: margin=10
+  panel: width=270
+  @media (max-width: 520) {
+    top: wrap=nowrap padding=8,10,8,10 column-gap=6
+    hbtn: padding=6,10,6,10
+    title: display=none
+    board: margin=6
+    panel: width=auto left=10
+  }
+</style>
+<column id="root" width="100%" height="100%" background="#0a0d14" clip="true">
+  <row id="top" class="top" align="center" border-bottom="1" border-color="#262d3d" background="#161b26" z="3">
+    <text id="title" class="title" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" color="#e8eaee">Breakout</text>
+    <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#8f97a8" nowrap="true">Score <span color="#e8eaee" font-weight="700">{score}</span></text>
+    <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#8f97a8" nowrap="true">Lives <span color="#e8eaee" font-weight="700">{lives}</span></text>
+    <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#8f97a8" nowrap="true">Level <span color="#e8eaee" font-weight="700">{level}</span></text>
+    <view grow="1" shrink="1" basis="0%" />
+    <button id="pause-btn" class="hbtn" justify="center" border-width="1" border-color="#262d3d" radius="8">
+      <text id="pause-btn-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" text-align="center" shrink="0">{pause_label}</text>
+    </button>
+    <button id="settings-btn" class="hbtn" justify="center" border-width="1" border-color="#262d3d" radius="8">
+      <text id="settings-btn-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" text-align="center" shrink="0">Settings</text>
+    </button>
+  </row>
+  <view id="board" class="board" grow="1" shrink="1" basis="0%" min-height="0" clip="true" background="#0d1119" radius="12" clickable="true">
+    <canvas id="cv" position="absolute" top="0" left="0" width="100%" height="100%" />
+    <column id="stats" position="absolute" top="8" right="8" padding="6,9,6,9" background="rgba(10, 13, 20, 0.72)" radius="8">
+      <text font-family="ui-monospace, Menlo, monospace" mono="true" font-size="12" line-height="17.4" color="#c9d1e3" shrink="0">{stats_fps}</text>
+      <text font-family="ui-monospace, Menlo, monospace" mono="true" font-size="12" line-height="17.4" color="#c9d1e3" shrink="0">{stats_time}</text>
+      <text font-family="ui-monospace, Menlo, monospace" mono="true" font-size="12" line-height="17.4" color="#c9d1e3" shrink="0">{stats_count}</text>
+      <text font-family="ui-monospace, Menlo, monospace" mono="true" font-size="12" line-height="17.4" color="#c9d1e3" shrink="0">{stats_renderer}</text>
+    </column>
+    <row id="pause" position="absolute" top="0" right="0" bottom="0" left="0" justify="center" align="center" background="rgba(5, 7, 12, 0.6)" visible="false">
+      <column min-width="220" padding="18,22,18,22" border-width="1" border-color="#262d3d" background="#161b26" radius="14" box-sizing="content-box">
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" color="#e8eaee" text-align="center" margin="0,0,10,0" shrink="0">Paused</text>
+        <row justify="center" margin="0,0,14,0" gap="10" shrink="0">
+          <button id="resume" justify="center" padding="6,12,6,12" border-width="1" border-color="#6d8bff" background="#6d8bff" radius="8">
+            <text id="resume-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" color="#ffffff" text-align="center" shrink="0">Resume</text>
+          </button>
+          <button id="restart" justify="center" padding="6,12,6,12" border-width="1" border-color="#262d3d" radius="8">
+            <text id="restart-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" text-align="center" shrink="0">Restart</text>
+          </button>
+        </row>
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#8f97a8" text-align="center" margin="0,0,14,0" shrink="0">P or Esc to pause and resume</text>
+      </column>
+    </row>
+    <row id="over" position="absolute" top="0" right="0" bottom="0" left="0" justify="center" align="center" background="rgba(5, 7, 12, 0.6)" visible="false">
+      <column min-width="220" padding="18,22,18,22" border-width="1" border-color="#262d3d" background="#161b26" radius="14" box-sizing="content-box">
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" color="#e8eaee" text-align="center" margin="0,0,14,0" shrink="0">Game over</text>
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" text-align="center" margin="0,0,14,0" shrink="0">Score <span font-weight="700">{final}</span> · level <span font-weight="700">{final_level}</span></text>
+        <row justify="center" gap="10" shrink="0">
+          <button id="again" justify="center" padding="6,12,6,12" border-width="1" border-color="#6d8bff" background="#6d8bff" radius="8">
+            <text id="again-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" color="#ffffff" text-align="center" shrink="0">Play again</text>
+          </button>
+        </row>
+      </column>
+    </row>
+    <column id="settings" class="panel" visible="false" position="absolute" top="10" right="10" bottom="10" padding="14,16,14,16" border-width="1" border-color="#262d3d" scroll="true" scroll-x="true" background="#161b26" radius="12">
+      <text font-family="system-ui, -apple-system, sans-serif" font-size="16.38" font-weight="700" color="#e8eaee" margin="0,0,12,0" shrink="0">Settings</text>
+      <column id="balls-field" margin="0,0,14,0" gap="6" shrink="0" clickable="true">
+        <row justify="space-between" shrink="0">
+          <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="1">Balls per launch</text>
+          <text font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" color="#e8eaee">{balls}</text>
+        </row>
+        <slider id="balls" min="1" max="500" step="1" value="1" height="20" margin="2" color="#000000" font-size="14" font-family="Adwaita Sans, system-ui" label="{balls_label}" />
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="12" color="#8f97a8" shrink="0">Up to 500: chaos mode</text>
+      </column>
+      <column id="rows-field" margin="0,0,14,0" gap="6" shrink="0" clickable="true">
+        <row justify="space-between" shrink="0">
+          <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="1">Brick rows</text>
+          <text font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" color="#e8eaee">{rows}</text>
+        </row>
+        <slider id="rows" min="2" max="12" step="1" value="6" height="20" margin="2" color="#000000" font-size="14" font-family="Adwaita Sans, system-ui" label="{rows_label}" />
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="12" color="#8f97a8" shrink="0">Rebuilds the bricks</text>
+      </column>
+      <row id="particles-row" align="center" margin="0,0,10,0" gap="8" shrink="0" clickable="true">
+        <checkbox id="particles" width="12" height="12" margin="3,2,3,2" shrink="1" label="Particles" checked="true" />
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="1">Particles</text>
+      </row>
+      <row id="show-stats-row" align="center" margin="0,0,10,0" gap="8" shrink="0" clickable="true">
+        <checkbox id="show-stats" width="12" height="12" margin="3,2,3,2" shrink="1" label="Stats overlay" checked="true" />
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="1">Stats overlay</text>
+      </row>
+      <row id="autoplay-row" align="center" margin="0,0,10,0" gap="8" shrink="0" clickable="true">
+        <checkbox id="autoplay" width="12" height="12" margin="3,2,3,2" shrink="1" label="Autoplay (the paddle follows the balls)" checked="false" />
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="1">Autoplay (the paddle follows the balls)</text>
+      </row>
+      <column id="mode-field" margin="0,0,14,0" gap="6" shrink="0" clickable="true">
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="14" color="#e8eaee" shrink="0">Renderer mode</text>
+        <select id="mode" value="zig" padding="5,6,5,6" border-width="1" border-color="#cdcdcd" background="#f4f4f4" radius="5" color="rgba(0, 0, 0, 0.8)" font-size="14" font-family="Adwaita Sans, system-ui" label="Renderer mode">
+          <option value="zig">Zig (the app draws it, no JS per frame)</option>
+        </select>
+        <text font-family="system-ui, -apple-system, sans-serif" font-size="12" color="#8f97a8" shrink="0">The Oriel renderer always draws in Zig</text>
+      </column>
+      <row justify="center" gap="10" shrink="0">
+        <button id="close-settings" justify="center" padding="6,12,6,12" border-width="1" border-color="#6d8bff" background="#6d8bff" radius="8">
+          <text id="close-settings-label" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" color="#ffffff" text-align="center" shrink="0">Done</text>
+        </button>
+      </row>
+    </column>
+  </view>
+  <text id="help" font-family="system-ui, -apple-system, sans-serif" font-size="12" color="#8f97a8" text-align="center" padding="0,14,10,14" shrink="0">{help}</text>
+</column>
