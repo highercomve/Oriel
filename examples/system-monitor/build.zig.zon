@@ -6,5 +6,5 @@
     .dependencies = .{
         .oriel = .{ .path = "../.." },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "sampler.zig", "sampler_linux.zig", "sampler_windows.zig", "sampler_macos.zig", "sampler_none.zig", "telemetry.zig", "web", "views", "oriel_monitor.zig", "monitor_model.zig", "monitor_charts.zig", "monitor_format.zig" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "web", "views" },
 }
