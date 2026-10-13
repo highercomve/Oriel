@@ -46,6 +46,7 @@ extern fn gtk_style_context_add_provider_for_display(display: *anyopaque, provid
 extern fn gtk_widget_get_width(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_height(widget: *anyopaque) c_int;
 extern fn gtk_widget_get_mapped(widget: *anyopaque) c_int;
+extern fn gtk_window_is_active(window: *gtk.Window) c_int;
 extern fn gtk_window_get_default_size(window: *anyopaque, width: *c_int, height: *c_int) void;
 extern fn gdk_display_get_default_seat(display: *anyopaque) ?*anyopaque;
 extern fn gdk_seat_get_pointer(seat: *anyopaque) ?*anyopaque;
@@ -59,7 +60,10 @@ extern fn gtk_event_controller_set_propagation_phase(controller: *anyopaque, pha
 extern fn gtk_widget_add_controller(widget: *anyopaque, controller: *anyopaque) void;
 extern fn g_signal_connect_data(instance: *anyopaque, signal: [*:0]const u8, handler: *const anyopaque, data: ?*anyopaque, destroy: ?*const anyopaque, flags: c_int) c_ulong;
 const gdk_motion_notify = 1;
+const gdk_button_press = 2;
 const gdk_button_release = 3;
+const gdk_enter_notify = 6;
+const gdk_leave_notify = 7;
 const gdk_button1_mask: c_uint = 1 << 8;
 const gtk_phase_capture = 1;
 
@@ -222,6 +226,9 @@ const State = struct {
     placement: ?App.Placement,
     click_through: bool = false,
     layer_surface: bool = false,
+    focus_on_show: bool = true,
+    /// `focus_on_show = false` layer surfaces: currently on-demand.
+    focusable: bool = false,
     /// Layer surfaces: where the pointer grabbed the window (surface
     /// coordinates) while the user drags it.
     drag: ?struct { x: f64, y: f64 } = null,
@@ -268,8 +275,16 @@ pub fn setup(window: *gtk.Window, view: ?*webkit.WebView, options: App.WindowOpt
             l.init_for_window(window);
             l.set_namespace(window, app_id.ptr);
             l.set_layer(window, if (options.always_on_top) layer_overlay else layer_top);
-            // A menu or dictation pill takes the keyboard while shown; captions don't.
-            l.set_keyboard_mode(window, if (options.focus_on_show) keyboard_exclusive else keyboard_on_demand);
+            // Never exclusive: that's a grab (lock screens, password
+            // prompts) the user can't click away from. On-demand is a normal
+            // window's focus, and compositors focus an on-demand surface when
+            // it maps: right for `focus_on_show`. Other overlays map without
+            // the keyboard, so captions don't take the user's typing, and
+            // are on-demand while the pointer is over them (onLayerEvent),
+            // so a click still focuses an input.
+            l.set_keyboard_mode(window, if (options.focus_on_show) keyboard_on_demand else keyboard_none);
+            st.focus_on_show = options.focus_on_show;
+            if (!options.focus_on_show) _ = g_signal_connect_data(window, "unmap", @ptrCast(&onOverlayUnmap), null, null, 0);
             st.layer_surface = true;
             applyLayerPlacement(window, options.placement orelse .{});
             // Sees the pointer before the webview does, for startWindowDrag.
@@ -288,6 +303,21 @@ pub fn setup(window: *gtk.Window, view: ?*webkit.WebView, options: App.WindowOpt
         return;
     }
     _ = gtk.Widget.signals.map.connect(window.as(gtk.Widget), ?*anyopaque, &onMap, null, .{});
+}
+
+/// An overlay that doesn't take focus when shown: hidden, it gives up the
+/// keyboard until the pointer is over it again.
+fn onOverlayUnmap(window: *gtk.Window, _: ?*anyopaque) callconv(.c) void {
+    if (stateFor(window)) |st| setFocusable(st, false);
+}
+
+/// Keyboard on demand (true) or none, for an overlay that doesn't take focus
+/// when shown; only changes are sent to the compositor.
+fn setFocusable(st: *State, focusable: bool) void {
+    if (st.focusable == focusable) return;
+    const l = Layer.get() orelse return;
+    st.focusable = focusable;
+    l.set_keyboard_mode(st.window, if (focusable) keyboard_on_demand else keyboard_none);
 }
 
 /// Forget a destroyed window.
@@ -462,6 +492,13 @@ pub fn startWindowDrag(handle: anytype) internal.DragMode {
 /// Layer surfaces: follow the pointer while dragging (see startWindowDrag).
 fn onLayerEvent(_: *anyopaque, event: *anyopaque, window: *gtk.Window) callconv(.c) c_int {
     const st = stateFor(window) orelse return 0;
+    if (!st.focus_on_show) switch (gdk_event_get_event_type(event)) {
+        // Focusable while the pointer is over it, so the first click focuses
+        // it (motion too: it may appear under a pointer that never entered).
+        gdk_enter_notify, gdk_motion_notify, gdk_button_press => setFocusable(st, true),
+        gdk_leave_notify => if (gtk_window_is_active(window) == 0) setFocusable(st, false),
+        else => {},
+    };
     const grab = st.drag orelse return 0;
     switch (gdk_event_get_event_type(event)) {
         gdk_button_release => st.drag = null,
