@@ -2,7 +2,13 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.14.0] — 2026-10-13
+
+The Oriel renderer grows up enough to run a real interface: `.oriel` views
+take a style sheet with media blocks (a phone layout and a desktop one from
+the same view), styled text runs, and `oriel fmt` keeps them tidy. The
+Breakout example now runs in all three renderers and fits a phone held
+upright.
 
 ### Added
 
@@ -15,7 +21,8 @@ Notable changes in Oriel releases.
   `ui.setVisible` shows or hides a part and what's in it.
 - `.oriel` views take a `<style>` sheet: `$tokens`, named styles applied with
   `class`, and up to four `@media (max-width: …)` / `(prefers-color-scheme:
-  …)` blocks, switched as the window's width or theme changes.
+  …)` blocks, switched as the window's width or theme changes;
+  `width="auto"` lets a media block undo a size.
 - `oriel fmt` formats `.oriel` views (`--check` for CI, `--stdin` for
   editors); apps get it as `zig build fmt-views`.
 - `ORIEL_NUI_DUMP=props` dumps each node's props, and `ORIEL_NUI_DUMP_AT`
@@ -33,7 +40,8 @@ Notable changes in Oriel releases.
 - `.oriel` `display="none"` hides what's in it on every backend: Android
   still drew a hidden text, laid out at width 0 (a letter a line).
 - Breakout: a narrow window keeps the header on one line (Settings no
-  longer drops below the score as it grows); the Oriel renderer's view
+  longer drops below the score as it grows) and opens the settings panel
+  across the board, its sliders full width; the Oriel renderer's view
   carries the page's `@media (max-width: 520px)` in its `<style>`.
 - Native renderer (Linux): text fields and buttons partly scrolled out or
   drawn over show the part in view, instead of disappearing whole.
