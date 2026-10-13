@@ -73,6 +73,14 @@ extern int oriel_nui_selection(void *opaque, double id, double *out);
 extern void oriel_nui_set_selection(void *opaque, double id, double start, double end);
 extern void oriel_nui_scroll_into_view(void *opaque, double id, const char *block, size_t len);
 extern void oriel_nui_scroll_to(void *opaque, double id, double y, double x);
+// interaction.zig, for main.js: keys that scroll, Tab's order, what a click
+// focuses, what a key activates, the focus ring.
+extern int oriel_nui_key_scroll(void *opaque, double id, const char *key, size_t len, int shift);
+extern int oriel_nui_is_scroll_key(void *opaque, const char *key, size_t len);
+extern double oriel_nui_tab_next(void *opaque, const char *json, size_t len, double active, int back);
+extern int oriel_nui_click_focuses(void *opaque, double kind);
+extern int oriel_nui_activates(void *opaque, const char *key, size_t len, int down, int repeat, int button, int link, int checkable);
+extern void oriel_nui_focus_ring(void *opaque, double kind, int has_accent, double r, double g, double b, double *out);
 extern void oriel_nui_file_read(void *opaque, uint32_t req_id, uint32_t handle, double offset, double length);
 extern void oriel_nui_file_release(void *opaque, uint32_t handle);
 
@@ -594,6 +602,89 @@ static JSValue h_scroll_to(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return JS_UNDEFINED;
 }
 
+// host.keyScroll(id, key, shift): a key scrolls from element `id` (-1: the
+// window); true when a scroller took it.
+static JSValue h_key_scroll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double id = -1;
+    if (argc > 0) JS_ToFloat64(ctx, &id, argv[0]);
+    size_t len = 0;
+    const char *key = argc > 1 ? JS_ToCStringLen(ctx, &len, argv[1]) : NULL;
+    if (!key) return JS_FALSE;
+    int shift = argc > 2 ? JS_ToBool(ctx, argv[2]) : 0;
+    int r = oriel_nui_key_scroll(opaque_of(ctx), id, key, len, shift);
+    JS_FreeCString(ctx, key);
+    return JS_NewBool(ctx, r);
+}
+
+// host.isScrollKey(key): whether the key scrolls.
+static JSValue h_is_scroll_key(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    size_t len = 0;
+    const char *key = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
+    if (!key) return JS_FALSE;
+    int r = oriel_nui_is_scroll_key(opaque_of(ctx), key, len);
+    JS_FreeCString(ctx, key);
+    return JS_NewBool(ctx, r);
+}
+
+// host.tabNext(candidatesJson, activeIndex, back): the candidate Tab moves
+// to (-1: none).
+static JSValue h_tab_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    size_t len = 0;
+    const char *json = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
+    if (!json) return JS_NewFloat64(ctx, -1);
+    double active = -1;
+    if (argc > 1) JS_ToFloat64(ctx, &active, argv[1]);
+    int back = argc > 2 ? JS_ToBool(ctx, argv[2]) : 0;
+    double r = oriel_nui_tab_next(opaque_of(ctx), json, len, active, back);
+    JS_FreeCString(ctx, json);
+    return JS_NewFloat64(ctx, r);
+}
+
+// host.clickFocuses(kind): whether a click focuses an element of that kind.
+static JSValue h_click_focuses(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double kind = 2;
+    if (argc > 0) JS_ToFloat64(ctx, &kind, argv[0]);
+    return JS_NewBool(ctx, oriel_nui_click_focuses(opaque_of(ctx), kind));
+}
+
+// host.activates(key, down, repeat, button, link, checkable).
+static JSValue h_activates(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    size_t len = 0;
+    const char *key = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
+    if (!key) return JS_FALSE;
+    int f[5] = { 0, 0, 0, 0, 0 };
+    for (int i = 0; i < 5 && i + 1 < argc; i++) f[i] = JS_ToBool(ctx, argv[i + 1]);
+    int r = oriel_nui_activates(opaque_of(ctx), key, len, f[0], f[1], f[2], f[3], f[4]);
+    JS_FreeCString(ctx, key);
+    return JS_NewBool(ctx, r);
+}
+
+// host.focusRing(kind, accent): [w, o, r, red, green, blue, alpha, halo];
+// `accent` the page's [r, g, b] (platform.accent), if it has one.
+static JSValue h_focus_ring(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    double kind = 4, out[8], rgb[3] = { 0, 0, 0 };
+    if (argc > 0) JS_ToFloat64(ctx, &kind, argv[0]);
+    int has_accent = 0;
+    if (argc > 1 && JS_IsArray(argv[1])) {
+        has_accent = 1;
+        for (uint32_t i = 0; i < 3; i++) {
+            JSValue v = JS_GetPropertyUint32(ctx, argv[1], i);
+            if (JS_ToFloat64(ctx, &rgb[i], v) < 0) has_accent = 0;
+            JS_FreeValue(ctx, v);
+        }
+    }
+    oriel_nui_focus_ring(opaque_of(ctx), kind, has_accent, rgb[0], rgb[1], rgb[2], out);
+    JSValue arr = JS_NewArray(ctx);
+    for (uint32_t i = 0; i < 8; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    return arr;
+}
+
 // host.fileRead(reqId, handle, offset, length): read a dropped file
 // (drop.zig). Always answered later, on another turn, through
 // __oriel.fileData(reqId, ArrayBuffer | null, errorName).
@@ -1074,6 +1165,12 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     set_fn(ctx, host, "stamp", h_stamp, 3);
     set_fn(ctx, host, "stampList", h_stamp_list, 6);
     set_fn(ctx, host, "focus", h_focus, 1);
+    set_fn(ctx, host, "keyScroll", h_key_scroll, 3);
+    set_fn(ctx, host, "isScrollKey", h_is_scroll_key, 1);
+    set_fn(ctx, host, "tabNext", h_tab_next, 3);
+    set_fn(ctx, host, "clickFocuses", h_click_focuses, 1);
+    set_fn(ctx, host, "activates", h_activates, 6);
+    set_fn(ctx, host, "focusRing", h_focus_ring, 2);
     set_fn(ctx, host, "selection", h_selection, 1);
     set_fn(ctx, host, "setSelection", h_set_selection, 3);
     set_fn(ctx, host, "scrollIntoView", h_scroll_into_view, 2);

@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body><div id="zone" style="width:100px;height:100px">zone</div><script>
 globalThis.dropped = [];
@@ -40,7 +41,7 @@ const host = {
   fileRelease: (handle) => released.push(handle),
   platform: JSON.stringify({ os: "android", arch: "aarch64" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 host.evalScript = (name, code) => vm.runInContext(code, ctx, { filename: name });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);

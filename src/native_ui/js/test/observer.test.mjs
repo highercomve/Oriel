@@ -5,6 +5,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { performance } from "node:perf_hooks";
 import { parseHTML } from "../vendor/linkedom/esm/index.js";
+import { withEngine } from "./engine-host.mjs";
 
 const logs = [], props = new Map();
 const host = {
@@ -19,7 +20,7 @@ const host = {
     }
   },
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx);
 ctx.__oriel.boot(800, 600, false, false);
 ctx.__oriel.render();

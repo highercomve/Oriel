@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body>
 <a id="nohref">no href</a>
@@ -33,7 +34,7 @@ const host = {
   ops: (json) => { lastOps = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); },
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
@@ -76,7 +77,7 @@ function bootPage(html, platform) {
     ops: (json) => { for (const [k, id, x] of JSON.parse(json)) if (k === "c") els.set(id, x); else if (k === "d") els.delete(id); },
     platform: JSON.stringify(platform), label: "main", url: "index.html",
   };
-  const c = vm.createContext({ __host: h });
+  const c = vm.createContext({ __host: withEngine(h) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), c, { filename: "runtime.js" });
   c.__oriel.boot(400, 600, false, false);
   c.__oriel.render();
@@ -113,7 +114,7 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   let ops = "";
   const winHost = { ...host, asset: (p) => (p === "index.html" ? winPage : undefined), platform: JSON.stringify({ os, arch: "x86_64" }),
     ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
-  const wctx = vm.createContext({ __host: winHost });
+  const wctx = vm.createContext({ __host: withEngine(winHost) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), wctx, { filename: "runtime.js" });
   wctx.__oriel.boot(400, 600, false, false);
   wctx.__oriel.render();
@@ -135,7 +136,7 @@ for (const [os, band] of [["windows", [16, 16, 16, 1]], ["android", [229, 151, 0
   let ops = "";
   const macHost = { ...host, asset: (p) => (p === "index.html" ? macPage : undefined), platform: JSON.stringify({ os: "macos", arch: "aarch64", fullKeyboardAccess: true }),
     ops: (json) => { ops = json; for (const [k, id, x] of JSON.parse(json)) if (k === "c") nodes.set(id, x); else if (k === "d") nodes.delete(id); } };
-  const mctx = vm.createContext({ __host: macHost });
+  const mctx = vm.createContext({ __host: withEngine(macHost) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), mctx, { filename: "runtime.js" });
   mctx.__oriel.boot(400, 600, false, false);
   mctx.__oriel.render();

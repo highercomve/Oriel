@@ -6569,29 +6569,15 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     return focusRing(cs, el, { ...memoized(cs, key, () => makeBoxProps(cs, display, fs, button, bb)) });
   }
-  var FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
-  var chromiumRings = (c) => {
-    const ring = (o, r) => ({ w: 2, c, o, h: [255, 255, 255, 1], r });
-    return { control: ring(-2, 3), check: ring(1, 3), link: ring(0, 4), box: ring(-1, 4) };
-  };
-  var WINDOWS_RINGS = chromiumRings([16, 16, 16, 1]);
-  var ANDROID_RINGS = chromiumRings([229, 151, 0, 1]);
-  function macRings(accent) {
-    const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 103, 244, 0.5];
-    const ring = (o, r) => ({ w: 4, c, o, r });
-    return { field: ring(-1, 2), control: ring(-1, 5), check: ring(-1, 5), link: ring(1, 2), box: ring(1, 2) };
+  var RING_KINDS = { field: 0, control: 1, check: 2, link: 3, box: 4 };
+  var hostRing = null;
+  function osRing(kind) {
+    const r = hostRing(RING_KINDS[kind]);
+    const ring = { w: r[0], c: [r[3], r[4], r[5], r[6]], o: r[1] };
+    if (r[2]) ring.r = r[2];
+    if (r[7]) ring.h = [255, 255, 255, 1];
+    return ring;
   }
-  function iosRings(accent) {
-    const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 122, 255, 0.5];
-    const ring = (o, r) => ({ w: 3, c, o, r });
-    return { field: ring(-2, 8), control: ring(-2, 8), check: ring(-2, 8), link: ring(0, 0), box: ring(0, 0) };
-  }
-  var webkitGtkRings = (accent) => {
-    const c = [...Array.isArray(accent) && accent.length === 3 ? accent : [52, 132, 228], 0.8];
-    const ring = (o, r) => ({ w: 2, c, o, r });
-    return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
-  };
-  var osRings = null;
   function darkColor(c) {
     const v = Math.max(c[0], c[1], c[2]) / 255;
     const k = v === 0 ? 0 : Math.max(0, (v - 0.33) / v);
@@ -6629,10 +6615,10 @@ input[type="range"] { height: 20px; margin: 2px; }
   function setNativeControls(list) {
     nativeControls = new Set(Array.isArray(list) ? list : []);
   }
-  function setFocusRingOS(os, accent) {
+  function setFocusRingOS(os, focusRing2) {
+    hostRing = focusRing2;
     pushButtons = os === "macos";
     webkitBorders = os === "macos" || os === "ios" || os === "linux";
-    osRings = os === "linux" ? webkitGtkRings(accent) : os === "macos" ? macRings(accent) : os === "ios" ? iosRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS }[os] || null;
   }
   var focusVisible = null;
   function setFocusVisible(el) {
@@ -6645,28 +6631,28 @@ input[type="range"] { height: 20px; margin: 2px; }
       return p.ol || null;
     }
     if (el !== focusVisible) return null;
-    return osRings ? ringFor(osRings, el) : FOCUS_RING;
+    return osRing(ringKind(el));
   }
   function focusRing(cs, el, p) {
-    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
+    if (el === focusVisible && el && !p.ol && cs["outline-style"] === void 0 && cs["outline-width"] === void 0) p.ol = osRing(ringKind(el));
     return p;
   }
-  function ringFor(rings, el) {
+  function ringKind(el) {
     switch (el.localName) {
       case "input": {
         const type = (el.getAttribute("type") || "").toLowerCase();
-        if (type === "checkbox" || type === "radio") return rings.check;
-        return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? rings.control : rings.field || rings.control;
+        if (type === "checkbox" || type === "radio") return "check";
+        return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? "control" : "field";
       }
       case "textarea":
-        return rings.field || rings.control;
+        return "field";
       case "button":
       case "select":
-        return rings.control;
+        return "control";
       case "a":
-        return el.hasAttribute("href") ? rings.link : rings.box;
+        return el.hasAttribute("href") ? "link" : "box";
       default:
-        return rings.box;
+        return "box";
     }
   }
   function outlinePart(cs, fs, p) {
@@ -8670,7 +8656,6 @@ ${a.stack || ""}`;
   globalThis.cancelAnimationFrame = (id) => {
     rafCallbacks.delete(id);
   };
-  var nextFrame = globalThis.requestAnimationFrame;
   var html = normalizeHtml(host.asset("index.html") || "<!doctype html><html><body></body></html>");
   var { window: dom, document } = openDocument(html);
   function normalizeHtml(src) {
@@ -9256,7 +9241,6 @@ ${a.stack || ""}`;
   elProto.scrollIntoView = function(opts) {
     if (!renderer) return;
     const block = typeof opts === "object" ? opts.block || "start" : opts === false ? "end" : "start";
-    glide = null;
     if (renderer.dirty) {
       renderer.pendingScroll = { el: this, block };
       return;
@@ -9599,7 +9583,7 @@ ${a.stack || ""}`;
     return { dark: !!d.dark, colors };
   }
   viewport.forced = forcedColorsOf(platform.forcedColors);
-  setFocusRingOS(platform.os, platform.accent);
+  setFocusRingOS(platform.os, (kind) => host.focusRing(kind, platform.accent));
   setNativeControls(platform.controls);
   g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
@@ -9783,12 +9767,9 @@ ${a.stack || ""}`;
     if (el && !mods && !disabledControl(el)) {
       if (type === "keydown" && key === " ") spacePress = ev.defaultPrevented ? null : el;
       if (!ev.defaultPrevented) {
-        if (type === "keydown" && key === "Enter" && !repeat && (buttonType(el) || el.localName === "a" && el.hasAttribute("href") || el.localName === "summary")) {
-          activate(el, flags);
-          return true;
-        }
-        if (type === "keyup" && key === " " && spacePress === el && (buttonType(el) || isCheckable(el))) {
-          spacePress = null;
+        const link = el.localName === "a" && el.hasAttribute("href") || el.localName === "summary";
+        if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el), link, isCheckable(el))) {
+          if (key === " ") spacePress = null;
           activate(el, flags);
           return true;
         }
@@ -9824,58 +9805,21 @@ ${a.stack || ""}`;
     return ev.defaultPrevented;
   }
   function scrollKey(from, key, shift) {
-    if (!renderer || !host.frame) return false;
+    if (!renderer || !host.isScrollKey(key)) return false;
     if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
     if (key === " " && from && (from.localName === "button" || from.localName === "input" || from.localName === "a")) return false;
-    const steps = { ArrowDown: 40, ArrowUp: -40, PageDown: 0.875, PageUp: -0.875, " ": shift ? -0.875 : 0.875, Home: -Infinity, End: Infinity };
-    const step = steps[key];
-    if (step === void 0) return false;
     renderer.render();
-    let target = -1, targetEl = null;
-    const clientH = (f2, el) => {
-      const b = el ? borderOf(el) : [0, 0, 0, 0];
-      return f2[3] - b[0] - b[2];
-    };
+    let id = -1;
     for (let n2 = from; n2 && n2.nodeType === 1 && n2 !== document.body && n2 !== document.documentElement; n2 = n2.parentNode) {
-      const cs = getComputedStyle(n2);
-      const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
-      if (ov !== "auto" && ov !== "scroll") continue;
-      const f2 = host.frame(renderer.idOf(n2, "el"));
-      if (f2 && f2[4] > clientH(f2, n2) + 0.5) {
-        target = renderer.idOf(n2, "el");
-        targetEl = n2;
+      const i = renderer.idOf(n2, "el");
+      if (host.frame(i)) {
+        id = i;
         break;
       }
     }
-    const f = host.frame(target);
-    if (!f) return false;
-    const view = clientH(f, targetEl);
-    const top = glide?.target === target ? glide.to : f[6] || 0;
-    const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
-    const want = Math.max(0, Math.min(f[4] - view, top + by));
-    if (want === top) return false;
-    glideTo(target, f[6] || 0, want, Math.abs(step) === 40 ? "line" : "page");
-    return true;
-  }
-  var GLIDES = { page: [200, 0, EASES.ease], line: [256, 20, EASES["ease-out"]] };
-  var glide = null;
-  function glideTo(target, from, to, kind) {
-    const [ms, delay, ease] = GLIDES[kind];
-    const g1 = { target, from, to, t0: performance.now(), ms, delay, ease, set: [from] };
-    glide = g1;
-    const step = (now) => {
-      if (glide !== g1) return;
-      const p = Math.min(1, Math.max(0, (now - g1.t0 - delay) / ms));
-      const y = from + (to - from) * ease(p);
-      g1.set = [...g1.set.slice(-2), y];
-      host.scrollTo(target, y);
-      if (p < 1) nextFrame(step);
-      else glide = null;
-    };
-    nextFrame(step);
+    return host.keyScroll(id, key, !!shift);
   }
   function pageScroll(id, top, left) {
-    glide = null;
     host.scrollTo(id, top, left);
   }
   var WEBKIT_KEYPRESS = platform.os === "macos" || platform.os === "ios";
@@ -9885,28 +9829,28 @@ ${a.stack || ""}`;
     return [...key].length === 1;
   }
   var FOCUSABLE2 = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
-  function tabOrder() {
-    const positive = [];
-    const rest = [];
+  function focusKind(el) {
+    return textLike(el) ? 0 : CONTROLS2.has(el.localName) ? 1 : 2;
+  }
+  function tabCandidates() {
+    const els = [], spec = [], groups = /* @__PURE__ */ new Map();
     for (const el of document.querySelectorAll(FOCUSABLE2)) {
-      let index = parseInt(el.getAttribute("tabindex"), 10);
-      if (Number.isNaN(index)) {
-        if (!naturallyFocusable(el) || tabRule !== "all" && !textLike(el)) continue;
-        index = 0;
-      } else if (tabRule === "ios" && CONTROLS2.has(el.localName) && !textLike(el)) continue;
-      if (index < 0 || disabledControl(el) || !shown(el)) continue;
+      const index = parseInt(el.getAttribute("tabindex"), 10);
+      const explicit = !Number.isNaN(index);
+      if (!explicit && !naturallyFocusable(el)) continue;
+      if (disabledControl(el) || !shown(el)) continue;
+      let group = 0;
       if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
-        const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
-        const stop = group.find((r) => r.checked) || group.find((r) => r === active) || group[0];
-        if (stop !== el) continue;
+        const first = radioGroup(el)[0];
+        if (!groups.has(first)) groups.set(first, groups.size + 1);
+        group = groups.get(first);
       }
-      (index > 0 ? positive : rest).push([index, el]);
+      els.push(el);
+      spec.push([focusKind(el), explicit ? index : null, group, !!el.checked]);
     }
-    positive.sort((a, b) => a[0] - b[0]);
-    return [...positive, ...rest].map((e) => e[1]);
+    return { els, spec };
   }
   var CONTROLS2 = /* @__PURE__ */ new Set(["input", "button", "select", "textarea"]);
-  var tabRule = platform.os === "ios" ? "ios" : platform.os === "macos" && !platform.fullKeyboardAccess ? "mac" : "all";
   function textLike(el) {
     return el.localName === "select" || textField(el) || ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
   }
@@ -9940,7 +9884,7 @@ ${a.stack || ""}`;
     for (let n2 = target; n2 && n2.nodeType === 1; n2 = n2.parentElement) {
       if (n2.localName === "label") return;
       const index = parseInt(n2.getAttribute("tabindex"), 10);
-      const focusable2 = Number.isNaN(index) ? naturallyFocusable(n2) && (tabRule === "all" || textLike(n2)) : true;
+      const focusable2 = Number.isNaN(index) ? naturallyFocusable(n2) && host.clickFocuses(focusKind(n2)) : true;
       if (!focusable2 || CONTROLS2.has(n2.localName) && n2.hasAttribute("disabled")) continue;
       if (active !== n2) n2.focus();
       return;
@@ -9949,10 +9893,10 @@ ${a.stack || ""}`;
   }
   var tapFocus = null;
   function tabFocus(back) {
-    const order = tabOrder();
-    if (!order.length) return false;
-    const at = order.indexOf(active);
-    const next = at < 0 ? back ? order[order.length - 1] : order[0] : order[(at + (back ? -1 : 1) + order.length) % order.length];
+    const { els, spec } = tabCandidates();
+    const at = host.tabNext(JSON.stringify(spec), els.indexOf(active), !!back);
+    if (at < 0) return false;
+    const next = els[at];
     keyboardFocus = true;
     next.focus();
     next.scrollIntoView({ block: "nearest" });
@@ -10466,7 +10410,6 @@ ${a.stack || ""}`;
           case "pointer":
             if (data?.[0] === "down" || data?.[0] === 0) {
               keyboardFocus = false;
-              if (data[5] === "touch") glide = null;
             }
             return pointerEvent(el, data);
           // The window went to a screen with another scale (data: the new
@@ -10500,7 +10443,6 @@ ${a.stack || ""}`;
           case "accent": {
             if (!Array.isArray(data) || data.length !== 3) return false;
             platform.accent = data;
-            setFocusRingOS(platform.os, data);
             renderer?.markAll();
             return false;
           }
@@ -10564,7 +10506,6 @@ ${a.stack || ""}`;
     scrolled(list) {
       guard(() => {
         for (const [id, top] of list) {
-          if (glide?.target === id && typeof top === "number" && !glide.set.some((y) => Math.abs(y - top) <= 1.5)) glide = null;
           if (id === -1) {
             const ev = new Event("scroll", { bubbles: true });
             document.dispatchEvent(ev);

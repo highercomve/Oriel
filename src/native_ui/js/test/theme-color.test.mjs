@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><head><meta name="theme-color" content="#336699"></head><body><p>hi</p></body></html>`;
 const calls = [];
@@ -14,7 +15,7 @@ const host = {
   focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {}, ops: () => {},
   platform: JSON.stringify({ os: "android", arch: "aarch64" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();
