@@ -119,7 +119,8 @@ pub const WindowOptions = struct {
     /// Closing the window hides it instead (reopen with `show()`).
     hide_on_close: bool = false,
     /// Take keyboard focus when shown. False for overlays that must not steal
-    /// typing from the app underneath (live captions).
+    /// typing from the app underneath (live captions); a click still focuses
+    /// one. Either way, clicking another app takes the focus back.
     focus_on_show: bool = true,
 };
 

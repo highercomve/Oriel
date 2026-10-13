@@ -2,6 +2,17 @@
 
 Notable changes in Oriel releases.
 
+## [0.12.1] — 2026-10-13
+
+### Fixed
+
+- Linux/Wayland: an overlay window (a layer surface) never grabs the
+  keyboard any more. One with `focus_on_show` is focused when shown and lets go
+  when the user clicks another app, as on every other platform (it held the
+  keyboard until hidden). One with `focus_on_show = false` no longer takes the
+  keyboard when it appears (Hyprland focused it), and one click still focuses
+  it.
+
 ## [0.12.0] — 2026-10-12
 
 Oriel 0.12.0 keeps one implementation and one API per feature: every second
