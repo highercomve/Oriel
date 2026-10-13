@@ -16,6 +16,19 @@ const prof = @import("prof.zig");
 /// button and check: native push buttons and checkboxes/radios, sent only to a
 /// backend that lists them in its platform JSON's `controls`
 /// (docs/design/native-controls-a11y-design.md).
+/// How deep the walks over a view's nodes go (focus, scrolling, names,
+/// tooltips: focus.zig, ui.zig, the backends): deeper nodes are left out,
+/// with a warning (`warnTooDeep`).
+pub const max_walk_depth = 256;
+
+var warned_too_deep = false;
+/// A walk reached `max_walk_depth`: said once per process.
+pub fn warnTooDeep(what: []const u8) void {
+    if (warned_too_deep) return;
+    warned_too_deep = true;
+    log.warn("{s}: the view is nested deeper than {d} nodes; deeper ones are left out", .{ what, max_walk_depth });
+}
+
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas, button, check };
 pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
@@ -2534,22 +2547,26 @@ pub const Tree = struct {
             .label => n.props.al,
         };
         if (current) |c| if (slot.* != null and std.mem.eql(u8, c, value)) return;
+        // Everything that can fail first, then the change: a failure leaves
+        // the node and the backend as they were (and a retry tries again).
         const owned = try t.gpa.dupe(u8, value);
+        errdefer t.gpa.free(owned);
+        var props = n.props;
+        switch (which) {
+            .tip => props.tip = owned,
+            .label => props.al = owned,
+        }
+        const notify = which == .label and n.kind != .view and n.kind != .text and t.on_props != null;
+        const parsed = if (notify) blk: {
+            const json = try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false });
+            defer t.gpa.free(json);
+            break :blk try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
+        } else null;
+        defer if (parsed) |v| v.deinit();
         if (slot.*) |old| t.gpa.free(old);
         slot.* = owned;
-        switch (which) {
-            .tip => n.props.tip = owned,
-            .label => {
-                n.props.al = owned;
-                if (n.kind != .view and n.kind != .text) if (t.on_props) |cb| {
-                    const json = try std.json.Stringify.valueAlloc(t.gpa, n.props, .{ .emit_null_optional_fields = false });
-                    defer t.gpa.free(json);
-                    const parsed = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
-                    defer parsed.deinit();
-                    cb(t.measure_ctx, n, parsed.value);
-                };
-            },
-        }
+        n.props = props;
+        if (parsed) |v| t.on_props.?(t.measure_ctx, n, v.value);
     }
 
     /// A typed update owns every slice and uses the same host notifications as

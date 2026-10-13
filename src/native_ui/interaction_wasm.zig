@@ -46,7 +46,7 @@ var ring_out: [8]f64 = undefined;
 /// the page's accent (`has_accent`: r, g, b).
 export fn focus_ring(kind: u32, has_accent: bool, red: f32, green: f32, blue: f32) [*]f64 {
     var p = platform;
-    p.accent = if (has_accent) .{ red, green, blue } else null;
+    p.accent = if (has_accent) interaction.accentOf(red, green, blue) else null;
     const r = interaction.ring(p, interaction.ringKindFrom(kind));
     ring_out = interaction.ringNumbers(r);
     return &ring_out;

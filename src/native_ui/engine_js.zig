@@ -537,7 +537,7 @@ pub const Engine = struct {
     /// engine takes a new serial, so answers to the old page's calls are
     /// dropped, and old timers are told apart by `timer_base`.
     fn reloadNow(e: *Engine) void {
-        if (e.in_call > 0) {
+        if (e.busy()) {
             e.backend.add_timer(e.backend.ctx, e, reload_timer_id, 0);
             return;
         }
@@ -1331,7 +1331,7 @@ export fn oriel_nui_activates(_: *anyopaque, key: [*]const u8, len: usize, down:
 /// page keeps it, from the platform JSON and "accent" events).
 export fn oriel_nui_focus_ring(p: *anyopaque, kind: f64, has_accent: c_int, red: f64, green: f64, blue: f64, out: *[8]f64) void {
     var platform = engineOf(p).platform;
-    platform.accent = if (has_accent != 0) .{ @floatCast(red), @floatCast(green), @floatCast(blue) } else null;
+    platform.accent = if (has_accent != 0) interaction.accentOf(red, green, blue) else null;
     const r = interaction.ring(platform, interaction.ringKindFrom(if (kind >= 0 and kind < 5) @as(u8, @intFromFloat(kind)) else 4));
     out.* = interaction.ringNumbers(r);
 }

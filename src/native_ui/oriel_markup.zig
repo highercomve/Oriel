@@ -272,35 +272,133 @@ fn shadow(s: []const u8) tree.Shadow {
     return .{ .x = number(parts[0]), .y = number(parts[1]), .blur = number(parts[2]), .spread = if (i == 5) number(parts[3]) else 0, .color = color(parts[i - 1]) };
 }
 
+/// One attribute: each group's function takes the ones it knows.
 fn attribute(n: *Spec, comptime key: []const u8, v: []const u8) void {
-    const p = &n.props;
+    if (identity(n, key, v) or layout(&n.props, key, v) or drawing(&n.props, key, v) or text(&n.props, key, v) or controls(&n.props, key, v) or image(&n.props, key, v)) return;
+    @compileError("Unknown .oriel attribute: " ++ key);
+}
+
+/// id, accessibility, focus and the tooltip.
+fn identity(n: *Spec, comptime key: []const u8, v: []const u8) bool {
     const eq = std.mem.eql;
-    // Identity and accessibility.
-    if (eq(u8, key, "id")) n.name = v else if (eq(u8, key, "label")) p.al = v else if (eq(u8, key, "role")) {
-        n.role = std.meta.stringToEnum(tree.AxRole, v) orelse @compileError(".oriel unknown role: " ++ v);
-    } else if (eq(u8, key, "level")) {
-        n.level = std.fmt.parseInt(u8, v, 10) catch @compileError(".oriel level is 1-6");
-        if (n.level < 1 or n.level > 6) @compileError(".oriel level is 1-6");
-    } else if (eq(u8, key, "description")) n.description = v else if (eq(u8, key, "alt")) n.alt = v else if (eq(u8, key, "focusable")) n.focusable = boolean(v) else if (eq(u8, key, "tooltip")) p.tip = v
-        // Layout.
-    else if (eq(u8, key, "gap")) {
+    if (eq(u8, key, "id")) n.name = v //
+    else if (eq(u8, key, "label")) n.props.al = v //
+    else if (eq(u8, key, "role")) n.role = std.meta.stringToEnum(tree.AxRole, v) orelse @compileError(".oriel unknown role: " ++ v) //
+    else if (eq(u8, key, "level")) n.level = headingLevel(v) //
+    else if (eq(u8, key, "description")) n.description = v //
+    else if (eq(u8, key, "alt")) n.alt = v //
+    else if (eq(u8, key, "focusable")) n.focusable = boolean(v) //
+    else if (eq(u8, key, "tooltip")) n.props.tip = v //
+    else return false;
+    return true;
+}
+
+fn headingLevel(v: []const u8) u8 {
+    const level = std.fmt.parseInt(u8, v, 10) catch @compileError(".oriel level is 1-6");
+    if (level < 1 or level > 6) @compileError(".oriel level is 1-6");
+    return level;
+}
+
+/// Flex layout, sizes, spacing, position, scrolling, visibility.
+fn layout(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
+    const eq = std.mem.eql;
+    if (eq(u8, key, "gap")) {
         p.rg = number(v);
         p.cg = number(v);
-    } else if (eq(u8, key, "row-gap")) p.rg = number(v) else if (eq(u8, key, "column-gap")) p.cg = number(v) else if (eq(u8, key, "width")) p.w = dim(v) else if (eq(u8, key, "height")) p.h = dim(v) else if (eq(u8, key, "min-width")) p.minw = dim(v) else if (eq(u8, key, "min-height")) p.minh = dim(v) else if (eq(u8, key, "max-width")) p.maxw = dim(v) else if (eq(u8, key, "max-height")) p.maxh = dim(v) else if (eq(u8, key, "aspect-ratio")) p.ar = number(v) else if (eq(u8, key, "grow")) p.fg = number(v) else if (eq(u8, key, "shrink")) p.fs = number(v) else if (eq(u8, key, "basis")) p.fb = dim(v) else if (eq(u8, key, "wrap")) p.fw = oneOf(key, v, &.{ "nowrap", "wrap", "wrap-reverse" }) else if (eq(u8, key, "align")) p.ai = oneOf(key, v, &.{ "flex-start", "flex-end", "center", "stretch", "baseline", "start", "end" }) else if (eq(u8, key, "align-self")) p.as = oneOf(key, v, &.{ "auto", "flex-start", "flex-end", "center", "stretch", "baseline", "start", "end" }) else if (eq(u8, key, "justify")) p.jc = oneOf(key, v, &.{ "flex-start", "flex-end", "center", "space-between", "space-around", "space-evenly", "start", "end" }) else if (eq(u8, key, "padding")) p.pad = sides(key, v) else if (eq(u8, key, "margin")) p.m = sides(key, v) else if (eq(u8, key, "position")) p.pos = oneOf(key, v, &.{ "relative", "absolute" }) else if (eq(u8, key, "top")) inset(p, 0, v) else if (eq(u8, key, "right")) inset(p, 1, v) else if (eq(u8, key, "bottom")) inset(p, 2, v) else if (eq(u8, key, "left")) inset(p, 3, v) else if (eq(u8, key, "scroll")) p.scroll = boolean(v) else if (eq(u8, key, "scroll-x")) p.scrollx = boolean(v) else if (eq(u8, key, "clip")) {
-        if (!boolean(v)) @compileError("clip must be true");
-        p.clip = true;
-    } else if (eq(u8, key, "visible")) p.vis = boolean(v) else if (eq(u8, key, "z")) p.z = std.fmt.parseInt(i32, v, 10) catch @compileError(".oriel z is an integer")
-        // Drawing.
-    else if (eq(u8, key, "background")) p.bg = .{ .color = color(v) } else if (eq(u8, key, "radius")) p.br = @splat(.{ .x = dim(v), .y = dim(v) }) else if (eq(u8, key, "border-width")) p.bw = @splat(number(v)) else if (eq(u8, key, "border-bottom")) p.bw = .{ 0, 0, number(v), 0 } else if (eq(u8, key, "border-color")) p.bc = @splat(color(v)) else if (eq(u8, key, "opacity")) p.op = number(v) else if (eq(u8, key, "shadow")) p.sh = shadow(v)
-        // Text.
-    else if (eq(u8, key, "color")) p.col = color(v) else if (eq(u8, key, "font-size")) p.fz = number(v) else if (eq(u8, key, "font-weight")) p.fwt = number(v) else if (eq(u8, key, "font-family")) p.ff = v else if (eq(u8, key, "italic")) p.it = boolean(v) else if (eq(u8, key, "mono")) p.mono = boolean(v) else if (eq(u8, key, "text-align")) p.ta = oneOf(key, v, &.{ "left", "center", "right" }) else if (eq(u8, key, "letter-spacing")) p.ls = number(v) else if (eq(u8, key, "line-height")) p.lh = number(v) else if (eq(u8, key, "nowrap")) p.nowrap = boolean(v)
-        // Controls.
-    else if (eq(u8, key, "value")) p.val = v else if (eq(u8, key, "placeholder")) p.ph = v else if (eq(u8, key, "disabled")) p.dis = boolean(v) else if (eq(u8, key, "readonly")) p.ro = boolean(v) else if (eq(u8, key, "password")) p.pw = boolean(v) else if (eq(u8, key, "rows")) p.rows = number(v) else if (eq(u8, key, "cols")) p.cols = number(v) else if (eq(u8, key, "checked")) p.on = boolean(v) else if (eq(u8, key, "mixed")) p.mix = boolean(v) else if (eq(u8, key, "accent")) p.acc = color(v) else if (eq(u8, key, "min") or eq(u8, key, "max") or eq(u8, key, "step")) {
+    } else if (eq(u8, key, "row-gap")) p.rg = number(v) //
+    else if (eq(u8, key, "column-gap")) p.cg = number(v) //
+    else if (eq(u8, key, "width")) p.w = dim(v) //
+    else if (eq(u8, key, "height")) p.h = dim(v) //
+    else if (eq(u8, key, "min-width")) p.minw = dim(v) //
+    else if (eq(u8, key, "min-height")) p.minh = dim(v) //
+    else if (eq(u8, key, "max-width")) p.maxw = dim(v) //
+    else if (eq(u8, key, "max-height")) p.maxh = dim(v) //
+    else if (eq(u8, key, "aspect-ratio")) p.ar = number(v) //
+    else if (eq(u8, key, "grow")) p.fg = number(v) //
+    else if (eq(u8, key, "shrink")) p.fs = number(v) //
+    else if (eq(u8, key, "basis")) p.fb = dim(v) //
+    else if (eq(u8, key, "wrap")) p.fw = oneOf(key, v, &.{ "nowrap", "wrap", "wrap-reverse" }) //
+    else if (eq(u8, key, "align")) p.ai = oneOf(key, v, &.{ "flex-start", "flex-end", "center", "stretch", "baseline", "start", "end" }) //
+    else if (eq(u8, key, "align-self")) p.as = oneOf(key, v, &.{ "auto", "flex-start", "flex-end", "center", "stretch", "baseline", "start", "end" }) //
+    else if (eq(u8, key, "justify")) p.jc = oneOf(key, v, &.{ "flex-start", "flex-end", "center", "space-between", "space-around", "space-evenly", "start", "end" }) //
+    else if (eq(u8, key, "padding")) p.pad = sides(key, v) //
+    else if (eq(u8, key, "margin")) p.m = sides(key, v) //
+    else if (eq(u8, key, "position")) p.pos = oneOf(key, v, &.{ "relative", "absolute" }) //
+    else if (eq(u8, key, "top")) inset(p, 0, v) //
+    else if (eq(u8, key, "right")) inset(p, 1, v) //
+    else if (eq(u8, key, "bottom")) inset(p, 2, v) //
+    else if (eq(u8, key, "left")) inset(p, 3, v) //
+    else if (eq(u8, key, "scroll")) p.scroll = boolean(v) //
+    else if (eq(u8, key, "scroll-x")) p.scrollx = boolean(v) //
+    else if (eq(u8, key, "clip")) p.clip = clipValue(v) //
+    else if (eq(u8, key, "visible")) p.vis = boolean(v) //
+    else if (eq(u8, key, "z")) p.z = std.fmt.parseInt(i32, v, 10) catch @compileError(".oriel z is an integer") //
+    else return false;
+    return true;
+}
+
+fn clipValue(v: []const u8) bool {
+    if (!boolean(v)) @compileError("clip must be true");
+    return true;
+}
+
+/// Background, corners, border, opacity, shadow.
+fn drawing(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
+    const eq = std.mem.eql;
+    if (eq(u8, key, "background")) p.bg = .{ .color = color(v) } //
+    else if (eq(u8, key, "radius")) p.br = @splat(.{ .x = dim(v), .y = dim(v) }) //
+    else if (eq(u8, key, "border-width")) p.bw = @splat(number(v)) //
+    else if (eq(u8, key, "border-bottom")) p.bw = .{ 0, 0, number(v), 0 } //
+    else if (eq(u8, key, "border-color")) p.bc = @splat(color(v)) //
+    else if (eq(u8, key, "opacity")) p.op = number(v) //
+    else if (eq(u8, key, "shadow")) p.sh = shadow(v) //
+    else return false;
+    return true;
+}
+
+/// Text color, font, alignment, spacing, wrapping.
+fn text(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
+    const eq = std.mem.eql;
+    if (eq(u8, key, "color")) p.col = color(v) //
+    else if (eq(u8, key, "font-size")) p.fz = number(v) //
+    else if (eq(u8, key, "font-weight")) p.fwt = number(v) //
+    else if (eq(u8, key, "font-family")) p.ff = v //
+    else if (eq(u8, key, "italic")) p.it = boolean(v) //
+    else if (eq(u8, key, "mono")) p.mono = boolean(v) //
+    else if (eq(u8, key, "text-align")) p.ta = oneOf(key, v, &.{ "left", "center", "right" }) //
+    else if (eq(u8, key, "letter-spacing")) p.ls = number(v) //
+    else if (eq(u8, key, "line-height")) p.lh = number(v) //
+    else if (eq(u8, key, "nowrap")) p.nowrap = boolean(v) //
+    else return false;
+    return true;
+}
+
+/// Fields, checkboxes and the slider.
+fn controls(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
+    const eq = std.mem.eql;
+    if (eq(u8, key, "value")) p.val = v //
+    else if (eq(u8, key, "placeholder")) p.ph = v //
+    else if (eq(u8, key, "disabled")) p.dis = boolean(v) //
+    else if (eq(u8, key, "readonly")) p.ro = boolean(v) //
+    else if (eq(u8, key, "password")) p.pw = boolean(v) //
+    else if (eq(u8, key, "rows")) p.rows = number(v) //
+    else if (eq(u8, key, "cols")) p.cols = number(v) //
+    else if (eq(u8, key, "checked")) p.on = boolean(v) //
+    else if (eq(u8, key, "mixed")) p.mix = boolean(v) //
+    else if (eq(u8, key, "accent")) p.acc = color(v) //
+    else if (eq(u8, key, "min") or eq(u8, key, "max") or eq(u8, key, "step")) {
         const r = &(p.range orelse @compileError(".oriel " ++ key ++ " is for <slider>"));
         r.*[if (eq(u8, key, "min")) 0 else if (eq(u8, key, "max")) 1 else 2] = number(v);
-    }
-    // Images.
-    else if (eq(u8, key, "src")) p.src = v else if (eq(u8, key, "fit")) p.fit = oneOf(key, v, &.{ "fill", "contain", "cover", "none", "scale-down" }) else @compileError("Unknown .oriel attribute: " ++ key);
+    } else return false;
+    return true;
+}
+
+fn image(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
+    const eq = std.mem.eql;
+    if (eq(u8, key, "src")) p.src = v //
+    else if (eq(u8, key, "fit")) p.fit = oneOf(key, v, &.{ "fill", "contain", "cover", "none", "scale-down" }) //
+    else return false;
+    return true;
 }
 
 test ".oriel compiles hierarchy and literal text" {

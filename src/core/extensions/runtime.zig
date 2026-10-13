@@ -201,6 +201,8 @@ pub const Call = struct {
 };
 
 // usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add.
+// There it wraps after 2^32 calls in one process (years of a call a
+// millisecond): accepted, as a call lives far shorter than that.
 var next_call_id: std.atomic.Value(usize) = .init(1);
 
 /// How often a waiting caller looks at its cancel token.

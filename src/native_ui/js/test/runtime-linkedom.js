@@ -20906,16 +20906,20 @@ ${a.stack || ""}`;
   }
   function tabCandidates() {
     const els = [], spec = [], groups = /* @__PURE__ */ new Map();
+    let groupCount = 0;
     for (const el of document.querySelectorAll(FOCUSABLE2)) {
       const index = parseInt(el.getAttribute("tabindex"), 10);
-      const explicit = !Number.isNaN(index);
+      const explicit = Number.isInteger(index) && index >= -2147483648 && index <= 2147483647;
       if (!explicit && !naturallyFocusable(el)) continue;
       if (disabledControl(el) || !shown(el)) continue;
       let group = 0;
       if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
-        const first = radioGroup(el)[0];
-        if (!groups.has(first)) groups.set(first, groups.size + 1);
-        group = groups.get(first);
+        const owner = el.closest("form") || document;
+        if (!groups.has(owner)) groups.set(owner, /* @__PURE__ */ new Map());
+        const byName = groups.get(owner);
+        const name = el.getAttribute("name");
+        if (!byName.has(name)) byName.set(name, ++groupCount);
+        group = byName.get(name);
       }
       els.push(el);
       spec.push([focusKind(el), explicit ? index : null, group, !!el.checked]);
