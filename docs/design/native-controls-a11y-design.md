@@ -1,5 +1,7 @@
 # Native buttons/checkboxes/radios and an accessibility tree for `-Dnative_ui`
 
+Status: design record (branch release-0.9.1, 2026-10-04); native controls and the accessibility tree shipped in the native renderer. What exists is documented in [Native renderer](../native-renderer.md) and the [native UI reference](../native-ui-reference.md).
+
 Branch release-0.9.1, 2026-10-04. Rule: **native look, web layout**. CSS decides every box. A real
 platform control fills the box when the page leaves the control's look alone. Oriel never draws
 its own copy of a native control when the platform has a real one.

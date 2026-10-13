@@ -1,4 +1,4 @@
-// The native DOM's QuickJS bindings (docs/native-dom.md): JavaScript
+// The native DOM's QuickJS bindings (docs/design/native-dom.md): JavaScript
 // objects for the nodes of the Zig document store (store.zig, capi.zig).
 //
 // A wrapper is one object of class "Node" per node, made when the page first

@@ -512,7 +512,7 @@ pub const Engine = struct {
     /// Running them: what they commit shows with this frame.
     in_frame_hooks: bool = false,
     /// Files dropped into the page, by the handles the page holds
-    /// (docs/drag-and-drop-design.md, section 3). Closed with the engine.
+    /// (docs/design/drag-and-drop-design.md, section 3). Closed with the engine.
     drops: drop.DropFiles,
     /// host.fileRead calls waiting for their turn (runFileReads), and
     /// whether that turn is scheduled.
@@ -736,7 +736,7 @@ pub const Engine = struct {
         return e.finishDispatch(r, t0, kind);
     }
 
-    /// A drag over the page, or a drop (docs/drag-and-drop-design.md,
+    /// A drag over the page, or a drop (docs/design/drag-and-drop-design.md,
     /// section 1): `__oriel.event(id, "drag", data)` on the hit-tested
     /// node (0: none), `data` the phase's JSON array. The page's effect
     /// mask (copy 1, move 2, link 4); 0 when it threw.

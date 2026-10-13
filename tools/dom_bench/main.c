@@ -1,4 +1,4 @@
-// dom_bench: runs a script against the native DOM (docs/native-dom.md) or
+// dom_bench: runs a script against the native DOM (docs/design/native-dom.md) or
 // linkedom, in the vendored QuickJS.
 //   dom_bench bench.js                    the native DOM
 //   dom_bench bench.js linkedom.iife.js   linkedom (the bundle defines parseHTML)

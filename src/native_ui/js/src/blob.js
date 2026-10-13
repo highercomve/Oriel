@@ -1,4 +1,4 @@
-// Blob, File, FileList and FileReader (docs/drag-and-drop-design.md,
+// Blob, File, FileList and FileReader (docs/design/drag-and-drop-design.md,
 // section 2), for files dropped into the page.
 //
 // A Blob is a list of segments: bytes held here ({ bytes }) or a range of

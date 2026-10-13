@@ -15,7 +15,7 @@ const prof = @import("prof.zig");
 
 /// button and check: native push buttons and checkboxes/radios, sent only to a
 /// backend that lists them in its platform JSON's `controls`
-/// (docs/native-controls-a11y-design.md).
+/// (docs/design/native-controls-a11y-design.md).
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas, button, check };
 pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border

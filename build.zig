@@ -293,7 +293,7 @@ pub fn build(b: *std.Build) void {
     });
     var dom_js_test: ?*std.Build.Step = null;
     // The native DOM against linkedom (the JavaScript DOM the runtime's
-    // Node tests use), outside the app (docs/native-dom.md):
+    // Node tests use), outside the app (docs/design/native-dom.md):
     // `zig build dom-bench -Doptimize=ReleaseFast`, then
     // zig-out/bin/dom_bench tools/dom_bench/bench.js [linkedom bundle].
     {

@@ -1,6 +1,8 @@
 # Native renderer performance: experiment history
 
-[Current performance summary](native-renderer-performance.md) · [Documentation](README.md)
+Status: history (dated experiments). The current numbers are in [Native renderer](../native-renderer.md) and [native renderer performance](../internal/native-renderer-performance.md).
+
+[Current performance summary](../internal/native-renderer-performance.md) · [Documentation](../README.md)
 
 These notes record dated investigations, primarily the 2026-10-02 LinkeDOM
 optimization passes. Statements about the current renderer and proposed next
@@ -581,7 +583,7 @@ a strong candidate, especially where JSC deployment is impractical. Keep
 QuickJS available while evaluating; no production engine changed in this pass.
 
 [Raw samples, pinned builds, fixture hashes and transcript checks](../examples/render-bench/results/2026-10-02-rows-alternative-engines.json).
-[Packaging/runner reproduction](../examples/render-bench/README.md#alternative-javascript-engines).
+[Packaging/runner reproduction](../README.md#alternative-javascript-engines).
 
 ## Canvas recording in JavaScript, 2026-10-03
 

@@ -1,6 +1,6 @@
 # Native renderer performance
 
-[Documentation](README.md) · [Native renderer](native-renderer.md) · [Experiment history](native-renderer-performance-history.md)
+[Documentation](../README.md) · [Native renderer](../native-renderer.md) · [Experiment history](../design/native-renderer-performance-history.md)
 
 Updated 2026-10-05 from the published site and tracked benchmark reports.
 This page separates the site's 2026-10-03 hardware results from the later
@@ -25,7 +25,7 @@ runs. Row timings include the synchronous layout read (`offsetHeight`).
 | Memory after the tests | **174 MB**, 177 after a second round | 561 MB |
 
 These figures supersede the old LinkeDOM headline comparisons in the
-[experiment history](native-renderer-performance-history.md). For this run,
+[experiment history](../design/native-renderer-performance-history.md). For this run,
 native row construction is about 3.1–3.7 times faster than WebView, and row
 updates about 3.2–4.7 times faster. These are workload-specific observations,
 not a guarantee for every page.
@@ -137,13 +137,13 @@ JavaScript flattening path. The default renderer now uses the native DOM;
 common rows and lists are stamped from its Zig store. Incremental updates,
 QuickJS changes, build-time bytecode, cached glyph widths, pooled nodes,
 transform-only animation, display-paced frames, and build-time stylesheet
-parsing also changed the path. See the [native DOM implementation notes](native-dom.md)
+parsing also changed the path. See the [native DOM implementation notes](../design/native-dom.md)
 and the site's [implementation discussion](https://highercomve.github.io/Oriel/docs/native-renderer/).
 
 The old 122.37 ms build, 10.85 ms update, and statements that native row
 construction trails WebView belong to those historical configurations. They
 are preserved with their original evidence in the
-[experiment history](native-renderer-performance-history.md), rather than
+[experiment history](../design/native-renderer-performance-history.md), rather than
 presented as the current renderer's headline results.
 
 ## Current priorities after callback tuning, 2026-10-04

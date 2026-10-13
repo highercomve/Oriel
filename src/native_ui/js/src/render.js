@@ -1532,7 +1532,7 @@ export class Renderer {
     // <input type=button|submit|reset>: a button (its value its label), as
     // a <button> with that text would be.
     // A native push button (the backend hosts one; rule 1.4 of
-    // docs/native-controls-a11y-design.md): the page left its box to the UA.
+    // docs/design/native-controls-a11y-design.md): the page left its box to the UA.
     if ((tag === "button" || isInputButton(el)) && nativeControls.has("button")) {
       const label = this.nativeButtonLabel(el, cs);
       if (label !== null) {
@@ -3082,7 +3082,7 @@ function pushButton(cs, p) {
 
 // The controls the backend hosts as native widgets (its platform JSON's
 // `controls`, e.g. ["check", "button"]): render.js sends those kinds only
-// then (docs/native-controls-a11y-design.md 1.1); else they're drawn.
+// then (docs/design/native-controls-a11y-design.md 1.1); else they're drawn.
 let nativeControls = new Set();
 export function setNativeControls(list) { nativeControls = new Set(Array.isArray(list) ? list : []); }
 

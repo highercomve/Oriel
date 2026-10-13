@@ -1,4 +1,4 @@
-//! The native DOM's document store (docs/native-dom.md): the nodes of one
+//! The native DOM's document store (docs/design/native-dom.md): the nodes of one
 //! window's document, their tree, attributes and text, owned by Zig.
 //!
 //! Memory, by design:

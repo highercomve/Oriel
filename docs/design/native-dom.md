@@ -1,6 +1,6 @@
 # Native DOM: design
 
-Status: proposal (2026-10-02). Owner: perf/native-engine.
+Status: shipped (the native renderer's only DOM since 0.12; written as a proposal on 2026-10-02). Documented in [Native renderer](../native-renderer.md).
 
 The native renderer (`-Dnative_ui`) runs the page's DOM as JavaScript inside
 QuickJS (linkedom, vendored in `src/native_ui/js/vendor/linkedom`), and its

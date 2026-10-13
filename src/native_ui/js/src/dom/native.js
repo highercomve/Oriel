@@ -3,7 +3,7 @@
 // references do: dom/store.zig prune).
 const internalWeak = (m) => (globalThis.__nuiDom?.internal?.(m), m);
 
-// The native DOM's JavaScript side (docs/native-dom.md).
+// The native DOM's JavaScript side (docs/design/native-dom.md).
 //
 // The nodes live in Zig (src/native_ui/dom): the tree, attributes, text,
 // innerHTML, selectors, cloning and serializing are native, reached through

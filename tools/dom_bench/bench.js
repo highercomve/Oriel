@@ -1,4 +1,4 @@
-// The native DOM against linkedom (docs/native-dom.md, phase 0): the same DOM
+// The native DOM against linkedom (docs/design/native-dom.md, phase 0): the same DOM
 // work as the render bench's rows, without the renderer. `document` is the
 // native one, or linkedom's when the tool loaded it (globalThis.parseHTML).
 const doc = globalThis.parseHTML

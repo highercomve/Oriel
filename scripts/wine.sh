@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test Windows builds under Wine (Steam's Proton or a system wine), headless,
 # in a private prefix under .wine-test/ (git-ignored). Never uses a Steam
-# game prefix. See docs/windows-testing.md.
+# game prefix. See docs/internal/windows-testing.md.
 #
 #   scripts/wine.sh setup                      # prefix + WebView2 runtime + WebView2Loader.dll (once)
 #   scripts/wine.sh loader                     # print the path of WebView2Loader.dll

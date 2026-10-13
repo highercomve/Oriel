@@ -1,4 +1,4 @@
-//! Files dropped into a native-renderer page (docs/drag-and-drop-design.md,
+//! Files dropped into a native-renderer page (docs/design/drag-and-drop-design.md,
 //! section 3): one table per engine (`Engine.drops`).
 //!
 //! The table is core/file_handles.zig, shared with oriel.share's received

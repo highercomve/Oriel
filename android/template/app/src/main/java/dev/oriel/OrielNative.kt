@@ -1915,7 +1915,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return true
     }
 
-    // --- Drag and drop (docs/drag-and-drop-design.md §5) --------------------------
+    // --- Drag and drop (docs/design/drag-and-drop-design.md §5) --------------------------
 
     private val dropWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var dragSession = 0
