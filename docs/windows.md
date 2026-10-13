@@ -229,7 +229,7 @@ policy ([Security](security.md#how-it-works)).
 | `skip_taskbar` | `bool` | `false` | Leave it out of the taskbar, Dock window list and Alt-Tab. |
 | `placement` | `?Placement` | `null` | Where to put it when shown, relative to its monitor's work area; null lets the window manager decide. |
 | `hide_on_close` | `bool` | `false` | Closing hides it instead (reopen with `show()`). |
-| `focus_on_show` | `bool` | `true` | Take keyboard focus when shown; false for overlays that mustn't steal typing. |
+| `focus_on_show` | `bool` | `true` | Take keyboard focus when shown; false for overlays that mustn't steal typing (a click still focuses them). Clicking another app takes focus back either way. |
 
 ### `Placement`
 
@@ -372,7 +372,7 @@ Errors: `Forbidden` (window API not allowed for this page),
 
 | Platform | Behavior |
 |---|---|
-| Linux | The app holds itself while the main window is hidden (`hide_on_close`, `visible = false`). Overlays on Wayland need gtk4-layer-shell, loaded at runtime; it's ignored (logged once) without it. A layer surface takes keyboard focus exclusively unless `focus_on_show = false`. |
+| Linux | The app holds itself while the main window is hidden (`hide_on_close`, `visible = false`). Overlays on Wayland need gtk4-layer-shell, loaded at runtime; it's ignored (logged once) without it. A layer surface never grabs the keyboard: with `focus_on_show` it's focused when shown and clicking another app unfocuses it; without, it has no keyboard until the pointer is over it, so a click focuses it. |
 | Windows | `skip_taskbar` is `WS_EX_TOOLWINDOW` (off the taskbar and Alt+Tab); click-through is `WS_EX_LAYERED \| WS_EX_TRANSPARENT`. |
 | macOS | `always_on_top` uses the floating level, or the status level when the window also skips the taskbar. `skip_taskbar` shows the window on every Space and over full-screen apps. Clicking the Dock icon with every window hidden shows the main window. |
 | Android | Each window is an Activity in its own task; `show()` starts or brings it back, `hide()` sends its task to the back. The WebView outlives its Activity (rotation). `placement`, click-through, always-on-top and dragging are no-ops. |
