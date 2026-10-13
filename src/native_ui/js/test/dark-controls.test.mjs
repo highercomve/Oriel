@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 function fields(dark, css) {
   const page = `<html><head><style>:root { color-scheme: light dark } ${css}</style></head><body><input id="i" value="x"><input type="checkbox"></body></html>`;
@@ -14,7 +15,7 @@ function fields(dark, css) {
     ops: (json) => { const k = new Map(); for (const [op, id, x] of JSON.parse(json)) { if (op === "c") k.set(id, x); else if (op === "p" && (x.ctl || x.ph !== undefined)) out.push(x); } },
     platform: JSON.stringify({ os: "android" }), label: "main", url: "index.html",
   };
-  const ctx = vm.createContext({ __host: host });
+  const ctx = vm.createContext({ __host: withEngine(host) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, dark, false);
   ctx.__oriel.render();
@@ -39,7 +40,7 @@ assert.deepEqual(own.col, [200, 0, 0, 1], "and its color");
     ops: (json) => { for (const [op, id, x] of JSON.parse(json)) if (op === "p") props.set(id, x); },
     platform: JSON.stringify({ os: "android" }), label: "main", url: "index.html",
   };
-  const ctx = vm.createContext({ __host: host });
+  const ctx = vm.createContext({ __host: withEngine(host) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, true, false);
   ctx.__oriel.render();

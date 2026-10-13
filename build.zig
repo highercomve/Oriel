@@ -350,6 +350,21 @@ pub fn build(b: *std.Build) void {
         runtime_test.addFileArg(b.path("src/native_ui/runtime.js"));
         b.step("test-native-runtime", "Test the production runtime's native DOM observers (requires Node)").dependOn(&runtime_test.step);
     }
+    // The input rules (interaction.zig) for the runtime's Node tests: their
+    // fake hosts answer with the engine's own (js/test/engine-host.mjs).
+    {
+        const wasm = b.addExecutable(.{
+            .name = "interaction",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/native_ui/interaction_wasm.zig"),
+                .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }),
+                .optimize = .ReleaseSmall,
+            }),
+        });
+        wasm.entry = .disabled;
+        wasm.rdynamic = true;
+        b.step("interaction-wasm", "Build the input rules for the runtime's Node tests").dependOn(&b.addInstallArtifact(wasm, .{}).step);
+    }
 
     const test_step = b.step("test", "Run unit tests");
     if (runs_tests) {

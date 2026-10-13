@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body>
 <ul><li>one</li><li>two<ul><li>inner<ul><li>deep</li></ul></li></ul></li></ul>
@@ -21,7 +22,7 @@ const host = {
   ops: (json) => { for (const [k, id, x] of JSON.parse(json)) if (k === "p") props.set(id, x); },
   platform: JSON.stringify({ os: "linux" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 900, false, false);
 ctx.__oriel.render();

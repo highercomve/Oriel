@@ -385,11 +385,9 @@ pub const Asset = App.Asset;
 pub const Backend = @import("backend.zig").Backend(Engine);
 pub const FontSpec = @import("backend.zig").FontSpec;
 
-// usize: 32-bit targets (armv7, x86 Android) have no 64-bit atomic add. Wrapping
-// would take 4 billion engines in one process.
-var next_serial: std.atomic.Value(usize) = .init(0);
-/// The open engines by serial (UI thread).
-var live: std.AutoHashMapUnmanaged(u64, *Engine) = .empty;
+const core = @import("engine_core.zig");
+const interaction = @import("interaction.zig");
+const registry = core.Registry(Engine);
 
 pub const Engine = struct {
     gpa: std.mem.Allocator,
@@ -423,9 +421,11 @@ pub const Engine = struct {
     /// frame runs its requestAnimationFrame callbacks.
     js_frame_wanted: bool = false,
     /// The app's Zig code at each display frame (canvas.zig onFrame).
-    frame_hooks: std.ArrayList(FrameHook) = .empty,
-    /// Running them: what they commit shows with this frame.
-    in_frame_hooks: bool = false,
+    frame_hooks: core.FrameHooks(Engine) = .{},
+    /// The platform's input rules' facts (interaction.zig), and a key
+    /// scroll's glide.
+    platform: interaction.Platform = .{},
+    glide: interaction.Glide = .{},
     /// Files dropped into the page, by the handles the page holds
     /// (docs/design/drag-and-drop-design.md, section 3). Closed with the engine.
     drops: drop.DropFiles,
@@ -460,6 +460,7 @@ pub const Engine = struct {
     pub const reload_timer_id: u32 = std.math.maxInt(u32);
     /// The timer id of a turn for the promise jobs one settle left (runJobs).
     pub const jobs_timer_id: u32 = std.math.maxInt(u32) - 1;
+    // (std.math.maxInt(u32) - 2: core.display_frame_timer.)
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -467,10 +468,7 @@ pub const Engine = struct {
     pub const drag_link: u8 = 4;
 
     /// A Zig callback at each display frame while it returns true.
-    pub const FrameHook = struct {
-        ctx: *anyopaque,
-        func: *const fn (ctx: *anyopaque, e: *Engine, interval_ms: f64) bool,
-    };
+    pub const FrameHook = core.FrameHooks(Engine).Hook;
 
     pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, label: [:0]const u8, url: [:0]const u8, width: f32, height: f32) !*Engine {
         const e = try gpa.create(Engine);
@@ -486,9 +484,10 @@ pub const Engine = struct {
         // On failure below: the tree (its Yoga config, and any nodes the
         // runtime already made) and the QuickJS runtime go too, as in destroy.
         errdefer e.tree.deinit();
-        e.serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1;
+        e.serial = registry.newSerial();
         e.hookTree(width, height);
         e.start_platform = try gpa.dupeZ(u8, platform_json);
+        e.platform = interaction.Platform.parse(gpa, platform_json);
         errdefer gpa.free(e.start_platform);
         e.start_label = try gpa.dupeZ(u8, label);
         errdefer gpa.free(e.start_label);
@@ -504,24 +503,13 @@ pub const Engine = struct {
         errdefer if (e.csp_handlers) |r| gpa.free(r);
         e.js = try e.newRuntime();
         errdefer oqjs_free(e.js);
-        try live.put(std.heap.smp_allocator, e.serial, e);
+        try registry.add(e);
         return e;
     }
 
     /// The tree's size and the backend's hooks (create, and a reload's new tree).
     fn hookTree(e: *Engine, width: f32, height: f32) void {
-        const backend = e.backend;
-        e.tree.width = width;
-        e.tree.height = height;
-        e.tree.on_remove = backend.removed;
-        e.tree.on_props = backend.props;
-        e.tree.on_ax = backend.ax_changed;
-        e.tree.on_text = backend.text;
-        e.tree.measure_texts = backend.measure_texts;
-        e.tree.on_leaf_style = backend.leaf_style;
-        e.tree.on_create = backend.leaf;
-        e.tree.on_paint = backend.paint;
-        e.tree.on_canvas = backend.canvas;
+        core.hookTree(e, width, height);
     }
 
     /// A QuickJS runtime with Oriel's runtime loaded, for this window.
@@ -559,10 +547,11 @@ pub const Engine = struct {
             log.err("native ui: reload failed ({s}); the page stays", .{@errorName(err)});
             return;
         };
-        _ = live.remove(e.serial);
+        registry.remove(e.serial);
         oqjs_free(e.js);
         e.js = js;
-        e.frame_hooks.clearRetainingCapacity();
+        e.frame_hooks.clear();
+        e.glide = .{};
         e.js_frame_wanted = false;
         e.frame_pending = false;
         e.relaid = false;
@@ -576,9 +565,9 @@ pub const Engine = struct {
         e.tree.deinit();
         e.tree = Tree.init(e.gpa, e.backend.ctx, e.backend.measure);
         e.hookTree(width, height);
-        e.serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1;
+        e.serial = registry.newSerial();
         e.timer_base = e.timer_next;
-        live.put(std.heap.smp_allocator, e.serial, e) catch {};
+        registry.add(e) catch {};
         log.info("native ui: reloading the page", .{});
         e.boot(e.dark orelse false, e.coarse);
     }
@@ -586,18 +575,18 @@ pub const Engine = struct {
     /// The engine with this serial, if its window is still open (UI
     /// thread): what a Zig handle that outlived its window finds.
     pub fn bySerial(serial: u64) ?*Engine {
-        return live.get(serial);
+        return registry.get(serial);
     }
 
     /// The page's JS or the app's frame hooks are on the stack: the engine
     /// can't go yet (they'd return into it). A window closed from there
     /// closes once they've returned (the backends' busy, or destroy).
     pub fn busy(e: *const Engine) bool {
-        return e.in_call > 0 or e.in_frame_hooks;
+        return e.in_call > 0 or e.frame_hooks.running;
     }
 
     pub fn destroy(e: *Engine) void {
-        _ = live.remove(e.serial);
+        registry.remove(e.serial);
         // The page's last localStorage changes, if its flush hadn't come.
         web_storage.flush();
         e.frame_hooks.deinit(e.gpa);
@@ -645,6 +634,7 @@ pub const Engine = struct {
     }
 
     pub fn event(e: *Engine, id: i64, kind: []const u8, data_json: []const u8) bool {
+        e.glide.stopOnTouch(kind, data_json);
         e.in_call += 1;
         const t0 = prof.now();
         const r = oqjs_event(e.js, id, kind.ptr, kind.len, data_json.ptr, data_json.len);
@@ -693,6 +683,7 @@ pub const Engine = struct {
 
     pub fn timerFired(e: *Engine, id: u32) void {
         if (id == task_timer_id) return e.runFileReads();
+        if (id == core.display_frame_timer) return e.displayFrame(1000.0 / 60.0);
         if (id == reload_timer_id) return e.reloadNow();
         if (id == jobs_timer_id) {
             e.jobs_pending = false;
@@ -712,18 +703,8 @@ pub const Engine = struct {
         // runs scroll steps before animation frames.
         e.flushScrolls();
         // The app's Zig first (a canvas it draws), then the page's frame.
-        e.in_frame_hooks = true;
-        var i: usize = 0;
-        while (i < e.frame_hooks.items.len) {
-            const h = e.frame_hooks.items[i];
-            if (h.func(h.ctx, e, interval_ms)) {
-                i += 1;
-            } else {
-                _ = e.frame_hooks.orderedRemove(i);
-            }
-        }
-        e.in_frame_hooks = false;
-        if (e.frame_hooks.items.len > 0) e.requestDisplayFrame();
+        e.frame_hooks.run(e, interval_ms);
+        if (e.frame_hooks.any()) e.requestDisplayFrame();
         if (e.js_frame_wanted) {
             e.js_frame_wanted = false;
             _ = e.callNumber("vsync", interval_ms);
@@ -736,34 +717,23 @@ pub const Engine = struct {
     /// Lay out if needed and draw what changed, without the page's render
     /// (a canvas the app's Zig drew).
     pub fn paintNow(e: *Engine) void {
-        if (e.tree.needsLayout()) {
-            e.tree.layout();
-            e.relaid = true;
-        }
-        if (e.relaid or e.tree.paint_dirty) {
-            e.relaid = false;
-            e.tree.paint_dirty = false;
-            e.backend.laid_out(e.backend.ctx);
-        }
+        core.layoutAndShow(e);
     }
 
     /// Run `hook` at each display frame until it returns false (UI thread).
     pub fn addFrameHook(e: *Engine, hook: FrameHook) !void {
-        try e.frame_hooks.append(e.gpa, hook);
+        try e.frame_hooks.add(e.gpa, hook);
         e.requestDisplayFrame();
     }
 
-    /// Stop the hooks with this context.
+    /// Stop the hooks with this context (one running may cancel itself).
     pub fn removeFrameHooks(e: *Engine, ctx: *anyopaque) void {
-        var i: usize = 0;
-        while (i < e.frame_hooks.items.len) {
-            if (e.frame_hooks.items[i].ctx == ctx) _ = e.frame_hooks.orderedRemove(i) else i += 1;
-        }
+        e.frame_hooks.remove(ctx);
     }
 
-    /// The next display frame, or a 60 Hz timer when the backend has none.
+    /// The next display frame.
     fn requestDisplayFrame(e: *Engine) void {
-        if (e.backend.request_display_frame) |request| request(e.backend.ctx);
+        core.requestDisplayFrame(e);
     }
 
     /// host.fileRead: queued, and answered on the engine's next turn
@@ -831,25 +801,27 @@ pub const Engine = struct {
         _ = e.callf("__oriel.resize({d},{d},{})", .{ width, height, dark });
     }
 
-    /// Scroll a container by `dy`: true if it moved.
     /// Scroll a container sideways by `dx`: true if it moved.
     pub fn scrollByX(e: *Engine, node: *Node, dx: f32) bool {
-        const before = node.scroll_x;
-        node.scroll_x = std.math.clamp(node.scroll_x + dx, 0, @max(0, node.content_w - node.frame.w));
-        if (node.scroll_x == before) return false;
-        e.tree.noteScroll(node);
-        e.tree.replace();
-        e.backend.laid_out(e.backend.ctx);
-        e.scrollsChanged();
-        return true;
+        e.glide.stopFor(node.id);
+        return e.scrolled(core.moveScroll(e, node, .x, dx));
     }
 
+    /// Scroll a container by `dy` (a wheel, a touch): true if it moved. A
+    /// key scroll's glide there stops.
     pub fn scrollBy(e: *Engine, node: *Node, dy: f32) bool {
-        const before = node.scroll_y;
-        node.scroll_y = std.math.clamp(node.scroll_y + dy, 0, @max(0, node.content_h - node.frame.h));
-        if (node.scroll_y == before) return false;
-        e.tree.noteScroll(node);
-        e.tree.replace();
+        e.glide.stopFor(node.id);
+        return e.scrolled(core.moveScroll(e, node, .y, dy));
+    }
+
+    /// The glide's own scroll (interaction.Glider).
+    pub fn setScrollY(e: *Engine, node: *Node, y: f32) void {
+        _ = e.scrolled(core.moveScroll(e, node, .y, y - node.scroll_y));
+    }
+
+    /// Drawn now; the page hears at the next display frame (scrollsChanged).
+    fn scrolled(e: *Engine, moved: bool) bool {
+        if (!moved) return false;
         e.backend.laid_out(e.backend.ctx);
         e.scrollsChanged();
         return true;
@@ -925,14 +897,7 @@ pub const Engine = struct {
     /// (`Backend.request_frame`) at the next frame.
     fn settle(e: *Engine) void {
         e.runJobs();
-        if (e.booted) if (e.backend.request_frame) |request| {
-            if (!e.frame_pending) {
-                e.frame_pending = true;
-                request(e.backend.ctx);
-            }
-            return;
-        };
-        e.renderNow();
+        if (!core.deferToFrame(e)) e.renderNow();
     }
 
     /// The pending promise jobs, as a call into the page (in_call: a job
@@ -967,17 +932,9 @@ pub const Engine = struct {
         _ = oqjs_render(e.js);
         e.in_call -= 1;
         e.runJobs();
-        if (e.tree.needsLayout()) {
-            const t0 = prof.now();
-            e.tree.layout();
-            prof.report("layout {d:.2}", .{prof.now() - t0});
-            e.relaid = true;
-        }
-        if (e.relaid or e.tree.paint_dirty) {
-            e.relaid = false;
-            e.tree.paint_dirty = false;
-            e.backend.laid_out(e.backend.ctx);
-        }
+        const t0 = prof.now();
+        core.layoutAndShow(e);
+        prof.report("layout {d:.2}", .{prof.now() - t0});
         // A layout that moved a scroller (its content shrank): heard too.
         e.scrollsChanged();
     }
@@ -1080,9 +1037,9 @@ export fn oriel_nui_invoke(p: *anyopaque, call_id: u32, cmd: [*]const u8, cmd_le
 export fn oriel_nui_timer(p: *anyopaque, id: u32, ms: f64) void {
     const e = engineOf(p);
     // Past the ids every earlier page used (timer_base), clear of the
-    // engine's own (task_timer_id, jobs_timer_id, reload_timer_id).
+    // engine's own (task 0, the display frame's, jobs and reload).
     const backend_id = std.math.add(u32, e.timer_base, id) catch return;
-    if (backend_id >= Engine.jobs_timer_id) return;
+    if (backend_id >= core.display_frame_timer) return;
     if (backend_id >= e.timer_next) e.timer_next = backend_id + 1;
     e.backend.add_timer(e.backend.ctx, e, backend_id, @intFromFloat(@max(0, @min(ms, 1e9))));
 }
@@ -1312,6 +1269,7 @@ export fn oriel_nui_scroll_into_view(p: *anyopaque, id: f64, block: [*]const u8,
         e.relaid = true;
     }
     const n = e.tree.get(Tree.idOf(id)) orelse return;
+    e.glide.active = false;
     e.tree.scrollIntoView(n, block[0..len]);
     e.backend.laid_out(e.backend.ctx);
     e.scrollsChanged();
@@ -1322,6 +1280,7 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64, x: f64) void {
     const e = engineOf(p);
     if (e.tree.needsLayout()) e.tree.layout();
     const n = e.tree.get(Tree.idOf(id)) orelse return;
+    e.glide.stopFor(n.id);
     const before = .{ n.scroll_y, n.scroll_x };
     if (!std.math.isNan(y)) n.scroll_y = std.math.clamp(@as(f32, @floatCast(y)), 0, @max(0, n.content_h - n.frame.h));
     if (!std.math.isNan(x)) n.scroll_x = std.math.clamp(@as(f32, @floatCast(x)), 0, @max(0, n.content_w - n.frame.w));
@@ -1329,6 +1288,52 @@ export fn oriel_nui_scroll_to(p: *anyopaque, id: f64, y: f64, x: f64) void {
     e.tree.replace();
     e.backend.laid_out(e.backend.ctx);
     e.scrollsChanged();
+}
+
+/// host.keyScroll(id, key, shift): the key scrolls from node `id`'s nearest
+/// scroller, else the window's (interaction.zig), gliding there.
+export fn oriel_nui_key_scroll(p: *anyopaque, id: f64, key: [*]const u8, len: usize, shift: c_int) c_int {
+    const e = engineOf(p);
+    return @intFromBool(core.keyScroll(Engine, e, e.tree.get(Tree.idOf(id)), e.tree.get(-1), key[0..len], shift != 0) catch false);
+}
+
+/// host.isScrollKey(key): a key that scrolls (interaction.scrollStep), so
+/// the page renders and looks for a scroller only for those.
+export fn oriel_nui_is_scroll_key(_: *anyopaque, key: [*]const u8, len: usize) c_int {
+    return @intFromBool(interaction.scrollStep(key[0..len], false) != null);
+}
+
+/// host.tabNext(json, active, back): `json` the candidates in document
+/// order, `[kind, tabindex | null, group, checked]` each; the index Tab
+/// moves to from index `active` (-1: none), or -1.
+export fn oriel_nui_tab_next(p: *anyopaque, json: [*]const u8, len: usize, active: f64, back: c_int) f64 {
+    const e = engineOf(p);
+    const at: ?usize = if (active >= 0 and active < 1e9) @intFromFloat(active) else null;
+    const next = interaction.tabNextJson(e.gpa, interaction.tabRule(e.platform), json[0..len], at, back != 0) catch return -1;
+    return if (next) |n| @floatFromInt(n) else -1;
+}
+
+/// host.clickFocuses(kind): a click focuses an element of that kind
+/// (without a tabindex) on this platform.
+export fn oriel_nui_click_focuses(p: *anyopaque, kind: f64) c_int {
+    const e = engineOf(p);
+    const k = interaction.kindFrom(if (kind >= 0 and kind < 3) @as(u8, @intFromFloat(kind)) else 2);
+    return @intFromBool(interaction.clickFocuses(interaction.tabRule(e.platform), k, false));
+}
+
+/// host.activates(key, down, repeat, button, link, checkable).
+export fn oriel_nui_activates(_: *anyopaque, key: [*]const u8, len: usize, down: c_int, repeat: c_int, button: c_int, link: c_int, checkable: c_int) c_int {
+    return @intFromBool(interaction.activates(key[0..len], down != 0, repeat != 0, button != 0, link != 0, checkable != 0));
+}
+
+/// host.focusRing(kind, accent): the platform's ring, `[w, o, r, red,
+/// green, blue, alpha, halo]`, in the page's accent (platform.accent: the
+/// page keeps it, from the platform JSON and "accent" events).
+export fn oriel_nui_focus_ring(p: *anyopaque, kind: f64, has_accent: c_int, red: f64, green: f64, blue: f64, out: *[8]f64) void {
+    var platform = engineOf(p).platform;
+    platform.accent = if (has_accent != 0) .{ @floatCast(red), @floatCast(green), @floatCast(blue) } else null;
+    const r = interaction.ring(platform, interaction.ringKindFrom(if (kind >= 0 and kind < 5) @as(u8, @intFromFloat(kind)) else 4));
+    out.* = interaction.ringNumbers(r);
 }
 
 /// host.fileRead(reqId, handle, offset, length): queued (Engine.queueFileRead).

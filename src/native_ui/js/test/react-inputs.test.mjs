@@ -5,6 +5,7 @@ import path from "node:path";
 import vm from "node:vm";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { withEngine } from "./engine-host.mjs";
 
 // A path, not URL.pathname ("/C:/…%20…" on Windows).
 const dir = fileURLToPath(new URL("./react-inputs/", import.meta.url));
@@ -18,7 +19,7 @@ const host = {
   platform: JSON.stringify({ os: "android", arch: "aarch64" }), label: "main",
   evalScript: (name, code) => vm.runInContext(code, ctx, { filename: name }),
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, true, true);
 ctx.__oriel.render();

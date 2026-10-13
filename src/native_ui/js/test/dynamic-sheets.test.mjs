@@ -6,6 +6,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><head><style id="boot">#b { color: rgb(0, 0, 255); }</style></head><body>
 <button id="b">x</button><p id="p">text</p>
@@ -19,7 +20,7 @@ const host = {
   focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {}, ops: () => {},
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();

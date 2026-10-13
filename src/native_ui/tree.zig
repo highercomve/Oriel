@@ -907,6 +907,9 @@ pub const Props = struct {
     acc: ?Color = null,
     /// A tooltip shown when the pointer rests on the node (or a node in it).
     tip: ?[]const u8 = null,
+    /// An explicit tabindex (.oriel `focusable="true"`: 0): Tab visits the
+    /// node on every platform (interaction.zig).
+    ti: ?i32 = null,
 };
 
 pub const Rect = struct {

@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body>
 <div id="s" style="height:70px; overflow:auto; padding:4px 6px">long text that scrolls</div>
@@ -25,7 +26,7 @@ const host = {
   },
   platform: JSON.stringify({ os: "windows", arch: "x86_64" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 host.evalScript = (name, code) => vm.runInContext(code, ctx, { filename: name });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);

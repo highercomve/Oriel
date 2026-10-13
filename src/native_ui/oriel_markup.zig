@@ -168,6 +168,11 @@ fn finish(n: *Spec) void {
         if (n.focusable) |f| a.focusable = f;
     } else if (n.level != 0 or n.description != null) @compileError(".oriel level/description need a role (or a drawn <button>/<image>)");
     if (n.focusable == true and ax == null) ax = .{ .role = .generic, .focusable = true };
+    // A drawn element Tab visits behaves as `tabindex="0"` (a drawn
+    // <button> is a `<div role="button" tabindex="0">`): every platform.
+    if (ax) |a| if (a.focusable) {
+        n.props.ti = 0;
+    };
     n.ax = ax;
 }
 

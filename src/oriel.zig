@@ -332,6 +332,7 @@ test {
     if (options.native_ui) {
         if (options.zig_ui) _ = @import("native_ui/ui.zig");
         _ = @import("native_ui/tree.zig");
+        _ = @import("native_ui/engine_core.zig");
         _ = @import("native_ui/drop.zig");
         if (@import("builtin").os.tag == .linux and !@import("builtin").abi.isAndroid()) _ = @import("native_ui/gtk.zig");
     }

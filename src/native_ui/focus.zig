@@ -1,14 +1,17 @@
-//! Keyboard focus and the default actions for the Zig engine (oriel.ui):
-//! what main.js does for a page, without one. Tab order, a focus ring on
-//! drawn elements focused from the keyboard, Enter/Space activating them,
-//! checkboxes and radios toggling, field edits recorded, keys scrolling.
+//! Keyboard focus for .oriel views (engine_zig.zig): what's focusable in a
+//! view's tree, and its drawn controls' state. The rules (Tab's order, what
+//! a click focuses, which key activates, the ring, key scrolling) are the
+//! platform's, shared with the native renderer's pages: interaction.zig.
 //!
 //! Native widgets (input, textarea, select, check, button) take platform
 //! focus and draw their own ring; the backend reports their "focus"/"blur".
-//! Drawn elements are focusable when their accessibility entry says so
-//! (a <button>, `focusable="true"`); their focus is this state and a ring.
+//! Drawn elements are focusable when their accessibility entry says so (a
+//! <button>, `focusable="true"`, a drawn checkbox or push button); their
+//! focus is this state and a ring.
 const std = @import("std");
 const tree_mod = @import("tree.zig");
+const interaction = @import("interaction.zig");
+const core = @import("engine_core.zig");
 const Tree = tree_mod.Tree;
 const Node = tree_mod.Node;
 
@@ -19,11 +22,7 @@ pub const State = struct {
     visible: bool = false,
     /// The node currently drawn with the ring (0: none).
     ring: i64 = 0,
-    /// The platform's accent color (the "accent" event): the ring's.
-    accent: [3]f32 = .{ 52, 132, 228 },
 };
-
-const mod_shift: i64 = 1;
 
 /// A widget the platform hosts: it has its own focus, ring and keys.
 pub fn isNative(n: *const Node) bool {
@@ -34,13 +33,38 @@ pub fn isNative(n: *const Node) bool {
 }
 
 /// A field the platform edits: keys typed in it are its own.
-fn isField(n: *const Node) bool {
+pub fn isField(n: *const Node) bool {
     return n.kind == .input or n.kind == .textarea or n.kind == .select;
 }
 
-/// A drawn checkbox or radio (no platform widget): toggled here.
-fn isDrawnCheck(n: *const Node) bool {
+/// A drawn checkbox or radio (no platform widget).
+pub fn isDrawnCheck(n: *const Node) bool {
     return n.kind != .check and n.props.ctl != null;
+}
+
+fn isRadio(n: *const Node) bool {
+    return if (n.props.ctl) |c| std.mem.eql(u8, c, "radio") else false;
+}
+
+/// What kind of element it is to the shared rules: a field is text-like; a
+/// native or drawn checkbox, radio or push button a control; a drawn
+/// element with a tabindex anything else.
+pub fn kindOf(n: *const Node) interaction.FocusKind {
+    if (isField(n)) return .text;
+    if (n.props.ti != null) return .other;
+    return .control;
+}
+
+/// Its ring (drawn elements only: a native widget draws its own).
+pub fn ringKind(n: *const Node) interaction.RingKind {
+    if (n.props.ctl != null) return .check;
+    if (n.props.ti != null) return .box;
+    return .control;
+}
+
+/// A drawn element activated by Enter or Space as a button would be.
+pub fn isDrawnButton(n: *const Node) bool {
+    return !isNative(n) and n.props.ctl == null;
 }
 
 /// Focusable now: a native widget or a drawn element its entry marks
@@ -57,19 +81,50 @@ pub fn focusable(t: *const Tree, n: *const Node) bool {
     return false;
 }
 
-/// The focusable nodes in tree order (depth first, children in order).
-pub fn order(t: *const Tree, gpa: std.mem.Allocator) ![]*Node {
-    var out: std.ArrayList(*Node) = .empty;
-    errdefer out.deinit(gpa);
-    const root = t.root orelse return out.toOwnedSlice(gpa);
-    try collect(t, gpa, root, &out, 0);
-    return out.toOwnedSlice(gpa);
+/// The focusable nodes in tree order, as the shared rules' candidates. A
+/// radio's group is the radios beside it (same parent): numbered 1, 2, ...
+/// by parent as they're found.
+pub fn candidates(t: *const Tree, gpa: std.mem.Allocator) ![]interaction.Candidate {
+    var c: Collect = .{ .gpa = gpa, .t = t };
+    defer c.groups.deinit(gpa);
+    errdefer c.out.deinit(gpa);
+    if (t.root) |root| try c.walk(root, 0);
+    return c.out.toOwnedSlice(gpa);
 }
 
-fn collect(t: *const Tree, gpa: std.mem.Allocator, n: *Node, out: *std.ArrayList(*Node), depth: usize) !void {
-    if (depth > 64 or n.props.vis == false or n.props.dis) return;
-    if (focusable(t, n)) try out.append(gpa, n);
-    for (n.kids.items) |k| try collect(t, gpa, k, out, depth + 1);
+const Collect = struct {
+    gpa: std.mem.Allocator,
+    t: *const Tree,
+    out: std.ArrayList(interaction.Candidate) = .empty,
+    /// Radio groups by their parent's id.
+    groups: std.AutoHashMapUnmanaged(i64, u32) = .empty,
+
+    fn walk(c: *Collect, n: *Node, depth: usize) !void {
+        if (depth > 64 or n.props.vis == false or n.props.dis) return;
+        if (focusable(c.t, n)) {
+            var group: u32 = 0;
+            if (isRadio(n)) if (n.parent) |p| {
+                const gop = try c.groups.getOrPut(c.gpa, p.id);
+                if (!gop.found_existing) gop.value_ptr.* = c.groups.count();
+                group = gop.value_ptr.*;
+            };
+            try c.out.append(c.gpa, .{ .id = n.id, .kind = kindOf(n), .tabindex = n.props.ti, .group = group, .checked = n.props.on });
+        }
+        for (n.kids.items) |k| try c.walk(k, depth + 1);
+    }
+};
+
+/// The first scroller in the view (depth first) that has more inside than it
+/// shows: what a scrolling key moves when nothing focused is in one.
+pub fn firstScroller(t: *const Tree) ?*Node {
+    return if (t.root) |root| firstScrollerIn(root, 0) else null;
+}
+
+fn firstScrollerIn(n: *Node, depth: usize) ?*Node {
+    if (depth > 64 or n.props.vis == false) return null;
+    if (n.props.scroll and core.maxScroll(n) > 0.5) return n;
+    for (n.kids.items) |k| if (firstScrollerIn(k, depth + 1)) |s| return s;
+    return null;
 }
 
 /// The node, or the nearest one around it, that takes focus on a click.
@@ -84,53 +139,37 @@ pub fn focusTarget(t: *const Tree, id: i64) ?*Node {
     return null;
 }
 
-/// The next focusable node after the focused one (before it, `back`),
-/// wrapping around; the first (last) when nothing is focused.
-pub fn next(t: *const Tree, gpa: std.mem.Allocator, current: i64, back: bool) !?*Node {
-    const list = try order(t, gpa);
-    defer gpa.free(list);
-    if (list.len == 0) return null;
-    const at: ?usize = for (list, 0..) |n, i| {
-        if (n.id == current) break i;
-    } else null;
-    if (at) |i| return list[if (back) (i + list.len - 1) % list.len else (i + 1) % list.len];
-    return list[if (back) list.len - 1 else 0];
-}
-
-/// The ring for a drawn element: 2px of accent, 1px out, corners 3
-/// (render.js's Linux "box" ring).
-pub fn ring(accent: [3]f32) tree_mod.Outline {
-    return .{ .w = 2, .o = 1, .c = .{ accent[0], accent[1], accent[2], 0.8 }, .r = 3 };
-}
-
 /// Move the ring to the focused node when it's drawn and focus is visible.
-pub fn updateRing(t: *Tree, st: *State) !void {
+pub fn updateRing(t: *Tree, st: *State, platform: interaction.Platform) !void {
     const want: i64 = if (st.visible and st.id != 0) if (t.get(st.id)) |n| if (isNative(n)) 0 else st.id else 0 else 0;
     if (want == st.ring) return;
+    try clearRing(t, st);
+    if (want != 0) {
+        const n = t.get(want).?;
+        var props = n.props;
+        props.ol = core.outline(interaction.ring(platform, ringKind(n)));
+        try t.updateUiProps(n.id, props);
+        st.ring = want;
+    }
+}
+
+/// Take the ring off (the accent changed: it's drawn again).
+pub fn clearRing(t: *Tree, st: *State) !void {
     if (st.ring != 0) if (t.get(st.ring)) |n| {
         var props = n.props;
         props.ol = null;
         try t.updateUiProps(n.id, props);
     };
     st.ring = 0;
-    if (want != 0) {
-        const n = t.get(want).?;
-        var props = n.props;
-        props.ol = ring(st.accent);
-        try t.updateUiProps(n.id, props);
-        st.ring = want;
-    }
 }
 
 /// A drawn checkbox or radio clicked (or activated): check it (a radio
 /// unchecks the radios beside it). Returns its new state.
 pub fn toggle(t: *Tree, n: *Node) !bool {
-    const radio = if (n.props.ctl) |c| std.mem.eql(u8, c, "radio") else false;
+    const radio = isRadio(n);
     const now = if (radio) true else !n.props.on;
     if (radio) if (n.parent) |p| for (p.kids.items) |k| {
-        if (k == n or !k.props.on) continue;
-        const kr = if (k.props.ctl) |c| std.mem.eql(u8, c, "radio") else false;
-        if (!kr) continue;
+        if (k == n or !k.props.on or !isRadio(k)) continue;
         var props = k.props;
         props.on = false;
         try t.updateUiProps(k.id, props);
@@ -163,48 +202,21 @@ pub fn valueOf(v: std.json.Value) []const u8 {
     };
 }
 
-/// A "key" event's key name and modifier flags (`[key, mods, repeat]`).
-pub fn keyOf(gpa: std.mem.Allocator, data: []const u8, name: []u8) ?struct { key: []const u8, mods: i64 } {
+/// A "key"/"keyup" event's data (`[key, mods, repeat]`; keyup without
+/// repeat). Modifier flags: shift 1, ctrl 2, alt 4, meta 8.
+pub const Key = struct { key: []const u8, mods: i64, repeat: bool };
+pub fn keyOf(gpa: std.mem.Allocator, data: []const u8, name: []u8) ?Key {
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, data, .{}) catch return null;
     defer parsed.deinit();
     if (parsed.value != .array or parsed.value.array.items.len < 2) return null;
     const a = parsed.value.array.items;
     if (a[0] != .string or a[0].string.len > name.len) return null;
     @memcpy(name[0..a[0].string.len], a[0].string);
-    return .{ .key = name[0..a[0].string.len], .mods = if (a[1] == .integer) a[1].integer else 0 };
-}
-
-/// The scroller a scrolling key moves: the focused node's nearest one,
-/// else the first one in the window.
-pub fn scrollerFor(t: *const Tree, focused: i64) ?*Node {
-    var at = t.nodes.get(focused);
-    while (at) |n| : (at = n.parent) if (n.props.scroll and n.content_h > n.frame.h) return n;
-    const root = t.root orelse return null;
-    return firstScroller(root, 0);
-}
-
-fn firstScroller(n: *Node, depth: usize) ?*Node {
-    if (depth > 64 or n.props.vis == false) return null;
-    if (n.props.scroll and n.content_h > n.frame.h) return n;
-    for (n.kids.items) |k| if (firstScroller(k, depth + 1)) |s| return s;
-    return null;
-}
-
-/// How far a key scrolls `n` (null: not a scrolling key).
-pub fn scrollDelta(n: *const Node, key: []const u8) ?f32 {
-    const line: f32 = 40;
-    const page = @max(line, n.frame.h * 0.875);
-    if (std.mem.eql(u8, key, "ArrowDown")) return line;
-    if (std.mem.eql(u8, key, "ArrowUp")) return -line;
-    if (std.mem.eql(u8, key, "PageDown")) return page;
-    if (std.mem.eql(u8, key, "PageUp")) return -page;
-    if (std.mem.eql(u8, key, "Home")) return -n.scroll_y;
-    if (std.mem.eql(u8, key, "End")) return n.content_h;
-    return null;
-}
-
-pub fn isShift(mods: i64) bool {
-    return mods & mod_shift != 0;
+    return .{
+        .key = name[0..a[0].string.len],
+        .mods = if (a[1] == .integer) a[1].integer else 0,
+        .repeat = a.len > 2 and a[2] == .bool and a[2].bool,
+    };
 }
 
 test "tab order skips disabled, hidden and unlaid nodes and wraps" {
@@ -224,6 +236,7 @@ test "tab order skips disabled, hidden and unlaid nodes and wraps" {
         \\  <column visible="false"><button id="hidden" height="20"><text>H</text></button></column>
         \\  <input id="field" />
         \\  <view id="plain" height="20" />
+        \\  <control id="native" value="OK" />
         \\  <button id="b" height="20"><text>B</text></button>
         \\</column>
     );
@@ -234,19 +247,69 @@ test "tab order skips disabled, hidden and unlaid nodes and wraps" {
     t.height = 300;
     t.layout();
     const gpa = std.testing.allocator;
-    const list = try order(&t, gpa);
-    defer gpa.free(list);
-    try std.testing.expectEqual(@as(usize, 3), list.len);
-    try std.testing.expectEqual(V.id("a", 1), list[0].id);
-    try std.testing.expectEqual(V.id("field", 1), list[1].id);
-    try std.testing.expectEqual(V.id("b", 1), list[2].id);
-    try std.testing.expectEqual(V.id("a", 1), (try next(&t, gpa, 0, false)).?.id);
-    try std.testing.expectEqual(V.id("b", 1), (try next(&t, gpa, 0, true)).?.id);
-    try std.testing.expectEqual(V.id("a", 1), (try next(&t, gpa, V.id("b", 1), false)).?.id);
-    try std.testing.expectEqual(V.id("b", 1), (try next(&t, gpa, V.id("a", 1), true)).?.id);
+    const cands = try candidates(&t, gpa);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(@as(usize, 4), cands.len);
+    const a = V.id("a", 1);
+    const field = V.id("field", 1);
+    const native = V.id("native", 1);
+    const b = V.id("b", 1);
+    try std.testing.expectEqual(interaction.FocusKind.text, cands[1].kind);
+    try std.testing.expectEqual(interaction.FocusKind.control, cands[2].kind);
+    var at: ?i64 = null;
+    var all: [5]i64 = undefined;
+    for (&all) |*o| {
+        at = try interaction.tabNext(gpa, .all, cands, at, false);
+        o.* = at.?;
+    }
+    try std.testing.expectEqual([5]i64{ a, field, native, b, a }, all);
+    // macOS without Full Keyboard Access: no native push button; drawn
+    // buttons (tabindex 0) and fields stay.
+    at = null;
+    var mac: [3]i64 = undefined;
+    for (&mac) |*o| {
+        at = try interaction.tabNext(gpa, .mac, cands, at, false);
+        o.* = at.?;
+    }
+    try std.testing.expectEqual([3]i64{ a, field, b }, mac);
     // A click inside a button focuses the button.
-    try std.testing.expectEqual(V.id("a", 1), focusTarget(&t, V.id("a", 1) + 1).?.id);
+    try std.testing.expectEqual(a, focusTarget(&t, a + 1).?.id);
     try std.testing.expect(focusTarget(&t, V.id("plain", 1)) == null);
+}
+
+test "radios in different parents are different Tab stops" {
+    const measure = struct {
+        fn f(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    }.f;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, measure);
+    defer t.deinit();
+    t.controls = .{ .check = false, .button = false };
+    const ui = @import("ui.zig");
+    // Radios in the column (id 100) and in its row (id 101): groups made
+    // from `parent id | 1` once collided (both 101).
+    const V = ui.View(
+        \\<column id="root" width="300" height="300">
+        \\  <row><radio id="b1" /><radio id="b2" checked="true" /></row>
+        \\  <radio id="a1" checked="true" />
+        \\  <radio id="a2" />
+        \\</column>
+    );
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{});
+    t.root = t.get(100);
+    t.width = 300;
+    t.height = 300;
+    t.layout();
+    const gpa = std.testing.allocator;
+    const cands = try candidates(&t, gpa);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(@as(i64, 101), t.get(V.id("b1", 100)).?.parent.?.id);
+    try std.testing.expect(cands[0].group != cands[2].group);
+    try std.testing.expectEqual(V.id("b2", 100), (try interaction.tabNext(gpa, .all, cands, null, false)).?);
+    try std.testing.expectEqual(V.id("a1", 100), (try interaction.tabNext(gpa, .all, cands, V.id("b2", 100), false)).?);
 }
 
 test "drawn radios check one at a time; the ring follows keyboard focus" {
@@ -279,6 +342,12 @@ test "drawn radios check one at a time; the ring follows keyboard focus" {
     try std.testing.expectEqual(tree_mod.Kind.view, r1.kind);
     try std.testing.expectEqual(tree_mod.AxRole.radio, t.ax.get(r1.id).?.r);
     try std.testing.expect(t.ax.get(r1.id).?.s & tree_mod.Ax.checked != 0);
+    // The radio group is one Tab stop: its checked radio.
+    const gpa = std.testing.allocator;
+    const cands = try candidates(&t, gpa);
+    defer gpa.free(cands);
+    try std.testing.expectEqual(r1.id, (try interaction.tabNext(gpa, .all, cands, null, false)).?);
+    try std.testing.expectEqual(V.id("c", 1), (try interaction.tabNext(gpa, .all, cands, r1.id, false)).?);
     try std.testing.expect(try toggle(&t, r2));
     try std.testing.expect(!t.get(r1.id).?.props.on);
     try std.testing.expect(t.ax.get(r1.id).?.s & tree_mod.Ax.checked == 0);
@@ -290,14 +359,15 @@ test "drawn radios check one at a time; the ring follows keyboard focus" {
     const ok = t.get(V.id("ok", 1)).?;
     try std.testing.expectEqual(tree_mod.Kind.text, ok.kind);
     try std.testing.expectEqualStrings("OK", t.ax.get(ok.id).?.n.?);
+    const linux: interaction.Platform = .{ .os = .linux };
     var st: State = .{ .id = r2.id, .visible = true };
-    try updateRing(&t, &st);
-    try std.testing.expect(t.get(r2.id).?.props.ol != null);
+    try updateRing(&t, &st, linux);
+    try std.testing.expectEqual(core.outline(interaction.ring(linux, .check)), t.get(r2.id).?.props.ol.?);
     st.id = ok.id;
-    try updateRing(&t, &st);
+    try updateRing(&t, &st, linux);
     try std.testing.expect(t.get(r2.id).?.props.ol == null);
-    try std.testing.expect(t.get(ok.id).?.props.ol != null);
+    try std.testing.expectEqual(core.outline(interaction.ring(linux, .control)), t.get(ok.id).?.props.ol.?);
     st.visible = false;
-    try updateRing(&t, &st);
+    try updateRing(&t, &st, linux);
     try std.testing.expect(t.get(ok.id).?.props.ol == null);
 }
