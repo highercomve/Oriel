@@ -2,7 +2,7 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased] — 0.12.0
+## [0.12.0] — 2026-10-12
 
 Oriel 0.12.0 keeps one implementation and one API per feature: every second
 way of doing something is gone, the generic, multiplatform form stays. Apps

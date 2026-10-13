@@ -1,10 +1,109 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.11.0, 0.10.0 and earlier.",
+.description = "Release notes for Oriel 0.12.0, 0.11.0 and earlier.",
 .date = .date("2026-10-12T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.12.0 · October 12, 2026]($heading.id('oriel-0-12-0-october-12-2026'))
+
+Oriel 0.12.0 keeps one implementation and one API per feature: every second
+way of doing something is gone, the generic, multiplatform form stays. Apps
+declare everything once, in `build.zig`, and `App.Config` takes it from there.
+The docs are rewritten as one page per feature, each with where it works, a
+quick start, how it works (with a diagram), examples and the full reference.
+**Breaking** throughout: each feature page has a "Migrating from 0.11"
+section, and the table below lists every change.
+
+## [Changed]($heading.id('changed'))
+
+- **`App.Config` takes `.app = oriel_app.build` and `.window`.** Everything
+  `build.zig` declares (id, embedded assets, dev server, icon, URL schemes,
+  permissions, isolation) comes from `app.build`; the main window is a
+  `WindowOptions` (`.window = .{ .title, .width, .height, ... }`, default
+  800×600). `oriel_app` exports `build` and `update_public_key` only.
+  `oriel.main` is the one entry point.
+- **Android platform hooks are declared like the Apple ones:**
+  `.android.hooks = &.{ .{ .class, .sources, .dependencies } }`, implementing
+  `OrielAndroidHooks` (Kotlin and Java). The generated registry is
+  `OrielHooksRegistry.kt`; runtime files a newer Oriel no longer ships are
+  deleted from the app's Gradle project on the next build.
+- **Events are typed:** `App.events(Events).emit` and `.emitTo(label, ...)`
+  (any thread) are the app's way; the untyped `App.emit`/`emitTo` and
+  `Window.emit` are Oriel-internal.
+- **`oriel.paths` is the one place for app directories:** `appData`,
+  `appCache`, `appConfig` and `appExternal` (Android's external files dir).
+- **One `window.oriel` for both renderers** (`src/core/bridge_api.js`), one
+  bridge script for every web view (`src/core/bridge_js.zig`), one dispatch
+  for native pages' commands (`src/core/native_commands.zig`).
+- **Shutdown cleanup runs on `oriel.lifecycle`'s `terminating`**, sent by
+  every shell before its windows go (Oriel's own modules included).
+- **Deep links are delivered through the same queue as notification clicks,
+  shares and lifecycle events**: links that arrive before `onOpen` is set are
+  handed to it once it is.
+- **chat:** a reply holds its own lock: `status`, `delete` and `compare` no
+  longer wait for it, and `Status.generating` is true while one runs;
+  `chat.deinit` frees the model at exit; a `cancel()` sent before the reply
+  starts stops it.
+- **Catalogs** in chat, dictation and tts use `findModel(name) ?*const Model`
+  and `modelPresent(m)`.
+- Module namespaces show only their documented API: backends, shells' entry
+  points and test hooks moved out of reach.
+
+## [Removed (each with its one replacement)]($heading.id('removed'))
+
+| Removed | Use |
+|---|---|
+| `App.Config.id`, `.title`, `.width`… `.placement`, `.show_main_window`, `.on_close`, `.icon`, `.deep_link_schemes`, `.permissions`, `.assets`, `.dev`, `.security.isolation` | `.app = app.build`, `.window = .{ ... }` (`.visible`, `.hide_on_close`) |
+| `App.Config.on_session_end` | `oriel.lifecycle` `.terminating` |
+| `App.run`, `App.setProcessArgs` | `oriel.main` |
+| `App.showWindow`/`hideWindow`/`toggleWindow`, `App.closeWindow`/`postCloseWindow` | `App.getWindow(label)` and the `Window`'s methods; `Window.close()` |
+| `App.setMenu` | `oriel.menu.set` |
+| `App.gtk_app`, `App.main_window` and other App internals | `oriel.hooks` (native handles) |
+| `.android.extensions`, `OrielAndroidExtension(Context)` | `.android.hooks` entries, `OrielAndroidHooks(Context)` |
+| `oriel.ios.onSystemEvent`; Android `trim-memory` in `onSystemEvent` | `oriel.lifecycle` |
+| `oriel.android.preconnect` | nothing: the app's `io` resolves through bionic |
+| `PackageOptions.icon`, `PackageOptions.url_schemes` | `AppOptions.icon`, `AppOptions.url_schemes` |
+| `oriel.store.configDir`/`dataDir`/`cacheDir`, `oriel.android.paths` | `oriel.paths` |
+| `oriel.network.info`, `onChange` (never implemented) | — |
+| `oriel.deep_link.validateUrl` | `validate` |
+| `oriel.share.read` | `oriel.share.open` |
+| `oriel.input.keyComboX11`, `typeTextX11` | `keyCombo`, `typeText` |
+| `oriel.updater.init`/`deinit`, `downloadWithOptions`, `verifyManifestWithOptions`, test hooks | `oriel.main` does init; `download(io, gpa, u, .{ ... })` |
+| `audio_play` one-shot `start`/`stop`/`finished` | `audio_play.Stream` |
+| `dictation.sources` | `oriel.audio_capture.listSources` |
+| `chat`/`dictation` `find`/`present` | `findModel`/`modelPresent` |
+| `system_ai.download`/`generate` `io` parameter | — |
+| `oriel.canvas.openIn`/`onFrameIn`/`engineOf` | `open`, `onFrame` |
+| `window.oriel.native` | `oriel.features.nativeUi` |
+| `-Dnative_dom=false` (linkedom in apps) | the native DOM |
+| `oriel:window:open` `min_width` spelling | `minWidth` |
+| IPC `notification:ready`, `deep_link:ready` | `events:ready` (the bridge's `listen()`) |
+| `oriel pake`, `oriel setup zig`, `oriel setup webview2`, `oriel wrap --tray` | `oriel wrap`, `oriel zig install`, `oriel webview2` (`oriel setup all` installs both); the tray is the default |
+
+## [Fixed]($heading.id('fixed'))
+
+- Windows and Android: `const { openExternal } = oriel` threw (the WebView2
+  bridge used `this.invoke`).
+- `oriel.drop.path` works on macOS, iOS and Android (only Linux and Windows
+  routed it) and resolves a string or null.
+- `fs_watch` on Linux and Android: `poll` into `oriel.fs_watch.Event` didn't
+  compile.
+- `oriel deep-link add` writes `AppOptions.url_schemes`; `oriel permission`
+  accepts `bluetooth` and `local_network`; `--help` shows the full usage of
+  `permission`, `deep-link` and `desktop-entry`.
+- The generated TypeScript has `WindowHandle.startDragging()`, the
+  `window:created`/`window:closed` events and `oriel.drop`.
+
+## [Docs]($heading.id('docs'))
+
+- One page per feature (`site/content/docs/*.smd`, the website), with a
+  Mermaid diagram on each; `docs/*.md` is generated from them
+  (`tools/docs/gen-md.mjs`, checked in CI). Design records are in
+  `docs/design/`, contributor notes in `docs/internal/` (the page template is
+  `docs/internal/writing-docs.md`).
+- The examples no longer commit Oriel's generated Kotlin runtime.
 
 # [Oriel 0.11.0 · October 12, 2026]($heading.id('oriel-0-11-0-october-12-2026'))
 
@@ -62,7 +161,7 @@ the Windows hooks compile but haven't run on Windows yet.
   error), as Swift does to iOS 18. The showcase's `-Dobjc_echo` builds
   `showcase.echo` in Objective-C on macOS. [App extensions]($link.page('docs/extensions'))
 
-## [Changed]($heading.id('changed'))
+## [Changed]($heading.id('changed-2'))
 
 - **Breaking: `.ios.resources` takes named entries,** like Android's
   `.assets`: `.{ .from = <LazyPath>, .to = "models/yoloe.mlmodelc" }`, placed
@@ -95,7 +194,7 @@ the Windows hooks compile but haven't run on Windows yet.
 - `.android.extensions`: still registered, after the `.android.hooks`
   classes; a class named in both is registered once.
 
-## [Fixed]($heading.id('fixed'))
+## [Fixed]($heading.id('fixed-2'))
 
 - **iOS simulator builds carry entitlements like Xcode's.** The executable
   embeds `application-identifier` (`<team>.<bundle id>`, or `.<bundle id>`
@@ -230,7 +329,7 @@ modules are gone; guard calls to desktop-only modules with
   for `oriel.android.paths.filesDir()` behind an Android check
   (docs/modules.md, "App directories").
 
-## [Changed]($heading.id('changed-2'))
+## [Changed]($heading.id('changed-3'))
 
 - Module flags are said once, for every target. An app's `.tray = true` in
   `b.dependency("oriel", ...)` means "where it exists": on a target without
@@ -278,7 +377,7 @@ modules are gone; guard calls to desktop-only modules with
   works on Android as it is (redirects included); remove the call. Oriel's
   own model downloads no longer use it.
 
-## [Fixed]($heading.id('fixed-2'))
+## [Fixed]($heading.id('fixed-3'))
 
 - Android projects generated before 0.9.9 now ship `zig-out/android-assets`
   (Oriel's runtime data and app extensions' `.android.assets`): their own
@@ -303,7 +402,7 @@ on window close and in Windows mDNS, pages that could hang their window,
 replies reaching the wrong page, an unpinned download in the CLI, and
 downgrades through `force`.
 
-## [Fixed]($heading.id('fixed-3'))
+## [Fixed]($heading.id('fixed-4'))
 
 - Native renderer: `localStorage` could lose everything. A key or value
   with a lone surrogate (valid in JavaScript) was saved as invalid UTF-8,
@@ -361,7 +460,7 @@ downgrades through `force`.
 Oriel 0.9.15 makes Android mDNS discovery reliable on phones older than
 Android 14, which could miss devices on the network.
 
-## [Fixed]($heading.id('fixed-4'))
+## [Fixed]($heading.id('fixed-5'))
 
 - Android mDNS browsing before Android 14: a resolve the system never
   answered blocked every service queued after it (one runs at a time), and
@@ -376,7 +475,7 @@ Android 14, which could miss devices on the network.
 Oriel 0.9.14 fixes a crash: since 0.9.12, every app built with the native
 renderer on Linux aborted as its window closed.
 
-## [Fixed]($heading.id('fixed-5'))
+## [Fixed]($heading.id('fixed-6'))
 
 - Native renderer on Linux: closing a window no longer aborts the app
   (SIGABRT). The text layouts kept per node (0.9.12) were freed before the
@@ -391,7 +490,7 @@ on macOS, and fixes what testing 0.9.12 on a Mac found in the system
 monitor example: idle processes can be found and terminated, empty CPU
 chips are hidden, and idle macOS network ports are left out.
 
-## [Fixed]($heading.id('fixed-6'))
+## [Fixed]($heading.id('fixed-7'))
 
 - Native renderer on macOS: a popover or sheet AppKit shows over the
   page (the share picker of `oriel.share.send`) is in the window's
@@ -424,7 +523,7 @@ on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
   receives them as one share with source `service`, its files readable
   through `oriel.share.file`, and comes forward.
 
-## [Changed]($heading.id('changed-3'))
+## [Changed]($heading.id('changed-4'))
 
 - Native renderer: `localStorage` lasts beyond the run, as in a WebView.
   One store per app, shared by its windows, saved as JSON in
@@ -444,7 +543,7 @@ on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
   .AppImage, setup.exe, .dmg). It costs less than btop and the terminal
   drawing it: a sampler at ~1.6 ms a sample and a virtual process table.
 
-## [Fixed]($heading.id('fixed-7'))
+## [Fixed]($heading.id('fixed-8'))
 
 - Native renderer: `JSON.parse` dropped the fraction of every number
   (`0.43` became `0`) under a locale whose decimal separator is a comma
@@ -495,7 +594,7 @@ with text to speech.
 - The system monitor example reuses its table rows and writes text only
   when it changed.
 
-## [Fixed]($heading.id('fixed-8'))
+## [Fixed]($heading.id('fixed-9'))
 
 - The build-time espeak-ng data compiler builds on macOS and with Apple's
   SDK (it used stdio macros that translate-c turns into inline functions).
@@ -518,7 +617,7 @@ wide tables on the documentation site.
 - The comparison with Vercel native now has measured numbers for the same
   system monitor app built with both frameworks.
 
-## [Fixed]($heading.id('fixed-9'))
+## [Fixed]($heading.id('fixed-10'))
 
 - Documentation tables wider than the page column scroll sideways instead of
   spilling under the table of contents; the module overview fits again.
@@ -591,7 +690,7 @@ drag and drop to the iOS native renderer, and Windows fixes.
 - Windows tray icons are decoded with zigimg instead of WIC, so creating and
   destroying trays no longer grows the process's kernel handles.
 
-## [Fixed]($heading.id('fixed-10'))
+## [Fixed]($heading.id('fixed-11'))
 
 - Windows: closing a window or quitting while a native-renderer context menu
   or the tray menu is open no longer hangs; a native page that closes its
@@ -624,7 +723,7 @@ Oriel 0.9.8 is a memory-safety release. It fixes use-after-free, out-of-bounds,
 overflow and leak defects across the native UI, platform layers, modules and
 CLI tooling.
 
-## [Fixed]($heading.id('fixed-11'))
+## [Fixed]($heading.id('fixed-12'))
 
 - Update manifests: base64 signatures, public keys and seeds must decode to
   exactly their expected size, closing a stack overflow reachable from an
@@ -697,7 +796,7 @@ built-in PCM playback.
 - Repository and website guides for offline speech synthesis, asset setup,
   playback ownership, callback behavior and dependency notices.
 
-## [Fixed]($heading.id('fixed-12'))
+## [Fixed]($heading.id('fixed-13'))
 
 - Playback teardown detaches sample state before joining the device thread,
   preventing stop/start deadlocks with audio callbacks.
@@ -727,7 +826,7 @@ Oriel 0.9.5 fixes the validated concurrency, memory-lifetime and security
 issues from a security and memory-safety review, and documents which reported
 findings were not supported by the current code.
 
-## [Fixed]($heading.id('fixed-13'))
+## [Fixed]($heading.id('fixed-14'))
 
 - File-handle tables synchronize access through reads and descriptor
   duplication, preventing release from recycling a descriptor in use.
@@ -792,7 +891,7 @@ and searchable documentation.
 - Native-renderer documentation describes renderer capabilities independently
   of individual release versions.
 
-## [Fixed]($heading.id('fixed-14'))
+## [Fixed]($heading.id('fixed-15'))
 
 - Linux disables WebKitGTK DMABUF rendering when the proprietary NVIDIA driver
   is detected, avoiding compositor-related high CPU usage. An explicit
@@ -852,7 +951,7 @@ and improves native controls, accessibility and platform integration.
   across Linux, Windows, macOS, Android and iOS.
 - Events received before page listeners are ready are queued for delivery.
 
-## [Fixed]($heading.id('fixed-15'))
+## [Fixed]($heading.id('fixed-16'))
 
 - Android mDNS resolution no longer crashes while encoding services with
   multiple TXT attributes. Attributes are iterated directly rather than copied
