@@ -87,7 +87,7 @@ fn startServers() !void {
 }
 
 fn stopServers() void {
-    if (!media_running) return;
+    if (!oriel.media_server.available or !media_running) return;
     media_running = false;
     oriel.media_server.scheme.clearRoot();
     media.stop();
