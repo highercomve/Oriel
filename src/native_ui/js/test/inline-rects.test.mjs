@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><body><p id="p">Start <span id="s">two <b>bold</b> words</span> end.</p><p id="q">x <i id="i">y</i></p></body></html>`;
 function run(withRects) {
@@ -19,7 +20,7 @@ function run(withRects) {
     platform: JSON.stringify({ os: "macos" }), label: "main", url: "index.html",
   };
   if (withRects) host.runRects = (id, first, last) => { asked.push([nodes.get(id).props.runs.slice(first, last + 1).map((r) => r.t).join("")]); return [[50, 20, 100, 17], [10, 37, 40, 17]]; };
-  const ctx = vm.createContext({ __host: host });
+  const ctx = vm.createContext({ __host: withEngine(host) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, false, false);
   ctx.__oriel.render();

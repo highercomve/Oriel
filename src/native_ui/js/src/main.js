@@ -128,8 +128,6 @@ globalThis.requestAnimationFrame = (cb) => {
   return id;
 };
 globalThis.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
-// The runtime's own frames (a key scroll's glide), out of the page's reach.
-const nextFrame = globalThis.requestAnimationFrame;
 
 // ---------------------------------------------------------------------------
 // The document
@@ -640,7 +638,6 @@ elProto.scrollIntoView = function (opts) {
   // render now. It returns nothing, so the page can't tell, and a page that
   // keeps scrolling to its newest line (a chat streaming tokens) doesn't
   // render the whole document once per token.
-  glide = null;
   if (renderer.dirty) { renderer.pendingScroll = { el: this, block }; return; }
   host.scrollIntoView(renderer.idOf(this, "el"), block);
 };
@@ -912,7 +909,8 @@ function forcedColorsOf(d) {
   return { dark: !!d.dark, colors };
 }
 viewport.forced = forcedColorsOf(platform.forcedColors);
-setFocusRingOS(platform.os, platform.accent);
+// The ring in the accent the page last heard (platform.accent, "accent").
+setFocusRingOS(platform.os, (kind) => host.focusRing(kind, platform.accent));
 setNativeControls(platform.controls);
 g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
@@ -1107,8 +1105,12 @@ function keyEvent(el, data, type = "keydown") {
   if (el && !mods && !disabledControl(el)) {
     if (type === "keydown" && key === " ") spacePress = ev.defaultPrevented ? null : el;
     if (!ev.defaultPrevented) {
-      if (type === "keydown" && key === "Enter" && !repeat && (buttonType(el) || (el.localName === "a" && el.hasAttribute("href")) || el.localName === "summary")) { activate(el, flags); return true; }
-      if (type === "keyup" && key === " " && spacePress === el && (buttonType(el) || isCheckable(el))) { spacePress = null; activate(el, flags); return true; }
+      const link = (el.localName === "a" && el.hasAttribute("href")) || el.localName === "summary";
+      if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el), link, isCheckable(el))) {
+        if (key === " ") spacePress = null;
+        activate(el, flags);
+        return true;
+      }
       if (type === "keydown" && el.type === "radio" && el.localName === "input" && /^Arrow(Up|Down|Left|Right)$/.test(key)) {
         const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
         const at = group.indexOf(el);
@@ -1144,68 +1146,26 @@ function keyEvent(el, data, type = "keydown") {
   return ev.defaultPrevented;
 }
 
-// ArrowUp/Down 40px, PageUp/Down and Space (Shift: up) 87.5% of the view,
-// Home/End to the ends, as Chromium. True when a scroller took it. The
-// scroller glides there (glideTo).
+// Keys that scroll (interaction.zig: Chromium's amounts, the scroller, the
+// glide WKWebView animates them with): from the focused element's nearest
+// scroller, else the window's; never from a field, which uses them. True
+// when a scroller took it. A page's own scroll, a wheel or a touch stops a
+// glide (the engine sees each).
 function scrollKey(from, key, shift) {
-  if (!renderer || !host.frame) return false;
+  if (!renderer || !host.isScrollKey(key)) return false;
   if (from && (textField(from) || from.localName === "select" || from.localName === "textarea" || from.isContentEditable)) return false;
   if (key === " " && from && (from.localName === "button" || from.localName === "input" || from.localName === "a")) return false;
-  const steps = { ArrowDown: 40, ArrowUp: -40, PageDown: 0.875, PageUp: -0.875, " ": shift ? -0.875 : 0.875, Home: -Infinity, End: Infinity };
-  const step = steps[key];
-  if (step === undefined) return false;
   renderer.render();
-  // The nearest ancestor that scrolls (overflow-y auto or scroll, taller
-  // inside than it shows), else the window.
-  // (f[4] is the scrollHeight: compared with the clientHeight, the frame's
-  // height less the borders.)
-  let target = -1, targetEl = null;
-  const clientH = (f, el) => { const b = el ? borderOf(el) : [0, 0, 0, 0]; return f[3] - b[0] - b[2]; };
+  // The nearest element with a box: where the engine looks for a scroller.
+  let id = -1;
   for (let n = from; n && n.nodeType === 1 && n !== document.body && n !== document.documentElement; n = n.parentNode) {
-    const cs = getComputedStyle(n);
-    const ov = cs["overflow-y"] || cs.overflowY || cs.overflow;
-    if (ov !== "auto" && ov !== "scroll") continue;
-    const f = host.frame(renderer.idOf(n, "el"));
-    if (f && f[4] > clientH(f, n) + 0.5) { target = renderer.idOf(n, "el"); targetEl = n; break; }
+    const i = renderer.idOf(n, "el");
+    if (host.frame(i)) { id = i; break; }
   }
-  const f = host.frame(target);
-  if (!f) return false;
-  const view = clientH(f, targetEl);
-  // A key while it glides: on from where that glide was going, as browsers.
-  const top = glide?.target === target ? glide.to : f[6] || 0;
-  const by = Math.abs(step) <= 1 ? Math.round(step * view) : step;
-  const want = Math.max(0, Math.min(f[4] - view, top + by));
-  if (want === top) return false;
-  glideTo(target, f[6] || 0, want, Math.abs(step) === 40 ? "line" : "page");
-  return true;
+  return host.keyScroll(id, key, !!shift);
 }
-
-// A key scroll glides as WKWebView's does (measured on macOS, a scroll
-// event a frame): a page, Space, Home or End over 200 ms on CSS's
-// \`ease\`, however far; an arrow's 40px over 256 ms on \`ease-out\`, 20 ms
-// in (to within a pixel). Chromium's (Windows, Android) is to be measured
-// there; until then the same. A page's own scroll (scrollTo, scrollTop,
-// scrollIntoView), a touch or a wheel stops it where it is: the wheel, as
-// the scroller then reports an offset this glide didn't set (scrolled).
-const GLIDES = { page: [200, 0, EASES.ease], line: [256, 20, EASES["ease-out"]] };
-let glide = null; // { target, from, to, t0, ms, delay, ease, set: offsets set lately }
-function glideTo(target, from, to, kind) {
-  const [ms, delay, ease] = GLIDES[kind];
-  const g1 = { target, from, to, t0: performance.now(), ms, delay, ease, set: [from] };
-  glide = g1;
-  const step = (now) => {
-    if (glide !== g1) return;
-    const p = Math.min(1, Math.max(0, (now - g1.t0 - delay) / ms));
-    const y = from + (to - from) * ease(p);
-    g1.set = [...g1.set.slice(-2), y];
-    host.scrollTo(target, y);
-    if (p < 1) nextFrame(step); else glide = null;
-  };
-  nextFrame(step);
-}
-// The page's scrolls: a key scroll's glide stops.
+// The page's scrolls (a key scroll's glide stops: the engine).
 function pageScroll(id, top, left) {
-  glide = null;
   host.scrollTo(id, top, left);
 }
 
@@ -1216,46 +1176,43 @@ function keypressFor(key, init) {
   return [...key].length === 1;
 }
 
-// Sequential focus, as browsers order it: positive tabindex first
-// (ascending, then document order), then the rest in document order.
-// Focusable: links with href, enabled form controls, contenteditable, and
-// anything with tabindex >= 0; shown ones only (rendered, not
-// visibility: hidden). True when the focus moved (the key is used); at the
-// end it wraps, as a page alone in its window has nowhere else to go.
+// Sequential focus (interaction.zig orders it: positive tabindex first, a
+// radio group one stop, which elements the platform's Tab visits). Here the
+// candidates, in document order: links with href, enabled form controls,
+// contenteditable, and anything with a tabindex; shown ones only (rendered,
+// not visibility: hidden).
 const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]";
-function tabOrder() {
-  const positive = [];
-  const rest = [];
+// Their kinds for the rules: text-like (0), another form control (1), else (2).
+function focusKind(el) {
+  return textLike(el) ? 0 : CONTROLS.has(el.localName) ? 1 : 2;
+}
+function tabCandidates() {
+  const els = [], spec = [], groups = new Map(); // form (or document) → name → group number
+  let groupCount = 0;
   for (const el of document.querySelectorAll(FOCUSABLE)) {
-    // A missing or invalid tabindex: 0 if the element is focusable itself.
-    let index = parseInt(el.getAttribute("tabindex"), 10);
-    if (Number.isNaN(index)) {
-      if (!naturallyFocusable(el) || (tabRule !== "all" && !textLike(el))) continue;
-      index = 0;
-    } else if (tabRule === "ios" && CONTROLS.has(el.localName) && !textLike(el)) continue;
-    if (index < 0 || disabledControl(el) || !shown(el)) continue;
-    // A radio group is one stop: its checked radio (else the one with the
-    // focus, else its first), as in browsers and Windows.
+    // A missing or invalid tabindex (not an integer a 32-bit int holds,
+    // as HTML parses it): none, if the element is focusable itself.
+    const index = parseInt(el.getAttribute("tabindex"), 10);
+    const explicit = Number.isInteger(index) && index >= -2147483648 && index <= 2147483647;
+    if (!explicit && !naturallyFocusable(el)) continue;
+    if (disabledControl(el) || !shown(el)) continue;
+    let group = 0;
     if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
-      const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
-      const stop = group.find((r) => r.checked) || group.find((r) => r === active) || group[0];
-      if (stop !== el) continue;
+      // A radio group: the same name in the same form (radioGroup's rule),
+      // numbered as found.
+      const owner = el.closest("form") || document;
+      if (!groups.has(owner)) groups.set(owner, new Map());
+      const byName = groups.get(owner);
+      const name = el.getAttribute("name");
+      if (!byName.has(name)) byName.set(name, ++groupCount);
+      group = byName.get(name);
     }
-    (index > 0 ? positive : rest).push([index, el]);
+    els.push(el);
+    spec.push([focusKind(el), explicit ? index : null, group, !!el.checked]);
   }
-  positive.sort((a, b) => a[0] - b[0]);
-  return [...positive, ...rest].map((e) => e[1]);
+  return { els, spec };
 }
 const CONTROLS = new Set(["input", "button", "select", "textarea"]);
-// Which elements Tab visits, as the platform's WebView does (measured):
-// - "mac": macOS without Full Keyboard Access (the system's keyboard
-//   navigation setting, off by default): text fields, selects, textareas
-//   and contenteditable, plus anything with an explicit tabindex >= 0 (a
-//   button or link without one is skipped);
-// - "ios": the same, but a tabindex doesn't bring in a button, checkbox
-//   or range (WKWebView skipped a tabindex="0" button);
-// - "all": browsers' order (Full Keyboard Access, other platforms).
-const tabRule = platform.os === "ios" ? "ios" : platform.os === "macos" && !platform.fullKeyboardAccess ? "mac" : "all";
 function textLike(el) {
   return el.localName === "select" || textField(el) || ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
 }
@@ -1293,7 +1250,7 @@ function pressFocus(target) {
   for (let n = target; n && n.nodeType === 1; n = n.parentElement) {
     if (n.localName === "label") return;
     const index = parseInt(n.getAttribute("tabindex"), 10);
-    const focusable = Number.isNaN(index) ? naturallyFocusable(n) && (tabRule === "all" || textLike(n)) : true;
+    const focusable = Number.isNaN(index) ? naturallyFocusable(n) && host.clickFocuses(focusKind(n)) : true;
     if (!focusable || (CONTROLS.has(n.localName) && n.hasAttribute("disabled"))) continue;
     if (active !== n) n.focus();
     return;
@@ -1303,12 +1260,10 @@ function pressFocus(target) {
 let tapFocus = null; // a touch's target, focused at its tap
 
 function tabFocus(back) {
-  const order = tabOrder();
-  if (!order.length) return false;
-  const at = order.indexOf(active);
-  const next = at < 0
-    ? (back ? order[order.length - 1] : order[0])
-    : order[(at + (back ? -1 : 1) + order.length) % order.length];
+  const { els, spec } = tabCandidates();
+  const at = host.tabNext(JSON.stringify(spec), els.indexOf(active), !!back);
+  if (at < 0) return false;
+  const next = els[at];
   keyboardFocus = true;
   next.focus();
   next.scrollIntoView({ block: "nearest" });
@@ -1829,7 +1784,6 @@ const oriel = {
         case "pointer":
           if (data?.[0] === "down" || data?.[0] === 0) {
             keyboardFocus = false;
-            if (data[5] === "touch") glide = null;
           }
           return pointerEvent(el, data);
         // The window went to a screen with another scale (data: the new
@@ -1861,7 +1815,6 @@ const oriel = {
         case "accent": {
           if (!Array.isArray(data) || data.length !== 3) return false;
           platform.accent = data;
-          setFocusRingOS(platform.os, data);
           renderer?.markAll();
           return false;
         }
@@ -1913,8 +1866,6 @@ const oriel = {
   scrolled(list) {
     guard(() => {
       for (const [id, top] of list) {
-        // An offset the key scroll's glide didn't set: a wheel took over.
-        if (glide?.target === id && typeof top === "number" && !glide.set.some((y) => Math.abs(y - top) <= 1.5)) glide = null;
         if (id === -1) {
           const ev = new Event("scroll", { bubbles: true });
           document.dispatchEvent(ev);

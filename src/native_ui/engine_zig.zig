@@ -5,11 +5,13 @@ pub const Tree = @import("tree.zig").Tree;
 pub const Node = @import("tree.zig").Node;
 pub const Asset = @import("../core/App.zig").Asset;
 pub const drop = @import("drop.zig");
+const focus = @import("focus.zig");
+const interaction = @import("interaction.zig");
 pub const Backend = @import("backend.zig").Backend(Engine);
 pub const FontSpec = @import("backend.zig").FontSpec;
+const core = @import("engine_core.zig");
 const log = std.log.scoped(.zig_ui);
-var next_serial: std.atomic.Value(usize) = .init(0);
-var live: std.AutoHashMapUnmanaged(u64, *Engine) = .empty;
+const registry = core.Registry(Engine);
 
 pub const Driver = struct {
     boot: *const fn (*Engine) anyerror!void,
@@ -35,47 +37,41 @@ pub const Engine = struct {
     dark: ?bool = null,
     coarse: bool = false,
     in_call: u32 = 0,
-    in_frame_hooks: bool = false,
     frame_pending: bool = false,
     relaid: bool = false,
-    frame_hooks: std.ArrayList(FrameHook) = .empty,
-    frame_number: u64 = 0,
-    pub const FrameHook = struct { ctx: *anyopaque, func: *const fn (*anyopaque, *Engine, f64) bool, run_after: u64 = 0, cancelled: bool = false };
+    frame_hooks: core.FrameHooks(Engine) = .{},
+    /// Keyboard focus (focus.zig), the platform's input rules' facts and a
+    /// key scroll's glide (interaction.zig).
+    focus: focus.State = .{},
+    platform: interaction.Platform = .{},
+    glide: interaction.Glide = .{},
+    pub const FrameHook = core.FrameHooks(Engine).Hook;
     pub const drag_copy: u8 = 1;
     pub const drag_move: u8 = 2;
     pub const drag_link: u8 = 4;
-    const frame_timer: u32 = std.math.maxInt(u32) - 1;
 
-    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, _: [:0]const u8, _: [:0]const u8, _: [:0]const u8, width: f32, height: f32) !*Engine {
+    pub fn create(gpa: std.mem.Allocator, backend: Backend, assets: []const Asset, platform_json: [:0]const u8, _: [:0]const u8, _: [:0]const u8, width: f32, height: f32) !*Engine {
         const driver = configured_driver orelse return error.MissingZigUiDriver;
         const e = try gpa.create(Engine);
         errdefer gpa.destroy(e);
-        e.* = .{ .gpa = gpa, .tree = Tree.init(gpa, backend.ctx, backend.measure), .backend = backend, .driver = driver, .assets = assets, .drops = .init(gpa), .serial = @as(u64, next_serial.fetchAdd(1, .monotonic)) + 1 };
+        e.* = .{ .gpa = gpa, .tree = Tree.init(gpa, backend.ctx, backend.measure), .backend = backend, .driver = driver, .assets = assets, .drops = .init(gpa), .serial = registry.newSerial() };
         errdefer e.tree.deinit();
-        e.tree.width = width;
-        e.tree.height = height;
-        e.tree.on_remove = backend.removed;
-        e.tree.on_props = backend.props;
-        e.tree.on_ax = backend.ax_changed;
-        e.tree.on_text = backend.text;
-        e.tree.measure_texts = backend.measure_texts;
-        e.tree.on_leaf_style = backend.leaf_style;
-        e.tree.on_create = backend.leaf;
-        e.tree.on_paint = backend.paint;
-        e.tree.on_canvas = backend.canvas;
-        try live.put(std.heap.smp_allocator, e.serial, e);
+        core.hookTree(e, width, height);
+        e.tree.controls = nativeControls(gpa, platform_json);
+        e.platform = interaction.Platform.parse(gpa, platform_json);
+        try registry.add(e);
         return e;
     }
 
     pub fn bySerial(serial: u64) ?*Engine {
-        return live.get(serial);
+        return registry.get(serial);
     }
     pub fn busy(e: *const Engine) bool {
-        return e.in_call > 0 or e.in_frame_hooks;
+        return e.in_call > 0 or e.frame_hooks.running;
     }
     pub fn destroy(e: *Engine) void {
         std.debug.assert(!e.busy());
-        _ = live.remove(e.serial);
+        registry.remove(e.serial);
         if (e.driver.shutdown) |cb| cb(e);
         e.frame_hooks.deinit(e.gpa);
         e.drops.deinit();
@@ -94,77 +90,181 @@ pub const Engine = struct {
         e.paintNow();
         log.info(".oriel view booted: {d} nodes, no JavaScript runtime", .{e.tree.nodes.count()});
     }
+    /// A backend event: the engine's own bookkeeping (focus, field values,
+    /// checkboxes), then the app's `Driver.event`, then the default action
+    /// it didn't prevent (Tab, Enter/Space, scrolling keys). True: handled.
     pub fn event(e: *Engine, id: i64, kind: []const u8, data: []const u8) bool {
-        const cb = e.driver.event orelse return false;
         e.in_call += 1;
-        const handled = cb(e, id, kind, data);
-        e.in_call -= 1;
-        e.paintNow();
+        defer {
+            e.in_call -= 1;
+            e.show();
+        }
+        const handled = e.dispatch(id, kind, data) catch |err| blk: {
+            log.err("event {s}: {s}", .{ kind, @errorName(err) });
+            break :blk false;
+        };
+        e.focus.visible = e.focus.visible and e.tree.get(e.focus.id) != null;
+        e.updateRing();
         return handled;
     }
+
+    fn appEvent(e: *Engine, id: i64, kind: []const u8, data: []const u8) bool {
+        const cb = e.driver.event orelse return false;
+        return cb(e, id, kind, data);
+    }
+
+    fn dispatch(e: *Engine, id: i64, kind: []const u8, data: []const u8) !bool {
+        const eq = std.mem.eql;
+        e.glide.stopOnTouch(kind, data);
+        if (eq(u8, kind, "accent")) {
+            e.platform.setAccent(e.gpa, data);
+            try focus.clearRing(&e.tree, &e.focus);
+        } else if (eq(u8, kind, "input") or eq(u8, kind, "change")) {
+            try e.fieldEdited(id, data);
+        } else if (eq(u8, kind, "focus")) {
+            if (e.tree.get(id) != null) {
+                e.focus.id = id;
+                e.focus.visible = true;
+            }
+        } else if (eq(u8, kind, "blur")) {
+            if (e.focus.id == id) e.focus.id = 0;
+        } else if (eq(u8, kind, "click")) {
+            return e.clicked(id, data);
+        } else if (eq(u8, kind, "key") or eq(u8, kind, "keyup")) {
+            if (e.appEvent(id, kind, data)) return true;
+            var name: [32]u8 = undefined;
+            const key = focus.keyOf(e.gpa, data, &name) orelse return false;
+            return e.keyDefault(eq(u8, kind, "key"), key);
+        }
+        return e.appEvent(id, kind, data);
+    }
+
+    /// A field's edit: its value is the node's before the app hears of it.
+    fn fieldEdited(e: *Engine, id: i64, data: []const u8) !void {
+        const n = e.tree.get(id) orelse return;
+        if (!focus.isField(n)) return;
+        const v = try focus.editedValue(e.gpa, data) orelse return;
+        defer v.deinit();
+        try e.tree.acceptUiValue(id, focus.valueOf(v.value));
+    }
+
+    /// A click focuses what it lands in, without a ring, where the
+    /// platform's click does (WebKit on macOS and iOS: fields and what has a
+    /// tabindex only); a checkbox or radio checks itself and the app hears
+    /// "change" instead.
+    fn clicked(e: *Engine, id: i64, data: []const u8) !bool {
+        if (focus.focusTarget(&e.tree, id)) |target| {
+            if (!focus.isNative(target) and interaction.clickFocuses(interaction.tabRule(e.platform), focus.kindOf(target), target.props.ti != null)) {
+                e.focus.id = target.id;
+                e.focus.visible = false;
+                e.backend.focus(e.backend.ctx, target);
+            }
+        }
+        // Focusing can run the app's code (a field's "blur"), which may
+        // have removed the node: look it up again.
+        if (e.tree.get(id)) |node| if (node.kind == .check or node.props.ctl != null) {
+            const on = try focus.toggle(&e.tree, node);
+            return e.appEvent(id, "change", if (on) "true" else "false");
+        };
+        return e.appEvent(id, "click", data);
+    }
+
+    /// What a key does when the app didn't prevent it (interaction.zig's
+    /// rules: Tab's order, activation, scrolling).
+    fn keyDefault(e: *Engine, down: bool, key: focus.Key) !bool {
+        const eq = std.mem.eql;
+        const mods = key.mods & (2 | 4 | 8) != 0;
+        if (down and !mods and eq(u8, key.key, "Tab")) {
+            if (e.tree.needsLayout()) {
+                e.tree.layout();
+                e.relaid = true;
+            }
+            const cands = try focus.candidates(&e.tree, e.gpa);
+            defer e.gpa.free(cands);
+            const active: ?i64 = if (e.focus.id != 0) e.focus.id else null;
+            const next_id = try interaction.tabNext(e.gpa, interaction.tabRule(e.platform), cands, active, key.mods & 1 != 0) orelse return false;
+            const target = e.tree.get(next_id) orelse return false;
+            e.focus.id = target.id;
+            e.focus.visible = true;
+            e.backend.focus(e.backend.ctx, target);
+            e.glide.active = false;
+            // Focusing can run the app's code (a field's "blur"), which may
+            // have removed the target: look it up again.
+            if (e.tree.get(next_id)) |focused| e.tree.scrollIntoView(focused, "nearest");
+            return true;
+        }
+        const focused = e.tree.get(e.focus.id);
+        // Keys typed in a field are the field's.
+        if (focused) |f| if (focus.isField(f)) return false;
+        // Enter and Space on a drawn element (a native widget handles its
+        // own), still enabled, shown and in the tree after the app's handler.
+        if (focused) |f| if (!focus.isNative(f) and !mods) {
+            if (!focus.focusable(&e.tree, f)) return false;
+            const space = eq(u8, key.key, " ");
+            if (space and down) {
+                e.focus.space = f.id;
+                return true; // its release activates it; no page scroll
+            }
+            if (space) {
+                const pressed_here = e.focus.space == f.id;
+                e.focus.space = 0;
+                if (!pressed_here) return false;
+            }
+            const checkable = f.props.ctl != null;
+            if (interaction.activates(key.key, down, key.repeat, focus.isDrawnButton(f), false, checkable)) {
+                e.focus.visible = true;
+                if (checkable) {
+                    const on = try focus.toggle(&e.tree, f);
+                    _ = e.appEvent(f.id, "change", if (on) "true" else "false");
+                } else _ = e.appEvent(f.id, "click", "0");
+                return true;
+            }
+        };
+        if (!down or mods) return false;
+        // Else the window's scroller: the first in the view (its root may
+        // only lay out a header and a scrolling body).
+        return core.keyScroll(Engine, e, focused, focus.firstScroller(&e.tree), key.key, key.mods & 1 != 0);
+    }
+
+    fn updateRing(e: *Engine) void {
+        focus.updateRing(&e.tree, &e.focus, e.platform) catch |err| log.err("focus ring: {s}", .{@errorName(err)});
+    }
     pub fn timerFired(e: *Engine, id: u32) void {
-        if (id == frame_timer) return e.displayFrame(1000.0 / 60.0);
+        if (id == core.display_frame_timer) return e.displayFrame(1000.0 / 60.0);
         e.in_call += 1;
         if (e.driver.timer) |cb| cb(e, id) catch |err| log.err("timer: {s}", .{@errorName(err)});
         e.in_call -= 1;
-        e.paintNow();
+        e.show();
     }
     pub fn displayFrame(e: *Engine, interval_ms: f64) void {
-        e.frame_number += 1;
         e.flushScrolls();
-        e.in_frame_hooks = true;
-        var i: usize = 0;
-        while (i < e.frame_hooks.items.len) {
-            const h = e.frame_hooks.items[i];
-            if (h.cancelled) {
-                _ = e.frame_hooks.orderedRemove(i);
-                continue;
-            }
-            if (h.run_after > e.frame_number) {
-                i += 1;
-                continue;
-            }
-            const keep = h.func(h.ctx, e, interval_ms);
-            if (keep and !e.frame_hooks.items[i].cancelled) i += 1 else _ = e.frame_hooks.orderedRemove(i);
-        }
-        e.in_frame_hooks = false;
-        if (e.frame_hooks.items.len > 0) e.requestDisplayFrame();
+        e.frame_hooks.run(e, interval_ms);
+        if (e.frame_hooks.any()) e.requestDisplayFrame();
         e.paintNow();
     }
+    /// Lay out and draw what changed, now.
     pub fn paintNow(e: *Engine) void {
-        if (e.tree.needsLayout()) {
-            e.tree.layout();
-            e.relaid = true;
-        }
-        if (e.relaid or e.tree.paint_dirty) {
-            e.relaid = false;
-            e.tree.paint_dirty = false;
-            e.backend.laid_out(e.backend.ctx);
-        }
+        core.layoutAndShow(e);
+    }
+    /// What an event, timer or reply changed: drawn at the next frame
+    /// when the backend paces frames (one layout however many came), else now.
+    fn show(e: *Engine) void {
+        if (!core.deferToFrame(e)) core.layoutAndShow(e);
     }
     pub fn addFrameHook(e: *Engine, hook: FrameHook) !void {
-        var pending = hook;
-        pending.run_after = e.frame_number + @intFromBool(e.in_frame_hooks);
-        try e.frame_hooks.append(e.gpa, pending);
+        try e.frame_hooks.add(e.gpa, hook);
         e.requestDisplayFrame();
     }
     pub fn removeFrameHooks(e: *Engine, ctx: *anyopaque) void {
-        var i: usize = 0;
-        while (i < e.frame_hooks.items.len) {
-            if (e.frame_hooks.items[i].ctx != ctx) {
-                i += 1;
-            } else if (e.in_frame_hooks) {
-                e.frame_hooks.items[i].cancelled = true;
-                i += 1;
-            } else _ = e.frame_hooks.orderedRemove(i);
-        }
+        e.frame_hooks.remove(ctx);
     }
     fn requestDisplayFrame(e: *Engine) void {
-        if (e.backend.request_display_frame) |cb| cb(e.backend.ctx) else e.backend.add_timer(e.backend.ctx, e, frame_timer, 17);
+        core.requestDisplayFrame(e);
     }
     pub fn frame(e: *Engine) void {
         e.frame_pending = false;
-        e.paintNow();
+        if (e.in_call > 0) return; // that call shows it when it returns
+        core.layoutAndShow(e);
     }
     pub fn resize(e: *Engine, width: f32, height: f32, dark: bool) void {
         if (width == e.tree.width and height == e.tree.height and dark == e.dark) return;
@@ -175,30 +275,28 @@ pub const Engine = struct {
         if (e.driver.resized) |cb| cb(e) catch |err| log.err("resize: {s}", .{@errorName(err)});
         e.paintNow();
     }
+    /// A wheel or touch scroll: a key scroll's glide there stops.
     pub fn scrollBy(e: *Engine, n: *Node, dy: f32) bool {
-        const before = n.scroll_y;
-        n.scroll_y = std.math.clamp(before + dy, 0, @max(0, n.content_h - n.frame.h));
-        if (before == n.scroll_y) return false;
-        e.tree.noteScroll(n);
-        e.tree.replace();
-        e.in_call += 1;
-        if (e.driver.scrolled) |cb| cb(e, n.id) catch |err| log.err("scroll: {s}", .{@errorName(err)});
-        e.in_call -= 1;
-        e.relaid = true;
-        e.paintNow();
-        return true;
+        e.glide.stopFor(n.id);
+        return e.scrolled(n, core.moveScroll(e, n, .y, dy));
     }
     pub fn scrollByX(e: *Engine, n: *Node, dx: f32) bool {
-        const before = n.scroll_x;
-        n.scroll_x = std.math.clamp(before + dx, 0, @max(0, n.content_w - n.frame.w));
-        if (before == n.scroll_x) return false;
-        e.tree.noteScroll(n);
-        e.tree.replace();
+        e.glide.stopFor(n.id);
+        return e.scrolled(n, core.moveScroll(e, n, .x, dx));
+    }
+    /// The glide's own scroll (interaction.Glider).
+    pub fn setScrollY(e: *Engine, n: *Node, y: f32) void {
+        _ = e.scrolled(n, core.moveScroll(e, n, .y, y - n.scroll_y));
+    }
+    /// A scroller moved: the app hears of it at once (a virtual list mounts
+    /// the rows now in view), then it's drawn.
+    fn scrolled(e: *Engine, n: *Node, moved: bool) bool {
+        if (!moved) return false;
         e.in_call += 1;
         if (e.driver.scrolled) |cb| cb(e, n.id) catch |err| log.err("scroll: {s}", .{@errorName(err)});
         e.in_call -= 1;
         e.relaid = true;
-        e.paintNow();
+        core.layoutAndShow(e);
         return true;
     }
     pub fn flushScrolls(e: *Engine) void {
@@ -233,12 +331,35 @@ pub const Engine = struct {
         e.in_call += 1;
         if (e.driver.resolved) |cb| cb(e, id, ok, json) catch |err| log.err("resolve: {s}", .{@errorName(err)});
         e.in_call -= 1;
-        e.paintNow();
+        e.show();
     }
     pub fn dropPathCommand(_: *Engine, _: std.mem.Allocator, _: []const u8) ![]u8 {
         return error.UnsupportedInZigUi;
     }
 };
+
+/// Which of `.check` and `.button` the backend hosts as platform widgets
+/// (its platform JSON's `controls`, as render.js reads it).
+fn nativeControls(gpa: std.mem.Allocator, platform_json: []const u8) @FieldType(Tree, "controls") {
+    var out: @FieldType(Tree, "controls") = .{ .check = false, .button = false };
+    const parsed = std.json.parseFromSlice(struct { controls: []const []const u8 = &.{} }, gpa, platform_json, .{ .ignore_unknown_fields = true }) catch return out;
+    defer parsed.deinit();
+    for (parsed.value.controls) |c| {
+        if (std.mem.eql(u8, c, "check")) out.check = true;
+        if (std.mem.eql(u8, c, "button")) out.button = true;
+    }
+    return out;
+}
+
+test nativeControls {
+    const gpa = std.testing.allocator;
+    const both = nativeControls(gpa, "{\"os\":\"linux\",\"controls\":[\"check\",\"button\"]}");
+    try std.testing.expect(both.check and both.button);
+    const ios = nativeControls(gpa, "{\"controls\":[\"button\"]}");
+    try std.testing.expect(!ios.check and ios.button);
+    const none = nativeControls(gpa, "{}");
+    try std.testing.expect(!none.check and !none.button);
+}
 
 test "a display callback added during a frame runs on the following frame" {
     const Fake = struct {
@@ -282,13 +403,13 @@ test "a display callback added during a frame runs on the following frame" {
     try std.testing.expectEqual(@as(usize, 0), calls);
     e.displayFrame(16.67);
     try std.testing.expectEqual(@as(usize, 1), calls);
-    try std.testing.expectEqual(@as(usize, 0), e.frame_hooks.items.len);
+    try std.testing.expectEqual(@as(usize, 0), e.frame_hooks.list.items.len);
     var other: usize = 0;
     try e.addFrameHook(.{ .ctx = &calls, .func = Fake.cancel_self });
     try e.addFrameHook(.{ .ctx = &calls, .func = Fake.late });
     try e.addFrameHook(.{ .ctx = &other, .func = Fake.late });
     e.displayFrame(16.67);
     try std.testing.expectEqual(@as(usize, 1), other);
-    try std.testing.expectEqual(@as(usize, 0), e.frame_hooks.items.len);
+    try std.testing.expectEqual(@as(usize, 0), e.frame_hooks.list.items.len);
     e.resolve(42, false, "failure");
 }

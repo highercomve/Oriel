@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const W = [0.1, 0.34, 0.5, 0.7, 1, 1.4, 1.7, 2.67, 2.9, 3];
 const page = `<html><body>${W.map((w, i) => `<div id="d${i}" style="width: 20px; height: 4px; border: ${w}px solid">x</div>`).join("")}</body></html>`;
@@ -20,7 +21,7 @@ function run(os, dpr) {
     ops: (json) => { for (const [k, id, x] of JSON.parse(json)) { if (k === "c") nodes.set(id, { props: {} }); else if (k === "p") nodes.get(id).props = x; } },
     platform: JSON.stringify({ os, dpr }), label: "main", url: "index.html",
   };
-  const ctx = vm.createContext({ __host: host });
+  const ctx = vm.createContext({ __host: withEngine(host) });
   vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
   ctx.__oriel.boot(400, 600, false, false);
   ctx.__oriel.render();

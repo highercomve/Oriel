@@ -430,7 +430,8 @@ fn setMtime(path: [*:0]const u8, sec: i64) !void {
         try testing.expectEqual(@as(c_int, 0), std.c.utimensat(std.c.AT.FDCWD, path, &times, 0));
         return;
     }
-    const times = [2]linux.timespec{ .{ .sec = sec, .nsec = 0 }, .{ .sec = sec, .nsec = 0 } };
+    // (isize: 32 bits on armv7 and x86 Android.)
+    const times = [2]linux.timespec{ .{ .sec = @intCast(sec), .nsec = 0 }, .{ .sec = @intCast(sec), .nsec = 0 } };
     try testing.expectEqual(linux.E.SUCCESS, linux.errno(linux.utimensat(linux.AT.FDCWD, path, &times, 0)));
 }
 

@@ -1,0 +1,165 @@
+---
+.title = "Architecture",
+.description = "How Oriel is layered so one app, its modules and its Zig code run under three renderers that share everything below their front end.",
+.date = .date("2026-10-13T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+An Oriel window can be drawn three ways: by the platform's web view, by
+Oriel's [native renderer]($link.page('docs/native-renderer')) running the
+same HTML, CSS and JavaScript without a browser, or by the experimental
+Oriel renderer, which runs views written in `.oriel` markup from Zig with no
+JavaScript at all. They are front ends over one stack: each renderer turns
+its own language into native views, and everything under that (the engine
+machinery, the input rules, layout, drawing, the platform's widgets) and
+everything beside it (commands, modules, permissions, the platform layer)
+is written once and shared.
+
+This page is the map: which layer owns what, what each renderer adds, and
+where new behavior goes. [Concepts]($link.page('docs/concepts')) covers the
+app's side (the process, the bridge, commands and events).
+
+# [The layers]($heading.id('layers'))
+
+>[]($block.attrs("mermaid"))
+```
+flowchart TB
+  subgraph App["The app (Zig)"]
+    Cmd["Commands, events,<br/>app state"]
+    Mods["Modules: tray, files, sql,<br/>local AI, camera, ..."]
+  end
+  subgraph Front["Front ends: one per renderer"]
+    WV["WebView<br/>the platform's browser engine"]
+    NW["Native renderer<br/>QuickJS, native DOM, CSS,<br/>main.js, render.js"]
+    OR["Oriel renderer (experimental)<br/>.oriel views, ui.zig, focus.zig"]
+  end
+  subgraph Shared["Shared native UI (src/native_ui)"]
+    Core["Engine core<br/>engine_core.zig"]
+    Rules["Input rules<br/>interaction.zig"]
+    Tree["Node tree and layout<br/>tree.zig, Yoga, text"]
+    BE["Backends<br/>gtk, win32, appkit, uikit, android"]
+  end
+  Plat["Platform layer<br/>src/platform: windows, event loop, bridge"]
+  Cmd <-->|"invoke, events<br/>(window.oriel)"| WV
+  Cmd <-->|"invoke, events<br/>(window.oriel)"| NW
+  Cmd <-->|"ui.invoke, Driver<br/>(direct Zig calls)"| OR
+  NW --> Core
+  OR --> Core
+  NW -->|"host.tabNext, focusRing, ..."| Rules
+  OR --> Rules
+  Core --> Tree --> BE
+  Mods --> Plat
+  WV --> Plat
+  BE --> Plat
+```
+
+Each layer only calls the layers under it. A front end never draws and
+never reads a platform API; a backend never knows which front end built the
+nodes it draws. That is what lets a fix or a feature in a lower layer reach
+every renderer at once.
+
+| Layer | Source | Owns |
+|---|---|---|
+| App | the app's Zig | Commands, events, state, which modules it turns on |
+| Modules | `src/modules/*` | Tray, notifications, files, SQL, local AI, ...: the same API under every renderer ([Modules]($link.page('docs/modules'))) |
+| Front end | WebView: the platform's; native: `src/native_ui/js/src`, `engine_js.zig`, `dom/`; Oriel: `oriel_markup.zig`, `ui.zig`, `engine_zig.zig`, `focus.zig` | Its language: parsing it, styling, deciding which native nodes exist and what they say, delivering events to the app's code |
+| Engine core | `src/native_ui/engine_core.zig` | The open engines, frame callbacks, painting at most once a frame, scrolling, the key scroll's glide |
+| Input rules | `src/native_ui/interaction.zig` | How the platform's WebView answers the keyboard and pointer: focus rings by kind of element, Tab's order, what a click focuses, which keys activate, how far a key scrolls |
+| Node tree | `src/native_ui/tree.zig`, `text_measure_cache.zig`, `svg_path.zig`, `zig_canvas.zig` | One node per drawn view: Yoga layout, paint order, scrolling, hit testing, accessibility entries, tooltips |
+| Backends | `src/native_ui/gtk.zig`, `win32.zig`, `appkit.zig`, `uikit.zig` with `apple_draw.zig`, `android.zig` with `OrielNative.kt` | Drawing, text measurement, the platform's widgets (fields, buttons, checkboxes), input events, the screen reader |
+| Platform layer | `src/platform/<os>` | Windows, the event loop, the web view and its bridge, the command policy ([Concepts]($link.page('docs/concepts').ref('platform-layer'))) |
+
+# [The three renderers]($heading.id('renderers'))
+
+| | WebView | Native renderer | Oriel renderer |
+|---|---|---|---|
+| Build | default | `-Dnative_ui` | `-Dzig_ui` (experimental) |
+| You write | HTML, CSS, JavaScript | the same files, unchanged | `.oriel` views and Zig |
+| Runs the UI | the platform's browser engine, in its own processes | QuickJS-ng and Oriel's native DOM, in the app's process | compiled views and the app's Zig, in the app's process |
+| Draws with | the browser engine | the shared tree and backends | the shared tree and backends |
+| Talks to Zig | `window.oriel`: messages to the app | `window.oriel`: direct calls in the process | Zig calls: `ui.invoke`, the `Driver` callbacks |
+| Status | stable, every platform | experimental: Linux, Windows, macOS, Android, iOS | experimental, not yet for apps: Linux; builds for Android |
+
+The web view shares the app, the modules and the platform layer; the two
+native renderers also share the whole native UI stack. In the native
+renderer the front end is JavaScript because the page is; in the Oriel
+renderer there is none, so a view's update is a few Zig calls instead of a
+DOM mutation, a restyle and a flatten.
+
+Measured on the [system monitor]($link.page('docs/examples')) (2026-10-13,
+Linux, three runs each, software rendering on a private X display, the same
+2 s sampling): the Oriel renderer opens its window in 0.18 s against 0.25 s,
+uses 0.70% CPU idle against 0.97% and 5.8% while scrolling the process list
+against 11.3%. Memory is about the same (246 MB RSS each): most of it is the
+toolkit and graphics stack both load, and leaving out QuickJS and the DOM
+saves 6 to 8 MB of heap.
+
+# [What is shared, and how]($heading.id('shared'))
+
+**One tree, any front end.** Both native front ends build the same
+`tree.zig` nodes with the same props: the native renderer from the styled
+DOM (`render.js`), the Oriel renderer from compiled `.oriel` templates
+(`ui.zig`). Layout, text, scrolling, hit testing and drawing don't know
+which. A prop added to the tree and drawn by a backend is available to both:
+tooltips (`tip`) are one prop and one backend change.
+
+**One engine core.** Each window has one engine, `engine_js.zig` or
+`engine_zig.zig`, and both are thin: their front end's lifecycle and
+events. The rest is `engine_core.zig`: the engines by serial (a Zig handle
+that outlived its window finds nothing), the app's display frame callbacks
+(a callback may cancel itself or add another during a frame), changes
+painted at most once per display frame however many events came, scroll
+offsets, and the glide that animates a key scroll on display frames.
+
+**One set of input rules.** How a window answers the keyboard is measured
+from each platform's WebView and kept in `interaction.zig`: the focus ring
+WebKitGTK, WebView2, Android's WebView and WKWebView draw around each kind
+of element; which elements Tab visits on macOS without Full Keyboard Access
+and on iOS; a radio group being one Tab stop; WebKit not focusing a button
+on a click; Enter and Space activating; the 40 px and 87.5% a key scrolls
+and the curves it glides on. The Oriel renderer applies them to its tree.
+The native renderer's page keeps what only a page can do (dispatching
+`keydown`, honouring `preventDefault`, finding candidates in document order)
+and asks the engine for the decisions (`host.tabNext`, `host.clickFocuses`,
+`host.activates`, `host.keyScroll`, `host.focusRing`). The runtime's Node
+tests get the same rules compiled to WebAssembly
+(`src/native_ui/interaction_wasm.zig`, `zig build interaction-wasm`).
+
+**One accessibility tree.** Both front ends describe their elements as
+entries in `Tree.ax` (role, name, states): the native renderer from the
+DOM's roles and ARIA (`a11y.js`), the Oriel renderer from its elements and
+`role`/`label` attributes (`Tree.setAxEntry`). The backends hand them to the
+screen reader.
+
+**Modules don't know the renderer.** A module is Zig on the app's side of
+the bridge. Under the web view and the native renderer the page reaches it
+through the same `window.oriel` (`src/core/bridge_api.js`), checked by the
+same command policy (`src/core/native_commands.zig`); under the Oriel
+renderer the app's Zig calls it directly. Turning a module on is the same
+build flag in all three ([Modules]($link.page('docs/modules'))).
+
+# [Where new behavior goes]($heading.id('where'))
+
+Put a behavior in the lowest layer that can own it, so every renderer gets
+it:
+
+| It is about | It goes in | Example |
+|---|---|---|
+| How something is drawn or what widget shows it | the backends, through a tree prop | a tooltip, a native checkbox |
+| Where things are, what's under the pointer, scrolling | `tree.zig` | sticky positioning, hit testing |
+| How the platform's browser answers input | `interaction.zig` | Tab's order on macOS, the focus ring's offset |
+| When things run and get painted | `engine_core.zig` | frame callbacks, one paint per frame |
+| A language: HTML/CSS/DOM, or `.oriel` | that front end | CSS's cascade, an `.oriel` element |
+| Something the app or the page calls | a module or a command | the tray, SQL |
+
+A rule that both front ends need is written once, in Zig, and the front end
+that can't call Zig directly (the page's JavaScript) asks through a host
+function. A front end keeps only what belongs to its language.
+
+# [Related]($heading.id('related'))
+
+- [Concepts]($link.page('docs/concepts')): the process, the bridge, commands and events.
+- [Native renderer]($link.page('docs/native-renderer')): the native renderer's front end in detail.
+- [Native UI reference]($link.page('docs/native-ui-reference')): what the native renderer supports.
+- [Modules]($link.page('docs/modules')): turning modules on, and how they're built.

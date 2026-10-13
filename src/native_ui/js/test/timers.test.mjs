@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 let clock = 0;
 const scheduled = [], errors = [];
@@ -12,7 +13,7 @@ const host = {
   now: () => clock, timer: (id, ms) => scheduled.push({ id, ms }),
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main",
 };
-const ctx = vm.createContext({ __host: host, advance: (ms) => { clock += ms; } });
+const ctx = vm.createContext({ __host: withEngine(host), advance: (ms) => { clock += ms; } });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx);
 ctx.__oriel.boot(400, 600, false, false);
 scheduled.length = 0;

@@ -238,11 +238,14 @@ pub fn system(e: *ui.Engine, p: *ui.Program, id: i64, info: tm.SystemInfo, boot:
 
 pub fn toggle(e: *ui.Engine, p: *ui.Program, id: i64, on: bool) !void {
     _ = start(e, p, id, 0x1f242c) orelse return;
+    // The track: one pill (a translucent color filled once, not a
+    // rectangle and two ends whose overlaps would show darker).
     p.fillStyle(if (on) oriel.canvas.rgba(0x39c5bb, 0.45) else rgb(0x30363d));
-    p.fillRect(8, 0, 14, 16);
-    p.circle(8, 8, 8);
-    p.fill();
-    p.circle(22, 8, 8);
+    p.beginPath();
+    p.arc(8, 8, 8, std.math.pi / 2.0, 3 * std.math.pi / 2.0, false);
+    p.lineTo(22, 0);
+    p.arc(22, 8, 8, -std.math.pi / 2.0, std.math.pi / 2.0, false);
+    p.closePath();
     p.fill();
     p.fillStyle(rgb(if (on) 0x39c5bb else 0x8b949e));
     p.circle(if (on) 22 else 8, 8, 6);

@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<html><head><style>ul { margin: 4px 0 } legend { padding: 0 }</style></head><body>
 <ul><li>a<ul id="n"><li>b</li></ul></li></ul><ul id="top"><li>c</li></ul>
@@ -14,7 +15,7 @@ const host = {
   invoke: () => {}, timer: () => {}, frame: () => undefined, focus: () => {}, scrollIntoView: () => {}, scrollTo: () => {}, ops: () => {},
   platform: JSON.stringify({ os: "linux" }), label: "main", url: "index.html",
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 ctx.__oriel.render();

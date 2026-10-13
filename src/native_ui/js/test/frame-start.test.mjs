@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import vm from "node:vm";
 import assert from "node:assert/strict";
+import { withEngine } from "./engine-host.mjs";
 
 const page = `<!doctype html><html><body><div id="list"></div><script>
 window.go = () => setTimeout(() => {
@@ -34,7 +35,7 @@ const host = {
   platform: JSON.stringify({ os: "linux", arch: "x86_64" }), label: "main",
   evalScript: (name, code) => vm.runInContext(code, ctx, { filename: name }),
 };
-const ctx = vm.createContext({ __host: host, __opsCalls: 0 });
+const ctx = vm.createContext({ __host: withEngine(host), __opsCalls: 0 });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(400, 600, false, false);
 const tick = () => new Promise((r) => setTimeout(r, 0));

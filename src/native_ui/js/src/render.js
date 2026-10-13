@@ -2987,47 +2987,17 @@ function boxProps(cs, display, fs, el) {
 // field), unless the page styles the outline. Here rather than a rule in
 // UA_CSS, which every element would be matched against.
 // main.js says which element matches :focus-visible (one at most).
-// The ring is the platform's browser's (setFocusRingOS, at boot):
-// - WebKitGTK's: blue, 2px, 1px out.
-// - Chromium's (WebView2, Android's WebView): a 2px band inside a 1px
-//   white halo (h), its corners at least r round (its outer edge's). As
-//   WebView2 draws it: over a control's own border (o -2, r 3), 1px over a
-//   box's edge (o -1, r 4), just outside a link (o 0) and 1px off a
-//   checkbox or radio (o 1, r 3). The band is #101010 on Windows and
-//   Android's orange #E59700 there (both measured).
-// - WKWebView's (measured), the system blue at half alpha (macOS's
-//   accent, rgb(0, 103, 244); iOS's, rgb(0, 122, 255)): on macOS 4px,
-//   1px off a box or link (o 1, r 2) and 1px over a control's edge (o -1;
-//   r 2, AppKit's bezel rings 5); on iOS 3px, just outside a box (o 0)
-//   and 2px over a control's edge (o -2, r 8).
-const FOCUS_RING = { w: 2, c: [0, 103, 244, 1], o: 1 };
-const chromiumRings = (c) => {
-  const ring = (o, r) => ({ w: 2, c, o, h: [255, 255, 255, 1], r });
-  return { control: ring(-2, 3), check: ring(1, 3), link: ring(0, 4), box: ring(-1, 4) };
-};
-const WINDOWS_RINGS = chromiumRings([16, 16, 16, 1]);
-const ANDROID_RINGS = chromiumRings([229, 151, 0, 1]);
-// (In the system's accent color, platform.accent, at half alpha; its
-// default blue without one.)
-function macRings(accent) {
-  const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 103, 244, 0.5];
-  const ring = (o, r) => ({ w: 4, c, o, r });
-  return { field: ring(-1, 2), control: ring(-1, 5), check: ring(-1, 5), link: ring(1, 2), box: ring(1, 2) };
+// The focus ring is the platform's browser's, by kind of element
+// (interaction.zig ring: measured in each WebView; the accent it follows).
+const RING_KINDS = { field: 0, control: 1, check: 2, link: 3, box: 4 };
+let hostRing = null; // host.focusRing (setFocusRingOS)
+function osRing(kind) {
+  const r = hostRing(RING_KINDS[kind]);
+  const ring = { w: r[0], c: [r[3], r[4], r[5], r[6]], o: r[1] };
+  if (r[2]) ring.r = r[2];
+  if (r[7]) ring.h = [255, 255, 255, 1];
+  return ring;
 }
-function iosRings(accent) {
-  const c = Array.isArray(accent) && accent.length === 3 ? [...accent.map((v) => +v || 0), 0.5] : [0, 122, 255, 0.5];
-  const ring = (o, r) => ({ w: 3, c, o, r });
-  return { field: ring(-2, 8), control: ring(-2, 8), check: ring(-2, 8), link: ring(0, 0), box: ring(0, 0) };
-}
-// WebKitGTK (Linux): 2px in the theme's accent color at 0.8 alpha (WebKit's
-// own blue without one), over a control's border (its 5px corners), just
-// outside a link or another box (measured). No halo.
-const webkitGtkRings = (accent) => {
-  const c = [...(Array.isArray(accent) && accent.length === 3 ? accent : [52, 132, 228]), 0.8];
-  const ring = (o, r) => ({ w: 2, c, o, r });
-  return { control: ring(-2, 5), check: ring(0, 3), link: ring(1, 3), box: ring(1, 3) };
-};
-let osRings = null;
 // A color's shade for an outset or inset border's dark sides (WebKit's and
 // Blink's Color::dark).
 function darkColor(c) {
@@ -3089,10 +3059,10 @@ function pushButton(cs, p) {
 let nativeControls = new Set();
 export function setNativeControls(list) { nativeControls = new Set(Array.isArray(list) ? list : []); }
 
-export function setFocusRingOS(os, accent) {
+export function setFocusRingOS(os, focusRing) {
+  hostRing = focusRing;
   pushButtons = os === "macos";
   webkitBorders = os === "macos" || os === "ios" || os === "linux";
-  osRings = os === "linux" ? webkitGtkRings(accent) : os === "macos" ? macRings(accent) : os === "ios" ? iosRings(accent) : { windows: WINDOWS_RINGS, android: ANDROID_RINGS }[os] || null;
 }
 let focusVisible = null;
 export function setFocusVisible(el) { focusVisible = el; }
@@ -3105,24 +3075,24 @@ function inlineOutline(cs, fs, el) {
     return p.ol || null;
   }
   if (el !== focusVisible) return null;
-  return osRings ? ringFor(osRings, el) : FOCUS_RING;
+  return osRing(ringKind(el));
 }
 
 function focusRing(cs, el, p) {
-  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = osRings ? ringFor(osRings, el) : FOCUS_RING;
+  if (el === focusVisible && el && !p.ol && cs["outline-style"] === undefined && cs["outline-width"] === undefined) p.ol = osRing(ringKind(el));
   return p;
 }
-function ringFor(rings, el) {
+function ringKind(el) {
   switch (el.localName) {
     case "input": {
       const type = (el.getAttribute("type") || "").toLowerCase();
-      if (type === "checkbox" || type === "radio") return rings.check;
-      return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? rings.control : rings.field || rings.control;
+      if (type === "checkbox" || type === "radio") return "check";
+      return ["button", "submit", "reset", "range", "color", "file", "image"].includes(type) ? "control" : "field";
     }
-    case "textarea": return rings.field || rings.control;
-    case "button": case "select": return rings.control;
-    case "a": return el.hasAttribute("href") ? rings.link : rings.box;
-    default: return rings.box;
+    case "textarea": return "field";
+    case "button": case "select": return "control";
+    case "a": return el.hasAttribute("href") ? "link" : "box";
+    default: return "box";
   }
 }
 

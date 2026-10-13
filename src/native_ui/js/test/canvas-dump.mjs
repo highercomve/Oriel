@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { withEngine } from "./engine-host.mjs";
 
 const dir = new URL("./canvas", import.meta.url).pathname;
 const nodes = new Map();
@@ -24,7 +25,7 @@ const host = {
   platform: JSON.stringify({ os: "linux" }), label: "main",
   evalScript: (name, code) => vm.runInContext(code, ctx, { filename: name }),
 };
-const ctx = vm.createContext({ __host: host });
+const ctx = vm.createContext({ __host: withEngine(host) });
 vm.runInContext(fs.readFileSync(new URL("./runtime-linkedom.js", import.meta.url), "utf8"), ctx, { filename: "runtime.js" });
 ctx.__oriel.boot(480, 300, true, false);
 await new Promise((r) => setTimeout(r, 0));

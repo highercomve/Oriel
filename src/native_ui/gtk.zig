@@ -62,6 +62,7 @@ extern fn gtk_text_view_set_input_purpose(w: *Widget, purpose: c_int) void;
 extern fn gtk_text_view_set_input_hints(w: *Widget, hints: c_uint) void;
 extern fn gtk_widget_add_controller(w: *Widget, controller: *anyopaque) void;
 extern fn gtk_widget_has_focus(w: *Widget) c_int;
+extern fn gtk_widget_set_tooltip_text(w: *Widget, text: ?[*:0]const u8) void;
 extern fn gtk_widget_set_cursor_from_name(w: *Widget, name: ?[*:0]const u8) void;
 extern fn gtk_widget_add_css_class(w: *Widget, class: [*:0]const u8) void;
 extern fn gtk_widget_create_pango_layout(w: *Widget, text: ?[*:0]const u8) *PangoLayout;
@@ -366,6 +367,10 @@ pub const Surface = struct {
     trim_id: c_uint = 0,
     pointer: [2]f32 = .{ 0, 0 },
     hovered: i64 = 0,
+    /// The node whose `tip` the drawing area's tooltip shows (0: none), and
+    /// a hash of that text (a bound tooltip changes on the same node).
+    tip_node: i64 = 0,
+    tip_hash: u64 = 0,
     /// A wheel scroll is moving the page: :hover waits until it settles
     /// (onScrollSettled), as in browsers. The compositor's motion after
     /// each wheel step (same point) would hover a new row each step: a
@@ -1907,11 +1912,38 @@ fn hoverAt(s: *Surface) void {
     const at = targetAt(s, s.pointer[0], s.pointer[1]);
     const n = at.node;
     gtk_widget_set_cursor_from_name(s.area, if (at.link or (n != null and clickableUp(n.?))) "pointer" else null);
+    tooltipFor(s, n);
     const id: i64 = at.id;
     if (id != s.hovered) {
         s.hovered = id;
         _ = s.engine.event(id, "hover", "null");
     }
+}
+
+/// The tooltip of the node under the pointer, or of the nearest node
+/// around it with one (Props.tip): GTK shows it after its hover delay.
+fn tooltipFor(s: *Surface, under: ?*Node) void {
+    var at = under;
+    var depth: usize = 0;
+    const owner: ?*Node = while (at) |x| : (at = x.parent) {
+        if (x.props.tip != null) break x;
+        depth += 1;
+        if (depth > tree_mod.max_walk_depth) break null;
+    } else null;
+    const id: i64 = if (owner) |o| o.id else 0;
+    const tip = if (owner) |o| o.props.tip.? else "";
+    const hash = std.hash.Wyhash.hash(0, tip);
+    if (id == s.tip_node and hash == s.tip_hash) return;
+    s.tip_node = id;
+    s.tip_hash = hash;
+    if (owner == null) return gtk_widget_set_tooltip_text(s.area, null);
+    // A long tooltip is cut, at a character's boundary.
+    var buf: [1024]u8 = undefined;
+    var n = @min(tip.len, buf.len - 1);
+    while (n < tip.len and n > 0 and tip[n] & 0xC0 == 0x80) n -= 1;
+    @memcpy(buf[0..n], tip[0..n]);
+    buf[n] = 0;
+    gtk_widget_set_tooltip_text(s.area, buf[0..n :0].ptr);
 }
 
 // ---------------------------------------------------------------------------

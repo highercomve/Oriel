@@ -16,6 +16,19 @@ const prof = @import("prof.zig");
 /// button and check: native push buttons and checkboxes/radios, sent only to a
 /// backend that lists them in its platform JSON's `controls`
 /// (docs/design/native-controls-a11y-design.md).
+/// How deep the walks over a view's nodes go (focus, scrolling, names,
+/// tooltips: focus.zig, ui.zig, the backends): deeper nodes are left out,
+/// with a warning (`warnTooDeep`).
+pub const max_walk_depth = 256;
+
+var warned_too_deep = false;
+/// A walk reached `max_walk_depth`: said once per process.
+pub fn warnTooDeep(what: []const u8) void {
+    if (warned_too_deep) return;
+    warned_too_deep = true;
+    log.warn("{s}: the view is nested deeper than {d} nodes; deeper ones are left out", .{ what, max_walk_depth });
+}
+
 pub const Kind = enum { view, text, input, textarea, select, icon, image, canvas, button, check };
 pub const BorderStyle = enum { dashed, dotted };
 /// CSS outline (render.js outlinePart): `w` wide, `o` out from the border
@@ -905,6 +918,11 @@ pub const Props = struct {
     /// A checkbox's indeterminate state (.indeterminate): drawn mixed.
     mix: bool = false,
     acc: ?Color = null,
+    /// A tooltip shown when the pointer rests on the node (or a node in it).
+    tip: ?[]const u8 = null,
+    /// An explicit tabindex (.oriel `focusable="true"`: 0): Tab visits the
+    /// node on every platform (interaction.zig).
+    ti: ?i32 = null,
 };
 
 pub const Rect = struct {
@@ -1250,6 +1268,10 @@ pub const Node = struct {
     pending_value: ?[]const u8 = null,
     /// A value already edited by the native control; never echoed back.
     ui_value: ?[]u8 = null,
+    /// A tooltip and an accessible label bound in an .oriel view (Tree.setBound):
+    /// owned here, pointed to by props.tip and props.al.
+    bound_tip: ?[]u8 = null,
+    bound_label: ?[]u8 = null,
     /// For a canvas node: its drawing program, from props `cv` (in the
     /// props arena) or host.canvas (in canvas_arena, kept across props).
     canvas: ?[]const CanvasCmd = null,
@@ -1569,6 +1591,9 @@ pub const Tree = struct {
     /// told when one changed or went (id -2: all cleared).
     ax: std.AutoHashMapUnmanaged(i64, *Ax) = .empty,
     on_ax: ?*const fn (ctx: *anyopaque, id: i64) void = null,
+    /// The platform widgets the backend hosts for `.check` and `.button`
+    /// (its platform JSON's `controls`); without one, oriel.ui draws it.
+    controls: struct { check: bool = true, button: bool = true } = .{},
     on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// A leaf style was defined (defineLeafStyle), with its props JSON, and a
     /// node was made from one (on_create: createLeaf, which host.leaf and
@@ -1644,6 +1669,8 @@ pub const Tree = struct {
         }
         t.dropTextOverride(n);
         if (n.ui_value) |value| t.gpa.free(value);
+        if (n.bound_tip) |value| t.gpa.free(value);
+        if (n.bound_label) |value| t.gpa.free(value);
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
         n.arena.deinit();
@@ -2176,7 +2203,65 @@ pub const Tree = struct {
         if (t.on_ax) |f| f(t.measure_ctx, id);
     }
 
-    fn dropAx(t: *Tree, id: i64) void {
+    /// An accessibility entry set from Zig (oriel.ui): the "a" op's fields,
+    /// strings copied into the entry.
+    pub const AxInit = struct {
+        r: AxRole = .generic,
+        n: ?[]const u8 = null,
+        d: ?[]const u8 = null,
+        v: ?[]const u8 = null,
+        s: u32 = 0,
+        l: u8 = 0,
+        rv: ?[3]f64 = null,
+        live: u8 = 0,
+        h: bool = false,
+    };
+
+    pub fn setAxEntry(t: *Tree, id: i64, entry_init: AxInit) !void {
+        const entry = try t.gpa.create(Ax);
+        entry.* = .{ .arena = .init(t.gpa) };
+        errdefer {
+            entry.arena.deinit();
+            t.gpa.destroy(entry);
+        }
+        const a = entry.arena.allocator();
+        entry.r = entry_init.r;
+        entry.n = if (entry_init.n) |s| try a.dupe(u8, s) else null;
+        entry.d = if (entry_init.d) |s| try a.dupe(u8, s) else null;
+        entry.v = if (entry_init.v) |s| try a.dupe(u8, s) else null;
+        entry.s = entry_init.s;
+        entry.l = entry_init.l;
+        entry.rv = entry_init.rv;
+        entry.live = entry_init.live;
+        entry.h = entry_init.h;
+        const gop = try t.ax.getOrPut(t.gpa, id);
+        if (gop.found_existing) {
+            gop.value_ptr.*.arena.deinit();
+            t.gpa.destroy(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = entry;
+        if (t.on_ax) |f| f(t.measure_ctx, id);
+    }
+
+    /// The state bits a node's own props decide (disabled; checked/mixed
+    /// for a checkable role), kept in step after a typed props update.
+    fn syncAxState(t: *Tree, n: *const Node) void {
+        const entry = t.ax.get(n.id) orelse return;
+        var s = entry.s & ~(Ax.disabled | Ax.checked | Ax.mixed);
+        if (n.props.dis) s |= Ax.disabled;
+        switch (entry.r) {
+            .checkbox, .radio, .@"switch" => {
+                if (n.props.on) s |= Ax.checked;
+                if (n.props.mix) s |= Ax.mixed;
+            },
+            else => {},
+        }
+        if (s == entry.s) return;
+        entry.s = s;
+        if (t.on_ax) |f| f(t.measure_ctx, n.id);
+    }
+
+    pub fn dropAx(t: *Tree, id: i64) void {
         const kv = t.ax.fetchRemove(id) orelse return;
         kv.value.arena.deinit();
         t.gpa.destroy(kv.value);
@@ -2446,6 +2531,44 @@ pub const Tree = struct {
         n.pending_value = null;
     }
 
+    pub const Bound = enum { tip, label };
+
+    /// Set a node's tooltip or accessible label to a copy of `value` (an
+    /// .oriel `{binding}`); no change when it already says that. A native
+    /// widget's backend hears of a new label.
+    pub fn setBound(t: *Tree, id: i64, which: Bound, value: []const u8) !void {
+        const n = t.get(id) orelse return error.UnknownNode;
+        const slot = switch (which) {
+            .tip => &n.bound_tip,
+            .label => &n.bound_label,
+        };
+        const current = switch (which) {
+            .tip => n.props.tip,
+            .label => n.props.al,
+        };
+        if (current) |c| if (slot.* != null and std.mem.eql(u8, c, value)) return;
+        // Everything that can fail first, then the change: a failure leaves
+        // the node and the backend as they were (and a retry tries again).
+        const owned = try t.gpa.dupe(u8, value);
+        errdefer t.gpa.free(owned);
+        var props = n.props;
+        switch (which) {
+            .tip => props.tip = owned,
+            .label => props.al = owned,
+        }
+        const notify = which == .label and n.kind != .view and n.kind != .text and t.on_props != null;
+        const parsed = if (notify) blk: {
+            const json = try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false });
+            defer t.gpa.free(json);
+            break :blk try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
+        } else null;
+        defer if (parsed) |v| v.deinit();
+        if (slot.*) |old| t.gpa.free(old);
+        slot.* = owned;
+        n.props = props;
+        if (parsed) |v| t.on_props.?(t.measure_ctx, n, v.value);
+    }
+
     /// A typed update owns every slice and uses the same host notifications as
     /// DOM updates. Immutable template identity is retained across edits.
     pub fn updateUiProps(t: *Tree, id: i64, props: Props) !void {
@@ -2455,6 +2578,7 @@ pub const Tree = struct {
         const value = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
         defer value.deinit();
         try t.setProps(n, value.value);
+        t.syncAxState(n);
         t.dirty = true;
     }
 
