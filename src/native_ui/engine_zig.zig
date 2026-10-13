@@ -115,57 +115,58 @@ pub const Engine = struct {
 
     fn dispatch(e: *Engine, id: i64, kind: []const u8, data: []const u8) !bool {
         const eq = std.mem.eql;
-        const n = e.tree.get(id);
         e.glide.stopOnTouch(kind, data);
         if (eq(u8, kind, "accent")) {
             e.platform.setAccent(e.gpa, data);
             try focus.clearRing(&e.tree, &e.focus);
-            return e.appEvent(id, kind, data);
-        }
-        // A field's edit: its value is the node's before the app hears of it.
-        if ((eq(u8, kind, "input") or eq(u8, kind, "change")) and n != null and focus.isField(n.?)) {
-            if (try focus.editedValue(e.gpa, data)) |v| {
-                defer v.deinit();
-                try e.tree.acceptUiValue(id, focus.valueOf(v.value));
+        } else if (eq(u8, kind, "input") or eq(u8, kind, "change")) {
+            try e.fieldEdited(id, data);
+        } else if (eq(u8, kind, "focus")) {
+            if (e.tree.get(id) != null) {
+                e.focus.id = id;
+                e.focus.visible = true;
             }
-            return e.appEvent(id, kind, data);
-        }
-        if (eq(u8, kind, "focus") and n != null) {
-            e.focus.id = id;
-            e.focus.visible = true;
-            return e.appEvent(id, kind, data);
-        }
-        if (eq(u8, kind, "blur")) {
+        } else if (eq(u8, kind, "blur")) {
             if (e.focus.id == id) e.focus.id = 0;
-            return e.appEvent(id, kind, data);
-        }
-        if (eq(u8, kind, "click")) {
-            // A click focuses what it lands in, without a ring, where the
-            // platform's click does (WebKit on macOS and iOS: fields and
-            // what has a tabindex only).
-            if (focus.focusTarget(&e.tree, id)) |target| {
-                if (!focus.isNative(target) and interaction.clickFocuses(interaction.tabRule(e.platform), focus.kindOf(target), target.props.ti != null)) {
-                    e.focus.id = target.id;
-                    e.focus.visible = false;
-                    e.backend.focus(e.backend.ctx, target);
-                }
-            }
-            // Focusing can run the app's code (a field's "blur"), which may
-            // have removed the node: look it up again.
-            if (e.tree.get(id)) |node| if (node.kind == .check or node.props.ctl != null) {
-                // A checkbox or radio checks itself; the app hears "change".
-                const on = try focus.toggle(&e.tree, node);
-                return e.appEvent(id, "change", if (on) "true" else "false");
-            };
-            return e.appEvent(id, kind, data);
-        }
-        if (eq(u8, kind, "key") or eq(u8, kind, "keyup")) {
+        } else if (eq(u8, kind, "click")) {
+            return e.clicked(id, data);
+        } else if (eq(u8, kind, "key") or eq(u8, kind, "keyup")) {
             if (e.appEvent(id, kind, data)) return true;
             var name: [32]u8 = undefined;
             const key = focus.keyOf(e.gpa, data, &name) orelse return false;
             return e.keyDefault(eq(u8, kind, "key"), key);
         }
         return e.appEvent(id, kind, data);
+    }
+
+    /// A field's edit: its value is the node's before the app hears of it.
+    fn fieldEdited(e: *Engine, id: i64, data: []const u8) !void {
+        const n = e.tree.get(id) orelse return;
+        if (!focus.isField(n)) return;
+        const v = try focus.editedValue(e.gpa, data) orelse return;
+        defer v.deinit();
+        try e.tree.acceptUiValue(id, focus.valueOf(v.value));
+    }
+
+    /// A click focuses what it lands in, without a ring, where the
+    /// platform's click does (WebKit on macOS and iOS: fields and what has a
+    /// tabindex only); a checkbox or radio checks itself and the app hears
+    /// "change" instead.
+    fn clicked(e: *Engine, id: i64, data: []const u8) !bool {
+        if (focus.focusTarget(&e.tree, id)) |target| {
+            if (!focus.isNative(target) and interaction.clickFocuses(interaction.tabRule(e.platform), focus.kindOf(target), target.props.ti != null)) {
+                e.focus.id = target.id;
+                e.focus.visible = false;
+                e.backend.focus(e.backend.ctx, target);
+            }
+        }
+        // Focusing can run the app's code (a field's "blur"), which may
+        // have removed the node: look it up again.
+        if (e.tree.get(id)) |node| if (node.kind == .check or node.props.ctl != null) {
+            const on = try focus.toggle(&e.tree, node);
+            return e.appEvent(id, "change", if (on) "true" else "false");
+        };
+        return e.appEvent(id, "click", data);
     }
 
     /// What a key does when the app didn't prevent it (interaction.zig's
@@ -195,8 +196,20 @@ pub const Engine = struct {
         const focused = e.tree.get(e.focus.id);
         // Keys typed in a field are the field's.
         if (focused) |f| if (focus.isField(f)) return false;
-        // Enter and Space on a drawn element (a native widget handles its own).
+        // Enter and Space on a drawn element (a native widget handles its
+        // own), still enabled, shown and in the tree after the app's handler.
         if (focused) |f| if (!focus.isNative(f) and !mods) {
+            if (!focus.focusable(&e.tree, f)) return false;
+            const space = eq(u8, key.key, " ");
+            if (space and down) {
+                e.focus.space = f.id;
+                return true; // its release activates it; no page scroll
+            }
+            if (space) {
+                const pressed_here = e.focus.space == f.id;
+                e.focus.space = 0;
+                if (!pressed_here) return false;
+            }
             const checkable = f.props.ctl != null;
             if (interaction.activates(key.key, down, key.repeat, focus.isDrawnButton(f), false, checkable)) {
                 e.focus.visible = true;
@@ -206,8 +219,6 @@ pub const Engine = struct {
                 } else _ = e.appEvent(f.id, "click", "0");
                 return true;
             }
-            // Space pressed on it: its release activates it; no page scroll.
-            if (down and eq(u8, key.key, " ")) return true;
         };
         if (!down or mods) return false;
         // Else the window's scroller: the first in the view (its root may

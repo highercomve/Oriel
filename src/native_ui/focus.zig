@@ -22,6 +22,9 @@ pub const State = struct {
     visible: bool = false,
     /// The node currently drawn with the ring (0: none).
     ring: i64 = 0,
+    /// The drawn element Space went down on (0: none): only its release
+    /// there activates it.
+    space: i64 = 0,
 };
 
 /// A widget the platform hosts: it has its own focus, ring and keys.
@@ -74,9 +77,12 @@ pub fn focusable(t: *const Tree, n: *const Node) bool {
     if (!isNative(n) and !drawn_ok) return false;
     if (n.frame.w <= 0 or n.frame.h <= 0) return false;
     var at: ?*const Node = n;
+    var depth: usize = 0;
     while (at) |x| : (at = x.parent) {
         if (x.props.dis or x.props.vis == false) return false;
         if (x.parent == null) return t.root == x;
+        depth += 1;
+        if (depth > tree_mod.max_walk_depth) return false;
     }
     return false;
 }
@@ -100,7 +106,8 @@ const Collect = struct {
     groups: std.AutoHashMapUnmanaged(i64, u32) = .empty,
 
     fn walk(c: *Collect, n: *Node, depth: usize) !void {
-        if (depth > 64 or n.props.vis == false or n.props.dis) return;
+        if (n.props.vis == false or n.props.dis) return;
+        if (depth > tree_mod.max_walk_depth) return tree_mod.warnTooDeep("Tab order");
         if (focusable(c.t, n)) {
             var group: u32 = 0;
             if (isRadio(n)) if (n.parent) |p| {
@@ -121,7 +128,11 @@ pub fn firstScroller(t: *const Tree) ?*Node {
 }
 
 fn firstScrollerIn(n: *Node, depth: usize) ?*Node {
-    if (depth > 64 or n.props.vis == false) return null;
+    if (n.props.vis == false) return null;
+    if (depth > tree_mod.max_walk_depth) {
+        tree_mod.warnTooDeep("key scrolling");
+        return null;
+    }
     if (n.props.scroll and core.maxScroll(n) > 0.5) return n;
     for (n.kids.items) |k| if (firstScrollerIn(k, depth + 1)) |s| return s;
     return null;
@@ -134,7 +145,7 @@ pub fn focusTarget(t: *const Tree, id: i64) ?*Node {
     while (at) |n| : (at = n.parent) {
         if (focusable(t, n)) return n;
         depth += 1;
-        if (depth > 64) break;
+        if (depth > tree_mod.max_walk_depth) break;
     }
     return null;
 }

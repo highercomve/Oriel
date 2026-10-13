@@ -602,16 +602,25 @@ static JSValue h_scroll_to(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return JS_UNDEFINED;
 }
 
+// The input-rule host functions below (interaction.zig) check every
+// conversion: a page argument whose conversion throws (a getter, an
+// object's valueOf, no memory) propagates as the exception, and nothing
+// is called with a half-converted value.
+
 // host.keyScroll(id, key, shift): a key scrolls from element `id` (-1: the
 // window); true when a scroller took it.
 static JSValue h_key_scroll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     double id = -1;
-    if (argc > 0) JS_ToFloat64(ctx, &id, argv[0]);
+    if (argc > 0 && JS_ToFloat64(ctx, &id, argv[0]) < 0) return JS_EXCEPTION;
     size_t len = 0;
     const char *key = argc > 1 ? JS_ToCStringLen(ctx, &len, argv[1]) : NULL;
-    if (!key) return JS_FALSE;
+    if (!key) return argc > 1 ? JS_EXCEPTION : JS_FALSE;
     int shift = argc > 2 ? JS_ToBool(ctx, argv[2]) : 0;
+    if (shift < 0) {
+        JS_FreeCString(ctx, key);
+        return JS_EXCEPTION;
+    }
     int r = oriel_nui_key_scroll(opaque_of(ctx), id, key, len, shift);
     JS_FreeCString(ctx, key);
     return JS_NewBool(ctx, r);
@@ -622,7 +631,7 @@ static JSValue h_is_scroll_key(JSContext *ctx, JSValueConst this_val, int argc, 
     (void)this_val;
     size_t len = 0;
     const char *key = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
-    if (!key) return JS_FALSE;
+    if (!key) return argc > 0 ? JS_EXCEPTION : JS_FALSE;
     int r = oriel_nui_is_scroll_key(opaque_of(ctx), key, len);
     JS_FreeCString(ctx, key);
     return JS_NewBool(ctx, r);
@@ -632,12 +641,13 @@ static JSValue h_is_scroll_key(JSContext *ctx, JSValueConst this_val, int argc, 
 // to (-1: none).
 static JSValue h_tab_next(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
+    double active = -1;
+    if (argc > 1 && JS_ToFloat64(ctx, &active, argv[1]) < 0) return JS_EXCEPTION;
+    int back = argc > 2 ? JS_ToBool(ctx, argv[2]) : 0;
+    if (back < 0) return JS_EXCEPTION;
     size_t len = 0;
     const char *json = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
-    if (!json) return JS_NewFloat64(ctx, -1);
-    double active = -1;
-    if (argc > 1) JS_ToFloat64(ctx, &active, argv[1]);
-    int back = argc > 2 ? JS_ToBool(ctx, argv[2]) : 0;
+    if (!json) return argc > 0 ? JS_EXCEPTION : JS_NewFloat64(ctx, -1);
     double r = oriel_nui_tab_next(opaque_of(ctx), json, len, active, back);
     JS_FreeCString(ctx, json);
     return JS_NewFloat64(ctx, r);
@@ -647,41 +657,50 @@ static JSValue h_tab_next(JSContext *ctx, JSValueConst this_val, int argc, JSVal
 static JSValue h_click_focuses(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     double kind = 2;
-    if (argc > 0) JS_ToFloat64(ctx, &kind, argv[0]);
+    if (argc > 0 && JS_ToFloat64(ctx, &kind, argv[0]) < 0) return JS_EXCEPTION;
     return JS_NewBool(ctx, oriel_nui_click_focuses(opaque_of(ctx), kind));
 }
 
 // host.activates(key, down, repeat, button, link, checkable).
 static JSValue h_activates(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
+    int f[5] = { 0, 0, 0, 0, 0 };
+    for (int i = 0; i < 5 && i + 1 < argc; i++) {
+        f[i] = JS_ToBool(ctx, argv[i + 1]);
+        if (f[i] < 0) return JS_EXCEPTION;
+    }
     size_t len = 0;
     const char *key = argc > 0 ? JS_ToCStringLen(ctx, &len, argv[0]) : NULL;
-    if (!key) return JS_FALSE;
-    int f[5] = { 0, 0, 0, 0, 0 };
-    for (int i = 0; i < 5 && i + 1 < argc; i++) f[i] = JS_ToBool(ctx, argv[i + 1]);
+    if (!key) return argc > 0 ? JS_EXCEPTION : JS_FALSE;
     int r = oriel_nui_activates(opaque_of(ctx), key, len, f[0], f[1], f[2], f[3], f[4]);
     JS_FreeCString(ctx, key);
     return JS_NewBool(ctx, r);
 }
 
 // host.focusRing(kind, accent): [w, o, r, red, green, blue, alpha, halo];
-// `accent` the page's [r, g, b] (platform.accent), if it has one.
+// `accent` the page's [r, g, b] (platform.accent), if it has one (engine_js
+// keeps only finite 0-255 values).
 static JSValue h_focus_ring(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     double kind = 4, out[8], rgb[3] = { 0, 0, 0 };
-    if (argc > 0) JS_ToFloat64(ctx, &kind, argv[0]);
-    int has_accent = 0;
-    if (argc > 1 && JS_IsArray(argv[1])) {
-        has_accent = 1;
-        for (uint32_t i = 0; i < 3; i++) {
-            JSValue v = JS_GetPropertyUint32(ctx, argv[1], i);
-            if (JS_ToFloat64(ctx, &rgb[i], v) < 0) has_accent = 0;
-            JS_FreeValue(ctx, v);
-        }
+    if (argc > 0 && JS_ToFloat64(ctx, &kind, argv[0]) < 0) return JS_EXCEPTION;
+    int has_accent = argc > 1 && JS_IsArray(argv[1]);
+    for (uint32_t i = 0; has_accent && i < 3; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, argv[1], i);
+        if (JS_IsException(v)) return JS_EXCEPTION;
+        int bad = JS_ToFloat64(ctx, &rgb[i], v) < 0;
+        JS_FreeValue(ctx, v);
+        if (bad) return JS_EXCEPTION;
     }
     oriel_nui_focus_ring(opaque_of(ctx), kind, has_accent, rgb[0], rgb[1], rgb[2], out);
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 8; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < 8; i++) {
+        if (JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i])) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+    }
     return arr;
 }
 

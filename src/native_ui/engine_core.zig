@@ -59,8 +59,11 @@ pub fn FrameHooks(comptime Engine: type) type {
         pub fn deinit(h: *Self, gpa: std.mem.Allocator) void {
             h.list.deinit(gpa);
         }
+        /// Drop every callback (a reload). During a pass they're cancelled
+        /// instead: the pass drops them, not its caller from under it.
         pub fn clear(h: *Self) void {
-            h.list.clearRetainingCapacity();
+            if (!h.running) return h.list.clearRetainingCapacity();
+            for (h.list.items) |*hook| hook.cancelled = true;
         }
         pub fn any(h: *const Self) bool {
             return h.list.items.len > 0;
@@ -83,8 +86,11 @@ pub fn FrameHooks(comptime Engine: type) type {
                 } else _ = h.list.orderedRemove(i);
             }
         }
-        /// One display frame's pass.
+        /// One display frame's pass. A frame delivered while a pass runs (a
+        /// callback that pumps the backend's loop) is skipped: the pass in
+        /// progress owns the list.
         pub fn run(h: *Self, e: *Engine, interval_ms: f64) void {
+            if (h.running) return;
             h.frame += 1;
             h.running = true;
             defer h.running = false;
@@ -245,8 +251,11 @@ fn Glide(comptime Engine: type) type {
             const g: *interaction.Glide = @ptrCast(@alignCast(ctx));
             if (g.active) if (e.tree.get(g.target)) |n| {
                 const pos = g.at(nowMs());
+                const gen = g.gen;
                 e.setScrollY(n, pos.y);
-                if (pos.done) g.active = false;
+                // The app may have started another glide meanwhile: that
+                // one goes on.
+                if (pos.done and g.gen == gen) g.active = false;
             } else {
                 g.active = false;
             };
@@ -259,7 +268,8 @@ fn Glide(comptime Engine: type) type {
 /// Tests' clock (tests of the glide set it; else the real one).
 pub var test_now: ?f64 = null;
 
-/// A monotonic clock in ms.
+/// A monotonic clock in ms; NaN when the platform's clock fails (a glide
+/// then ends where it was going: interaction.Glide.at).
 pub fn nowMs() f64 {
     if (@import("builtin").is_test) if (test_now) |t| return t;
     if (comptime @import("builtin").os.tag == .windows) {
@@ -267,12 +277,11 @@ pub fn nowMs() f64 {
         const qpf = @extern(*const fn (*i64) callconv(.winapi) c_int, .{ .name = "QueryPerformanceFrequency", .library_name = "kernel32" });
         var t: i64 = 0;
         var f: i64 = 1;
-        _ = qpc(&t);
-        _ = qpf(&f);
-        return @as(f64, @floatFromInt(t)) * 1e3 / @as(f64, @floatFromInt(@max(1, f)));
+        if (qpc(&t) == 0 or qpf(&f) == 0 or f <= 0) return std.math.nan(f64);
+        return @as(f64, @floatFromInt(t)) * 1e3 / @as(f64, @floatFromInt(f));
     }
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    var ts: std.c.timespec = .{ .sec = 0, .nsec = 0 };
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) return std.math.nan(f64);
     return @as(f64, @floatFromInt(ts.sec)) * 1e3 + @as(f64, @floatFromInt(ts.nsec)) / 1e6;
 }
 
@@ -316,6 +325,30 @@ test "frame hooks: self-cancellation, cancelling another, adding during a pass" 
     try std.testing.expectEqual([4]u32{ 1, 2, 0, 3 }, f.calls);
     f.hooks.run(&f, 16);
     try std.testing.expectEqual(@as(u32, 3), f.calls[1]);
+}
+
+test "frame hooks: a nested pass is skipped; clearing during a pass cancels" {
+    const Fake = struct {
+        hooks: FrameHooks(@This()) = .{},
+        calls: u32 = 0,
+        nested: u32 = 0,
+        fn reenter(_: *anyopaque, e: *@This(), interval: f64) bool {
+            e.calls += 1;
+            // A callback that pumps the loop into another frame.
+            e.hooks.run(e, interval);
+            e.nested += 1;
+            e.hooks.clear();
+            return true;
+        }
+    };
+    var f: Fake = .{};
+    defer f.hooks.deinit(std.testing.allocator);
+    try f.hooks.add(std.testing.allocator, .{ .ctx = @ptrCast(&f.calls), .func = Fake.reenter });
+    f.hooks.run(&f, 16);
+    try std.testing.expectEqual(@as(u32, 1), f.calls);
+    try std.testing.expectEqual(@as(u32, 1), f.nested);
+    // Cleared during its own pass: dropped after it, not under it.
+    try std.testing.expect(!f.hooks.any());
 }
 
 test "a key scroll glides as WKWebView's, and a wheel, the page or a touch stops it" {

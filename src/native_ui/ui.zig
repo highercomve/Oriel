@@ -156,18 +156,24 @@ fn optEql(a: ?[]const u8, b: ?[]const u8) bool {
 }
 
 /// The text inside a node, words separated by a space, as much as fits.
+/// Stops when `buf` is full, at a character's boundary.
 fn contentText(n: *const tree.Node, buf: []u8, len: *usize, depth: usize) void {
-    if (depth > 16) return;
+    if (len.* >= buf.len) return;
+    if (depth > tree.max_walk_depth) return tree.warnTooDeep("accessible name");
     if (n.props.runs) |runs| for (runs) |r| {
         const t = std.mem.trim(u8, r.t, " \t\r\n");
         if (t.len == 0) continue;
-        if (len.* > 0 and len.* < buf.len) {
+        if (len.* > 0) {
+            if (len.* + 1 >= buf.len) return;
             buf[len.*] = ' ';
             len.* += 1;
         }
-        const room = @min(t.len, buf.len - len.*);
+        var room = @min(t.len, buf.len - len.*);
+        // Not in the middle of a character's UTF-8 bytes.
+        while (room < t.len and room > 0 and t[room] & 0xC0 == 0x80) room -= 1;
         @memcpy(buf[len.*..][0..room], t[0..room]);
         len.* += room;
+        if (room < t.len) return;
     };
     for (n.kids.items) |k| contentText(k, buf, len, depth + 1);
 }

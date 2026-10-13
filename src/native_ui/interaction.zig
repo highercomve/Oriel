@@ -36,10 +36,11 @@ pub const Platform = struct {
         const Raw = struct { os: []const u8 = "", fullKeyboardAccess: bool = false, accent: ?[3]f32 = null };
         const parsed = std.json.parseFromSlice(Raw, gpa, json, .{ .ignore_unknown_fields = true }) catch return .{};
         defer parsed.deinit();
+        const a = parsed.value.accent;
         return .{
             .os = std.meta.stringToEnum(Os, parsed.value.os) orelse .other,
             .full_keyboard_access = parsed.value.fullKeyboardAccess,
-            .accent = parsed.value.accent,
+            .accent = if (a) |c| accentOf(c[0], c[1], c[2]) else null,
         };
     }
 
@@ -47,9 +48,22 @@ pub const Platform = struct {
     pub fn setAccent(p: *Platform, gpa: std.mem.Allocator, data: []const u8) void {
         const parsed = std.json.parseFromSlice([3]f32, gpa, data, .{}) catch return;
         defer parsed.deinit();
-        p.accent = parsed.value;
+        p.accent = accentOf(parsed.value[0], parsed.value[1], parsed.value[2]);
     }
 };
+
+/// An accent color from outside (the platform JSON, an "accent" event, the
+/// page): each channel finite and 0-255, else none (the default ring).
+pub fn accentOf(r: anytype, g: anytype, b: anytype) ?[3]f32 {
+    const ok = struct {
+        fn f(v: f64) bool {
+            return std.math.isFinite(v) and v >= 0 and v <= 255;
+        }
+    }.f;
+    const c = [3]f64{ @floatCast(r), @floatCast(g), @floatCast(b) };
+    if (!ok(c[0]) or !ok(c[1]) or !ok(c[2])) return null;
+    return .{ @floatCast(c[0]), @floatCast(c[1]), @floatCast(c[2]) };
+}
 
 // ---------------------------------------------------------------------------
 // Focus rings
@@ -188,23 +202,35 @@ fn visits(rule: TabRule, c: Candidate) bool {
 /// is one stop (its checked radio, else the focused one, else its first).
 /// Wraps around. Null: nothing to visit.
 pub fn tabNext(gpa: std.mem.Allocator, rule: TabRule, cands: []const Candidate, active: ?i64, back: bool) !?i64 {
+    if (cands.len > max_candidates) return error.TooManyCandidates;
+    // Each radio group's stop, in one pass.
+    var stops: std.AutoHashMapUnmanaged(u32, GroupStop) = .empty;
+    defer stops.deinit(gpa);
+    for (cands) |c| {
+        if (c.group == 0 or !visits(rule, c)) continue;
+        const gop = try stops.getOrPut(gpa, c.group);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .first = c.id };
+        if (c.checked and gop.value_ptr.checked == null) gop.value_ptr.checked = c.id;
+        if (active != null and c.id == active.?) gop.value_ptr.focused = c.id;
+    }
     var order: std.ArrayList(Candidate) = .empty;
     defer order.deinit(gpa);
+    try order.ensureTotalCapacity(gpa, cands.len);
     for (cands) |c| {
         if (!visits(rule, c)) continue;
-        if (c.group != 0 and stopOf(rule, cands, c.group, active) != c.id) continue;
-        try order.append(gpa, c);
+        if (c.group != 0 and stops.get(c.group).?.stop() != c.id) continue;
+        order.appendAssumeCapacity(c);
     }
     if (order.items.len == 0) return null;
-    // Positive tabindex first, ascending; equal ones (and the rest) keep
-    // their order: a stable sort on the key.
+    // Positive tabindex first, ascending; the rest after them. Equal ones
+    // keep their document order: a stable sort.
     std.sort.block(Candidate, order.items, {}, struct {
-        fn key(c: Candidate) i64 {
-            const t = c.tabindex orelse 0;
-            return if (t > 0) t else std.math.maxInt(i32);
+        fn positive(c: Candidate) bool {
+            return (c.tabindex orelse 0) > 0;
         }
         fn lt(_: void, a: Candidate, b: Candidate) bool {
-            return key(a) < key(b);
+            if (positive(a) and positive(b)) return a.tabindex.? < b.tabindex.?;
+            return positive(a) and !positive(b);
         }
     }.lt);
     const n = order.items.len;
@@ -215,26 +241,35 @@ pub fn tabNext(gpa: std.mem.Allocator, rule: TabRule, cands: []const Candidate, 
     return order.items[i].id;
 }
 
-fn stopOf(rule: TabRule, cands: []const Candidate, group: u32, active: ?i64) ?i64 {
-    var first: ?i64 = null;
-    var focused: ?i64 = null;
-    for (cands) |c| {
-        if (c.group != group or !visits(rule, c)) continue;
-        if (c.checked) return c.id;
-        if (first == null) first = c.id;
-        if (active != null and c.id == active.?) focused = c.id;
+/// The most candidates Tab orders (a page with more fails its Tab, rather
+/// than holding the UI thread), and the most bytes they come in.
+pub const max_candidates = 4096;
+pub const max_candidates_json = max_candidates * 48;
+
+/// A radio group's Tab stop: its checked radio, else the focused one, else
+/// its first.
+const GroupStop = struct {
+    first: i64,
+    checked: ?i64 = null,
+    focused: ?i64 = null,
+    fn stop(g: GroupStop) i64 {
+        return g.checked orelse g.focused orelse g.first;
     }
-    return focused orelse first;
-}
+};
 
 /// Tab from the page (main.js tabCandidates): `json` the candidates in
 /// document order, `[kind, tabindex | null, group, checked]` each (kind 0
 /// text, 1 control, 2 other); the index Tab moves to from index `active`
-/// (null: none), or null.
+/// (null: none), or null. Malformed or too many candidates: null.
 pub fn tabNextJson(gpa: std.mem.Allocator, rule: TabRule, json: []const u8, active: ?usize, back: bool) !?usize {
+    if (json.len > max_candidates_json) return null;
     const Raw = struct { u8, ?i32, u32, bool };
-    const parsed = std.json.parseFromSlice([]const Raw, gpa, json, .{}) catch return null;
+    const parsed = std.json.parseFromSlice([]const Raw, gpa, json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
     defer parsed.deinit();
+    if (parsed.value.len > max_candidates) return null;
     const cands = try gpa.alloc(Candidate, parsed.value.len);
     defer gpa.free(cands);
     for (parsed.value, cands, 0..) |r, *c, i| c.* = .{ .id = @intCast(i), .kind = kindFrom(r[0]), .tabindex = r[1], .group = r[2], .checked = r[3] };
@@ -350,6 +385,9 @@ pub const Glide = struct {
     /// A frame callback drives it (engine_core.keyScroll): one at a time,
     /// whether or not a glide is running.
     hooked: bool = false,
+    /// Which glide this is: a frame that runs the app's code (a scroll it
+    /// hears of) can start another; the old one's end mustn't stop it.
+    gen: u32 = 0,
 
     /// Where scroller `id` (now at `scroll_y`) is going: mid-glide a key
     /// goes on from there.
@@ -358,7 +396,7 @@ pub const Glide = struct {
     }
 
     pub fn start(g: *Glide, id: i64, scroll_y: f32, to: f32, step: Step, now_ms: f64) void {
-        g.* = .{ .target = id, .from = scroll_y, .to = to, .t0 = now_ms, .line = step.kind == .line, .active = true, .hooked = g.hooked };
+        g.* = .{ .target = id, .from = scroll_y, .to = to, .t0 = now_ms, .line = step.kind == .line, .active = true, .hooked = g.hooked, .gen = g.gen +% 1 };
     }
 
     /// A touch went down: a glide anywhere stops (the "pointer" event's
@@ -372,7 +410,9 @@ pub const Glide = struct {
     pub fn at(g: *const Glide, now_ms: f64) struct { y: f32, done: bool } {
         const ms: f64 = if (g.line) 256 else 200;
         const delay: f64 = if (g.line) 20 else 0;
-        const p = std.math.clamp((now_ms - g.t0 - delay) / ms, 0, 1);
+        const raw = (now_ms - g.t0 - delay) / ms;
+        // No clock (NaN): there.
+        const p = if (std.math.isNan(raw)) 1 else std.math.clamp(raw, 0, 1);
         const e = if (g.line) bezier(0, 0, 0.58, 1, p) else bezier(0.25, 0.1, 0.25, 1, p);
         return .{ .y = g.from + (g.to - g.from) * @as(f32, @floatCast(e)), .done = p >= 1 };
     }
@@ -461,6 +501,19 @@ test "rings, clicks, activation and key steps" {
     try std.testing.expect(!g.active);
 }
 
+test "tab order: tabindex 2147483647 still comes first; too many candidates fail" {
+    const gpa = std.testing.allocator;
+    const cands = [_]Candidate{
+        .{ .id = 1, .kind = .text },
+        .{ .id = 2, .kind = .other, .tabindex = std.math.maxInt(i32) },
+    };
+    try std.testing.expectEqual(@as(?i64, 2), try tabNext(gpa, .all, &cands, null, false));
+    const many = try gpa.alloc(Candidate, max_candidates + 1);
+    defer gpa.free(many);
+    @memset(many, .{ .id = 0, .kind = .text });
+    try std.testing.expectError(error.TooManyCandidates, tabNext(gpa, .all, many, null, false));
+}
+
 test tabNextJson {
     const gpa = std.testing.allocator;
     const json = "[[2,null,0,false],[0,null,0,false],[2,2,0,false],[1,null,7,false],[1,null,7,true]]";
@@ -469,6 +522,12 @@ test tabNextJson {
     try std.testing.expectEqual(@as(?usize, 4), try tabNextJson(gpa, .all, json, 1, false));
     try std.testing.expectEqual(@as(?usize, 1), try tabNextJson(gpa, .mac, json, 2, false));
     try std.testing.expectEqual(@as(?usize, null), try tabNextJson(gpa, .all, "nonsense", null, false));
+}
+
+test accentOf {
+    try std.testing.expectEqual(@as(?[3]f32, .{ 1, 2, 3 }), accentOf(@as(f64, 1), @as(f64, 2), @as(f64, 3)));
+    try std.testing.expectEqual(@as(?[3]f32, null), accentOf(std.math.nan(f64), @as(f64, 2), @as(f64, 3)));
+    try std.testing.expectEqual(@as(?[3]f32, null), accentOf(@as(f64, 300), @as(f64, 2), @as(f64, 3)));
 }
 
 test "platform JSON" {
