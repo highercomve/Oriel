@@ -1997,7 +1997,12 @@ function updateThemeColor() {
 function watchThemeColor() {
   updateThemeColor();
   const head = document.head || document.documentElement;
-  new MutationObserver(() => updateThemeColor()).observe(head, { subtree: true, childList: true, attributes: true });
+  const observer = new MutationObserver(() => updateThemeColor());
+  // This internal watcher only uses the active document's metadata. Like
+  // the renderer's observer, it must not enable hooks for detached DOM
+  // construction throughout the page (native.js syncObserving).
+  observer.__nuiConnectedOnly = true;
+  observer.observe(head, { subtree: true, childList: true, attributes: true });
 }
 
 // matchMedia lists whose answer changed since `before` (mediaSnapshot):

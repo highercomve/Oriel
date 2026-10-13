@@ -77,6 +77,7 @@ const Features = struct {
     /// (QuickJS-ng + Yoga; Linux, Windows, macOS, Android and iOS).
     /// docs/native-renderer.md
     native_ui: bool,
+    zig_ui: bool,
     /// The phone's own model (`oriel.system_ai`): Gemini Nano through ML Kit
     /// on Android, Apple Foundation Models on iOS 26+. Android and iOS only.
     system_ai: bool,
@@ -105,13 +106,14 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
                 std.mem.eql(u8, field.name, "native_ui") or
+                std.mem.eql(u8, field.name, "zig_ui") or
                 std.mem.eql(u8, field.name, "system_ai") or
                 std.mem.eql(u8, field.name, "camera") or
                 std.mem.eql(u8, field.name, "deep_link"));
             // The updater is opt-in on Android: the store updates apps there.
             const android_opt_in = comptime std.mem.eql(u8, field.name, "updater");
             const opt = b.option(bool, field.name, "Enable the " ++ field.name ++ " module");
-            const supported = module_table.supported(field.name, platform);
+            const supported = module_table.supported(if (comptime std.mem.eql(u8, field.name, "zig_ui")) "native_ui" else field.name, platform);
             if (!supported and opt == true) {
                 if (command_line) fatal("-D" ++ field.name ++ " is not available on {s} (docs/modules.md, \"Availability\")", .{@tagName(platform)});
                 missing.print(b.allocator, "{s}{s}", .{ if (missing.items.len > 0) ", " else "", field.name }) catch @panic("OOM");
@@ -122,6 +124,7 @@ const Features = struct {
         // error naming the module anyway.
         if (missing.items.len > 0 and b.verbose) std.log.info("oriel: not available on {s}, so oriel.<module>.available = false: {s}", .{ @tagName(platform), missing.items });
 
+        f.native_ui = f.native_ui or f.zig_ui;
         if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows or target.result.os.tag == .macos or target.result.os.tag == .ios)) {
             fatal("-Dnative_ui is experimental: Linux, Windows, macOS, Android and iOS only so far (docs/native-renderer.md)", .{});
         }
@@ -339,6 +342,13 @@ pub fn build(b: *std.Build) void {
         const dom_js_test_step = b.step("dom-js-test", "Run the native DOM's QuickJS tests (tools/dom_bench)");
         dom_js_test_step.dependOn(&js_test.step);
         dom_js_test = &js_test.step;
+        // The generated production runtime on the real native DOM, including
+        // internal/page observer behavior. Node only assembles the test file.
+        const runtime_test = b.addSystemCommand(&.{"node"});
+        runtime_test.addFileArg(b.path("src/native_ui/js/test/theme-color-native.test.mjs"));
+        runtime_test.addArtifactArg(dom_bench);
+        runtime_test.addFileArg(b.path("src/native_ui/runtime.js"));
+        b.step("test-native-runtime", "Test the production runtime's native DOM observers (requires Node)").dependOn(&runtime_test.step);
     }
 
     const test_step = b.step("test", "Run unit tests");
@@ -683,6 +693,7 @@ fn addOrielModule(
     // (src/native_ui/prof.zig); compiled out without it.
     const native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings (src/native_ui/prof.zig)") orelse false;
     options.addOption(bool, "native_ui_prof", native_ui_prof);
+    const zig_ui = features.zig_ui;
 
     const is_android = target.result.abi.isAndroid();
     // Desktop Linux: GTK, WebKitGTK, PulseAudio, Wayland and X11. Android is
@@ -815,7 +826,7 @@ fn addOrielModule(
             .flags = &.{ "-DSQLITE_THREADSAFE=1", "-DSQLITE_DQS=0", "-DSQLITE_OMIT_DEPRECATED" },
         });
     };
-    if (features.native_ui) addNativeUi(b, oriel, native_ui_prof);
+    if (features.native_ui) addNativeUi(b, oriel, native_ui_prof, zig_ui);
     if (features.sqlite_vec) {
         if (b.lazyDependency("sqlite_vec", .{})) |sqlite_vec| {
             oriel.addIncludePath(sqlite_vec.path("."));
@@ -1323,6 +1334,7 @@ const PermissionKind = @import("src/core/permissions/common.zig").Kind;
 /// -Dnative_ui: the frontend's modules compiled to QuickJS bytecode
 /// (qjs_modules) and embedded with it (embed_assets' extra directory).
 fn addModuleBytecode(b: *std.Build, oriel_dep: *std.Build.Dependency, embed: *std.Build.Step.Run, dist: []const u8, build_fe: ?*std.Build.Step) void {
+    if (dependencyFlag(oriel_dep, "zig_ui")) return;
     if (!dependencyFlag(oriel_dep, "native_ui")) return;
     const modules = b.addRunArtifact(oriel_dep.artifact("qjs_modules"));
     modules.has_side_effects = true; // dist/ is produced outside the build graph
@@ -3194,7 +3206,7 @@ fn pathExists(b: *std.Build, path: []const u8) bool {
 
 /// -Dnative_ui: QuickJS-ng (the page's JavaScript) and Yoga (flexbox
 /// layout), compiled into the oriel module. docs/native-renderer.md
-fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
+fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool, zig_ui: bool) void {
     const no_ubsan = "-fno-sanitize=undefined"; // both rely on unspecified C behavior
     // The Apple backends draw with CoreGraphics and CoreText (apple_draw.zig).
     // Without an SDK nothing links (check).
@@ -3205,9 +3217,8 @@ fn addNativeUi(b: *std.Build, oriel: *std.Build.Module, prof: bool) void {
         oriel.linkFramework("CoreText", .{});
         oriel.linkFramework("ImageIO", .{}); // <img>
     };
-    // QuickJS-ng lives in the repo (src/native_ui/vendor/quickjs-ng, see its
-    // README.md): tuned for the renderer.
-    {
+    // The Zig UI path shares Yoga and the backends, without QuickJS or DOM.
+    if (!zig_ui) {
         const qjs = b.path("src/native_ui/vendor/quickjs-ng");
         oriel.addIncludePath(qjs);
         oriel.addCSourceFiles(.{

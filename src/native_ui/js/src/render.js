@@ -744,9 +744,13 @@ export class Renderer {
       if (!runs || !runs.length) return false;
       updates.push(el, holder, runs, old, tid);
     }
+    let direct = 0, nativeMs = 0;
     for (let i = 0; i < restamp.length; i += 3) {
       const row = restamp[i];
-      if (!this.host.stamp(restamp[i + 1], row, restamp[i + 2])) {
+      const a = P && P();
+      const stamped = this.host.stamp(restamp[i + 1], row, restamp[i + 2]);
+      if (P) nativeMs += P() - a;
+      if (!stamped) {
         // Its shape changed (more text nodes…): the general way.
         const rf = this.fc.get(row);
         if (rf) { rf.stamp = 0; this.noStamp.add(row); } else this.noStampList.add(row.parentNode);
@@ -754,7 +758,6 @@ export class Renderer {
       }
     }
     // Validate every leaf before changing any cached output.
-    let direct = 0, nativeMs = 0;
     for (let i = 0; i < updates.length; i += 5) {
       const el = updates[i], holder = updates[i + 1], value = updates[i + 2], old = updates[i + 3], tid = updates[i + 4];
       const str = typeof value === "string";
@@ -797,7 +800,7 @@ export class Renderer {
     // Canvas programs that changed in the same frame (a chart beside the
     // text it labels): sent as canvasOnly() would.
     if (this.host.canvasOps && this.canvasEls.size) this.sendCanvases();
-    if (P) this.host.log(1, `PROF text: ${updates.length / 5} leaves, ${direct} direct, prepare ${(P() - t0 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
+    if (P) this.host.log(1, `PROF text: ${updates.length / 5} leaves, ${direct} direct, ${restamp.length / 3} stamped rows, prepare ${(P() - t0 - nativeMs - this.applyMs).toFixed(2)}, apply ${(nativeMs + this.applyMs).toFixed(2)}`);
     return true;
   }
 

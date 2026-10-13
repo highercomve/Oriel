@@ -53,10 +53,14 @@ jobs:
       - name: Sampler test (one full sample)
         # Zig's own glibc: the container's crt files can be newer than its linker reads.
         run: zig test sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
+      - name: Model tests (histories, process filtering and sorting)
+        run: zig build test
+      - name: Oriel renderer build (.oriel views)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
       - name: Build
-        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Packages (.deb, .rpm, .AppImage)
-        run: zig build package-deb package-rpm package-appimage -Dnative_ui -Doptimize=ReleaseFast
+        run: zig build package-deb package-rpm package-appimage -Drenderer=native -Doptimize=ReleaseFast
       - run: ls -la zig-out/package
       - uses: actions/upload-artifact@v4
         with:
@@ -84,11 +88,11 @@ jobs:
       - name: Sampler test (one full sample)
         run: zig test sampler_windows.zig -OReleaseFast
       - name: Build
-        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Installer (setup.exe) and portable zip
         shell: pwsh
         run: |
-          zig build package-nsis -Dnative_ui -Doptimize=ReleaseFast
+          zig build package-nsis -Drenderer=native -Doptimize=ReleaseFast
           Compress-Archive -Path zig-out/bin/* -DestinationPath zig-out/package/oriel-system-monitor-windows-x86_64.zip -Force
           Get-ChildItem zig-out/package
       - uses: actions/upload-artifact@v4
@@ -112,10 +116,10 @@ jobs:
       - name: Sampler test (one full sample)
         run: zig test sampler_macos.zig -OReleaseFast
       - name: Build
-        run: zig build -Dnative_ui -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Disk image (.app in a .dmg, unsigned)
         run: |
-          zig build package-dmg -Dnative_ui -Doptimize=ReleaseFast
+          zig build package-dmg -Drenderer=native -Doptimize=ReleaseFast
           ls -la zig-out/package
       - uses: actions/upload-artifact@v4
         with:

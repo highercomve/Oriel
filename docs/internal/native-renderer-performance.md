@@ -2,11 +2,195 @@
 
 [Documentation](../README.md) · [Native renderer](../native-renderer.md) · [Experiment history](../design/native-renderer-performance-history.md)
 
-Updated 2026-10-05 from the published site and tracked benchmark reports.
+Updated 2026-10-12 from the published site and tracked benchmark reports.
 This page separates the site's 2026-10-03 hardware results from the later
 2026-10-04 software-rendered diagnostics. Dates, displays, renderers, and
 measurement methods matter: a newer run is not automatically a replacement
 for a run on different hardware.
+
+## Theme-color observer regression, 2026-10-12
+
+A Pixel 8 report shows native builds at 51.93 / 217.21 ms and updates at
+41.28 / 74.73 ms for 1,000 / 3,000 rows, against WebView's 23.10 / 73.10 ms
+builds and 9.80 / 27.10 ms updates. Both renderers reach approximately
+120 fps in the reported animation/canvas workloads. The user confirmed the
+earlier native APK was the build immediately before this fix; its optimization
+was not separately recorded. These phone screenshots remain separate from
+the docs' measurements on different hardware.
+
+After receiving the fixed arm64 ReleaseFast APK with profiling disabled,
+the user supplied a new Pixel 8 screenshot:
+
+| Phone workload | Earlier native | Fixed APK | WebView reference |
+|---|---:|---:|---:|
+| Build 1,000 rows | 51.93 ms | **14.37 ms** | 23.10 ms |
+| Build 3,000 rows | 217.21 ms | **97.54 ms** | 73.10 ms |
+| Update 1,000 rows | 41.28 ms | **14.19 ms** | 9.80 ms |
+| Update 3,000 rows | 74.73 ms | **38.42 ms** | 27.10 ms |
+
+Observed row time falls 49–72%. Construction of 1,000 rows now leads the
+WebView reference; construction of 3,000 rows and both update workloads
+still trail it. This is one screenshot per variant with uncontrolled
+thermal/background state. The user identified the earlier APK as immediately
+pre-fix; its build mode was not separately recorded. In
+particular, the much larger phone update improvement cannot be attributed
+entirely to the observer fix from the Linux comparison below.
+
+PSS rises from 72.71 to 92.67 MB, and private memory from 53.06 to 78.05 MB.
+These snapshots do not establish a leak. Despite the screenshots' "all
+processes" label, render-bench reads the app's accessible `/proc` process
+tree. Android's isolated WebView renderer is spawned under `webview_zygote`,
+outside that tree, and is not included. Thus the WebView's 96.79 MB PSS and
+52.99 MB private reading are not combined app-plus-renderer totals and
+cannot establish the native/WebView total-memory difference. New Android
+benchmark labels say "app process tree" and explicitly note the exclusion.
+Use external `adb shell dumpsys meminfo` readings of the app and its
+identified isolated renderer at the same benchmark endpoint for a fair total.
+[Android WebView memory/process accounting](https://developer.android.com/develop/ui/views/layout/webapps/manage-webview-memory).
+
+Animation is 115.41 fps, while
+canvas medians remain near 120 fps; the 1,000-ball Zig canvas includes a
+52.84 fps trial that needs a repeated run to assess stability. The screenshot
+shows power measurement starting but supplies no power results.
+[Transcribed phone trials and APK identity](../../examples/render-bench/results/2026-10-12-pixel8-screenshots.json).
+
+The local investigation nevertheless reproduces a construction regression
+in the shared runtime. `41faf78` (2026-10-04) added an internal theme-color
+MutationObserver without the runtime's `__nuiConnectedOnly` marker. The
+native DOM consequently enables hooks for every detached mutation across
+the document, including row parsing and list construction, although this
+observer only watches the head. The fix marks the watcher as internal,
+retaining normal page observers' detached notifications.
+
+Three serial processes per variant, rotated order, ReleaseFast, private
+Xvfb at 1024×768, 900×700 windows, software Cairo rendering. Nine pooled
+second-round samples per row workload, including synchronous layout:
+
+| Metric | Before (`69a47ec`) | Fixed | Historical (`c0615af`) |
+|---|---:|---:|---:|
+| Build 1,000 rows | 18.62 ms | **7.71 ms** | 6.91 ms |
+| Build 3,000 rows | 54.85 ms | **21.43 ms** | 19.70 ms |
+| Update 1,000 rows | 4.22 ms | 4.20 ms | 3.23 ms |
+| Update 3,000 rows | 13.86 ms | 12.45 ms | 9.50 ms |
+| Whole-process user instructions, median | 15.51 billion | 9.75 billion | 7.82 billion |
+
+Construction improves 59–61%, close to the historical baseline on this
+same setup. Updates remain slower than that baseline; do not claim they
+are fixed. Before/after larger-update trial ranges overlap. Counter runs
+include startup, both rounds and idle painting, not just timed rows.
+Row-only memory is not comparable to full-suite memory. These Linux
+results establish neither Pixel 8 timings nor energy savings.
+
+Tools used: `perf record` with DWARF stacks, `perf stat` for user cycles
+and instructions, the native DOM-only benchmark, and `-Dnative_ui_prof`
+stage logging. In the sampled row-only pair, `JS_CallInternal` drops from
+21.29% to 8.81% of self samples; absolute instruction counts provide the
+separate work-reduction evidence. Stage logging confirms that construction
+still uses list stamping and text updates still use row stamping. The
+previous text log reported zero leaves/direct calls and charged stamped
+native work to preparation; it now reports stamped rows and includes
+their calls in apply time.
+
+The final instrumented full suite also completes both rounds; animation
+and JavaScript/Zig canvas stay at the private display's approximately
+60 Hz limit. The corrected first-round text logs split 3,000 stamped rows
+into 2.25–2.66 ms of preparation and 2.76–3.30 ms in native stamping.
+Treat these stage samples as diagnostics, separately from the serial
+comparison above. JavaScript, Zig, DOM and typed-dispatch checks pass.
+
+Next priorities supported by this review:
+
+1. **Profile text updates on the Pixel 8.** Separate mutation hooks, row
+   stamping, batched Android text measurement, Yoga and frame publication.
+   Desktop diagnostics show about 12 ms in the first 3,000-row update's
+   synchronous layout and about 5 ms in later stamped-update preparation
+   plus native work; these are instrumented observations, not phone timings.
+2. **Measure cold layout separately from repeated text edits.** New
+   3,000-row lists invoke Yoga's measure callback about 12,000 times in the
+   desktop stage trace, mostly hitting cached text sizes. Optimize repeated
+   layout work without changing synchronous geometry or font baselines.
+3. **Keep internal observers from enabling page-wide detached hooks.**
+   The new `test-native-runtime` check runs the production bundle on
+   QuickJS/the native DOM, fails on the old bundle, checks live theme-color
+   changes, and verifies detached records for page observers and restored
+   suppression after disconnect. LinkeDOM tests alone cannot detect this.
+
+[Raw samples, counters, profiled pairs and conditions](../../examples/render-bench/results/2026-10-12-theme-observer-rows.json).
+Reproduction commands are in the [render-bench README](../../examples/render-bench/README.md).
+
+## Third renderer: compiled Zig views, 2026-10-12
+
+The benchmark now offers `-Drenderer=oriel` (called `zig` in the 2026-10-12
+runs below) alongside `webview` and `native`.
+It compiles `.oriel` templates into the existing native tree and runs events,
+state and canvas loops in Zig, without QuickJS, DOM or CSS processing. The
+full benchmark workloads and controls remain available; this is an experimental
+view API with explicit stable identities, not a complete component framework.
+[Architecture and scope](../design/zig-ui-experiment.md).
+
+Three serial processes per renderer, rotated order, ReleaseFast, private Xvfb
+at 1024×768, 900×700 windows and Cairo. Nine pooled second-round samples:
+
+| Workload | WebView | Native JS (observer fixed) | Zig UI |
+|---|---:|---:|---:|
+| Build 1,000 rows | 18 ms | 7.79 ms | 7.09 ms |
+| Build 3,000 rows | 51 ms | 21.55 ms | 19.57 ms |
+| Update 1,000 rows | 8 ms | 4.28 ms | 0.70 ms |
+| Update 3,000 rows | 25 ms | 12.84 ms | 1.74 ms |
+
+Construction improves about 9%; updates improve 84–86% relative to the fixed
+JavaScript native mode in this desktop diagnostic. Layout stays inside timing,
+painting outside. Rows are fully instantiated. Zig uses native templates and
+text updates, with no DOM/CSS synchronization; its shell uses native rows
+rather than an HTML table. Native font measurement, Yoga and platform drawing
+remain. These results do not establish Android timings or energy savings.
+
+The full two-round Zig suite completes all box/canvas workloads near the
+private display's 60 Hz ceiling. Its primary canvas uses f64 Zig physics in
+place of JavaScript; the direct `(Zig)` variant reuses the existing f32 code.
+The four power scenarios correctly report an unavailable desktop energy source.
+Android arm64 ReleaseFast builds with the existing host; Pixel 8 measurements
+remain to be collected. Tests cover ownership, keyed identity and frame pacing.
+[Raw samples, perf counters, conditions and full-suite diagnostic](../../examples/render-bench/results/2026-10-12-three-renderers-desktop.json).
+
+## Poco X3 device measurements, 2026-10-13
+
+The compiled-view Oriel mode, fixed native JS mode and WebView were tested on
+the connected M2007J20CG, Android 12, arm64 ReleaseFast, unplugged over Wi-Fi
+ADB. Original brightness and the 60 Hz peak refresh limit were retained.
+Power uses a fixed visible 320 × 240 viewport with result publication deferred;
+this avoids the original table shrinking or clipping the drawing area.
+
+| Measurement | Oriel | Native JS | WebView |
+|---|---:|---:|---:|
+| External combined PSS snapshots | 89–111 MiB | 103–122 MiB | 196–202 MiB |
+| Idle whole-device draw | 1.17 W | 1.11 W | 0.98 W |
+| 200 boxes whole-device draw | 1.39 W | 2.64 W | 2.15 W |
+| 1,000 balls whole-device draw | 1.68 W | 3.25 W* | 2.09 W |
+| 1,000 balls scenario-average FPS | 59.8 | 33.6* | 58.9 |
+| Direct Zig balls draw | 1.88 W | 2.05 W | — |
+
+The box scenario's average draw falls about 48% versus native JS and 36%
+versus WebView, at approximately 60 fps. Idle does not improve. Memory was
+sampled separately through dumpsys meminfo, including the isolated WebView
+renderer associated by ActivityManager packageList. Native/Oriel ranges overlap
+and post-suite snapshot times differ; avoid a precise improvement percentage.
+In-app /proc PSS omits graphics accounting, and Pss_Anon (“private”) is absent
+on this device and shown as zero. These in-app fields were excluded from totals.
+
+*The standard native-JS canvas scenario lasted 80.2 seconds for a requested
+60. Its average watts/FPS include the whole scenario; the cause is uninvestigated.
+Do not compare total joules as equal-duration work or treat the reported FPS
+as isolated steady-state drawing throughput. The other scenarios lasted about
+60 seconds. One pass in fixed order, different thermal/background state and
+whole-device current/voltage sampling supply no confidence interval or general
+battery-life conclusion. Charge-counter steps were too coarse for attribution.
+
+The device test also caught typed dimension/corner serialization mismatching
+the native parser; explicit wire serialization and round-trip tests now preserve
+sizes and radii. Both native test suites pass. The original APK, screen timeout
+and debug property were restored after testing.
+[Complete raw reports, APK hashes and limitations](../../examples/render-bench/results/2026-10-13-poco-x3-memory-power.json).
 
 ## Published desktop comparison, 2026-10-03
 

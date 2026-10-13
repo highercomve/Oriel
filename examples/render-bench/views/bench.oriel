@@ -1,0 +1,15 @@
+<column id="root" gap="12" padding="16" background="#16181d" height="100%">
+  <row gap="12" align="center">
+    <text font-size="18">Render bench</text>
+    <text color="#6d8bff">oriel</text>
+    <view grow="1" />
+    <button id="run" padding="6,12,6,12" background="#6d8bff" radius="8"><text>Run again</text></button>
+    <button id="power" padding="6,12,6,12" background="#6d8bff" radius="8"><text>Measure power</text></button>
+  </row>
+  <row padding="4,10,4,10" border-bottom="1" border-color="#30343d">
+    <text width="52%">Test</text><text width="17%">Median</text><text width="31%">Runs</text>
+  </row>
+  <column id="results" />
+  <text id="status" color="#9aa0ab">Starting…</text>
+  <view id="stage" grow="1" shrink="1" min-height="0" clip="true" background="#1d2026" radius="10" />
+</column>

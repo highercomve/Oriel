@@ -61,6 +61,10 @@ pub const extensions = @import("core/extensions.zig");
 /// (native_ui/zig_canvas.zig; docs/native-renderer.md, "Canvas from Zig").
 /// Without it there is no native canvas: check `oriel.canvas.available`.
 pub const canvas = if (options.native_ui) @import("native_ui/zig_canvas.zig") else unavailable("canvas");
+/// Experimental Zig-driven native views compiled from .oriel files.
+pub const ui = if (options.zig_ui) @import("native_ui/ui.zig") else struct {
+    pub const available = false;
+};
 
 // Built-in modules. Each has `available`: a comptime fact for this build.
 // Off, or missing on the target, the namespace holds only `available =
@@ -326,6 +330,7 @@ test {
     // The native renderer's own tests: its tree everywhere, the GTK backend
     // on desktop Linux.
     if (options.native_ui) {
+        if (options.zig_ui) _ = @import("native_ui/ui.zig");
         _ = @import("native_ui/tree.zig");
         _ = @import("native_ui/drop.zig");
         if (@import("builtin").os.tag == .linux and !@import("builtin").abi.isAndroid()) _ = @import("native_ui/gtk.zig");

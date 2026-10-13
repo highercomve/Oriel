@@ -102,6 +102,8 @@ extern fn gtk_event_controller_scroll_new(flags: c_uint) *anyopaque;
 extern fn gtk_event_controller_motion_new() *anyopaque;
 extern fn gtk_event_controller_key_new() *anyopaque;
 extern fn gtk_event_controller_focus_new() *anyopaque;
+extern fn gtk_button_get_child(b: *Widget) ?*Widget;
+extern fn gtk_label_set_xalign(label: *Widget, alignment: f32) void;
 extern fn gtk_scale_new_with_range(orientation: c_int, min: f64, max: f64, step: f64) *Widget;
 extern fn gtk_range_set_value(r: *Widget, v: f64) void;
 extern fn gtk_range_get_value(r: *Widget) f64;
@@ -457,11 +459,15 @@ pub const Surface = struct {
         gtk_widget_add_controller(area, click);
         const scroll = gtk_event_controller_scroll_new(1); // vertical
         _ = g_signal_connect_data(scroll, "scroll", @ptrCast(&onScroll), s, null, 0);
-        gtk_widget_add_controller(area, scroll);
+        // Oriel controls are overlay siblings of the drawing area. Capture
+        // wheel input on their common parent so a button cannot swallow it.
+        if (@import("build_options").zig_ui) gtk_event_controller_set_propagation_phase(scroll, 1);
+        gtk_widget_add_controller(if (@import("build_options").zig_ui) overlay else area, scroll);
         const motion = gtk_event_controller_motion_new();
         _ = g_signal_connect_data(motion, "motion", @ptrCast(&onMotion), s, null, 0);
         _ = g_signal_connect_data(motion, "leave", @ptrCast(&onLeave), s, null, 0);
-        gtk_widget_add_controller(area, motion);
+        if (@import("build_options").zig_ui) gtk_event_controller_set_propagation_phase(motion, 1);
+        gtk_widget_add_controller(if (@import("build_options").zig_ui) overlay else area, motion);
         const keys = gtk_event_controller_key_new();
         _ = g_signal_connect_data(keys, "key-pressed", @ptrCast(&onKey), s, null, 0);
         _ = g_signal_connect_data(keys, "key-released", @ptrCast(&onKeyUp), s, null, 0);
@@ -1137,6 +1143,7 @@ fn syncFields(s: *Surface) void {
             const z = s.gpa.dupeZ(u8, label) catch continue;
             defer s.gpa.free(z);
             gtk_button_set_label(w, z.ptr);
+            if (@import("build_options").zig_ui) if (n.props.ta) |alignment| if (std.mem.eql(u8, alignment, "left")) if (gtk_button_get_child(w)) |child| gtk_label_set_xalign(child, 0);
         }
         // A native check: the page's state (JS owns it), every sync.
         if (n.kind == .check) {
@@ -1331,6 +1338,16 @@ fn updateCss(s: *Surface) void {
         const n = s.engine.tree.get(e.key_ptr.*) orelse continue;
         if (n.kind == .button) {
             s.css_text.print(a, ".nui-f{d} {{ padding: 0; margin: 0; min-height: 0; min-width: 0; font-size: {d:.1}px; }}\n", .{ n.id, n.props.fz orelse 13.333 }) catch return;
+            if (@import("build_options").zig_ui) {
+                if (n.props.bg) |bg| if (bg.color) |c| {
+                    s.css_text.print(a, ".nui-f{d} {{ background: rgba({d:.0},{d:.0},{d:.0},{d:.2}); background-image: none; box-shadow: none; }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
+                };
+                const color = if (n.props.bc) |colors| colors[0] else tree_mod.Color{48,54,61,1};
+                const border_width = if (n.props.bw) |widths| widths[0] else 1;
+                const radius = n.radiusXY().x[0];
+                s.css_text.print(a, ".nui-f{d} {{ border: {d:.1}px solid rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-radius: {d:.1}px; font-weight: {d:.0}; }}\n", .{n.id,border_width,color[0],color[1],color[2],color[3],radius,n.props.fwt orelse 500}) catch return;
+                if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d} {{ font-family: '{s}'; }}\n", .{n.id, resolveFamily(s,family)}) catch return;
+            }
             // The page's own color on the label; else the theme's.
             if (n.props.col) |c| s.css_text.print(a, ".nui-f{d} label {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
             continue;

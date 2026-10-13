@@ -1,0 +1,661 @@
+{
+  "date": "2026-10-13",
+  "device": {
+    "serial_usb": "ae82807d",
+    "serial_wireless": "192.168.68.122:5555",
+    "model": "M2007J20CG",
+    "android": "12",
+    "settings": {
+      "system/screen_off_timeout": "30000",
+      "system/screen_brightness": "1191",
+      "system/screen_brightness_mode": "0",
+      "system/peak_refresh_rate": "60",
+      "system/min_refresh_rate": "null",
+      "global/stay_on_while_plugged_in": "7"
+    },
+    "debug.oriel.env": "",
+    "battery_initial": "Current Battery Service state:\n  AC powered: true\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 800000\n  Max charging voltage: 5000000\n  Charge counter: 3912160\n  status: 5\n  health: 2\n  present: true\n  level: 100\n  scale: 100\n  voltage: 4403\n  temperature: 211\n  technology: Li-poly",
+    "webview_provider": "com.google.android.webview 153.0.8010.57",
+    "conditions": {
+      "brightness": "Original fixed value 1191 retained; automatic brightness off",
+      "refresh": "Original peak_refresh_rate=60 retained; min refresh unset; adaptive idle refresh remains enabled",
+      "network": "Wi-Fi ADB; existing radio/background app state retained",
+      "power": "BatteryManager CURRENT_NOW times broadcast voltage, 250 ms integration; whole-device draw, not app-only",
+      "memory": "External dumpsys meminfo TOTAL PSS and Private Dirty+Private Clean; associated isolated WebView process included using ActivityManager packageList. In-app PSS omits graphics accounting and private is Pss_Anon, absent on this Android 12 device."
+    }
+  },
+  "apks": {
+    "oriel": {
+      "bytes": 1638498,
+      "sha256": "d42652ab7190f5b59eab90d37c3afbd639b72fd049c8e92ba83722801cdaf31e",
+      "optimization": "ReleaseFast",
+      "abi": "arm64-v8a"
+    },
+    "native": {
+      "bytes": 2656838,
+      "sha256": "32e8508edf3acadc000b0f536a0e56a5944eb88bd76ed63f6084f871814e568c",
+      "optimization": "ReleaseFast",
+      "abi": "arm64-v8a"
+    },
+    "webview": {
+      "bytes": 1323494,
+      "sha256": "52982ee8095b83f9d469f7043cd33e182b78b22e2af6d9d3c854cb4f9e625a92",
+      "optimization": "ReleaseFast",
+      "abi": "arm64-v8a"
+    }
+  },
+  "conditions": {
+    "optimization": "Zig ReleaseFast; signed Gradle release arm64-v8a APKs",
+    "power_order": [
+      "oriel",
+      "native",
+      "webview"
+    ],
+    "repeats": "One fresh process per mode for power. One full GUI suite per mode for memory, two snapshots of that process, not independent repeated trials.",
+    "power_method": "Power-only mode; fixed visible 320x240 logical pixels; results deferred until completion. Requested 60 seconds/scenario. BatteryManager current times voltage, approximately 250 ms integration. Whole-device draw.",
+    "memory_method": "External dumpsys meminfo TOTAL PSS; Private Dirty+Private Clean. ActivityManager packageList identifies main app and its isolated WebView renderer. Done screenshots checked. Queries separate from power.",
+    "memory_endpoints": "Oriel approximately 48/54 seconds after start; native/WebView approximately 60/76 seconds. All completed the suite. A later Oriel repeat went black and was rejected. Endpoint timing/cache reclamation limits precise native/Oriel attribution.",
+    "display": "Original fixed brightness 1191, peak 60 Hz and adaptive idle refresh retained. Wireless ADB, no charger.",
+    "instrumentation": "Logcat polled every 10 seconds; charger checked periodically; viewport screenshot during Oriel canvas.",
+    "temperature_c": {
+      "oriel": [
+        22.3,
+        23.1
+      ],
+      "native": [
+        23.8,
+        24.4
+      ],
+      "webview": [
+        24.4,
+        24.6
+      ]
+    }
+  },
+  "runs": {
+    "oriel": {
+      "memory": {
+        "renderer": "oriel",
+        "method": "One GUI full suite; external memory after 48 and 54 seconds, after completion; isolated processes identified by ActivityManager packageList. Queries separate from power tests.",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3792400\n  status: 3\n  health: 2\n  present: true\n  level: 94\n  scale: 100\n  voltage: 4262\n  temperature: 223\n  technology: Li-poly",
+        "samples": [
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 25814,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 113673,
+                "private_dirty_kib": 98600,
+                "private_clean_kib": 8644,
+                "private_kib": 107244
+              }
+            ],
+            "combined_pss_mib": 111.0087890625,
+            "combined_private_mib": 104.73046875
+          },
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 25814,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 91590,
+                "private_dirty_kib": 70364,
+                "private_clean_kib": 14572,
+                "private_kib": 84936
+              }
+            ],
+            "combined_pss_mib": 89.443359375,
+            "combined_private_mib": 82.9453125
+          }
+        ],
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3792400\n  status: 3\n  health: 2\n  present: true\n  level: 94\n  scale: 100\n  voltage: 4262\n  temperature: 223\n  technology: Li-poly",
+        "apk_sha256": "d42652ab7190f5b59eab90d37c3afbd639b72fd049c8e92ba83722801cdaf31e",
+        "apk_identity_note": "Hash associated from the packaged test artifact; original run record did not include the hash field."
+      },
+      "power": {
+        "renderer": "oriel",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3792400\n  status: 3\n  health: 2\n  present: true\n  level: 94\n  scale: 100\n  voltage: 4262\n  temperature: 223\n  technology: Li-poly",
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3752480\n  status: 3\n  health: 2\n  present: true\n  level: 93\n  scale: 100\n  voltage: 4253\n  temperature: 231\n  technology: Li-poly",
+        "elapsed_s": 238.85390546597773,
+        "report": {
+          "renderer": "zig-ui",
+          "memory_scope": "app process tree",
+          "workload": "power",
+          "power_viewport": {
+            "width": 320,
+            "height": 240
+          },
+          "canvas_implementation": "Zig f64 physics for standard canvas; existing Zig f32 implementation for (Zig) workloads",
+          "results": {
+            "startup \u2192 Zig view": {
+              "median": 40.57,
+              "runs": [
+                40.57
+              ],
+              "unit": "ms"
+            },
+            "power: idle (nothing moving)": {
+              "median": 1166.19,
+              "runs": [
+                1166.19
+              ],
+              "unit": "mW"
+            },
+            "power: animate 200 boxes": {
+              "median": 1385.46,
+              "runs": [
+                1385.46
+              ],
+              "unit": "mW"
+            },
+            "power: canvas 1000 balls": {
+              "median": 1681.2,
+              "runs": [
+                1681.2
+              ],
+              "unit": "mW"
+            },
+            "power: canvas 1000 balls (Zig)": {
+              "median": 1882.7,
+              "runs": [
+                1882.7
+              ],
+              "unit": "mW"
+            },
+            "power": [
+              {
+                "name": "idle (nothing moving)",
+                "source": "battery",
+                "seconds": 60.25227081,
+                "mw": 1166.1893507884863,
+                "joules": 70.26555657944597,
+                "samples": 234,
+                "plugged": false,
+                "charge_uah": 0
+              },
+              {
+                "name": "animate 200 boxes",
+                "source": "battery",
+                "seconds": 60.013785080999995,
+                "mw": 1385.45570963813,
+                "joules": 83.14644119746707,
+                "samples": 231,
+                "plugged": false,
+                "fps": 59.95289240869937,
+                "mj_per_frame": 23.10907203931825,
+                "charge_uah": 39920
+              },
+              {
+                "name": "canvas 1000 balls",
+                "source": "battery",
+                "seconds": 60.01389867499999,
+                "mw": 1681.1998906916156,
+                "joules": 100.89535989238769,
+                "samples": 231,
+                "plugged": false,
+                "fps": 59.76948805517675,
+                "mj_per_frame": 28.12806241772726,
+                "charge_uah": 0
+              },
+              {
+                "name": "canvas 1000 balls (Zig)",
+                "source": "battery",
+                "seconds": 60.022105759,
+                "mw": 1882.6985923435752,
+                "joules": 113.00353402196649,
+                "samples": 231,
+                "plugged": false,
+                "fps": 59.777976041135446,
+                "mj_per_frame": 31.494853406345175,
+                "charge_uah": 0
+              }
+            ]
+          }
+        },
+        "apk_sha256": "d42652ab7190f5b59eab90d37c3afbd639b72fd049c8e92ba83722801cdaf31e",
+        "apk_identity_note": "Hash associated from the packaged test artifact; original run record did not include the hash field."
+      }
+    },
+    "native": {
+      "memory": {
+        "renderer": "native",
+        "method": "One GUI full suite; external memory after 60 and 76 seconds, after completion; isolated processes identified by ActivityManager packageList. Queries separate from power tests.",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3752480\n  status: 3\n  health: 2\n  present: true\n  level: 93\n  scale: 100\n  voltage: 4253\n  temperature: 231\n  technology: Li-poly",
+        "samples": [
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 27679,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 124525,
+                "private_dirty_kib": 109100,
+                "private_clean_kib": 10200,
+                "private_kib": 119300
+              }
+            ],
+            "combined_pss_mib": 121.6064453125,
+            "combined_private_mib": 116.50390625
+          },
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 27679,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 105878,
+                "private_dirty_kib": 84212,
+                "private_clean_kib": 16132,
+                "private_kib": 100344
+              }
+            ],
+            "combined_pss_mib": 103.396484375,
+            "combined_private_mib": 97.9921875
+          }
+        ],
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3752480\n  status: 3\n  health: 2\n  present: true\n  level: 92\n  scale: 100\n  voltage: 4247\n  temperature: 238\n  technology: Li-poly",
+        "apk_sha256": "32e8508edf3acadc000b0f536a0e56a5944eb88bd76ed63f6084f871814e568c"
+      },
+      "power": {
+        "renderer": "native",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3752480\n  status: 3\n  health: 2\n  present: true\n  level: 92\n  scale: 100\n  voltage: 4247\n  temperature: 238\n  technology: Li-poly",
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3712560\n  status: 3\n  health: 2\n  present: true\n  level: 91\n  scale: 100\n  voltage: 4285\n  temperature: 244\n  technology: Li-poly",
+        "elapsed_s": 260.0669197370007,
+        "apk_sha256": "32e8508edf3acadc000b0f536a0e56a5944eb88bd76ed63f6084f871814e568c",
+        "report": {
+          "renderer": "native",
+          "memory_scope": "app process tree",
+          "workload": "power",
+          "power_viewport": {
+            "width": 320,
+            "height": 240
+          },
+          "results": {
+            "startup \u2192 page script": {
+              "median": 99.34,
+              "runs": [
+                99.34
+              ],
+              "unit": "ms"
+            },
+            "startup \u2192 first frame": {
+              "median": 246.79,
+              "runs": [
+                246.79
+              ],
+              "unit": "ms"
+            },
+            "memory at start (PSS, app process tree)": {
+              "median": 27.08,
+              "runs": [
+                27.08
+              ],
+              "unit": "MB"
+            },
+            "private memory at start (app process tree)": {
+              "median": 0,
+              "runs": [
+                0
+              ],
+              "unit": "MB"
+            },
+            "power": [
+              {
+                "name": "idle (nothing moving)",
+                "source": "battery",
+                "seconds": 60,
+                "mw": 1112,
+                "joules": 66.74,
+                "samples": 239,
+                "plugged": false,
+                "charge_uah": 0
+              },
+              {
+                "name": "animate 200 boxes",
+                "source": "battery",
+                "seconds": 60.1,
+                "mw": 2643,
+                "joules": 158.8,
+                "samples": 240,
+                "plugged": false,
+                "fps": 59.9,
+                "mj_per_frame": 44.12,
+                "charge_uah": 0
+              },
+              {
+                "name": "canvas 1000 balls",
+                "source": "battery",
+                "seconds": 80.2,
+                "mw": 3245,
+                "joules": 260.32,
+                "samples": 303,
+                "plugged": false,
+                "fps": 33.6,
+                "mj_per_frame": 96.45,
+                "charge_uah": 39920
+              },
+              {
+                "name": "canvas 1000 balls (Zig)",
+                "source": "battery",
+                "seconds": 60.2,
+                "mw": 2049,
+                "joules": 123.44,
+                "samples": 236,
+                "plugged": false,
+                "fps": 59.6,
+                "mj_per_frame": 34.37,
+                "charge_uah": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    "webview": {
+      "memory": {
+        "renderer": "webview",
+        "method": "One GUI full suite; external memory after 60 and 76 seconds, after completion; isolated processes identified by ActivityManager packageList. Queries separate from power tests.",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3712560\n  status: 3\n  health: 2\n  present: true\n  level: 91\n  scale: 100\n  voltage: 4285\n  temperature: 244\n  technology: Li-poly",
+        "samples": [
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 29828,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 114207,
+                "private_dirty_kib": 67780,
+                "private_clean_kib": 23536,
+                "private_kib": 91316
+              },
+              {
+                "uid": 99216,
+                "pid": 29924,
+                "name": "com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": true,
+                "pss_kib": 86522,
+                "private_dirty_kib": 17936,
+                "private_clean_kib": 49876,
+                "private_kib": 67812
+              }
+            ],
+            "combined_pss_mib": 196.0244140625,
+            "combined_private_mib": 155.3984375
+          },
+          {
+            "processes": [
+              {
+                "uid": 10167,
+                "pid": 29828,
+                "name": "dev.oriel.RenderBench",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": false,
+                "pss_kib": 116775,
+                "private_dirty_kib": 67196,
+                "private_clean_kib": 23504,
+                "private_kib": 90700
+              },
+              {
+                "uid": 99216,
+                "pid": 29924,
+                "name": "com.google.android.webview:sandboxed_process0:org.chromium.content.app.SandboxedProcessService0:0",
+                "package_list": "dev.oriel.RenderBench",
+                "isolated": true,
+                "pss_kib": 89770,
+                "private_dirty_kib": 18092,
+                "private_clean_kib": 49660,
+                "private_kib": 67752
+              }
+            ],
+            "combined_pss_mib": 201.7041015625,
+            "combined_private_mib": 154.73828125
+          }
+        ],
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3712560\n  status: 3\n  health: 2\n  present: true\n  level: 91\n  scale: 100\n  voltage: 4285\n  temperature: 244\n  technology: Li-poly",
+        "apk_sha256": "52982ee8095b83f9d469f7043cd33e182b78b22e2af6d9d3c854cb4f9e625a92"
+      },
+      "power": {
+        "renderer": "webview",
+        "battery_before": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3712560\n  status: 3\n  health: 2\n  present: true\n  level: 91\n  scale: 100\n  voltage: 4285\n  temperature: 244\n  technology: Li-poly",
+        "battery_after": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3712560\n  status: 3\n  health: 2\n  present: true\n  level: 90\n  scale: 100\n  voltage: 4274\n  temperature: 246\n  technology: Li-poly",
+        "elapsed_s": 177.2421872150153,
+        "apk_sha256": "52982ee8095b83f9d469f7043cd33e182b78b22e2af6d9d3c854cb4f9e625a92",
+        "report": {
+          "renderer": "WebView",
+          "memory_scope": "app process tree",
+          "workload": "power",
+          "power_viewport": {
+            "width": 320,
+            "height": 240
+          },
+          "results": {
+            "startup \u2192 page script": {
+              "median": 603.4,
+              "runs": [
+                603.4
+              ],
+              "unit": "ms"
+            },
+            "startup \u2192 first frame": {
+              "median": 708.35,
+              "runs": [
+                708.35
+              ],
+              "unit": "ms"
+            },
+            "memory at start (PSS, app process tree)": {
+              "median": 69.09,
+              "runs": [
+                69.09
+              ],
+              "unit": "MB"
+            },
+            "private memory at start (app process tree)": {
+              "median": 0,
+              "runs": [
+                0
+              ],
+              "unit": "MB"
+            },
+            "power": [
+              {
+                "name": "idle (nothing moving)",
+                "source": "battery",
+                "seconds": 60,
+                "mw": 982,
+                "joules": 58.94,
+                "samples": 240,
+                "plugged": false,
+                "charge_uah": 0
+              },
+              {
+                "name": "animate 200 boxes",
+                "source": "battery",
+                "seconds": 60,
+                "mw": 2151,
+                "joules": 129.13,
+                "samples": 240,
+                "plugged": false,
+                "fps": 60,
+                "mj_per_frame": 35.85,
+                "charge_uah": 0
+              },
+              {
+                "name": "canvas 1000 balls",
+                "source": "battery",
+                "seconds": 60,
+                "mw": 2091,
+                "joules": 125.55,
+                "samples": 240,
+                "plugged": false,
+                "fps": 58.9,
+                "mj_per_frame": 35.49,
+                "charge_uah": 39920
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "summary": {
+    "memory": {
+      "oriel": {
+        "pss_mib": [
+          111.0087890625,
+          89.443359375
+        ],
+        "private_mib": [
+          104.73046875,
+          82.9453125
+        ]
+      },
+      "native": {
+        "pss_mib": [
+          121.6064453125,
+          103.396484375
+        ],
+        "private_mib": [
+          116.50390625,
+          97.9921875
+        ]
+      },
+      "webview": {
+        "pss_mib": [
+          196.0244140625,
+          201.7041015625
+        ],
+        "private_mib": [
+          155.3984375,
+          154.73828125
+        ]
+      }
+    },
+    "power": {
+      "oriel": {
+        "idle (nothing moving)": {
+          "watts": 1.1661893507884864,
+          "seconds": 60.25227081,
+          "fps": null,
+          "mj_per_frame": null,
+          "samples": 234
+        },
+        "animate 200 boxes": {
+          "watts": 1.38545570963813,
+          "seconds": 60.013785080999995,
+          "fps": 59.95289240869937,
+          "mj_per_frame": 23.10907203931825,
+          "samples": 231
+        },
+        "canvas 1000 balls": {
+          "watts": 1.6811998906916155,
+          "seconds": 60.01389867499999,
+          "fps": 59.76948805517675,
+          "mj_per_frame": 28.12806241772726,
+          "samples": 231
+        },
+        "canvas 1000 balls (Zig)": {
+          "watts": 1.8826985923435753,
+          "seconds": 60.022105759,
+          "fps": 59.777976041135446,
+          "mj_per_frame": 31.494853406345175,
+          "samples": 231
+        }
+      },
+      "native": {
+        "idle (nothing moving)": {
+          "watts": 1.112,
+          "seconds": 60,
+          "fps": null,
+          "mj_per_frame": null,
+          "samples": 239
+        },
+        "animate 200 boxes": {
+          "watts": 2.643,
+          "seconds": 60.1,
+          "fps": 59.9,
+          "mj_per_frame": 44.12,
+          "samples": 240
+        },
+        "canvas 1000 balls": {
+          "watts": 3.245,
+          "seconds": 80.2,
+          "fps": 33.6,
+          "mj_per_frame": 96.45,
+          "samples": 303
+        },
+        "canvas 1000 balls (Zig)": {
+          "watts": 2.049,
+          "seconds": 60.2,
+          "fps": 59.6,
+          "mj_per_frame": 34.37,
+          "samples": 236
+        }
+      },
+      "webview": {
+        "idle (nothing moving)": {
+          "watts": 0.982,
+          "seconds": 60,
+          "fps": null,
+          "mj_per_frame": null,
+          "samples": 240
+        },
+        "animate 200 boxes": {
+          "watts": 2.151,
+          "seconds": 60,
+          "fps": 60,
+          "mj_per_frame": 35.85,
+          "samples": 240
+        },
+        "canvas 1000 balls": {
+          "watts": 2.091,
+          "seconds": 60,
+          "fps": 58.9,
+          "mj_per_frame": 35.49,
+          "samples": 240
+        }
+      }
+    }
+  },
+  "limits": [
+    "Single pass in fixed order; no confidence interval; includes screen/radios/background apps. Thermal/background states differ.",
+    "Native JS standard canvas took 80.2 seconds for a 60-second request; cause uninvestigated. Average watts/FPS cover the whole scenario, including preparation/cleanup. Do not compare total joules as equal-duration work or infer steady-state FPS.",
+    "Charge counter changes in approximately 39,920 uAh steps; zero delta does not mean zero energy.",
+    "In-app PSS omits graphics accounting visible externally. private_mb actually reads Pss_Anon, unavailable on this Android 12 device and shown as zero. In-app fields are not used as total memory.",
+    "Primary canvas is JavaScript in native/WebView, Zig f64 physics in Oriel. Shared direct Zig variant uses existing f32 code.",
+    "Declarative and HTML/table UI shells differ. These measure whole scenarios, not isolated interpreter costs.",
+    "Memory endpoints differ slightly and ranges overlap for native/Oriel; avoid a precise improvement percentage."
+  ],
+  "rejected_attempts": [
+    "Initial Oriel memory endpoint black.",
+    "Initial native power attempt with shrinking/partly clipped viewport aborted.",
+    "Final Oriel memory repeat black; earlier visible Done snapshots retained."
+  ],
+  "validation": {
+    "zig_ui_tests": "580 passed, 3 skipped",
+    "native_ui_tests": "619 passed, 3 skipped",
+    "host_power_only": "Both native modes completed four unavailable-source scenarios; viewport metadata 320x240.",
+    "apk": "All three release APKs passed apksigner verification, same certificate as original app."
+  },
+  "restored": {
+    "original_apk_restored": true,
+    "screen_off_timeout": "30000",
+    "debug.oriel.env": "",
+    "brightness": "1191",
+    "peak_refresh_rate": "60",
+    "battery": "Current Battery Service state:\n  AC powered: false\n  USB powered: false\n  Wireless powered: false\n  Max charging current: 0\n  Max charging voltage: 0\n  Charge counter: 3632720\n  status: 3\n  health: 2\n  present: true\n  level: 89\n  scale: 100\n  voltage: 4273\n  temperature: 243\n  technology: Li-poly"
+  }
+}

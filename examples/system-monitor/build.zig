@@ -1,23 +1,31 @@
 const std = @import("std");
 const oriel = @import("oriel");
 
-/// System monitor: live CPU, memory and process telemetry rendered via
-/// Oriel's native renderer (`-Dnative_ui`) or system WebView.
+/// Live telemetry with WebView, JavaScript/native, or compiled .oriel views.
 pub fn build(b: *std.Build) void {
     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
+    const Renderer = enum { webview, native, oriel };
+    const renderer = b.option(Renderer, "renderer", "Renderer: webview, native (default), or oriel (.oriel views)") orelse .native;
     const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
-        .native_ui = b.option(bool, "native_ui", "Draw the page with native widgets instead of a WebView (experimental)") orelse true,
+        .native_ui = renderer != .webview,
+        .zig_ui = renderer == .oriel,
         .native_ui_prof = b.option(bool, "native_ui_prof", "Log the native renderer's stage timings") orelse false,
         .clipboard = true,
     });
+    const model_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("monitor_model.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    b.step("test", "Test histories and process filtering/sorting").dependOn(&b.addRunArtifact(model_tests).step);
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-system-monitor",
         .root_source_file = b.path("main.zig"),
         .frontend = .{
-            .dir = "web",
+            .dir = if (renderer == .oriel) "views" else "web",
             .dist = ".",
             .build_command = null,
             .install_command = null,

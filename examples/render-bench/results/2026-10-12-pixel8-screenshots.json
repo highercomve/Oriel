@@ -1,0 +1,148 @@
+{
+  "date": "2026-10-12",
+  "device": "Pixel 8 (user identified)",
+  "source": "User screenshots transcribed from this performance-review conversation; not exported benchmark JSON.",
+  "screenshots": {
+    "native_before": "1000196009.png",
+    "webview_reference": "1000195936.png",
+    "native_after": "1000196011.png"
+  },
+  "candidate": {
+    "optimization": "ReleaseFast",
+    "native_ui": true,
+    "native_ui_prof": false,
+    "abi": "arm64-v8a",
+    "base_revision": "69a47ec",
+    "changes": "Working-tree theme-color observer fix plus profiling correction and row-only harness; default full suite used.",
+    "apk_sha256": "9de981fbd046e3ab35593e698b6c8749a32b951d1686115e7eec29003070beaf"
+  },
+  "conditions": {
+    "baseline_optimization": "unconfirmed",
+    "baseline_revision": "User confirmed the earlier native APK was exactly the build immediately before these changes; APK hash not available.",
+    "round": "unconfirmed; visible UI medians of three trials",
+    "thermal_and_background_state": "uncontrolled",
+    "power": "Power measurement was starting in after screenshot; no power results supplied.",
+    "limits": "Direct before/after screenshots on the user-identified Pixel 8, with the baseline identified by the user as immediately pre-fix. One screenshot per variant; baseline optimization was not separately recorded, thermal/background state is uncontrolled, and individual gains are not isolated from all candidate build changes.",
+    "memory_scope": "App-readable process tree from /proc/smaps_rollup. Screenshot label all processes is inaccurate on Android: isolated WebView renderer under webview_zygote is excluded. WebView screenshot memory is not app-plus-renderer total; native/WebView total comparison requires external per-process measurements."
+  },
+  "rows": {
+    "build 1000 rows": {
+      "native_before_ms": 51.93,
+      "native_after_ms": 14.37,
+      "native_after_trials_ms": [
+        80.9,
+        14.37,
+        13.47
+      ],
+      "webview_reference_ms": 23.1,
+      "observed_speedup": 3.614,
+      "observed_time_reduction_percent": 72.3
+    },
+    "build 3000 rows": {
+      "native_before_ms": 217.21,
+      "native_after_ms": 97.54,
+      "native_after_trials_ms": [
+        185.27,
+        97.54,
+        92.47
+      ],
+      "webview_reference_ms": 73.1,
+      "observed_speedup": 2.227,
+      "observed_time_reduction_percent": 55.1
+    },
+    "update 1000 rows": {
+      "native_before_ms": 41.28,
+      "native_after_ms": 14.19,
+      "native_after_trials_ms": [
+        27.33,
+        13.8,
+        14.19
+      ],
+      "webview_reference_ms": 9.8,
+      "observed_speedup": 2.909,
+      "observed_time_reduction_percent": 65.6
+    },
+    "update 3000 rows": {
+      "native_before_ms": 74.73,
+      "native_after_ms": 38.42,
+      "native_after_trials_ms": [
+        39.22,
+        37.4,
+        38.42
+      ],
+      "webview_reference_ms": 27.1,
+      "observed_speedup": 1.945,
+      "observed_time_reduction_percent": 48.6
+    }
+  },
+  "other_results": {
+    "animation_200_boxes": {
+      "before_fps": 119.08,
+      "after_fps": 115.41,
+      "after_trials_fps": [
+        116.66,
+        114.32,
+        115.41
+      ]
+    },
+    "canvas_200_balls_js": {
+      "after_fps": 120.24,
+      "after_trials_fps": [
+        120.25,
+        120.24,
+        120.11
+      ]
+    },
+    "canvas_200_balls_zig": {
+      "after_fps": 120.21,
+      "after_trials_fps": [
+        120.21,
+        120.29,
+        120.12
+      ]
+    },
+    "canvas_200_balls_zig_work": {
+      "after_us": 86.76,
+      "after_trials_us": [
+        79.54,
+        86.76,
+        93.88
+      ]
+    },
+    "canvas_1000_balls_js": {
+      "after_fps": 120.06,
+      "after_trials_fps": [
+        119.34,
+        120.06,
+        120.27
+      ]
+    },
+    "canvas_1000_balls_zig": {
+      "after_fps": 119.97,
+      "after_trials_fps": [
+        119.97,
+        120.23,
+        52.84
+      ]
+    },
+    "canvas_1000_balls_zig_work": {
+      "after_us": 220.81,
+      "after_trials_us": [
+        220.81,
+        234.46,
+        205.9
+      ]
+    },
+    "pss_after_tests_mb": {
+      "before": 72.71,
+      "after": 92.67,
+      "webview_reference": 96.79
+    },
+    "private_memory_after_tests_mb": {
+      "before": 53.06,
+      "after": 78.05,
+      "webview_reference": 52.99
+    }
+  },
+  "baseline_confirmation": "User: Yes the previous APK was exactly before this"
+}

@@ -1,6 +1,48 @@
 # Oriel System Monitor
 
-Live CPU, memory, and process monitor built in **Zig + Oriel**, running either with the system WebView or the experimental **native renderer** (`-Dnative_ui`).
+Live CPU, memory, and process monitor with three renderer modes: **WebView**, **native web** (JavaScript and native elements), and **Oriel** (compiled `.oriel` views and Zig, without JavaScript).
+
+
+## Run the Oriel renderer
+
+```sh
+cd examples/system-monitor
+zig build -Drenderer=oriel -Doptimize=ReleaseFast
+./zig-out/bin/oriel-system-monitor
+```
+
+`-Drenderer=native` (the default) and `-Drenderer=webview` select the other
+modes. All three use the same platform sampler and process commands.
+
+The Oriel frontend lives in [views/](views/) and
+[oriel_monitor.zig](oriel_monitor.zig). It includes the summary tiles, system
+information, 60-sample CPU/per-core histories, memory bars, disks, interface
+selection and network graphs, sensors, process filtering/sorting, pause/refresh,
+clipboard actions and confirmed process shutdown. It mounts at most 32 process
+rows while scrolling through the busiest 256. Sampling runs on the existing
+command pool with one request in flight; graphs redraw on samples and relevant
+UI changes, with no continuous frame callback. When processes are the only
+visible section, the table fills the available height.
+
+Oriel settings are independent of the web frontends, persisted in
+`oriel-settings.json` under `oriel.paths.appConfig` (Linux:
+`~/.config/dev.oriel.SystemMonitor/`). Settings and process action panels scroll
+in small windows. The confirmation focuses Cancel and covers background
+controls; Enter cancels initially, Tab then Enter confirms. Escape closes
+panels/dialogs. Windows uses the existing WM_CLOSE command.
+
+```sh
+zig build test -Doptimize=ReleaseFast
+```
+
+History and process-selection tests run with the command above. The new mode
+was built and interactively checked on Linux/GTK: search/clear, sorting, table
+scrolling, pause/manual refresh, persistent section/cadence settings, interface
+selection, clipboard, narrow-window layout and keyboard confirmation. Shutdown
+was checked against a disposable test process. Windows/macOS runtime behavior
+and assistive technology still need platform validation; this remains an
+experimental renderer. Existing performance tables below describe the native
+web mode and do not measure this port.
 
 Inspired by `native/examples/system-monitor/`, this version takes full advantage of Oriel's architecture: native compiled Zig telemetry on the backend and Oriel's high-performance native DOM and widget pipeline on the frontend.
 
@@ -124,14 +166,14 @@ Use the `oriel` CLI commands from inside `examples/system-monitor`:
 
 ```bash
 cd examples/system-monitor
-oriel run -Dnative_ui
+oriel run
 ```
 
 ### Run with the System WebView
 
 ```bash
 cd examples/system-monitor
-oriel run
+oriel run -Drenderer=webview
 ```
 
 ### Dev Mode (Hot Reload)
@@ -144,6 +186,6 @@ oriel dev
 
 ```bash
 oriel check                      # Type-check without building binaries (~1 s)
-oriel build -Dnative_ui          # Build release binary into zig-out/bin/
+oriel build                      # Build release binary into zig-out/bin/
 ```
 

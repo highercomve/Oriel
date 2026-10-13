@@ -91,6 +91,8 @@ pub fn main(init: std.process.Init) !u8 {
     sampler = sampler_mod.Sampler.init(std.heap.smp_allocator, io);
     sampler_initialized = true;
 
+    if (oriel.options.zig_ui) @import("oriel_monitor.zig").configure(io);
+
     return oriel.main(init, .{ .commands = Commands, .events = Events }, .{
         .app = app.build,
         .window = .{ .title = "Oriel System Monitor", .width = 1280, .height = 900, .min_width = 860, .min_height = 540 },

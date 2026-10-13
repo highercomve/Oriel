@@ -1,0 +1,5 @@
+<row padding="4,10,4,10" border-bottom="1" border-color="#30343d">
+  <text width="52%" font-size="13">{name}</text>
+  <text width="17%" font-size="13">{median}</text>
+  <text id="runs" width="31%" font-size="13" color="#9aa0ab">{runs}</text>
+</row>

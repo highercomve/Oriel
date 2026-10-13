@@ -1,8 +1,9 @@
 # Render bench
 
-One static page, timed in Oriel's two renderers: the WebView (WebKitGTK on
-Linux) and the experimental native renderer (`-Dnative_ui`: QuickJS, the
-native DOM, Yoga layout, GTK drawing; see `docs/native-renderer.md`).
+The same workloads in three renderer modes: WebView, native with QuickJS/DOM,
+and the experimental Oriel renderer with compiled `.oriel` views. Both native
+modes share the tree, Yoga layout and platform drawing backends. The Oriel
+renderer excludes QuickJS, DOM and CSS processing; see [the experiment](../../docs/design/zig-ui-experiment.md).
 
 ![Render bench in the WebView: row timing results and animated boxes](../../assets/screenshots/render-bench.png)
 
@@ -10,13 +11,40 @@ The screenshot shows the UI during a private-display run; benchmark results
 below retain their own dates and measurement conditions.
 
 ```sh
-zig build -Doptimize=ReleaseFast                                  # WebView
-zig build -Dnative_ui -Doptimize=ReleaseFast -p zig-out-native    # native (native DOM)
-./zig-out/bin/oriel-render-bench                                  # GUI
-RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench            # one JSON line, then exits
+zig build -Doptimize=ReleaseFast                                         # WebView
+zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native     # native (native DOM)
+zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel       # Oriel (.oriel views)
+./zig-out/bin/oriel-render-bench                                         # GUI
+RENDER_BENCH=1 ./zig-out-native/bin/oriel-render-bench                   # one JSON line, then exits
 ```
 
-Latest (2026-10-03, main c0615af, the Linux desktop at 180 Hz, the median
+## Oriel renderer
+
+For Android, build with the default output prefix, then assemble the existing
+Android host using the project's signing configuration:
+
+```sh
+zig build -Drenderer=oriel -Dtarget=aarch64-linux-android -Doptimize=ReleaseFast
+cd android
+# Use Gradle 8.14.3 or newer; provide ORIEL_ANDROID_KEYSTORE and signing variables.
+gradle assembleRelease
+```
+
+The `.oriel` views in `views/` define the shell, result rows, workload rows,
+boxes, canvas and list. `zig_ui_bench.zig` provides typed state, click handlers
+and display callbacks. It retains the existing 1,000/3,000 full-row builds and
+updates, 200-box animation, 200/1,000-ball canvas tests, three trials, two rounds
+in benchmark mode, memory readings and four power scenarios. **Run again** and
+**Measure power** work in the GUI. Startup reports “Zig view” instead of a
+page script. Android memory remains app-process-tree scoped.
+
+In this mode the primary canvas loop is Zig with f64 physics, replacing the
+JavaScript loop; the `(Zig)` variant reuses `zig_balls.zig` unchanged. This
+keeps the workload while removing the interpreter, rather than comparing two
+JavaScript engines. Idle power uses a 250 ms timer with no animation hook.
+Desktop power requires a readable battery/RAPL source.
+
+Historical hardware reference (2026-10-03, main c0615af, the Linux desktop at 180 Hz, the median
 of 3 runs of RENDER_BENCH=1, native vs WebView):
 
 | | native | WebView |
@@ -49,6 +77,25 @@ was the default).
 `RENDER_BENCH` is an environment variable because GTK rejects command-line
 options it doesn't know.
 
+For a short row-only diagnostic, set `RENDER_BENCH_ROWS_ONLY=1` as well.
+It keeps the same construction, text changes, synchronous layout reads,
+three trials and two rounds, but skips animation and canvas. Its JSON has
+`"workload":"rows"`; its memory readings cover rows only. Build all variants
+first and run them serially. From the repository root:
+
+```sh
+RENDER_BENCH=1 RENDER_BENCH_ROWS_ONLY=1 GSK_RENDERER=cairo \
+  scripts/headless.sh perf record -m 32 -F 999 -g --call-graph dwarf,4096 \
+  -o /tmp/oriel-rows.data examples/render-bench/zig-out-native/bin/oriel-render-bench
+DEBUGINFOD_URLS= perf report -i /tmp/oriel-rows.data --stdio --call-graph none
+```
+
+Use `perf stat -e cycles:u,instructions:u -- <binary>` inside the same
+private-display wrapper for counters, and `-Dnative_ui_prof` for stage
+times. Collect normal timings separately from sampling/stage logging.
+The production native runtime's observer regression test is
+`zig build test-native-runtime -Doptimize=ReleaseFast` (requires Node).
+
 ## Power
 
 Outside the default run (it takes minutes): the **Measure power** button
@@ -57,6 +104,28 @@ it's in the JSON report as `power`). Scenarios: idle, animate 200 boxes,
 canvas 1000 balls, and (native only) the same balls drawn from Zig. For
 each: the average draw in mW, joules, fps and mJ per frame, and the
 battery's charge counter's drop where there is one.
+
+For a power-only diagnostic, set `RENDER_BENCH=1`,
+`RENDER_BENCH_POWER=60` and `RENDER_BENCH_POWER_ONLY=1`. It skips the
+row/animation benchmark warmup and reports `"workload":"power"`.
+All power scenarios use a **320 × 240 logical-pixel** drawing area. The
+results table is hidden during sampling and restored afterward; appending
+results during sampling previously shrank the area and could move it off-screen
+on a phone. Reports include `power_viewport` when power is measured.
+
+On Android:
+
+```sh
+adb shell setprop debug.oriel.env "'RENDER_BENCH=1 RENDER_BENCH_POWER=60 RENDER_BENCH_POWER_ONLY=1'"
+adb shell am force-stop dev.oriel.RenderBench
+adb shell am start -n dev.oriel.RenderBench/dev.oriel.OrielLaunchActivity
+# Collect the render_bench JSON from logcat; reset the property afterward.
+```
+
+Use wireless ADB and physically unplug all chargers. Keep the phone unlocked
+with the display on; lock-screen or hidden-view runs are invalid. Retain the
+brightness/refresh/network settings across modes. External memory queries run
+separately from power sampling.
 
 Where the numbers come from (`power_now` in main.zig):
 
@@ -92,13 +161,27 @@ Each test runs 3 times; the median is reported.
 | update N rows | Change every row's text, then force layout |
 | animate 200 boxes | `requestAnimationFrame` moving 200 boxes for 2 s: frames per second |
 | canvas N balls | A `<canvas>` game loop: physics on N balls, then a full redraw (background, circles, text) each frame for 2 s: frames per second |
-| memory (PSS) | Proportional memory of the app and all its child processes (a WebView page runs in WebKit's own processes) |
+| memory (PSS) | Proportional memory of the app's readable process tree; Linux includes WebKit children, Android excludes its isolated WebView renderer |
 
 Times cover the DOM work and the layout it triggers, not painting, in both
 renderers. The native renderer's `requestAnimationFrame` is paced by the
 display. Its canvas records a numeric 2d program, replayed into a bitmap
 of its own by the platform backend (see `docs/native-renderer.md`, "Canvas").
 The historical linkedom results below predate these changes.
+
+Android's WebView renderer is a sandboxed process started under
+`webview_zygote`, not a child of the APK's main process. The old "all
+processes" label therefore overstates what this in-app `/proc` measurement
+includes. New Android labels say "app process tree" and show this exclusion.
+On this Poco X3's Android 12, the in-app `/proc` PSS reading also excludes
+`dumpsys meminfo` graphics accounting. Its "private" counter is actually
+`Pss_Anon`, which is unavailable on this device and displays zero; that is not
+zero private memory. For a complete comparison, externally collect
+`adb shell dumpsys meminfo`
+for both the app and the isolated renderer identified as belonging to that
+app, then sum their PSS readings at the same endpoint. Do not sum every
+WebView renderer on the phone or compare app-only memory with a total.
+[Android's process/memory documentation](https://developer.android.com/develop/ui/views/layout/webapps/manage-webview-memory).
 
 ### On screen (Android)
 
@@ -118,6 +201,83 @@ adb shell setprop debug.oriel.env "''"
 ```
 
 ## Results
+
+### Poco X3 memory and power (2026-10-13)
+
+Android 12, M2007J20CG, arm64 ReleaseFast, unplugged with wireless ADB,
+fixed brightness (1191) and 60 Hz peak refresh. One power pass per mode, in
+Oriel/native/WebView order. Fixed visible 320 × 240 power viewport, 60 seconds
+requested per scenario. Memory queries were in separate full-suite GUI runs.
+
+| Metric | Oriel | Native JS | WebView |
+|---|---:|---:|---:|
+| External PSS snapshots | 89–111 MiB | 103–122 MiB | 196–202 MiB |
+| Idle device draw | 1.17 W | 1.11 W | 0.98 W |
+| 200 boxes device draw | 1.39 W | 2.64 W | 2.15 W |
+| 1,000 balls device draw | 1.68 W | 3.25 W* | 2.09 W |
+| 1,000 balls scenario-average FPS | 59.8 | 33.6* | 58.9 |
+| Shared direct Zig balls draw | 1.88 W | 2.05 W | — |
+
+Oriel's box scenario uses about 48% less whole-device power than native JS
+and 36% less than WebView in this pass, at about 60 fps. Idle does not improve.
+WebView PSS includes its associated isolated renderer. Native/Oriel snapshot
+ranges overlap; Oriel was sampled slightly earlier after completion. All
+memory endpoint screenshots showed Done; black/hidden attempts were excluded.
+Do not assign a precise memory improvement percentage from these snapshots.
+
+*Native JS's standard canvas scenario took **80.2 seconds** for the 60-second
+request. Its watts and FPS cover the whole scenario, including any setup or
+completion overhead. The overrun's cause is not established; this is not an
+equal-duration energy or isolated steady-state drawing comparison. Other
+scenarios took approximately 60 seconds. Temperatures/order/background work
+differ, and one pass supplies no confidence interval or general battery-life
+claim. The coarse charge counter is unsuitable for per-scenario attribution.
+
+On this Android 12 device the in-app PSS omits external graphics accounting,
+and its “private” Pss_Anon counter displays zero because that field is absent.
+Use the external readings, not those in-app fields, for the table above.
+The original installed APK, screen timeout and debug property were restored.
+
+[Raw reports, samples, APK identities and conditions](results/2026-10-13-poco-x3-memory-power.json) ·
+[Associated-process memory dumps and measurement runner](results/poco-x3-2026-10-13/).
+
+### Internal theme-color observer regression (2026-10-12)
+
+Three serial processes per variant, in rotated order, ReleaseFast on the
+same Linux desktop with Xvfb at 1024×768 and software Cairo rendering.
+Each process runs two rounds of three trials; these medians pool the nine
+second-round samples. Row-only mode preserves the timed DOM/layout work.
+
+| Test | Current before (`69a47ec`) | Fixed | Historical (`c0615af`) |
+|---|---:|---:|---:|
+| Build 1,000 rows | 18.62 ms | **7.71 ms** | 6.91 ms |
+| Build 3,000 rows | 54.85 ms | **21.43 ms** | 19.70 ms |
+| Update 1,000 rows | 4.22 ms | 4.20 ms | 3.23 ms |
+| Update 3,000 rows | 13.86 ms | 12.45 ms | 9.50 ms |
+
+The theme-color watcher added in `41faf78` registered as a page observer,
+enabling native-to-JS mutation hooks even during detached construction.
+Marking it as an internal connected-only observer restores the native
+DOM's existing suppression of those hooks. Page observers retain detached
+mutation records. Construction improves 59–61%; the smaller text update is
+unchanged, and the larger update's trial ranges overlap. Whole-process
+median retired instructions fall from 15.51 to 9.75 billion (37%), including
+startup and both rounds, rather than counting only the timed rows.
+
+This reproduces a shared-runtime regression; it does not measure the user's
+Pixel 8 or replace the published hardware results. Fixed construction
+remains 9–12% slower and updates 30–31% slower than the historical
+checkout on this setup. [Raw samples, counters and conditions](results/2026-10-12-theme-observer-rows.json).
+
+The user's subsequent Pixel 8 screenshot of the fixed arm64 ReleaseFast APK
+shows builds at 14.37 / 97.54 ms and updates at 14.19 / 38.42 ms, versus
+51.93 / 217.21 ms and 41.28 / 74.73 ms in the earlier native screenshot.
+These are observed improvements of 49–72%, not controlled attribution to
+the fix: the user confirmed the earlier APK was immediately pre-fix, while
+its build mode was not separately recorded and run conditions are uncontrolled. PSS
+increased from 72.71 to 92.67 MB; canvas medians remain near 120 fps with
+one 52.84 fps Zig trial. No power result was supplied.
+[Transcribed phone samples and limitations](results/2026-10-12-pixel8-screenshots.json).
 
 ### Android emulator, latest native build (2026-10-04)
 

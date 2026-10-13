@@ -1,0 +1,1229 @@
+{
+  "date": "2026-10-12",
+  "base_revision": "69a47ec",
+  "experiment": "Third renderer: compiled .oriel views, Zig state/events, shared native tree/Yoga/platform backends. No QuickJS or DOM in zig-ui.",
+  "conditions": {
+    "platform": "Linux-6.18.55-1-lts-x86_64-with-glibc2.44",
+    "optimization": "ReleaseFast",
+    "display": "Xvfb 1024x768; 900x700 window; approximately 60 Hz",
+    "native_drawing": "GSK_RENDERER=cairo",
+    "method": "Three serial processes per renderer, rotated order; two rounds per process and three trials per row workload. Nine pooled second-round samples per metric. All compilation finished before timing. perf stat user cycles/instructions covers the entire process tree, including startup and both rounds.",
+    "parity": "1000/3000 full rows with index, dot, label; same row colors, 14px text, gap 8px, padding 3px/8px and 1px bottom border; new text Row i: updated r; synchronous layout included, paint excluded. Zig does not construct a DOM or match CSS; templates produce the native tree directly. UI shell is declarative and uses rows rather than HTML table layout.",
+    "limits": "Desktop software-rendered diagnostic, not Pixel 8 measurements or power evidence. No confidence interval. Canvas in Zig mode necessarily uses Zig instead of JavaScript. Native styling/font/layout/backend costs remain.",
+    "post_measurement_change": "After timing, GUI-only handlers were corrected to replace repeated power reports and reset power state on Run again. Timed workloads and benchmark-mode control flow are unchanged."
+  },
+  "runs": {
+    "webview": [
+      {
+        "renderer": "WebView",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 284.4,
+            "runs": [
+              284.4
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 299.45,
+            "runs": [
+              299.45
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 255.16,
+            "runs": [
+              255.16
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 154.8,
+            "runs": [
+              154.8
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18,
+            "runs": [
+              20,
+              17,
+              18
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 50,
+            "runs": [
+              56,
+              50,
+              50
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 8,
+            "runs": [
+              8,
+              8,
+              9
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 25,
+            "runs": [
+              27,
+              25,
+              25
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 276.43,
+            "runs": [
+              276.43
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 172.34,
+            "runs": [
+              172.34
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 316.19,
+            "runs": [
+              316.19
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 212.04,
+            "runs": [
+              212.04
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:57:34 2026\n\n5248516810,,cycles:u,2894058368,100.00,,\n13539900661,,instructions:u,2894066403,100.00,,\n"
+      },
+      {
+        "renderer": "WebView",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 287.71,
+            "runs": [
+              287.71
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 302,
+            "runs": [
+              302
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 254.9,
+            "runs": [
+              254.9
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 154.11,
+            "runs": [
+              154.11
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18,
+            "runs": [
+              21,
+              18,
+              18
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 51,
+            "runs": [
+              56,
+              51,
+              50
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 8,
+            "runs": [
+              8,
+              8,
+              9
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 25,
+            "runs": [
+              26,
+              25,
+              25
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 276.16,
+            "runs": [
+              276.16
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 172.15,
+            "runs": [
+              172.15
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 315.85,
+            "runs": [
+              315.85
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 184.34,
+            "runs": [
+              184.34
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:58:28 2026\n\n5216149008,,cycles:u,2896815794,100.00,,\n13527778641,,instructions:u,2896815794,100.00,,\n"
+      },
+      {
+        "renderer": "WebView",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 286.49,
+            "runs": [
+              286.49
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 300.89,
+            "runs": [
+              300.89
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 255.26,
+            "runs": [
+              255.26
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 154.87,
+            "runs": [
+              154.87
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 18,
+            "runs": [
+              20,
+              18,
+              17
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 51,
+            "runs": [
+              56,
+              50,
+              51
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 9,
+            "runs": [
+              9,
+              8,
+              9
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 25,
+            "runs": [
+              26,
+              25,
+              24
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 277.26,
+            "runs": [
+              277.26
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 173.25,
+            "runs": [
+              173.25
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 316.32,
+            "runs": [
+              316.32
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 212.1,
+            "runs": [
+              212.1
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:58:50 2026\n\n5193788741,,cycles:u,2880327608,100.00,,\n13529510271,,instructions:u,2880327608,100.00,,\n"
+      }
+    ],
+    "native": [
+      {
+        "renderer": "native",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 182.05,
+            "runs": [
+              182.05
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 230.67,
+            "runs": [
+              230.67
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.84,
+            "runs": [
+              109.84
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.2,
+            "runs": [
+              61.2
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.56,
+            "runs": [
+              10.16,
+              7.56,
+              7.27
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.55,
+            "runs": [
+              27.25,
+              21.55,
+              21.01
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4,
+            "runs": [
+              7.96,
+              4,
+              3.98
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.88,
+            "runs": [
+              26.68,
+              12.84,
+              12.88
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 115.81,
+            "runs": [
+              115.81
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 66.87,
+            "runs": [
+              66.87
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 116.68,
+            "runs": [
+              116.68
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 67.73,
+            "runs": [
+              67.73
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:57:45 2026\n\n3145865316,,cycles:u,2337485960,100.00,,\n9766992156,,instructions:u,2337485960,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 178.31,
+            "runs": [
+              178.31
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 225.73,
+            "runs": [
+              225.73
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.84,
+            "runs": [
+              109.84
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.17,
+            "runs": [
+              61.17
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.82,
+            "runs": [
+              10.67,
+              7.82,
+              7.22
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.55,
+            "runs": [
+              27.04,
+              21.55,
+              20.95
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 4.06,
+            "runs": [
+              7.73,
+              3.95,
+              4.06
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.1,
+            "runs": [
+              23.29,
+              12.1,
+              12
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 115.97,
+            "runs": [
+              115.97
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 67,
+            "runs": [
+              67
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 116.75,
+            "runs": [
+              116.75
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 67.79,
+            "runs": [
+              67.79
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:58:07 2026\n\n3123697027,,cycles:u,2344397771,100.00,,\n9769494660,,instructions:u,2344397771,100.00,,\n"
+      },
+      {
+        "renderer": "native",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "results": {
+          "startup \u2192 page script": {
+            "median": 183.99,
+            "runs": [
+              183.99
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 232.47,
+            "runs": [
+              232.47
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 109.89,
+            "runs": [
+              109.89
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 61.16,
+            "runs": [
+              61.16
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.79,
+            "runs": [
+              10.29,
+              7.79,
+              7.43
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.73,
+            "runs": [
+              27.56,
+              21.73,
+              21.13
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 5.1,
+            "runs": [
+              7.89,
+              5.1,
+              4.28
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 12.55,
+            "runs": [
+              23.38,
+              12.11,
+              12.55
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 116.11,
+            "runs": [
+              116.11
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 67.08,
+            "runs": [
+              67.08
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 116.81,
+            "runs": [
+              116.81
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 67.78,
+            "runs": [
+              67.78
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:59:01 2026\n\n3144381184,,cycles:u,2344329346,100.00,,\n9762849156,,instructions:u,2344329346,100.00,,\n"
+      }
+    ],
+    "zig-ui": [
+      {
+        "renderer": "zig-ui",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "canvas_implementation": "Zig f64 physics for standard canvas; existing Zig f32 implementation for (Zig) workloads",
+        "results": {
+          "startup \u2192 Zig view": {
+            "median": 189.24,
+            "runs": [
+              189.24
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 192.36,
+            "runs": [
+              192.36
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 94.29,
+            "runs": [
+              94.29
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 49.39,
+            "runs": [
+              49.39
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.09,
+            "runs": [
+              9.4,
+              6.42,
+              7.09
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 19.28,
+            "runs": [
+              26.81,
+              19.28,
+              19.1
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 0.76,
+            "runs": [
+              0.76,
+              0.92,
+              0.62
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 1.64,
+            "runs": [
+              1.79,
+              1.58,
+              1.64
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 97.17,
+            "runs": [
+              97.17
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 51.84,
+            "runs": [
+              51.84
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 97.48,
+            "runs": [
+              97.48
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 52.15,
+            "runs": [
+              52.15
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:57:56 2026\n\n1908200791,,cycles:u,2098718020,100.00,,\n6020407518,,instructions:u,2098718020,100.00,,\n"
+      },
+      {
+        "renderer": "zig-ui",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "canvas_implementation": "Zig f64 physics for standard canvas; existing Zig f32 implementation for (Zig) workloads",
+        "results": {
+          "startup \u2192 Zig view": {
+            "median": 188.36,
+            "runs": [
+              188.36
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 190.75,
+            "runs": [
+              190.75
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 94.29,
+            "runs": [
+              94.29
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 49.41,
+            "runs": [
+              49.41
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 7.45,
+            "runs": [
+              9.93,
+              6.53,
+              7.45
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 21.47,
+            "runs": [
+              27.17,
+              21.47,
+              19.57
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 0.63,
+            "runs": [
+              0.73,
+              0.53,
+              0.63
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 1.74,
+            "runs": [
+              1.85,
+              1.6,
+              1.74
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 96.97,
+            "runs": [
+              96.97
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 51.85,
+            "runs": [
+              51.85
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 97.27,
+            "runs": [
+              97.27
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 52.14,
+            "runs": [
+              52.14
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:58:18 2026\n\n1938435043,,cycles:u,2139015325,100.00,,\n6021281345,,instructions:u,2139015325,100.00,,\n"
+      },
+      {
+        "renderer": "zig-ui",
+        "memory_scope": "all processes",
+        "workload": "rows",
+        "canvas_implementation": "Zig f64 physics for standard canvas; existing Zig f32 implementation for (Zig) workloads",
+        "results": {
+          "startup \u2192 Zig view": {
+            "median": 188.03,
+            "runs": [
+              188.03
+            ],
+            "unit": "ms"
+          },
+          "startup \u2192 first frame": {
+            "median": 191.09,
+            "runs": [
+              191.09
+            ],
+            "unit": "ms"
+          },
+          "memory at start (PSS, all processes)": {
+            "median": 94.48,
+            "runs": [
+              94.48
+            ],
+            "unit": "MB"
+          },
+          "private memory at start (all processes)": {
+            "median": 49.46,
+            "runs": [
+              49.46
+            ],
+            "unit": "MB"
+          },
+          "build 1000 rows": {
+            "median": 6.58,
+            "runs": [
+              9.48,
+              6.52,
+              6.58
+            ],
+            "unit": "ms"
+          },
+          "build 3000 rows": {
+            "median": 19.42,
+            "runs": [
+              26.72,
+              19.42,
+              19.41
+            ],
+            "unit": "ms"
+          },
+          "update 1000 rows": {
+            "median": 0.7,
+            "runs": [
+              0.99,
+              0.7,
+              0.69
+            ],
+            "unit": "ms"
+          },
+          "update 3000 rows": {
+            "median": 1.79,
+            "runs": [
+              1.86,
+              1.79,
+              1.65
+            ],
+            "unit": "ms"
+          },
+          "memory after the tests (PSS, all processes)": {
+            "median": 97.32,
+            "runs": [
+              97.32
+            ],
+            "unit": "MB"
+          },
+          "private memory after the tests (all processes)": {
+            "median": 51.87,
+            "runs": [
+              51.87
+            ],
+            "unit": "MB"
+          },
+          "memory after a second round (PSS, all processes)": {
+            "median": 97.65,
+            "runs": [
+              97.65
+            ],
+            "unit": "MB"
+          },
+          "private memory after a second round (all processes)": {
+            "median": 52.2,
+            "runs": [
+              52.2
+            ],
+            "unit": "MB"
+          }
+        },
+        "counters_raw": "# started on Mon Oct 12 23:58:39 2026\n\n1929631181,,cycles:u,2111449467,100.00,,\n6020254121,,instructions:u,2111449467,100.00,,\n"
+      }
+    ]
+  },
+  "order": [
+    "0-webview",
+    "0-native",
+    "0-zig-ui",
+    "1-native",
+    "1-zig-ui",
+    "1-webview",
+    "2-zig-ui",
+    "2-webview",
+    "2-native"
+  ],
+  "summary_ms": {
+    "webview": {
+      "build 1000 rows": 18,
+      "build 3000 rows": 51,
+      "update 1000 rows": 8,
+      "update 3000 rows": 25
+    },
+    "native": {
+      "build 1000 rows": 7.79,
+      "build 3000 rows": 21.55,
+      "update 1000 rows": 4.28,
+      "update 3000 rows": 12.84
+    },
+    "zig-ui": {
+      "build 1000 rows": 7.09,
+      "build 3000 rows": 19.57,
+      "update 1000 rows": 0.7,
+      "update 3000 rows": 1.74
+    }
+  },
+  "counter_medians": {
+    "webview": {
+      "cycles:u": 5216149008,
+      "instructions:u": 13529510271
+    },
+    "native": {
+      "cycles:u": 3144381184,
+      "instructions:u": 9766992156
+    },
+    "zig-ui": {
+      "cycles:u": 1929631181,
+      "instructions:u": 6020407518
+    }
+  },
+  "binary_bytes": {
+    "webview": 10969120,
+    "native": 23957872,
+    "zig-ui": 15338744
+  },
+  "zig_ui_full_suite_diagnostic": {
+    "renderer": "zig-ui",
+    "memory_scope": "all processes",
+    "workload": "full",
+    "canvas_implementation": "Zig f64 physics for standard canvas; existing Zig f32 implementation for (Zig) workloads",
+    "results": {
+      "startup \u2192 Zig view": {
+        "median": 190.51,
+        "runs": [
+          190.51
+        ],
+        "unit": "ms"
+      },
+      "startup \u2192 first frame": {
+        "median": 193.79,
+        "runs": [
+          193.79
+        ],
+        "unit": "ms"
+      },
+      "memory at start (PSS, all processes)": {
+        "median": 94.49,
+        "runs": [
+          94.49
+        ],
+        "unit": "MB"
+      },
+      "private memory at start (all processes)": {
+        "median": 49.48,
+        "runs": [
+          49.48
+        ],
+        "unit": "MB"
+      },
+      "build 1000 rows": {
+        "median": 7.08,
+        "runs": [
+          9.28,
+          6.61,
+          7.08
+        ],
+        "unit": "ms"
+      },
+      "build 3000 rows": {
+        "median": 19.27,
+        "runs": [
+          26.64,
+          19.27,
+          19.17
+        ],
+        "unit": "ms"
+      },
+      "update 1000 rows": {
+        "median": 0.62,
+        "runs": [
+          0.62,
+          0.62,
+          0.54
+        ],
+        "unit": "ms"
+      },
+      "update 3000 rows": {
+        "median": 1.81,
+        "runs": [
+          1.81,
+          2.62,
+          1.8
+        ],
+        "unit": "ms"
+      },
+      "animate 200 boxes": {
+        "median": 60.01,
+        "runs": [
+          60.13,
+          60.01,
+          60
+        ],
+        "unit": "fps"
+      },
+      "canvas 200 balls": {
+        "median": 60,
+        "runs": [
+          60,
+          60,
+          60
+        ],
+        "unit": "fps"
+      },
+      "canvas 200 balls (Zig)": {
+        "median": 60,
+        "runs": [
+          60,
+          60,
+          60
+        ],
+        "unit": "fps"
+      },
+      "canvas 200 balls (Zig), Zig work per frame": {
+        "median": 3.64,
+        "runs": [
+          3.83,
+          3.64,
+          3.6
+        ],
+        "unit": "\u00b5s"
+      },
+      "canvas 1000 balls": {
+        "median": 60,
+        "runs": [
+          60,
+          60,
+          60
+        ],
+        "unit": "fps"
+      },
+      "canvas 1000 balls (Zig)": {
+        "median": 60,
+        "runs": [
+          60,
+          60,
+          60
+        ],
+        "unit": "fps"
+      },
+      "canvas 1000 balls (Zig), Zig work per frame": {
+        "median": 14.23,
+        "runs": [
+          14.8,
+          14.23,
+          14.07
+        ],
+        "unit": "\u00b5s"
+      },
+      "memory after the tests (PSS, all processes)": {
+        "median": 107.02,
+        "runs": [
+          107.02
+        ],
+        "unit": "MB"
+      },
+      "private memory after the tests (all processes)": {
+        "median": 61.58,
+        "runs": [
+          61.58
+        ],
+        "unit": "MB"
+      },
+      "memory after a second round (PSS, all processes)": {
+        "median": 107.84,
+        "runs": [
+          107.84
+        ],
+        "unit": "MB"
+      },
+      "private memory after a second round (all processes)": {
+        "median": 62.39,
+        "runs": [
+          62.39
+        ],
+        "unit": "MB"
+      },
+      "power: idle (nothing moving)": {
+        "median": 0,
+        "runs": [
+          0
+        ],
+        "unit": "unavailable"
+      },
+      "power: animate 200 boxes": {
+        "median": 0,
+        "runs": [
+          0
+        ],
+        "unit": "unavailable"
+      },
+      "power: canvas 1000 balls": {
+        "median": 0,
+        "runs": [
+          0
+        ],
+        "unit": "unavailable"
+      },
+      "power: canvas 1000 balls (Zig)": {
+        "median": 0,
+        "runs": [
+          0
+        ],
+        "unit": "unavailable"
+      },
+      "power": [
+        {
+          "name": "idle (nothing moving)",
+          "source": "rapl: no access (energy_uj is root-only)",
+          "error": "rapl: no access (energy_uj is root-only)",
+          "seconds": 0.003992319999990286,
+          "mw": 0,
+          "joules": 0,
+          "samples": 0,
+          "plugged": false
+        },
+        {
+          "name": "animate 200 boxes",
+          "source": "rapl: no access (energy_uj is root-only)",
+          "error": "rapl: no access (energy_uj is root-only)",
+          "seconds": 0.015874398999992993,
+          "mw": 0,
+          "joules": 0,
+          "samples": 0,
+          "plugged": false
+        },
+        {
+          "name": "canvas 1000 balls",
+          "source": "rapl: no access (energy_uj is root-only)",
+          "error": "rapl: no access (energy_uj is root-only)",
+          "seconds": 0.016599483000012696,
+          "mw": 0,
+          "joules": 0,
+          "samples": 0,
+          "plugged": false
+        },
+        {
+          "name": "canvas 1000 balls (Zig)",
+          "source": "rapl: no access (energy_uj is root-only)",
+          "error": "rapl: no access (energy_uj is root-only)",
+          "seconds": 0.016597007999997002,
+          "mw": 0,
+          "joules": 0,
+          "samples": 0,
+          "plugged": false
+        }
+      ]
+    }
+  },
+  "apk": {
+    "file": "oriel-render-bench-zig-ui-releasefast-arm64.apk",
+    "optimization": "ReleaseFast",
+    "abi": "arm64-v8a",
+    "bytes": 1586850,
+    "sha256": "63761551ba6861295b63843eaa65bb3d6f65f3a1f446036f18fc2cf06d3d288e",
+    "signed": true,
+    "device_measurements": null
+  },
+  "validation": {
+    "gui": "Private Xvfb: five Measure power clicks, then Run again; verified power rows replaced, normal benchmark returned to Done, and controls at 410 px width. Desktop power source inaccessible.",
+    "root_tests": "zig build test -Dzig_ui -Doptimize=ReleaseFast; native renderer suite also passed after engine split.",
+    "host_builds": [
+      "webview",
+      "native",
+      "zig"
+    ],
+    "android": "arm64 ReleaseFast build, Gradle release assembly and apksigner verification; embedded library matched build output; HTTP download bytes matched APK.",
+    "runtime_exclusion": "Host nm found no oqjs_, JS_CallInternal or nui_dom_ symbols; ldd found no WebKit/JavaScript dependencies."
+  }
+}

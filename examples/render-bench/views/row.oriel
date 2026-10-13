@@ -1,0 +1,5 @@
+<row gap="8" align="center" padding="3,8,3,8" border-bottom="1" border-color="#30343d">
+  <text id="index" width="48" color="#9aa0ab">{index}</text>
+  <view width="8" height="8" background="#6d8bff" radius="50%" />
+  <text id="label">{label}</text>
+</row>

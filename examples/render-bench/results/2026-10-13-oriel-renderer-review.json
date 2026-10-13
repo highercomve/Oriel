@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-13",
+  "scope": "Readiness audit; no production renderer or APK changes",
+  "probe": {
+    "purpose": "Frame callback removes its own context and returns false",
+    "source": "\ntest \"review probe: a callback can cancel its own context\" {\n    const Fake = struct {\n        fn measure(_: *anyopaque, _: *Node, out_width: f32, out: *[2]f32) void { _ = out_width; out.* = .{ 0, 0 }; }\n        fn laid(_: *anyopaque) void {}\n        fn removed(_: *anyopaque, _: *Node) void {}\n        fn timer(_: *anyopaque, _: *Engine, _: u32, _: u32) void {}\n        fn invoke(_: *anyopaque, _: *Engine, _: u32, _: []const u8, _: []const u8) void {}\n        fn focus(_: *anyopaque, _: *Node) void {}\n        fn boot(_: *Engine) !void {}\n        fn cancel(ctx: *anyopaque, e: *Engine, _: f64) bool { e.removeFrameHooks(ctx); return false; }\n    };\n    const saved = configured_driver;\n    defer configured_driver = saved;\n    configured_driver = .{ .boot = Fake.boot };\n    var ctx: u8 = 0;\n    const e = try Engine.create(std.testing.allocator, .{ .ctx = &ctx, .measure = Fake.measure, .laid_out = Fake.laid, .removed = Fake.removed, .add_timer = Fake.timer, .invoke = Fake.invoke, .focus = Fake.focus }, &.{}, \"{}\", \"main\", \"bench.oriel\", 900, 700);\n    defer e.destroy();\n    try e.addFrameHook(.{ .ctx = &ctx, .func = Fake.cancel });\n    e.displayFrame(16.67);\n    try std.testing.expectEqual(@as(usize, 0), e.frame_hooks.items.len);\n}\n",
+    "temporary_location": "src/native_ui/engine_zig.zig (appended during test, then removed)",
+    "command": "zig build test -Dzig_ui -Doptimize=ReleaseSafe --summary all",
+    "exit_code": 1,
+    "observed": "index out of bounds: index 0, len 0; ArrayList.orderedRemove; SIGABRT",
+    "summary": "579/583 tests passed; 3 skipped; 1 crashed",
+    "log": "/tmp/oriel-review-cancellation.log"
+  },
+  "other_findings": "Source inspection; see docs/internal/oriel-renderer-readiness.md",
+  "phone_measurements": null
+}
