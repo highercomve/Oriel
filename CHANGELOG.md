@@ -2,6 +2,15 @@
 
 Notable changes in Oriel releases.
 
+## [0.15.1] — 2026-10-14
+
+### Fixed
+
+- Breakout (Oriel renderer): dragging a finger on the board moves the
+  paddle on touch screens. The board now takes the drag when a finger goes
+  down on it, as the page's `touchmove` `preventDefault` does, so Android
+  no longer turns the drag into a scroll and cancels the pointer.
+
 ## [0.15.0] — 2026-10-14
 
 A page drawn by the native renderer can now be ported to the Oriel renderer
