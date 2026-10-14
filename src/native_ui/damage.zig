@@ -30,8 +30,8 @@ pub const Hooks = struct {
 
 /// Past these, everything is taken as changed: a tree deeper than any page
 /// (the walk recurses), or more changed areas than are worth telling apart.
-const max_depth = 512;
-const max_rects = 256;
+pub const max_depth = 512;
+pub const max_rects = 256;
 
 const Entry = struct {
     hash: u64,
