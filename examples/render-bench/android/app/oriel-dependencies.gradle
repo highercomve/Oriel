@@ -2,4 +2,4 @@
 dependencies {
 }
 // Oriel's runtime data and app extensions' assets (an older project's build.gradle.kts doesn't add them).
-android.sourceSets.main.assets.srcDirs += ["../../../../../../../../tmp/claude-1000/-home-projects-personal-oriel/e442f11c-40e4-4fe1-9775-ba6e9de63d24/scratchpad/rb-android/android-assets"]
+android.sourceSets.main.assets.srcDirs += ["../../zig-out/android-assets"]
