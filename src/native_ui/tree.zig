@@ -1756,6 +1756,7 @@ pub const Tree = struct {
     props_need_value: bool = true,
     /// Shared, bounded scratch for synchronous mirroring callbacks.
     ui_wire_buffer: ?[]align(@alignOf(std.json.Value)) u8 = null,
+    ui_wire_allocator: std.heap.FixedBufferAllocator = undefined,
     ui_wire_busy: bool = false,
     /// The accessibility entries (the "a" op), by element id, and a hook
     /// told when one changed or went (id -2: all cleared).
@@ -2809,8 +2810,10 @@ pub const Tree = struct {
         if (t.on_props == null or !t.props_need_value) return .null;
         if (t.ui_wire_busy) return error.ReentrantUiProps;
         const buffer = t.ui_wire_buffer orelse return error.UiPropsNotPrepared;
-        var fixed = std.heap.FixedBufferAllocator.init(buffer);
-        const value = uiWireValue(Props, fixed.allocator(), props) catch return error.UiWireCapacityExceeded;
+        // Managed JSON arrays retain their allocator: its context must
+        // remain alive for the entire backend callback.
+        t.ui_wire_allocator = .init(buffer);
+        const value = uiWireValue(Props, t.ui_wire_allocator.allocator(), props) catch return error.UiWireCapacityExceeded;
         t.ui_wire_busy = true;
         return value;
     }
@@ -5365,4 +5368,27 @@ test "prepared typed updates allocate no heap memory and preserve failures" {
     props.options = &options;
     try std.testing.expectError(error.UiPropsTooLarge, t.updateUiProps(1, props));
     try std.testing.expectEqualDeep(old, n.props);
+}
+
+test "mirroring scratch survives callbacks and rejects reentrant updates" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+        fn props(ctx: *anyopaque, node: *Node, value: std.json.Value) void {
+            const t: *Tree = @ptrCast(@alignCast(ctx));
+            const options = value.object.get("options").?.array;
+            std.testing.expect(options.allocator.ptr == @as(*anyopaque, @ptrCast(&t.ui_wire_allocator))) catch unreachable;
+            std.testing.expectError(error.ReentrantUiProps, t.updateUiProps(node.id, node.props)) catch unreachable;
+            std.testing.expectEqualStrings("label", options.items[0].array.items[0].string) catch unreachable;
+        }
+    };
+    var t = Tree.init(std.testing.allocator, undefined, Host.measure);
+    defer t.deinit();
+    t.measure_ctx = &t;
+    t.on_props = Host.props;
+    try t.create(1, .select);
+    try t.reserveUiProps(1, default_ui_props_bytes);
+    try t.updateUiProps(1, .{ .options = &.{.{ "label", "value" }} });
+    try std.testing.expect(!t.ui_wire_busy);
 }
