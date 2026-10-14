@@ -2,7 +2,13 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.15.0] — 2026-10-14
+
+A page drawn by the native renderer can now be ported to the Oriel renderer
+and look the same: `.oriel` says everything the native renderer computes, a
+page exports itself as views, and `zig build check-views` proves it.
+HollerShare is the first app ported this way. GTK windows paint only what
+changed.
 
 ### Added
 
@@ -29,13 +35,30 @@ Notable changes in Oriel releases.
   combination; `@when (focus)` and `@when (hover)` looks for the focused
   and hovered nodes, which also style native fields' focus. Spans take
   `class`.
+- `.oriel` views update in place: `View.update(tree, base, bindings)` edits
+  only the bound texts, tooltips and labels that changed, keeping the
+  view's native controls, scroll positions and media styles. Typed
+  property updates go straight to the tree (and Android's mirror) without
+  JSON. `zig build bench-ui-updates -Dzig_ui=true` measures both.
 - Zig-renderer apps: `Engine.setColorScheme` pins dark or light;
   `Driver.drag` takes drags and drops (dropped files' paths from
   `Engine.drops`); events the app emits reach `Driver.event` as "message"
   on every platform, as they did on Windows and Android.
 
+### Improved
+
+- GTK: windows paint only what changed since the last frame (tiles and
+  patches GTK composites), and canvases are drawn at the display's real
+  fractional scale instead of being resampled every frame. An idle system
+  monitor took 3.7-7.4% of a core, now 1.5%. `ORIEL_NUI_FULL_REDRAW=1`
+  paints everything, to compare.
+
 ### Fixed
 
+- Typed property updates keep the props a backend callback still reads
+  until it returns.
+- System monitor (Oriel renderer): the process actions' copy submenu shows,
+  and copying or ending a process says whether it worked.
 - A view mounted where another one was starts from its own look (it showed
   the old view's media blocks as already applied).
 - Linux: a `-Dnative_ui` build no longer links a WebKitGTK call for
