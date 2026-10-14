@@ -5044,6 +5044,7 @@ test "a text in a wrapping row starts from its unwrapped width, as CSS's max-con
 
 test {
     _ = @import("slab_pool.zig");
+    _ = @import("damage.zig");
     _ = @import("zig_canvas.zig");
 }
 
