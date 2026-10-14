@@ -613,7 +613,23 @@ pub fn WindowCreator(
             controller_class = apple.defineSubclass("OrielViewController", "UIViewController", &.{}, .{
                 .{ "prefersStatusBarHidden", prefersStatusBarHidden },
                 .{ "prefersHomeIndicatorAutoHidden", prefersStatusBarHidden },
+                .{ "preferredStatusBarStyle", preferredStatusBarStyle },
             });
+        }
+
+        /// The status bar's text in contrast with what's under it: the
+        /// container's color, which a native page sets to its background.
+        fn preferredStatusBarStyle(self: apple.id, _: apple.c.SEL) callconv(.c) isize {
+            const view = (Object{ .value = self }).msgSend(Object, "view", .{});
+            const bg = view.msgSend(Object, "backgroundColor", .{});
+            if (bg.value == null) return 0; // UIStatusBarStyleDefault
+            var r: f64 = 0;
+            var g: f64 = 0;
+            var b: f64 = 0;
+            var a: f64 = 0;
+            if (bg.msgSend(apple.c.BOOL, "getRed:green:blue:alpha:", .{ &r, &g, &b, &a }) == apple.boolean(false) or a < 0.5) return 0;
+            const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            return if (luma < 0.5) 1 else 3; // UIStatusBarStyleLightContent, DarkContent
         }
 
         pub fn deinit() void {

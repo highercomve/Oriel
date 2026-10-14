@@ -2,6 +2,24 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- iOS (native and Oriel renderers): the status bar and home indicator areas
+  show the page's background, as CSS spreads the root's over the canvas,
+  instead of the system's white; the status bar's text follows its
+  lightness.
+- System monitor (Oriel renderer): no "0.0 GHz" on Apple Silicon, which
+  doesn't tell its CPU frequency; the frequency is hidden, as in the web
+  frontend, and the per-core chart drops its "0.0G".
+- Render bench: memory readings on macOS and iOS (resident size and
+  physical footprint, the app's process), instead of 0 MB.
+- Breakout: `zig build test-game` passes with any renderer (the WebView
+  build left out the canvas the physics rules use).
+- iOS simulator builds no longer print codesign's "replacing existing
+  signature" as a failed command.
+
 ## [0.14.1] — 2026-10-13
 
 ### Fixed

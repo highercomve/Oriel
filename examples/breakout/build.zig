@@ -35,11 +35,18 @@ pub fn build(b: *std.Build) void {
             .version = "0.1.0",
         },
     });
+    // The rules draw with oriel.canvas, which the WebView build leaves out:
+    // the tests get their own Oriel, for this machine, with it.
+    const test_dep = b.dependency("oriel", .{
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .native_ui = true,
+    });
     const game_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("game.zig"),
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
-        .imports = &.{.{ .name = "oriel", .module = dep.module("oriel") }},
+        .imports = &.{.{ .name = "oriel", .module = test_dep.module("oriel") }},
     }) });
     b.step("test-game", "Check Breakout's Zig physics rules").dependOn(&b.addRunArtifact(game_tests).step);
 }
