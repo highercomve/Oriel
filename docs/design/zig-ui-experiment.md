@@ -136,7 +136,10 @@ These measurements do not establish Pixel 8 timings or battery savings.
 ## Validation
 
 Root Zig tests cover compiled markup, owned text, keyed reordering, subtree
-destruction and next-frame callback scheduling. Both native engines and the
+destruction and next-frame callback scheduling. Update regressions also cover
+wrong-template/style IDs, malformed runs, input count/byte limits, capacity and
+allocation failures, zero property-buffer heap allocations after preparation,
+and mirroring callback lifetime/reentry. Both native engines and the
 WebView build successfully on Linux; the Zig renderer also builds for Android
 arm64 with the existing host. The pure binary has no QuickJS/DOM symbols or
 WebKit/JavaScript shared-library dependencies. Full-suite and GUI checks are
