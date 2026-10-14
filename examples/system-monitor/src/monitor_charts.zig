@@ -118,7 +118,7 @@ pub fn cores(e: *ui.Engine, p: *ui.Program, id: i64, h: *const model.Histories, 
         p.fillStyle(rgb(0xf0f6fc));
         p.fillText(try std.fmt.bufPrint(&b, "{d:.0}%", .{core.percent}), x + width - 54, y + 13);
         p.fillStyle(rgb(0x6e7681));
-        p.fillText(try std.fmt.bufPrint(&b, "{d:.1}G", .{core.freq_mhz / 1000}), x + width, y + 13);
+        if (core.freq_mhz > 0) p.fillText(try std.fmt.bufPrint(&b, "{d:.1}G", .{core.freq_mhz / 1000}), x + width, y + 13);
     }
     try finish(e, p, id);
 }
