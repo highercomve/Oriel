@@ -944,6 +944,32 @@ function invoke(cmd, args) {
     host.invoke(id, String(cmd), JSON.stringify(args ?? null));
   });
 }
+// ORIEL_NUI_EXPORT (Linux): the page as it is now, written as an .oriel
+// view named `name` (docs/design/zig-ui-experiment.md, "Porting a page"):
+// its elements' ids name the view's nodes. Options: `element` (only it and
+// what's in it), `hollow` (elements exported without what's in them: lists
+// whose rows are views), and `variant` with `media` or `when`: the same view under a
+// media condition ("prefers-color-scheme: dark", several joined by " and ")
+// or an app state (`when`, the view's `@when` block), after the default. An export script
+// (ORIEL_NUI_EXPORT_SCRIPT) brings the page to each state and calls it;
+// __orielExportDone() quits once it's done.
+Object.defineProperty(g, "__orielExport", {
+  value: (name, options = {}) => {
+    renderer?.render();
+    const names = {};
+    if (renderer) for (const el of document.querySelectorAll("[id]")) names[renderer.idOf(el, "el")] = el.id;
+    // An element: only it and what's in it (a list's row as a view of its own).
+    const { element, variant, media, when, hollow = [] } = options instanceof Element ? { element: options } : options;
+    const root = element && renderer ? renderer.idOf(element, "el") : null;
+    // Lists whose rows are views of their own: the list, not its rows.
+    const hollowIds = renderer ? hollow.map((el) => renderer.idOf(el, "el")) : [];
+    return invoke("__oriel:export", {
+      name: String(name), names, root, hollow: hollowIds, variant: variant ?? null, media: media ?? null, when: when ?? null,
+      viewport: { width: viewport.width, height: viewport.height, dark: !!viewport.dark },
+    });
+  },
+});
+Object.defineProperty(g, "__orielExportDone", { value: () => invoke("__oriel:export-done", null) });
 Object.defineProperty(g, "oriel", { value: orielApi({
   invoke,
   listeners: new Map(),

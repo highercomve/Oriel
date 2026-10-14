@@ -4,8 +4,42 @@ Notable changes in Oriel releases.
 
 ## [Unreleased]
 
+### Added
+
+- `.oriel` views can say everything the native renderer computes from
+  HTML and CSS, so an Oriel-renderer view can look exactly like the web
+  page it came from: per-side borders and border colors, dashed and dotted
+  borders, per-corner and elliptical radii, `calc()` lengths, gradients,
+  transforms, outlines and focus halos, `position: relative` offsets and
+  sticky, tables, scrollbar styling and color scheme, `align-content` and
+  any flex direction, max-/fit-content text, keyboard hints for fields,
+  SVG icons (`<icon>` with `<path>`s), and spans that are underlined,
+  highlighted, boxed (inline `<code>`-style boxes) or links whose clicks
+  reach the app as their own ids. `unset="..."` gives a prop no value. A
+  test fails the build if a native prop is ever added that no attribute
+  sets.
+- Porting a page to the Oriel renderer: `ORIEL_NUI_EXPORT` and
+  `ORIEL_NUI_EXPORT_SCRIPT` write a native-renderer page as `.oriel` views,
+  its states merged as blocks, and `zig build check-views` proves each
+  view compiles to the props the page had (docs/design/zig-ui-experiment.md,
+  "Porting a page"). Character entities (`&amp;`, `&#10;`) in markup.
+- `.oriel` blocks: `@when (state)` for the app's states
+  (`View.setState`), combined with media conditions, up to 64 blocks per
+  view, applied block by block instead of one compiled variant per
+  combination; `@when (focus)` and `@when (hover)` looks for the focused
+  and hovered nodes, which also style native fields' focus. Spans take
+  `class`.
+- Zig-renderer apps: `Engine.setColorScheme` pins dark or light;
+  `Driver.drag` takes drags and drops (dropped files' paths from
+  `Engine.drops`); events the app emits reach `Driver.event` as "message"
+  on every platform, as they did on Windows and Android.
+
 ### Fixed
 
+- A view mounted where another one was starts from its own look (it showed
+  the old view's media blocks as already applied).
+- Linux: a `-Dnative_ui` build no longer links a WebKitGTK call for
+  transparent windows.
 - iOS (native and Oriel renderers): the status bar and home indicator areas
   show the page's background, as CSS spreads the root's over the canvas,
   instead of the system's white; the status bar's text follows its

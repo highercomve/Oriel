@@ -342,6 +342,8 @@ fn makeTransparent(window: *gtk.Window, view: ?*webkit.WebView) void {
     gtk_widget_add_css_class(window, "oriel-transparent");
     // A native window (-Dnative_ui) has no web view: its surface clears to
     // transparent itself (native_ui/gtk.zig, Surface.transparent).
+    // -Dnative_ui links no WebKitGTK: there is no view to clear.
+    if (comptime build_options.native_ui) return;
     const v = view orelse return;
     const clear: GdkRGBA = .{ .red = 0, .green = 0, .blue = 0, .alpha = 0 };
     webkit_web_view_set_background_color(v, &clear);
