@@ -509,6 +509,7 @@ Debugging aids; on Android set them with `debug.oriel.env`
 | `ORIEL_NUI_AXDUMP=1` | all | The accessibility tree as a backend builds it, after each change. |
 | `ORIEL_NUI_SNAPSHOT=<dir>` | macOS | Each window as drawn, fields included, to `<dir>/<label>.png` after each layout. |
 | `ORIEL_NUI_FIELDS=1` | Linux | Each native field's frame, clip and visibility. |
+| `ORIEL_NUI_FULL_REDRAW=1` | Linux | Paint the whole window every frame instead of only what changed (to compare with). |
 | `ORIEL_NUI_PAGE=<file>` | Linux | Read this file for `index.html` (`tools/flatten_diff`). |
 | `ORIEL_NUI_JSON=1` | Android | Send props and leaf styles as JSON instead of the compact records. |
 | `ORIEL_NUI_SCALE=1.25` | Windows | Force a display scale (WebView2's `--force-device-scale-factor`). |

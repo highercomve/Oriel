@@ -9,6 +9,7 @@ const std = @import("std");
 const gtk = @import("gtk");
 const engine_mod = @import("engine.zig");
 const prof = @import("prof.zig");
+const damage_mod = @import("damage.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
 const tree_mod = @import("tree.zig");
 const Engine = engine_mod.Engine;
@@ -33,8 +34,26 @@ const GskPath = opaque {};
 const GdkRectangle = extern struct { x: c_int, y: c_int, width: c_int, height: c_int };
 const GtkCssProvider = opaque {};
 
-extern fn gtk_drawing_area_new() *Widget;
-extern fn gtk_drawing_area_set_draw_func(area: *Widget, func: ?*const fn (*Widget, *cairo_t, c_int, c_int, ?*anyopaque) callconv(.c) void, data: ?*anyopaque, destroy: ?*anyopaque) void;
+extern fn gtk_drawing_area_get_type() usize;
+extern fn gtk_widget_get_type() usize;
+extern fn g_initially_unowned_get_type() usize;
+extern fn g_type_register_static_simple(parent: usize, name: [*:0]const u8, class_size: c_uint, class_init: *const fn (?*anyopaque, ?*anyopaque) callconv(.c) void, instance_size: c_uint, instance_init: ?*const anyopaque, flags: c_uint) usize;
+const GTypeQuery = extern struct { type: usize, type_name: ?[*:0]const u8, class_size: c_uint, instance_size: c_uint };
+extern fn g_type_query(t: usize, query: *GTypeQuery) void;
+extern fn g_object_new_with_properties(t: usize, n: c_uint, names: ?*const anyopaque, values: ?*const anyopaque) ?*anyopaque;
+const GskRenderNode = opaque {};
+const GrapheneRect = extern struct { x: f32, y: f32, w: f32, h: f32 };
+const GraphenePoint = extern struct { x: f32, y: f32 };
+extern fn gsk_texture_node_new(texture: *anyopaque, bounds: *const GrapheneRect) ?*GskRenderNode;
+extern fn gdk_memory_texture_new(w: c_int, h: c_int, format: c_int, bytes: *anyopaque, stride: usize) *anyopaque;
+extern fn g_bytes_new_with_free_func(data: ?*const anyopaque, size: usize, free: *const fn (?*anyopaque) callconv(.c) void, user: ?*anyopaque) *anyopaque;
+extern fn cairo_surface_set_device_offset(surface: *anyopaque, x: f64, y: f64) void;
+/// Cairo's ARGB32 (native-endian, premultiplied) as a GdkMemoryFormat.
+const cairo_memory_format: c_int = if (@import("builtin").cpu.arch.endian() == .little) 0 else 1;
+extern fn gsk_render_node_unref(node: *GskRenderNode) void;
+extern fn gtk_snapshot_append_node(snapshot: *anyopaque, node: *GskRenderNode) void;
+extern fn gtk_native_get_surface_transform(native: *anyopaque, x: *f64, y: *f64) void;
+extern fn gtk_widget_compute_point(w: *Widget, target: *Widget, point: *const GraphenePoint, out: *GraphenePoint) c_int;
 extern fn gtk_overlay_new() *Widget;
 extern fn gtk_overlay_set_child(overlay: *Widget, child: *Widget) void;
 extern fn gtk_overlay_add_overlay(overlay: *Widget, child: *Widget) void;
@@ -124,6 +143,9 @@ extern fn g_object_set_data(obj: *anyopaque, key: [*:0]const u8, data: ?*anyopaq
 extern fn g_object_get_data(obj: *anyopaque, key: [*:0]const u8) ?*anyopaque;
 extern fn g_object_get(obj: *anyopaque, first: [*:0]const u8, ...) void;
 extern fn g_object_unref(obj: *anyopaque) void;
+extern fn g_signal_handler_disconnect(instance: *anyopaque, handler: c_ulong) void;
+extern fn g_object_add_weak_pointer(object: *anyopaque, location: *?*anyopaque) void;
+extern fn g_object_remove_weak_pointer(object: *anyopaque, location: *?*anyopaque) void;
 extern fn g_signal_handlers_disconnect_matched(instance: *anyopaque, mask: c_int, signal_id: c_uint, detail: c_uint, closure: ?*anyopaque, func: ?*anyopaque, data: ?*anyopaque) c_uint;
 extern fn gtk_style_context_remove_provider_for_display(display: *anyopaque, provider: *GtkCssProvider) void;
 extern fn g_free(p: ?*anyopaque) void;
@@ -150,6 +172,9 @@ extern fn cairo_create(target: *anyopaque) ?*cairo_t;
 extern fn cairo_destroy(cr: *cairo_t) void;
 extern fn cairo_surface_set_device_scale(surface: *anyopaque, x: f64, y: f64) void;
 extern fn gtk_widget_get_scale_factor(w: *Widget) c_int;
+extern fn gtk_widget_get_native(w: *Widget) ?*anyopaque;
+extern fn gtk_native_get_surface(native: *anyopaque) ?*anyopaque;
+extern fn gdk_surface_get_scale(surface: *anyopaque) f64;
 extern fn cairo_image_surface_create(format: c_int, w: c_int, h: c_int) ?*anyopaque;
 extern fn cairo_image_surface_get_data(surface: *anyopaque) ?[*]u8;
 extern fn cairo_image_surface_get_stride(surface: *anyopaque) c_int;
@@ -340,6 +365,8 @@ pub const Surface = struct {
     resolved_families: std.StringHashMapUnmanaged([]const u8) = .empty,
     css: *GtkCssProvider,
     css_text: std.ArrayList(u8) = .empty,
+    /// The CSS the provider has (updateCss), hashed.
+    css_hash: u64 = 0,
     invoke_fn: Invoke,
     invoke_ctx: ?*anyopaque,
     /// The area's event controllers (their handlers go in `destroy`).
@@ -380,6 +407,27 @@ pub const Surface = struct {
     /// each wheel step (same point) would hover a new row each step: a
     /// restyle and a second draw per step.
     settle_id: c_uint = 0,
+    /// The window surface whose scale changes redraw (onRealize), and the
+    /// handler on it; null once either goes.
+    scale_surface: ?*anyopaque = null,
+    scale_handler: c_ulong = 0,
+    /// The page in tiles kept from frame to frame (paintTiles), painted
+    /// again when everything changed or under patches let go.
+    tiles: std.ArrayList(?*GskRenderNode) = .empty,
+    /// What the tiles were painted at: any of it changing paints them all.
+    grid: Grid = .{},
+    /// The changes since, painted over the tiles, oldest first.
+    patches: std.ArrayList(Patch) = .empty,
+    /// What changed since the last frame.
+    damage: damage_mod.Damage = .{},
+    /// A frame's changed areas, and those of patches let go (the tiles
+    /// under them painted again): kept for their memory.
+    regions: std.ArrayList(Rect) = .empty,
+    stale: std.ArrayList(Rect) = .empty,
+    /// The tile being painted: paint skips what can't reach it.
+    cull: ?Rect = null,
+    /// How deep paint is in the tree (bounded: damage_mod.max_depth).
+    paint_depth: u32 = 0,
     /// The rounded clips the boxes being painted put on their children,
     /// not yet applied (paint): each child is clipped to the rectangle,
     /// and to the rounded path only where it reaches into a corner.
@@ -411,7 +459,7 @@ pub const Surface = struct {
             _ = g_object_ref_sink(overlay);
             g_object_unref(overlay);
         }
-        const area = gtk_drawing_area_new();
+        const area = paintAreaNew() orelse return error.NoPaintArea;
         gtk_widget_set_hexpand(area, 1);
         gtk_widget_set_vexpand(area, 1);
         gtk_widget_set_focusable(area, 1);
@@ -451,15 +499,15 @@ pub const Surface = struct {
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
-        .font_metrics_family = fontMetricsFamily,
-        .run_rects = runRects,
-        .font_x_height = fontXHeight,
+            .font_metrics_family = fontMetricsFamily,
+            .run_rects = runRects,
+            .font_x_height = fontXHeight,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
 
-        gtk_drawing_area_set_draw_func(area, draw, s, null);
         _ = g_signal_connect_data(@ptrCast(area), "resize", @ptrCast(&onResize), s, null, 0);
+        _ = g_signal_connect_data(@ptrCast(area), "realize", @ptrCast(&onRealize), s, null, 0);
         _ = g_signal_connect_data(@ptrCast(overlay), "get-child-position", @ptrCast(&onChildPosition), s, null, 0);
 
         const click = gtk_gesture_click_new();
@@ -502,6 +550,8 @@ pub const Surface = struct {
 
         s.token = next_token;
         next_token += 1;
+        // The area's snapshot finds the page by it (snapshotArea).
+        g_object_set_data(@ptrCast(area), "oriel-surface", @ptrFromInt(s.token));
         surfaces.put(gpa, s.token, s) catch |err| {
             s.engine.destroy();
             return err;
@@ -528,7 +578,15 @@ pub const Surface = struct {
         s.focus_events.deinit(s.gpa);
         s.warm.deinit(s.gpa);
         s.keys_down.deinit(s.gpa);
-        gtk_drawing_area_set_draw_func(s.area, null, null, null);
+        g_object_set_data(@ptrCast(s.area), "oriel-surface", null);
+        forgetScaleSurface(s);
+        dropTiles(s);
+        s.tiles.deinit(s.gpa);
+        dropPatches(s);
+        s.patches.deinit(s.gpa);
+        s.regions.deinit(s.gpa);
+        s.stale.deinit(s.gpa);
+        s.damage.deinit(s.gpa);
         disconnect(s, s.area);
         disconnect(s, s.overlay);
         for (s.controllers) |c| disconnect(s, c);
@@ -1428,11 +1486,11 @@ fn updateCss(s: *Surface) void {
                 if (n.props.bg) |bg| if (bg.color) |c| {
                     s.css_text.print(a, ".nui-f{d} {{ background: rgba({d:.0},{d:.0},{d:.0},{d:.2}); background-image: none; box-shadow: none; }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
                 };
-                const color = if (n.props.bc) |colors| colors[0] else tree_mod.Color{48,54,61,1};
+                const color = if (n.props.bc) |colors| colors[0] else tree_mod.Color{ 48, 54, 61, 1 };
                 const border_width = if (n.props.bw) |widths| widths[0] else 1;
                 const radius = n.radiusXY().x[0];
-                s.css_text.print(a, ".nui-f{d} {{ border: {d:.1}px solid rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-radius: {d:.1}px; font-weight: {d:.0}; }}\n", .{n.id,border_width,color[0],color[1],color[2],color[3],radius,n.props.fwt orelse 500}) catch return;
-                if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d} {{ font-family: '{s}'; }}\n", .{n.id, resolveFamily(s,family)}) catch return;
+                s.css_text.print(a, ".nui-f{d} {{ border: {d:.1}px solid rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-radius: {d:.1}px; font-weight: {d:.0}; }}\n", .{ n.id, border_width, color[0], color[1], color[2], color[3], radius, n.props.fwt orelse 500 }) catch return;
+                if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d} {{ font-family: '{s}'; }}\n", .{ n.id, resolveFamily(s, family) }) catch return;
             }
             // The page's own color on the label; else the theme's.
             if (n.props.col) |c| s.css_text.print(a, ".nui-f{d} label {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
@@ -1460,6 +1518,11 @@ fn updateCss(s: *Surface) void {
         }) catch return;
     }
     s.css_text.append(a, 0) catch return;
+    // The same as loaded (a sync with nothing new): loading it again would
+    // have GTK restyle every field, each frame.
+    const hash = std.hash.Wyhash.hash(0, s.css_text.items);
+    if (hash == s.css_hash) return;
+    s.css_hash = hash;
     gtk_css_provider_load_from_string(s.css, @ptrCast(s.css_text.items.ptr));
 }
 
@@ -1670,6 +1733,49 @@ fn modifierBit(name: []const u8) u32 {
 fn onResize(_: *Widget, width: c_int, height: c_int, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
     s.engine.resize(@floatFromInt(width), @floatFromInt(height), s.dark);
+}
+
+/// The window's own surface: redrawn when its scale changes. A change of
+/// fractional scale alone (1.25 to 1.5, both 2 as an integer) replays the
+/// last frame, its canvas bitmaps resampled, without drawing it again.
+fn onRealize(_: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    const native = gtk_widget_get_native(s.area) orelse return;
+    const surface = gtk_native_get_surface(native) orelse return;
+    if (surface == s.scale_surface) return;
+    forgetScaleSurface(s);
+    // The token, not the Surface: the handler goes in destroy, but a
+    // signal on its way when the page goes finds nothing.
+    s.scale_handler = g_signal_connect_data(surface, "notify::scale", @ptrCast(&onScaleChanged), @ptrFromInt(s.token), null, 0);
+    if (s.scale_handler == 0) return;
+    s.scale_surface = surface;
+    // Cleared by GLib if the window's surface goes first.
+    g_object_add_weak_pointer(surface, &s.scale_surface);
+}
+
+/// The scale handler off the window's surface, if that is still there.
+fn forgetScaleSurface(s: *Surface) void {
+    const surface = s.scale_surface orelse return;
+    g_signal_handler_disconnect(surface, s.scale_handler);
+    g_object_remove_weak_pointer(surface, &s.scale_surface);
+    s.scale_surface = null;
+    s.scale_handler = 0;
+}
+
+fn onScaleChanged(_: *anyopaque, _: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaces.get(@intFromPtr(data)) orelse return; // the page is gone
+    gtk_widget_queue_draw(s.area);
+}
+
+/// Device pixels per unit: the surface's fractional scale (1.25, 1.333 on
+/// a scaled display), as GTK renders the window. The integer scale factor
+/// rounds that up, and a bitmap made at it is resampled down every frame.
+fn deviceScale(s: *Surface) f64 {
+    const fallback: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    const native = gtk_widget_get_native(s.area) orelse return fallback;
+    const surface = gtk_native_get_surface(native) orelse return fallback;
+    const scale = gdk_surface_get_scale(surface);
+    return if (scale > 0 and std.math.isFinite(scale)) scale else fallback;
 }
 
 fn onPressed(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) callconv(.c) void {
@@ -2549,7 +2655,7 @@ fn dropDeliver(job: *DropJob) void {
     const gpa = job.gpa; // the job goes before the JSON
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
-    json.print(gpa,"[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.suggested, job.mods, job.session, job.items.items }) catch {
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.suggested, job.mods, job.session, job.items.items }) catch {
         sendDragLeave(s, job.session);
         return dropAbandon(job);
     };
@@ -3068,28 +3174,392 @@ fn c16(v: f32) u16 {
 
 // ---------------------------------------------------------------------------
 // Drawing
+//
+// The page is kept from frame to frame as bitmaps GTK shows as textures:
+// tiles over the whole area, and over them patches, each the page in an
+// area that changed since (damage.zig) as it was then. A frame paints only
+// its changes, as new patches; the rest it gives GTK as it was, the same
+// render nodes, which GTK's diff of the frames skips: only the changes are
+// drawn and sent to the compositor. Painting the whole window each frame
+// was most of an idle app's CPU (a system monitor's few numbers each 2 s).
 
-fn draw(_: *Widget, cr: *cairo_t, _: c_int, _: c_int, data: ?*anyopaque) callconv(.c) void {
-    const s = surfaceOf(data);
+/// What the tiles were painted at (Surface.grid).
+const Grid = struct {
+    w: c_int = 0,
+    h: c_int = 0,
+    /// Device pixels per unit, and where the area's origin falls within
+    /// its device pixel: tiles start on whole pixels (no seams between).
+    scale: f64 = 0,
+    fx: f64 = 0,
+    fy: f64 = 0,
+    transparent: bool = false,
+    /// The fonts' settings (the Pango context's serial).
+    fonts: c_uint = 0,
+};
+
+/// The drawing area with its own snapshot (paintTiles) in place of the
+/// draw function's one picture of the whole area; and whether its class
+/// took that snapshot (paintAreaClassInit).
+var paint_area_type: usize = 0;
+var paint_area_ok = false;
+
+fn paintAreaNew() ?*Widget {
+    if (paint_area_type == 0) {
+        var q: GTypeQuery = undefined;
+        g_type_query(gtk_drawing_area_get_type(), &q);
+        if (q.class_size == 0) return null;
+        paint_area_type = g_type_register_static_simple(gtk_drawing_area_get_type(), "OrielPaintArea", q.class_size, paintAreaClassInit, q.instance_size, null, 0);
+        if (paint_area_type == 0) return null;
+    }
+    const area = g_object_new_with_properties(paint_area_type, 0, null, null) orelse return null;
+    // The class is made with the first one: an area that would draw nothing
+    // is no area.
+    if (!paint_area_ok) {
+        g_object_unref(g_object_ref_sink(area));
+        return null;
+    }
+    return @ptrCast(@alignCast(area));
+}
+
+fn paintAreaClassInit(class: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    // GtkWidgetClass's snapshot: after GInitiallyUnowned's class and the
+    // 23 virtual functions before it (gtkwidget.h, stable in GTK 4).
+    var base: GTypeQuery = undefined;
+    g_type_query(g_initially_unowned_get_type(), &base);
+    var widget: GTypeQuery = undefined;
+    g_type_query(gtk_widget_get_type(), &widget);
+    const at = @as(usize, base.class_size) + 23 * @sizeOf(*const anyopaque);
+    // Inside GtkWidgetClass, and GtkDrawingArea's own snapshot there: else
+    // not the layout this was written for, and nothing is written.
+    if (base.class_size == 0 or at + @sizeOf(*const anyopaque) > widget.class_size) {
+        log.err("native ui: GtkWidgetClass is not as expected; no drawing", .{});
+        return;
+    }
+    const slot: *?*const anyopaque = @ptrFromInt(@intFromPtr(class.?) + at);
+    if (slot.* == null) {
+        log.err("native ui: GtkDrawingArea has no snapshot where expected; no drawing", .{});
+        return;
+    }
+    slot.* = @ptrCast(&snapshotArea);
+    paint_area_ok = true;
+}
+
+fn snapshotArea(widget: ?*anyopaque, snapshot: ?*anyopaque) callconv(.c) void {
+    const token = @intFromPtr(g_object_get_data(widget.?, "oriel-surface") orelse return);
+    const s = surfaces.get(token) orelse return; // the page is gone
+    paintTiles(s, snapshot.?);
+}
+
+/// Where the area's origin is on the window's surface, in device pixels.
+fn deviceOrigin(s: *Surface, scale: f64) [2]f64 {
+    const native = gtk_widget_get_native(s.area) orelse return .{ 0, 0 };
+    var sx: f64 = 0;
+    var sy: f64 = 0;
+    gtk_native_get_surface_transform(native, &sx, &sy);
+    var at: GraphenePoint = .{ .x = 0, .y = 0 };
+    if (gtk_widget_compute_point(s.area, @ptrCast(@alignCast(native)), &.{ .x = 0, .y = 0 }, &at) == 0) return .{ 0, 0 };
+    const x = (at.x + sx) * scale;
+    const y = (at.y + sy) * scale;
+    return if (std.math.isFinite(x) and std.math.isFinite(y)) .{ x, y } else .{ 0, 0 };
+}
+
+/// A tile's side, in device pixels.
+const tile_px = 256;
+/// Patches over the tiles before the oldest are painted into the tiles
+/// under them; and how many stay then.
+const max_patches = 48;
+const kept_patches = 16;
+
+/// A change painted over the tiles (paintTiles): the page in `rect`, on
+/// whole device pixels, as it was then.
+const Patch = struct { node: *GskRenderNode, rect: Rect };
+
+fn paintTiles(s: *Surface, snapshot: *anyopaque) void {
     s.draw_serial += 1;
     if (s.engine.tree.needsLayout()) s.engine.tree.layout();
     const root = s.engine.tree.root orelse return;
-    // Under the page: white, as in a browser (the root's background, if
-    // any, is painted over it); nothing in a transparent window.
-    if (s.transparent) {
-        cairo_set_operator(cr, cairo_operator_clear);
-        cairo_paint(cr);
-        cairo_set_operator(cr, cairo_operator_over);
-    } else {
-        cairo_set_source_rgba(cr, 1, 1, 1, 1);
-        cairo_paint(cr);
-    }
+    const w = gtk_widget_get_width(s.area);
+    const h = gtk_widget_get_height(s.area);
+    if (w <= 0 or h <= 0) return;
     const t0 = prof.now();
-    paint(s, cr, root);
-    prof.report("draw {d:.2}", .{prof.now() - t0});
+    const scale = deviceScale(s);
+    const origin = deviceOrigin(s, scale);
+    const grid: Grid = .{
+        .w = w,
+        .h = h,
+        .scale = scale,
+        .fx = origin[0] - @floor(origin[0]),
+        .fy = origin[1] - @floor(origin[1]),
+        .transparent = s.transparent,
+        .fonts = pango_context_get_serial(gtk_widget_get_pango_context(s.area)),
+    };
+    const cols: usize = @intFromFloat(@ceil((@as(f64, @floatFromInt(w)) * scale + grid.fx) / tile_px));
+    const rows: usize = @intFromFloat(@ceil((@as(f64, @floatFromInt(h)) * scale + grid.fy) / tile_px));
+    if (!std.meta.eql(grid, s.grid) or s.tiles.items.len != cols * rows) {
+        dropTiles(s);
+        s.tiles.appendNTimes(s.gpa, null, cols * rows) catch return;
+        s.grid = grid;
+        s.damage.invalidate();
+    }
+    // Everything every frame, as before the tiles (comparing the two).
+    if (std.c.getenv("ORIEL_NUI_FULL_REDRAW") != null) s.damage.invalidate();
+    s.damage.collect(s.gpa, root, .{ .ctx = s, .bounds = paintBounds, .extra = paintExtra });
+
+    // The changes as patches over the tiles; the tiles themselves painted
+    // again only when everything changed, or under patches let go.
+    s.stale.clearRetainingCapacity();
+    // A transparent window: no patches (what one leaves transparent would
+    // show the older page under it), the tiles the changes reach instead.
+    const only_tiles = s.transparent;
+    const all = s.damage.all or (!only_tiles and !addPatches(s, root));
+    if (all) dropPatches(s);
+    var painted: usize = 0;
+    for (0..rows) |row| for (0..cols) |col| {
+        const rect = tileRect(grid, col, row) orelse continue;
+        const slot = &s.tiles.items[row * cols + col];
+        if (slot.* == null or all or (only_tiles and s.damage.reaches(rect)) or reachesAny(s.stale.items, rect)) {
+            if (paintTile(s, root, rect)) |node| {
+                if (slot.*) |old| gsk_render_node_unref(old);
+                slot.* = node;
+                painted += 1;
+            }
+        }
+        if (slot.*) |node| gtk_snapshot_append_node(snapshot, node);
+    };
+    for (s.patches.items) |p| gtk_snapshot_append_node(snapshot, p.node);
+    s.damage.painted();
+    prof.report("draw {d:.2}, {d} of {d} tiles, {d} patches", .{ prof.now() - t0, painted, cols * rows, s.patches.items.len });
+}
+
+/// Tile `col`, `row`: on whole device pixels, the first row and column
+/// starting before the area (at most a pixel), the last ending at its edge.
+fn tileRect(g: Grid, col: usize, row: usize) ?Rect {
+    const left = (@as(f64, @floatFromInt(col)) * tile_px - g.fx) / g.scale;
+    const top = (@as(f64, @floatFromInt(row)) * tile_px - g.fy) / g.scale;
+    return within(g, left, top, left + tile_px / g.scale, top + tile_px / g.scale);
+}
+
+/// `r` grown out to whole device pixels, and cut to the area.
+fn onPixels(g: Grid, r: Rect) ?Rect {
+    const left = (@floor(@as(f64, r.x) * g.scale + g.fx) - g.fx) / g.scale;
+    const top = (@floor(@as(f64, r.y) * g.scale + g.fy) - g.fy) / g.scale;
+    const right = (@ceil(@as(f64, r.x + r.w) * g.scale + g.fx) - g.fx) / g.scale;
+    const bottom = (@ceil(@as(f64, r.y + r.h) * g.scale + g.fy) - g.fy) / g.scale;
+    return within(g, left, top, right, bottom);
+}
+
+fn within(g: Grid, left: f64, top: f64, right: f64, bottom: f64) ?Rect {
+    const x0 = @max(0, left);
+    const y0 = @max(0, top);
+    const x1 = @min(@as(f64, @floatFromInt(g.w)), right);
+    const y1 = @min(@as(f64, @floatFromInt(g.h)), bottom);
+    if (!(x1 > x0 and y1 > y0)) return null;
+    return .{ .x = @floatCast(x0), .y = @floatCast(y0), .w = @floatCast(x1 - x0), .h = @floatCast(y1 - y0) };
+}
+
+fn reachesAny(rects: []const Rect, r: Rect) bool {
+    for (rects) |x| if (damage_mod.overlaps(x, r)) return true;
+    return false;
+}
+
+fn areaOf(r: Rect) f32 {
+    return r.w * r.h;
+}
+
+/// The damage as patches over the tiles: each changed area painted as it
+/// is now, over the patches before it (one it covers whole is dropped).
+/// Over many patches, the oldest are painted into the tiles under them
+/// (`Surface.stale`). False: none could be made, or the changes are most
+/// of the area (the tiles are painted again instead).
+fn addPatches(s: *Surface, root: *Node) bool {
+    s.regions.clearRetainingCapacity();
+    for (s.damage.rects.items) |r| if (onPixels(s.grid, r)) |p| {
+        s.regions.append(s.gpa, p) catch return false;
+    };
+    if (!mergeRegions(&s.regions)) return false;
+    var total: f32 = 0;
+    for (s.regions.items) |r| total += areaOf(r);
+    const whole = @as(f32, @floatFromInt(s.grid.w)) * @as(f32, @floatFromInt(s.grid.h));
+    if (total > whole / 2) return false;
+    s.patches.ensureUnusedCapacity(s.gpa, s.regions.items.len) catch return false;
+    for (s.regions.items) |r| {
+        const node = paintTile(s, root, r) orelse return false;
+        var i: usize = 0;
+        while (i < s.patches.items.len) {
+            if (damage_mod.inside(s.patches.items[i].rect, r)) {
+                gsk_render_node_unref(s.patches.items[i].node);
+                _ = s.patches.orderedRemove(i);
+            } else i += 1;
+        }
+        s.patches.appendAssumeCapacity(.{ .node = node, .rect = r });
+    }
+    if (s.patches.items.len > max_patches) {
+        const drop = s.patches.items.len - kept_patches;
+        for (s.patches.items[0..drop]) |p| {
+            s.stale.append(s.gpa, p.rect) catch return false;
+        }
+        for (s.patches.items[0..drop]) |p| gsk_render_node_unref(p.node);
+        s.patches.replaceRangeAssumeCapacity(0, drop, &.{});
+    }
+    return true;
+}
+
+/// Changed areas near each other as one: what's between them is painted
+/// once more, but there are fewer patches, and less drawn twice at edges.
+/// False: more steps than `max_rects` areas can take (it couldn't finish).
+fn mergeRegions(list: *std.ArrayList(Rect)) bool {
+    // Each step merges two (one fewer) or moves on: n areas end within n².
+    const max_steps = damage_mod.max_rects * damage_mod.max_rects;
+    if (list.items.len > damage_mod.max_rects) return false;
+    var steps: usize = 0;
+    var i: usize = 0;
+    while (i < list.items.len) {
+        steps += 1;
+        if (steps > max_steps) return false;
+        var grew = false;
+        var j = i + 1;
+        while (j < list.items.len) {
+            const a = list.items[i];
+            const b = list.items[j];
+            const both = damage_mod.join(a, b);
+            if (areaOf(both) <= (areaOf(a) + areaOf(b)) * 1.25 + 256) {
+                list.items[i] = both;
+                _ = list.swapRemove(j);
+                grew = true;
+            } else j += 1;
+        }
+        // Grown: it may reach ones it didn't before.
+        if (!grew) i += 1;
+    }
+    return true;
+}
+
+fn dropPatches(s: *Surface) void {
+    for (s.patches.items) |p| gsk_render_node_unref(p.node);
+    s.patches.clearRetainingCapacity();
+}
+
+/// One tile or patch of the page, at `r` (on whole device pixels): painted
+/// into a bitmap of the device pixels it covers, and given to GTK as a
+/// texture there. GTK only copies it to the screen: no scaling, and edges
+/// that meet their neighbors' exactly (a Cairo recording replayed at a
+/// fractional scale covers part of its last row and column of pixels,
+/// seams between tiles).
+fn paintTile(s: *Surface, root: *Node, r: Rect) ?*GskRenderNode {
+    const g = s.grid;
+    if (!(g.scale > 0) or !(r.w > 0 and r.h > 0)) return null;
+    const left = @round(@as(f64, r.x) * g.scale + g.fx);
+    const top = @round(@as(f64, r.y) * g.scale + g.fy);
+    const right = @round(@as(f64, r.x + r.w) * g.scale + g.fx);
+    const bottom = @round(@as(f64, r.y + r.h) * g.scale + g.fy);
+    const pw: c_int = @intFromFloat(right - left);
+    const ph: c_int = @intFromFloat(bottom - top);
+    if (pw <= 0 or ph <= 0) return null;
+    const img = cairo_image_surface_create(0, pw, ph) orelse return null; // ARGB32
+    // The area's units on it, its first pixel the device pixel `left`, `top`.
+    cairo_surface_set_device_scale(img, g.scale, g.scale);
+    cairo_surface_set_device_offset(img, g.fx - left, g.fy - top);
+    {
+        const cr = cairo_create(img) orelse {
+            cairo_surface_destroy(img);
+            return null;
+        };
+        defer cairo_destroy(cr);
+        // Under the page: white, as in a browser (the root's background, if
+        // any, is painted over it); nothing in a transparent window.
+        if (!s.transparent) {
+            cairo_set_source_rgba(cr, 1, 1, 1, 1);
+            cairo_paint(cr);
+        }
+        s.cull = r;
+        defer s.cull = null;
+        paint(s, cr, root);
+    }
+    cairo_surface_flush(img);
+    const data = cairo_image_surface_get_data(img) orelse {
+        cairo_surface_destroy(img);
+        return null;
+    };
+    const stride = cairo_image_surface_get_stride(img);
+    // The texture's bytes are the bitmap's: it goes with them.
+    const bytes = g_bytes_new_with_free_func(data, @intCast(stride * ph), @ptrCast(&cairo_surface_destroy), img);
+    defer g_bytes_unref(bytes);
+    const texture = gdk_memory_texture_new(pw, ph, cairo_memory_format, bytes, @intCast(stride));
+    defer g_object_unref(texture);
+    return gsk_texture_node_new(texture, &.{
+        .x = @floatCast((left - g.fx) / g.scale),
+        .y = @floatCast((top - g.fy) / g.scale),
+        .w = @floatCast(@as(f64, @floatFromInt(pw)) / g.scale),
+        .h = @floatCast(@as(f64, @floatFromInt(ph)) / g.scale),
+    });
+}
+
+fn dropTiles(s: *Surface) void {
+    for (s.tiles.items) |tile| if (tile) |node| gsk_render_node_unref(node);
+    s.tiles.clearRetainingCapacity();
+}
+
+/// Where a node's own painting reaches (damage.zig's Hooks.bounds): its
+/// frame, its shadow and outline past it, and text overflowing its box.
+fn paintBounds(ctx: *anyopaque, n: *Node) Rect {
+    const s = surfaceOf(ctx);
+    const p = n.props;
+    // A pixel past its edges for the antialiasing.
+    var reach: f32 = 1;
+    if (p.sh) |sh| reach = @max(reach, @abs(sh.x) + @abs(sh.y) + @abs(sh.spread) + @abs(sh.blur) + 1);
+    if (p.ol) |ol| reach = @max(reach, @abs(ol.o) + @abs(ol.w) + 2);
+    var r = n.frame;
+    switch (n.kind) {
+        .text => r = damage_mod.join(r, textBounds(s, n)),
+        // An icon's strokes, a placeholder's text, a checkbox's mark.
+        .icon, .textarea => reach = @max(reach, 4),
+        .view => if (p.ctl != null) {
+            reach = @max(reach, 4);
+        },
+        else => {},
+    }
+    return damage_mod.grown(r, reach);
+}
+
+/// A text's lines as paintText draws them, its inline boxes and its links'
+/// rings: past its box when it overflows.
+fn textBounds(s: *Surface, n: *Node) Rect {
+    const c = n.content();
+    const layout = paintLayout(s, n, paintWidth(c.w)) orelse return n.frame;
+    defer g_object_unref(layout);
+    var ink: PangoRectangle = .{};
+    var logical: PangoRectangle = .{};
+    pango_layout_get_extents(layout, &ink, &logical);
+    const box = damage_mod.join(pangoRect(ink), pangoRect(logical));
+    // Lines on CSS's line boxes (paintText) move up to half a line.
+    var reach: f32 = (n.props.fz orelse 16) / 2;
+    if (n.props.runs) |runs| for (runs) |run| {
+        reach = @max(reach, run.sz / 2);
+        if (run.ol) |ol| reach = @max(reach, @abs(ol.o) + @abs(ol.w) + 2);
+        if (run.ib) |ib| for (0..4) |i| {
+            reach = @max(reach, @abs(ib.p[i]) + @abs(ib.m[i]) + (if (ib.bw) |bw| @abs(bw[i]) else 0) + 1);
+        };
+    };
+    return damage_mod.grown(.{ .x = c.x + box.x, .y = c.y + box.y, .w = box.w, .h = box.h }, reach);
+}
+
+fn pangoRect(r: PangoRectangle) Rect {
+    const k: f32 = PANGO_SCALE;
+    return .{ .x = @as(f32, @floatFromInt(r.x)) / k, .y = @as(f32, @floatFromInt(r.y)) / k, .w = @as(f32, @floatFromInt(r.width)) / k, .h = @as(f32, @floatFromInt(r.height)) / k };
+}
+
+/// What a node's pixels depend on beyond the tree (damage.zig's
+/// Hooks.extra): a text area's placeholder shows while it's empty.
+fn paintExtra(ctx: *anyopaque, n: *Node) u64 {
+    if (n.kind != .textarea or n.props.ph == null) return 0;
+    const s = surfaceOf(ctx);
+    const w = s.fields.get(n.id) orelse return 1;
+    return if (gtk_text_buffer_get_char_count(gtk_text_view_get_buffer(w)) > 0) 2 else 3;
 }
 
 fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
+    // Nothing of it or its children where this tile is.
+    if (s.cull) |tile| if (s.damage.subtree(n.id)) |r| if (!damage_mod.overlaps(r, tile)) return;
     const p = n.props;
     if (p.vis == false) return;
     const f = n.frame;
@@ -3098,40 +3568,69 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         // Off screen: its children may still be (absolute ones).
         if (n.kids.items.len == 0) return;
     }
+    // Deeper than any page (a cycle the tree let through): not drawn, as
+    // the damage walk takes it as everything changed (damage.zig).
+    if (s.paint_depth >= damage_mod.max_depth) return;
+    s.paint_depth += 1;
+    defer s.paint_depth -= 1;
     cairo_save(cr);
     defer cairo_restore(cr);
     cairo_rectangle(cr, n.clip.x, n.clip.y, n.clip.w, n.clip.h);
     cairo_clip(cr);
-    // scale and rotate: around the box's center, for it and its children.
-    const sc = p.sc orelse 1;
-    const rot = p.rot orelse 0;
-    // A transformed box: the rounded clips waiting are applied here, in
-    // the space they were made in (its own frame is no longer theirs).
     const waiting = s.round_clip_count;
     defer s.round_clip_count = waiting;
-    if (sc != 1 or rot != 0) {
-        applyRoundClips(s, cr, null);
-        s.round_clip_count = 0;
-        const cx = f.x + f.w / 2;
-        const cy = f.y + f.h / 2;
-        cairo_translate(cr, cx, cy);
-        if (rot != 0) cairo_rotate(cr, rot * std.math.pi / 180.0);
-        if (sc != 1) cairo_scale(cr, sc, sc);
-        cairo_translate(cr, -cx, -cy);
-    }
+    transformBox(s, cr, n);
     const alpha = p.op orelse 1;
     if (alpha < 1) cairo_push_group(cr);
-
     // Elliptical corners, as CSS draws them (tree.zig radiusXY).
     const r = n.radiusXY();
-    // The box itself, clipped to the rounded corners it reaches into (a
-    // shadow or outline paints past its frame: every waiting clip).
+    // The rounded clips waiting for what this box paints itself.
     const own_base = s.round_clip_count;
-    const own_clipped = own_base > 0;
+    paintBox(s, cr, n, r, own_base > 0);
+    paintKids(s, cr, n, own_base);
+    if (p.ol) |ol| {
+        if (own_base > 0) {
+            cairo_save(cr);
+            applyRoundClips(s, cr, null);
+        }
+        outline(cr, f, r, ol);
+        if (own_base > 0) cairo_restore(cr);
+    }
+    if (alpha < 1) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, alpha);
+    }
+}
+
+/// scale and rotate: around the box's center, for it and its children. A
+/// transformed box: the rounded clips waiting are applied here, in the
+/// space they were made in (its own frame is no longer theirs).
+fn transformBox(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const sc = n.props.sc orelse 1;
+    const rot = n.props.rot orelse 0;
+    if (sc == 1 and rot == 0) return;
+    applyRoundClips(s, cr, null);
+    s.round_clip_count = 0;
+    const f = n.frame;
+    const cx = f.x + f.w / 2;
+    const cy = f.y + f.h / 2;
+    cairo_translate(cr, cx, cy);
+    if (rot != 0) cairo_rotate(cr, rot * std.math.pi / 180.0);
+    if (sc != 1) cairo_scale(cr, sc, sc);
+    cairo_translate(cr, -cx, -cy);
+}
+
+/// The box itself (shadow, background, border, and what its kind draws),
+/// clipped to the rounded corners it reaches into (a shadow or outline
+/// paints past its frame: every waiting clip).
+fn paintBox(s: *Surface, cr: *cairo_t, n: *Node, r: Radii, own_clipped: bool) void {
+    const p = n.props;
+    const f = n.frame;
     if (own_clipped) {
         cairo_save(cr);
         applyRoundClips(s, cr, if (p.sh != null or p.ol != null) null else f);
     }
+    defer if (own_clipped) cairo_restore(cr);
     if (p.sh) |sh| shadow(cr, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
@@ -3155,15 +3654,19 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .image => paintImage(s, cr, n),
         .textarea => paintPlaceholder(s, cr, n),
         .canvas => paintCanvas(s, cr, n),
-        .view => if (n.props.ctl != null) paintControl(cr, n),
+        .view => if (p.ctl != null) paintControl(cr, n),
         else => {},
     }
-    if (own_clipped) cairo_restore(cr);
-    // A box that clips its content (overflow hidden, or a scroller) with
-    // rounded corners: the children are clipped to its rounded padding box.
-    // To its rectangle here; the rounded path waits for the children that
-    // reach into a corner. A path clip is a mask Cairo composites
-    // everything under through, every row of a list each scroll frame.
+}
+
+/// The children, in CSS paint order (a sticky header over the rows
+/// scrolled under it). A box that clips its content (overflow hidden, or
+/// a scroller) with rounded corners: the children are clipped to its
+/// rounded padding box. To its rectangle here; the rounded path waits for
+/// the children that reach into a corner. A path clip is a mask Cairo
+/// composites everything under through, every row of a list each scroll
+/// frame.
+fn paintKids(s: *Surface, cr: *cairo_t, n: *Node, own_base: usize) void {
     const round_clip = n.roundClips();
     if (round_clip) {
         cairo_save(cr);
@@ -3175,24 +3678,11 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         } else roundRectXY(cr, pb.rect, pb.radii);
         cairo_clip(cr);
     }
-    // CSS paint order: a sticky header over the rows scrolled under it.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(s, cr, k);
     if (round_clip) {
         cairo_restore(cr);
         s.round_clip_count = own_base;
-    }
-    if (p.ol) |ol| {
-        if (own_clipped) {
-            cairo_save(cr);
-            applyRoundClips(s, cr, null);
-        }
-        outline(cr, f, r, ol);
-        if (own_clipped) cairo_restore(cr);
-    }
-    if (alpha < 1) {
-        cairo_pop_group_to_source(cr);
-        cairo_paint_with_alpha(cr, alpha);
     }
 }
 
@@ -3865,7 +4355,9 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
 // into cairo. Every paint replays the whole program from the context's
 // defaults; save/restore keeps the state on a stack here as in the page.
 
-const CanvasBitmap = struct { surf: *anyopaque, w: c_int, h: c_int };
+/// `drawn`: the draw it was last drawn in (a canvas across tiles is drawn
+/// once, then only shown in each).
+const CanvasBitmap = struct { surf: *anyopaque, w: c_int, h: c_int, drawn: u64 = 0 };
 
 /// A circle mask's radius (1/16 px) and position within its pixel (1/16 px).
 const CircleKey = struct { r16: u32, qx: u8, qy: u8 };
@@ -3968,7 +4460,7 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     // an unbalanced restore() would pop the window's own states, and a
     // clearRect must clear the canvas, not the page behind it. All of that
     // now stays in the canvas's surface.
-    var sf: f64 = @floatFromInt(@max(1, gtk_widget_get_scale_factor(s.area)));
+    var sf = deviceScale(s);
     // At most max_canvas_pixels (as on Apple): a bigger canvas gets a
     // bitmap of fewer pixels per point, scaled up on the page.
     const area = f.w * sf * f.h * sf;
@@ -3981,11 +4473,15 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     var owned: ?*anyopaque = null; // not cached: destroyed after this frame
     defer if (owned) |o| cairo_surface_destroy(o);
     const img = blk: {
-        if (s.canvases.get(n.id)) |b| if (b.w == pw and b.h == ph) break :blk b.surf;
+        if (s.canvases.getPtr(n.id)) |b| if (b.w == pw and b.h == ph) {
+            if (b.drawn == s.draw_serial) return showCanvas(s, win_cr, n, b.surf, sf);
+            b.drawn = s.draw_serial;
+            break :blk b.surf;
+        };
         if (s.canvases.fetchRemove(n.id)) |kv| cairo_surface_destroy(kv.value.surf);
         const fresh = cairo_image_surface_create(0, pw, ph) orelse return;
         cairo_surface_set_device_scale(fresh, sf, sf);
-        s.canvases.put(n.id, .{ .surf = fresh, .w = pw, .h = ph }) catch {
+        s.canvases.put(n.id, .{ .surf = fresh, .w = pw, .h = ph, .drawn = s.draw_serial }) catch {
             owned = fresh;
         };
         break :blk fresh;
@@ -3996,14 +4492,7 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     cairo_set_operator(cr, cairo_operator_over);
     defer {
         cairo_destroy(cr);
-        cairo_save(win_cr);
-        // Clipped to the box's rounded corners, as a browser clips a
-        // replaced element's content to its border-radius.
-        roundRectXY(win_cr, f, n.radiusXY());
-        cairo_clip(win_cr);
-        cairo_set_source_surface(win_cr, img, f.x, f.y);
-        cairo_paint(win_cr);
-        cairo_restore(win_cr);
+        showCanvas(s, win_cr, n, img, sf);
     }
     // The drawing's coordinate space: the bitmap, scaled to the box (CSS
     // width/height stretch it, as in a browser).
@@ -4136,6 +4625,30 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
             },
         }
     }
+}
+
+/// A canvas's bitmap on the page, clipped to the box's rounded corners as
+/// a browser clips a replaced element's content to its border-radius. At
+/// the device pixel nearest its box when nothing scales or turns it: a
+/// bitmap between pixels is resampled to show (every frame it's shown).
+fn showCanvas(s: *Surface, win_cr: *cairo_t, n: *Node, img: *anyopaque, sf: f64) void {
+    const f = n.frame;
+    var x: f64 = f.x;
+    var y: f64 = f.y;
+    var m: CairoMatrix = undefined;
+    cairo_get_matrix(win_cr, &m);
+    if (m.xx == 1 and m.yy == 1 and m.xy == 0 and m.yx == 0 and sf == s.grid.scale) {
+        const ox = s.grid.fx;
+        const oy = s.grid.fy;
+        x = (@round((x + m.x0) * sf + ox) - ox) / sf - m.x0;
+        y = (@round((y + m.y0) * sf + oy) - oy) / sf - m.y0;
+    }
+    cairo_save(win_cr);
+    defer cairo_restore(win_cr);
+    roundRectXY(win_cr, f, n.radiusXY());
+    cairo_clip(win_cr);
+    cairo_set_source_surface(win_cr, img, x, y);
+    cairo_paint(win_cr);
 }
 
 /// fillRect / strokeRect: they draw their own path and leave the page's
@@ -4479,7 +4992,7 @@ test "probeSize reads a PNG's declared size without decoding it" {
 
 test "shared measurements match fresh Pango layouts after text, width and font changes" {
     if (gtk_init_check() == 0) return error.SkipZigTest;
-    const area = gtk_drawing_area_new();
+    const area = paintAreaNew() orelse return error.NoPaintArea;
     _ = g_object_ref_sink(area);
     defer g_object_unref(area);
     const gpa = std.testing.allocator;
