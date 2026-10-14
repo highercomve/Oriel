@@ -305,7 +305,7 @@ fn event(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) bool {
 
 fn handle(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) !bool {
     const eq = std.mem.eql;
-    if (eq(u8, kind, "pointer")) return pointer(e, data);
+    if (eq(u8, kind, "pointer")) return pointer(e, node, data);
     if (eq(u8, kind, "key")) return key(e, data, true);
     if (eq(u8, kind, "keyup")) return key(e, data, false);
     if (eq(u8, kind, "click")) return click(e, node);
@@ -313,8 +313,12 @@ fn handle(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) !bool {
     return false;
 }
 
-/// The board's pointer: the paddle follows a mouse over the board.
-fn pointer(e: *ui.Engine, data: []const u8) !bool {
+/// The board's pointer: the paddle follows a mouse over the board, or a
+/// finger dragging on it. A press on the board itself (not an overlay or
+/// the settings) takes the drag, as game.js's touchmove preventDefault:
+/// otherwise a touch platform scrolls and cancels the pointer once the
+/// finger moves.
+fn pointer(e: *ui.Engine, node: i64, data: []const u8) !bool {
     const parsed = std.json.parseFromSlice(std.json.Value, e.gpa, data, .{}) catch return false;
     defer parsed.deinit();
     const a = if (parsed.value == .array) parsed.value.array.items else return false;
@@ -324,7 +328,8 @@ fn pointer(e: *ui.Engine, data: []const u8) !bool {
     const b = e.tree.get(id("board")).?.frame;
     const inside = x >= b.x and x < b.x + b.w and y >= b.y and y < b.y + b.h;
     s.target = if (inside) x - b.x else null;
-    return false;
+    const down = a[0] == .string and std.mem.eql(u8, a[0].string, "down");
+    return down and inside and (node == id("board") or node == id("cv"));
 }
 
 fn numberOf(v: std.json.Value) ?f64 {
