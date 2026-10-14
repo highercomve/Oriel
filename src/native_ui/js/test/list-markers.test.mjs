@@ -35,7 +35,9 @@ assert.equal(shapes.length, 4, "one per bulleted item; none for list-style none 
 const disc = shapes.find((p) => p.bg && p.br);
 assert.deepEqual([disc.w, disc.h], [6, 6]);
 assert.deepEqual(disc.ins.slice(1), ["100%", null, null]);
-assert.equal(disc.m[1], 14, "14px before the text at 16px");
+// Blink, A 17 at 16px: o 11, the disc 6px wide and its left 18 before the text.
+assert.equal(disc.m[1], 12, "its right edge 12px before the text");
+assert.equal(disc.ins[0], 9, "9px below the item's top");
 assert.ok(shapes.some((p) => p.bw && p.br), "a circle: a ring");
 assert.ok(shapes.some((p) => p.bg && !p.br), "a square");
 const num = marks.find((p) => p.runs);

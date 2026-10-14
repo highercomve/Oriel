@@ -194,7 +194,8 @@ function lineStrut(cs, fs, host) {
   const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
   // Its x-height third (vertical-align: middle): the backend's, else half
   // the size.
-  return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2];
+  // and its ascent (rounded): list markers are placed from it.
+  return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2, Math.round(ascent)];
 }
 // An inline element with a box of its own (padding, a border, rounded
 // corners, a horizontal margin: a "148 MB" badge after a label). At the
@@ -1792,12 +1793,18 @@ export class Renderer {
     this.own(mid, el);
     const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
     if (typeof marker === "object") {
-      // A bullet: a shape, as browsers draw it (measured in Chromium: a
-      // 6px disc at 16px, 9px at 24px, centered about 0.56em down the
-      // line, its edge 14px before the text at 16px), not a glyph.
+      // A bullet: a shape, not a glyph, placed as Blink places it from the
+      // font's ascent A (ListMarker::RelativeSymbolMarkerRect, measured in
+      // WebView2): with o = ⌊2A/3⌋, ⌊(o + 1)/2⌋ wide, ⌊3(A − o)/2⌋ below
+      // the text's top, its left o + 7 before the content (16px Segoe UI:
+      // a 6px disc 9px down, 18px before the text).
       const fg = color(cs.color) || [0, 0, 0, 1];
-      const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
-      const mp = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
+      const [above, , , ascent] = lineStrut(cs, fontSize, this.host);
+      const o = Math.floor((2 * ascent) / 3);
+      const disc = Math.max(1, Math.floor((o + 1) / 2));
+      const size = marker.shape === "circle" ? Math.round(disc * 4 / 3) : disc;
+      const y = top + (above - ascent) + Math.floor((3 * (ascent - o)) / 2) - (size - disc) / 2;
+      const mp = { w: size, h: size, pos: "absolute", ins: [y, "100%", null, null], m: [0, o + 7 - size + (size - disc) / 2, 0, 0] };
       if (marker.shape === "circle") { mp.bw = [1, 1, 1, 1]; mp.bc = [fg, fg, fg, fg]; }
       else mp.bg = { color: fg };
       if (marker.shape !== "square") mp.br = ["50%", "50%", "50%", "50%"];

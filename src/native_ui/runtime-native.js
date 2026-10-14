@@ -4049,7 +4049,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const v = cs["line-height"];
     const lh = !v || v === "normal" ? normal : lineHeightPx(v, fs) ?? normal;
     const above = Math.round(ascent) + Math.floor((lh - Math.round(ascent) - Math.round(descent)) / 2);
-    return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2];
+    return [above, Math.max(0, lh - above), m[3] > 0 ? m[3] : fs / 2, Math.round(ascent)];
   }
   var nonZero = (v) => !!v && (/^(thin|medium|thick)$/.test(v) || parseFloat(v) !== 0 && !Number.isNaN(parseFloat(v)));
   function boxedInline(cs) {
@@ -5474,8 +5474,12 @@ input[type="range"] { height: 20px; margin: 2px; }
       const top = Array.isArray(props.pad) && typeof props.pad[0] === "number" ? props.pad[0] : 0;
       if (typeof marker === "object") {
         const fg = color(cs.color) || [0, 0, 0, 1];
-        const size = Math.max(3, Math.round(fontSize * (marker.shape === "circle" ? 0.5 : 0.375)));
-        const mp2 = { w: size, h: size, pos: "absolute", ins: [top + Math.round(fontSize * 0.5625 - size / 2), "100%", null, null], m: [0, Math.round(fontSize * 0.5 + 6), 0, 0] };
+        const [above, , , ascent] = lineStrut(cs, fontSize, this.host);
+        const o = Math.floor(2 * ascent / 3);
+        const disc = Math.max(1, Math.floor((o + 1) / 2));
+        const size = marker.shape === "circle" ? Math.round(disc * 4 / 3) : disc;
+        const y = top + (above - ascent) + Math.floor(3 * (ascent - o) / 2) - (size - disc) / 2;
+        const mp2 = { w: size, h: size, pos: "absolute", ins: [y, "100%", null, null], m: [0, o + 7 - size + (size - disc) / 2, 0, 0] };
         if (marker.shape === "circle") {
           mp2.bw = [1, 1, 1, 1];
           mp2.bc = [fg, fg, fg, fg];
