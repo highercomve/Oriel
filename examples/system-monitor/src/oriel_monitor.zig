@@ -48,14 +48,17 @@ const State = struct {
     paused: bool = false,
     in_flight: bool = false,
     pending_refresh: bool = false,
+    manual_refresh: bool = false,
     timer_id: u32 = 100,
     filter_timer: u32 = 0,
+    notification_timer: u32 = 0,
     next_timer: u32 = 100,
     settings_open: bool = false,
     actions_open: bool = false,
     confirm_open: bool = false,
     command_in_flight: bool = false,
     copy_details: bool = false,
+    copy_label: []const u8 = "process name",
     samples: u64 = 0,
 };
 const SavedSettings = struct { shown: [8]bool = @splat(true), interval_ms: u32 = 2000, interface: []const u8 = "" };
@@ -194,7 +197,10 @@ fn request_sample(e: *ui.Engine) !void {
     try ui.invoke(e, sample_request, "sample", .{ .filter = s.filter[0..s.filter_len] });
 }
 fn timer(e: *ui.Engine, id: u32) !void {
-    if (id == s.filter_timer) {
+    if (id == s.notification_timer) {
+        s.notification_timer = 0;
+        try display(e, sid("notification"), false);
+    } else if (id == s.filter_timer) {
         s.filter_timer = 0;
         try request_sample(e);
     } else if (id == s.timer_id and !s.paused) try request_sample(e);
@@ -204,6 +210,10 @@ fn resolved(e: *ui.Engine, id: u32, ok: bool, json: []const u8) !void {
         sample_request => {
             s.in_flight = false;
             defer arm(e);
+            errdefer if (s.manual_refresh) {
+                s.manual_refresh = false;
+                action_feedback(e, "Could not refresh the monitor. Try again.", false) catch {};
+            };
             if (ok) {
                 const sample = try std.json.parseFromSlice(tm.SystemSample, e.gpa, json, .{ .allocate = .alloc_always });
                 if (s.sample) |old| old.deinit();
@@ -213,6 +223,10 @@ fn resolved(e: *ui.Engine, id: u32, ok: bool, json: []const u8) !void {
                 try visibility(e);
                 try render_sample(e);
             } else try text(e, sid("status"), "Sampling failed. Refresh to retry.");
+            if (s.manual_refresh and !s.pending_refresh) {
+                s.manual_refresh = false;
+                try action_feedback(e, if (ok) "Monitor refreshed." else "Refresh failed. Try again.", ok);
+            }
             if (s.pending_refresh) {
                 s.pending_refresh = false;
                 try request_sample(e);
@@ -227,17 +241,28 @@ fn resolved(e: *ui.Engine, id: u32, ok: bool, json: []const u8) !void {
         },
         command_request => {
             s.command_in_flight = false;
+            errdefer action_feedback(e, "Could not copy the command line. Try again.", false) catch {};
             if (!ok) {
-                try text(e, sid("status"), "Could not read the full command line.");
+                try action_feedback(e, "Could not read the full command line.", false);
                 return;
             }
             const value = try std.json.parseFromSlice([]const u8, e.gpa, json, .{});
             defer value.deinit();
-            if (s.copy_details) try copy_row(e, value.value) else try copy(e, value.value);
+            if (value.value.len == 0 and !s.copy_details) {
+                try action_feedback(e, "Command line unavailable; nothing copied.", false);
+                return;
+            }
+            if (s.copy_details) try copy_row(e, value.value) else try copy(e, value.value, "command line");
         },
-        clipboard_request => try text(e, sid("status"), if (ok and std.mem.eql(u8, json, "true")) "Copied to clipboard." else "Clipboard copy failed."),
+        clipboard_request => {
+            const success = ok and std.mem.eql(u8, json, "true");
+            var buf: [128]u8 = undefined;
+            const message = if (success) try std.fmt.bufPrint(&buf, "Copied {s} to clipboard.", .{s.copy_label}) else "Clipboard copy failed. Try again.";
+            try action_feedback(e, message, success);
+        },
         end_request => {
-            try text(e, sid("status"), if (ok and std.mem.eql(u8, json, "true")) "Requested process shutdown." else "Process could not be asked to close (it may have exited or require permission).");
+            const success = ok and std.mem.eql(u8, json, "true");
+            try action_feedback(e, if (success) "Process shutdown requested." else "Could not request shutdown. The process may have exited or require permission.", success);
             try request_sample(e);
         },
         else => {},
@@ -460,7 +485,7 @@ fn scrolled(e: *ui.Engine, id: i64) !void {
     if (id == sid("proc-scroll") and s.sample != null) try render_rows(e);
 }
 fn overlay_children(e: *ui.Engine) !void {
-    var ids: [6]i64 = .{ root_id + 1, sid("body"), sid("footer"), 0, 0, 0 };
+    var ids: [7]i64 = .{ root_id + 1, sid("body"), sid("footer"), 0, 0, 0, 0 };
     var len: usize = 3;
     if (s.settings_open) {
         ids[len] = settings_id;
@@ -474,6 +499,8 @@ fn overlay_children(e: *ui.Engine) !void {
         ids[len] = confirm_id;
         len += 1;
     }
+    ids[len] = sid("notification");
+    len += 1;
     if (!try e.tree.stampKids(root_id, ids[0..len])) return error.InvalidTemplate;
 }
 fn close_overlays(e: *ui.Engine) !void {
@@ -551,14 +578,41 @@ fn confirm(e: *ui.Engine) !void {
     e.paintNow();
     e.backend.focus(e.backend.ctx, e.tree.get(Confirm.id("cancel", confirm_id)).?);
 }
-fn copy(e: *ui.Engine, value: []const u8) !void {
+fn action_feedback(e: *ui.Engine, message: []const u8, success: bool) !void {
+    try text(e, sid("footer-status"), message);
+    var props = e.tree.get(sid("footer-status")).?.props;
+    props.col = oriel.canvas.rgb(if (success) 0x7ee787 else 0xff7b72);
+    try e.tree.updateUiProps(sid("footer-status"), props);
+    try text(e, sid("notification-message"), message);
+    try display(e, sid("notification-success"), success);
+    try display(e, sid("notification-failure"), !success);
+    var notification = e.tree.get(sid("notification")).?.props;
+    notification.none = false;
+    notification.bg = .{ .color = oriel.canvas.rgb(if (success) 0x163022 else 0x3d1f24) };
+    const border = oriel.canvas.rgb(if (success) 0x3fb950 else 0xff7b72);
+    notification.bc = .{ border, border, border, border };
+    try e.tree.updateUiProps(sid("notification"), notification);
+    s.notification_timer = new_timer();
+    e.backend.add_timer(e.backend.ctx, e, s.notification_timer, if (success) 4000 else 8000);
+}
+fn copy(e: *ui.Engine, value: []const u8, label_text: []const u8) !void {
+    s.copy_label = label_text;
+    try close_overlays(e);
+    try text(e, sid("footer-status"), "Copying to clipboard…");
     try ui.invoke(e, clipboard_request, "copy_to_clipboard", .{ .text = value });
+}
+fn manual_refresh(e: *ui.Engine) !void {
+    s.manual_refresh = true;
+    errdefer s.manual_refresh = false;
+    try close_overlays(e);
+    try text(e, sid("footer-status"), "Refreshing monitor…");
+    try request_sample(e);
 }
 fn copy_row(e: *ui.Engine, command: []const u8) !void {
     const row = s.action orelse return;
     const value = try std.fmt.allocPrint(e.gpa, "PID {d}\nName {s}\nUser {s}\nState {s}\nThreads {d}\nCPU {d:.1}%\nRSS {d} bytes\nCommand {s}", .{ row.pid, row.name, row.user, row.state, row.threads, row.cpu_percent, row.mem_rss_bytes, command });
     defer e.gpa.free(value);
-    try copy(e, value);
+    try copy(e, value, "full process row");
 }
 fn set_filter(e: *ui.Engine, value: []const u8, echo: bool) !void {
     s.filter_len = @min(value.len, s.filter.len);
@@ -580,11 +634,16 @@ fn set_filter(e: *ui.Engine, value: []const u8, echo: bool) !void {
 fn event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) bool {
     return handle_event(e, id, kind, data) catch |err| {
         std.log.err("monitor UI: {s}", .{@errorName(err)});
-        text(e, sid("status"), "Could not complete the action.") catch {};
+        action_feedback(e, "Could not complete the action.", false) catch {};
         return true;
     };
 }
 fn handle_event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) !bool {
+    if (id == sid("notification-dismiss") and std.mem.eql(u8, kind, "click")) {
+        s.notification_timer = 0;
+        try display(e, sid("notification"), false);
+        return true;
+    }
     if (std.mem.eql(u8, kind, "key") and std.mem.indexOf(u8, data, "Escape") != null) {
         try close_overlays(e);
         return true;
@@ -608,17 +667,24 @@ fn handle_event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) !boo
             node = node.?.parent;
         }
         try copy_menu(e, inside);
+        try action_hover(e, id);
         return false;
     }
     const click = std.mem.eql(u8, kind, "click");
     const context = std.mem.eql(u8, kind, "contextmenu");
     if (!click and !context) return false;
     if (s.confirm_open) {
-        if (id == Confirm.id("cancel", confirm_id)) try close_overlays(e);
+        if (id == Confirm.id("cancel", confirm_id)) {
+            try close_overlays(e);
+            try action_feedback(e, "Process shutdown cancelled.", true);
+        }
         if (id == Confirm.id("confirm", confirm_id)) {
             const row = s.action orelse return true;
             try close_overlays(e);
-            if (row.pid <= std.math.maxInt(i32)) try ui.invoke(e, end_request, "terminate_process", .{ .pid = @as(i32, @intCast(row.pid)) });
+            if (row.pid <= std.math.maxInt(i32)) {
+                try text(e, sid("footer-status"), "Requesting process shutdown…");
+                try ui.invoke(e, end_request, "terminate_process", .{ .pid = @as(i32, @intCast(row.pid)) });
+            } else try action_feedback(e, "Could not request shutdown: invalid process ID.", false);
         }
         return true;
     }
@@ -626,7 +692,7 @@ fn handle_event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) !boo
     if (s.settings_open and try settings_click(e, id)) return true;
     if (process_at(e, id)) |row| {
         if (id == Row.id("copy", rows_base + @divTrunc(id - rows_base, 20) * 20)) {
-            try copy(e, row.name);
+            try copy(e, row.name, "process name");
             return true;
         }
         if (context or id == Row.id("actions", rows_base + @divTrunc(id - rows_base, 20) * 20)) {
@@ -650,6 +716,7 @@ fn handle_event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) !boo
             try visibility(e);
             try save_settings(e);
             if (s.sample != null) try render_sample(e);
+            try action_feedback(e, if (s.settings.shown[2]) "CPU chart shown." else "CPU chart hidden.", true);
             return true;
         }
         node = node.?.parent;
@@ -663,6 +730,7 @@ fn settings_click(e: *ui.Engine, id: i64) !bool {
         try visibility(e);
         try save_settings(e);
         if (s.sample != null) try render_sample(e);
+        try action_feedback(e, "Display settings saved.", true);
         return true;
     };
     inline for (.{ 1, 2, 5 }) |seconds| if (id == Settings.id(std.fmt.comptimePrint("interval-{d}", .{seconds}), settings_id)) {
@@ -670,6 +738,7 @@ fn settings_click(e: *ui.Engine, id: i64) !bool {
         arm(e);
         try save_settings(e);
         try open_settings(e);
+        try action_feedback(e, std.fmt.comptimePrint("Refresh interval set to {d} seconds.", .{seconds}), true);
         return true;
     };
     return false;
@@ -685,12 +754,12 @@ fn action_click(e: *ui.Engine, id: i64) !bool {
         return true;
     }
     if (id == Actions.id("name", actions_id)) {
-        try copy(e, row.name);
+        try copy(e, row.name, "process name");
         return true;
     }
     if (id == Actions.id("pid", actions_id)) {
         var buf: [20]u8 = undefined;
-        try copy(e, try std.fmt.bufPrint(&buf, "{d}", .{row.pid}));
+        try copy(e, try std.fmt.bufPrint(&buf, "{d}", .{row.pid}), "PID");
         return true;
     }
     if (id == Actions.id("command", actions_id) or id == Actions.id("details", actions_id)) {
@@ -698,16 +767,19 @@ fn action_click(e: *ui.Engine, id: i64) !bool {
         s.command_in_flight = true;
         errdefer s.command_in_flight = false;
         s.copy_details = id == Actions.id("details", actions_id);
+        try close_overlays(e);
+        try text(e, sid("footer-status"), "Reading command line…");
         try ui.invoke(e, command_request, "command_line", .{ .pid = row.pid });
         return true;
     }
     if (id == Actions.id("filter", actions_id)) {
         try set_filter(e, row.name, true);
         try close_overlays(e);
+        try action_feedback(e, "Process filter applied.", true);
         return true;
     }
     if (id == Actions.id("refresh", actions_id)) {
-        try request_sample(e);
+        try manual_refresh(e);
         return true;
     }
     return false;
@@ -720,6 +792,7 @@ fn switch_network(e: *ui.Engine, forward: bool) !void {
     try render_network(e);
     try save_settings(e);
     try redraw(e);
+    try action_feedback(e, "Network interface changed.", true);
 }
 
 fn toolbar_click(e: *ui.Engine, id: i64) !bool {
@@ -732,21 +805,23 @@ fn toolbar_click(e: *ui.Engine, id: i64) !bool {
         s.timer_id = new_timer();
         try label(e, sid("pause"), if (s.paused) "▶ Resume" else "⏸ Pause");
         if (!s.paused) try request_sample(e);
-        try text(e, sid("status"), if (s.paused) "Paused · Refresh still takes a manual sample." else "Resuming…");
+        try action_feedback(e, if (s.paused) "Sampling paused. Manual refresh is still available." else "Sampling resumed.", true);
         return true;
     }
     if (id == sid("refresh")) {
-        try request_sample(e);
+        try manual_refresh(e);
         return true;
     }
     if (id == sid("sort-dir")) {
         s.order.descending = !s.order.descending;
         try label(e, sid("sort-dir"), if (s.order.descending) "▼" else "▲");
         if (s.sample != null) try render_processes(e, false);
+        try action_feedback(e, if (s.order.descending) "Processes sorted in descending order." else "Processes sorted in ascending order.", true);
         return true;
     }
     if (id == sid("clear")) {
         try set_filter(e, "", true);
+        try action_feedback(e, "Process filter cleared.", true);
         return true;
     }
     inline for (.{ "cpu", "mem", "threads", "pid", "name" }) |field| if (id == sid("sort-" ++ field)) {
@@ -754,6 +829,7 @@ fn toolbar_click(e: *ui.Engine, id: i64) !bool {
         s.order = .{ .field = sort, .descending = if (s.order.field == sort) !s.order.descending else sort != .name and sort != .pid };
         try sort_labels(e);
         if (s.sample != null) try render_processes(e, true);
+        try action_feedback(e, "Process sort updated.", true);
         return true;
     };
     if (id == sid("net-prev") or id == sid("net-next")) {
@@ -839,10 +915,31 @@ fn settings_state(e: *ui.Engine) !void {
     inline for (model.sections, 0..) |name, i| try charts.toggle(e, &s.program, Settings.id(name ++ "-switch", settings_id), s.settings.shown[i]);
 }
 
+fn action_hover(e: *ui.Engine, hovered: i64) !void {
+    const ids = comptime blk: {
+        const names = .{ "end", "copy", "name", "pid", "command", "details", "filter", "refresh" };
+        var ids: [names.len]i64 = undefined;
+        for (names, 0..) |name, i| ids[i] = Actions.id(name, actions_id);
+        break :blk ids;
+    };
+    for (ids) |id| {
+        const node = e.tree.get(id) orelse continue;
+        const color = oriel.canvas.rgb(if (id == hovered) 0x30363d else 0x1f242c);
+        if (node.props.bg) |bg| if (bg.color) |current| {
+            if (std.mem.eql(f32, &current, &color)) continue;
+        };
+        var props = node.props;
+        props.bg = .{ .color = color };
+        try e.tree.updateUiProps(id, props);
+    }
+}
+
 fn copy_menu(e: *ui.Engine, show: bool) !void {
     const id = Actions.id("copy-menu", actions_id);
     var props = e.tree.get(id).?.props;
     if (props.vis == show) return;
+    // Markup propagates the initial hidden state to the menu's controls.
+    try ui.setVisible(&e.tree, id, show);
     props.vis = show;
     props.h = if (show) null else .{ .px = 0 };
     try e.tree.updateUiProps(id, props);
