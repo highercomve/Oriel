@@ -13,6 +13,9 @@ const oriel = @import("oriel");
 const app = @import("oriel_app");
 
 var io: std.Io = undefined;
+const is_darwin = @import("builtin").os.tag.isDarwin();
+/// Whose memory the readings cover (Commands.pss_mb, private_mb).
+pub const memory_scope_name = if (@import("builtin").abi.isAndroid()) "app process tree" else if (is_darwin) "app process" else "all processes";
 var started: std.Io.Clock.Timestamp = undefined;
 var bench_mode = false;
 /// RENDER_BENCH_POWER=<seconds>: the page measures power (each scenario
@@ -45,15 +48,18 @@ pub const Commands = struct {
     /// children…: on Linux a WebView's page runs in WebKit's child processes.
     /// Android's isolated WebView renderer is outside this tree and cannot
     /// be included by reading the app's /proc files. Linux/Android
-    /// /proc; 0 elsewhere. It moves with what else on the desktop maps the
-    /// same libraries (a GL driver's are tens of MB): private_mb doesn't.
+    /// /proc. macOS/iOS: this process's resident size (Darwin has no PSS;
+    /// WebKit's WebContent processes aren't counted). 0 elsewhere. It moves
+    /// with what else on the desktop maps the same libraries (a GL driver's
+    /// are tens of MB): private_mb doesn't.
     pub fn pss_mb(_: std.mem.Allocator) f64 {
+        if (comptime is_darwin) return darwinMb(.resident);
         return treeMb("\nPss:");
     }
 
     /// Android's renderer is spawned by webview_zygote, not by the app.
     pub fn memory_scope(_: std.mem.Allocator) []const u8 {
-        return if (@import("builtin").abi.isAndroid()) "app process tree" else "all processes";
+        return memory_scope_name;
     }
 
     /// The same processes' private memory (Pss_Anon: their heaps and other
@@ -61,9 +67,23 @@ pub const Commands = struct {
     /// allocated, comparable from one day to the next.
     /// Windows: this process's private bytes (its committed heaps; a
     /// WebView's msedgewebview2 processes aren't counted).
+    /// macOS/iOS: this process's physical footprint (its dirty and
+    /// compressed pages, what Xcode and Activity Monitor show as memory).
     pub fn private_mb(_: std.mem.Allocator) f64 {
         if (@import("builtin").os.tag == .windows) return winPrivateMb();
+        if (comptime is_darwin) return darwinMb(.footprint);
         return treeMb("\nPss_Anon:");
+    }
+
+    fn darwinMb(comptime which: enum { resident, footprint }) f64 {
+        var info: std.c.task_vm_info_data_t = undefined;
+        var count: std.c.mach_msg_type_number_t = std.c.TASK.VM.INFO_COUNT;
+        if (std.c.task_info(std.c.mach_task_self(), std.c.TASK.VM.INFO, @ptrCast(&info), &count) != 0) return 0;
+        const bytes = switch (which) {
+            .resident => info.resident_size,
+            .footprint => info.phys_footprint,
+        };
+        return @as(f64, @floatFromInt(bytes)) / (1024 * 1024);
     }
 
     const ProcessMemoryCountersEx = extern struct {

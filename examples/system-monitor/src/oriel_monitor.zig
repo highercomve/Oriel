@@ -83,6 +83,13 @@ fn height(e: *ui.Engine, id: i64, px: f32) !void {
     props.h = .{ .px = px };
     try e.tree.updateUiProps(id, props);
 }
+/// display: none or not (the web frontend's `hidden` class).
+fn display(e: *ui.Engine, id: i64, on: bool) !void {
+    var props = e.tree.get(id).?.props;
+    if (props.none == !on) return;
+    props.none = !on;
+    try e.tree.updateUiProps(id, props);
+}
 fn boot(e: *ui.Engine) !void {
     s.program = .init(e.gpa);
     s.action_arena = .init(e.gpa);
@@ -269,7 +276,9 @@ fn render_sample(e: *ui.Engine) !void {
     if (s.settings.shown[2]) {
         const c = sample.cpu;
         try text(e, sid("cpu-detail"), c.model);
-        try text(e, sid("cpu-freq"), try std.fmt.bufPrint(&buf, "{d:.1} GHz", .{c.freq_mhz / 1000}));
+        // Apple Silicon doesn't tell its frequency: no "0.0 GHz".
+        try display(e, sid("cpu-freq"), c.freq_mhz > 0);
+        if (c.freq_mhz > 0) try text(e, sid("cpu-freq"), try std.fmt.bufPrint(&buf, "{d:.1} GHz", .{c.freq_mhz / 1000}));
         try text(e, sid("cpu-temp"), if (c.temp_c) |temp| try std.fmt.bufPrint(&buf, "{d:.0}°C", .{@round(temp)}) else "--°C");
         try text(e, sid("cpu-load"), if (c.load_avg) |load| try std.fmt.bufPrint(&buf, "Load {d:.2} {d:.2} {d:.2}", .{ load[0], load[1], load[2] }) else "Load --");
         try text(e, sid("cpu-tasks"), try std.fmt.bufPrint(&buf, "{d} running · {d} threads", .{ sample.running, sample.threads_total }));

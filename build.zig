@@ -2726,8 +2726,10 @@ fn addIosApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOption
         // On a Mac, sign the simulator bundle ad hoc as Xcode does: the
         // signature then names the bundle ID and seals Info.plist and the
         // resources (the linker's own signature covers the executable only).
+        // codesign's output only when it fails: the build prints a passing
+        // step's stderr as a failed command ("replacing existing signature").
         if (ios_build.isSimulator(target.result) and b.graph.host.result.os.tag == .macos) {
-            const sign = b.addSystemCommand(&.{ "sh", "-c", "cp -R \"$0\"/. \"$1\" && chmod -R u+w \"$1\" && codesign --force --sign - --timestamp=none \"$1/$2\"" });
+            const sign = b.addSystemCommand(&.{ "sh", "-c", "cp -R \"$0\"/. \"$1\" && chmod -R u+w \"$1\" && { out=$(codesign --force --sign - --timestamp=none \"$1/$2\" 2>&1) || { echo \"$out\" >&2; exit 1; }; }" });
             sign.addDirectoryArg(made[idx].dir);
             const signed = sign.addOutputDirectoryArg("ios-signed");
             sign.addArg(bundle_dir);

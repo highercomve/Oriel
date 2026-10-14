@@ -393,7 +393,7 @@ fn loopTick(e: *Engine) !bool {
     return true;
 }
 fn addMemory(e: *Engine, comptime when: []const u8) !void {
-    const scope = if (oriel.target.is_android) "app process tree" else "all processes";
+    const scope = host.memory_scope_name;
     try addResult(e, "memory " ++ when ++ " (PSS, " ++ scope ++ ")", &.{host.Commands.pss_mb(e.gpa)}, "MB");
     try addResult(e, "private memory " ++ when ++ " (" ++ scope ++ ")", &.{host.Commands.private_mb(e.gpa)}, "MB");
 }
@@ -411,7 +411,7 @@ fn finishRound(e: *Engine) !bool {
         return true;
     }
     if (s.bench_mode) {
-        const scope = if (oriel.target.is_android) "app process tree" else "all processes";
+        const scope = host.memory_scope_name;
         try addResult(e, "memory after the tests (PSS, " ++ scope ++ ")", &.{s.first_pss}, "MB");
         try addResult(e, "private memory after the tests (" ++ scope ++ ")", &.{s.first_private}, "MB");
         try addMemory(e, "after a second round");

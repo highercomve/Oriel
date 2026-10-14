@@ -53,6 +53,9 @@ pub const Surface = struct {
     fields: std.AutoHashMapUnmanaged(i64, Field) = .empty,
     updating: bool = false,
     dark: bool = false,
+    /// The page's background as last given to the window's container
+    /// (`syncCanvasBackground`), null: the container's own.
+    canvas_bg: ?tree_mod.Color = null,
     /// The field node that has the keyboard (0: none), as the page last
     /// heard it ("focus"/"blur"), and whether a check is queued.
     focused: i64 = 0,
@@ -150,6 +153,7 @@ fn classes() void {
         .{ "nuiDisplayFrame:", onDisplayFrame },
         .{ "drawRect:", drawRect },
         .{ "layoutSubviews", layoutSubviews },
+        .{ "didMoveToSuperview", movedToSuperview },
         .{ "traitCollectionDidChange:", traitsChanged },
         .{ "touchesBegan:withEvent:", touchesBegan },
         .{ "touchesMoved:withEvent:", touchesMoved },
@@ -667,6 +671,7 @@ fn laidOut(ctx: *anyopaque) void {
     const s = surfaceOf(ctx);
     queueTrim(s);
     syncFields(s);
+    syncCanvasBackground(s);
     if (s.a11y) {
         // The list again at the next query (text nodes come and go too);
         // VoiceOver told when the page's entries changed.
@@ -680,6 +685,45 @@ fn laidOut(ctx: *anyopaque) void {
         }
     }
     s.view.msgSend(void, "setNeedsDisplay", .{});
+}
+
+/// The color behind the page: the first opaque solid background down the
+/// boxes filling the page from its root, as CSS spreads the root's (or
+/// body's) background over the whole canvas. Null: none.
+fn canvasBackground(tree: *const tree_mod.Tree) ?tree_mod.Color {
+    var n = tree.root orelse return null;
+    var depth: u32 = 0;
+    while (depth < 4) : (depth += 1) {
+        if (n.props.bg) |bg| if (bg.color) |c| if (c[3] >= 1) return c;
+        if (n.kids.items.len == 0) return null;
+        const kid = n.kids.items[0];
+        if (kid.frame.w < tree.width - 1 or kid.frame.h < tree.height - 1) return null;
+        n = kid;
+    }
+    return null;
+}
+
+/// The window's container (the page's superview) shows the page's
+/// background under the status bar and home indicator, outside the safe
+/// area the page sits in, instead of the system's white or black.
+fn syncCanvasBackground(s: *Surface) void {
+    if (s.transparent) return;
+    const c = canvasBackground(&s.engine.tree);
+    if (std.meta.eql(c, s.canvas_bg)) return;
+    // The first layout runs before the window puts the view in its container.
+    const container = s.view.msgSend(Object, "superview", .{});
+    if (container.value == null) return;
+    s.canvas_bg = c;
+    const color = if (c) |v|
+        apple.class("UIColor").msgSend(Object, "colorWithRed:green:blue:alpha:", .{ @as(f64, v[0]) / 255, @as(f64, v[1]) / 255, @as(f64, v[2]) / 255, @as(f64, 1) })
+    else
+        apple.class("UIColor").msgSend(Object, "systemBackgroundColor", .{});
+    container.msgSend(void, "setBackgroundColor:", .{color});
+    // The status bar's text in contrast (the controller's
+    // preferredStatusBarStyle reads the container's color).
+    const controller = container.msgSend(Object, "nextResponder", .{});
+    if (controller.value != null and controller.msgSend(apple.c.BOOL, "respondsToSelector:", .{apple.objc.sel("setNeedsStatusBarAppearanceUpdate").value}) != apple.boolean(false))
+        controller.msgSend(void, "setNeedsStatusBarAppearanceUpdate", .{});
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,6 +1690,13 @@ fn layoutSubviews(self: id, _: SEL) callconv(.c) void {
     const b = s.view.msgSend(CGRect, "bounds", .{});
     if (b.size.width <= 0 or b.size.height <= 0) return;
     s.engine.resize(@floatCast(b.size.width), @floatCast(b.size.height), s.dark);
+}
+
+/// In the window's container now: it takes the page's background.
+fn movedToSuperview(self: id, _: SEL) callconv(.c) void {
+    const s = by_view.get(key(self)) orelse return;
+    s.canvas_bg = null;
+    syncCanvasBackground(s);
 }
 
 fn traitsChanged(self: id, _: SEL, _: id) callconv(.c) void {
