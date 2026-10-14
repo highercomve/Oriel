@@ -7,6 +7,8 @@
 //! lays the tree out and tells the backend.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const exporter = @import("oriel_export.zig");
 const tree_mod = @import("tree.zig");
 const prof = @import("prof.zig");
 const web_storage = @import("web_storage.zig");
@@ -448,6 +450,30 @@ pub const Engine = struct {
     /// fires afterwards is told apart from the new page's.
     timer_base: u32 = 0,
     timer_next: u32 = 1,
+    /// ORIEL_NUI_EXPORT: the views exported so far, each with its
+    /// variants (views.zig lists them), and the answers exports wait to
+    /// give on a turn of their own.
+    exports: std.ArrayList(*ExportView) = .empty,
+    export_answers: std.ArrayList(ExportAnswer) = .empty,
+
+    const ExportAnswer = struct { call_id: u32, ok: bool, json: []u8 };
+    const ExportView = struct {
+        name: []u8,
+        /// The default first, once it's exported.
+        variants: std.ArrayList(ExportVariant) = .empty,
+    };
+    /// A view as the page was at one export: `label` "" the default.
+    const ExportVariant = struct {
+        arena: std.heap.ArenaAllocator,
+        label: []const u8,
+        media: ?[]const u8,
+        when: ?[]const u8 = null,
+        snap: exporter.Snap,
+        /// The page's names for its node ids then (the default's name the
+        /// view: a variant's row was made anew, its ids aligned to them).
+        names: exporter.Names = .empty,
+        header: []const u8,
+    };
 
     /// A host.fileRead: `len` bytes of `handle` from `offset`. Null
     /// `offset` or `len`: the page passed something that isn't an index.
@@ -461,6 +487,8 @@ pub const Engine = struct {
     /// The timer id of a turn for the promise jobs one settle left (runJobs).
     pub const jobs_timer_id: u32 = std.math.maxInt(u32) - 1;
     // (std.math.maxInt(u32) - 2: core.display_frame_timer; - 3: core.dump_timer.)
+    /// The timer id of a turn for the answers exports left (exportAnswers).
+    pub const export_timer_id: u32 = std.math.maxInt(u32) - 4;
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -603,6 +631,15 @@ pub const Engine = struct {
         e.gpa.free(e.start_platform);
         e.gpa.free(e.start_label);
         e.gpa.free(e.start_url);
+        for (e.exports.items) |v| {
+            for (v.variants.items) |*variant| variant.arena.deinit();
+            v.variants.deinit(e.gpa);
+            e.gpa.free(v.name);
+            e.gpa.destroy(v);
+        }
+        e.exports.deinit(e.gpa);
+        for (e.export_answers.items) |a| e.gpa.free(a.json);
+        e.export_answers.deinit(e.gpa);
         e.gpa.destroy(e);
     }
 
@@ -618,6 +655,166 @@ pub const Engine = struct {
             e.tree.layout();
             e.tree.dump();
         }
+        e.runExportScript();
+    }
+
+    // --- ORIEL_NUI_EXPORT: the page written as .oriel views (Linux) -----
+
+    /// ORIEL_NUI_EXPORT_SCRIPT=<file>: run once the page booted, in an
+    /// async function, to bring the page to each state and export it
+    /// (`await __orielExport("name")`).
+    fn runExportScript(e: *Engine) void {
+        if (comptime builtin.os.tag != .linux) return;
+        const path = std.c.getenv("ORIEL_NUI_EXPORT_SCRIPT") orelse return;
+        const code = readFileC(e.gpa, path) orelse return log.err("native ui: can't read the export script {s}", .{path});
+        defer e.gpa.free(code);
+        const script = std.fmt.allocPrintSentinel(e.gpa, "(async () => {{\n{s}\n}})().catch((err) => console.error(\"export script: \" + err + (err && err.stack ? \"\\n\" + err.stack : \"\")));", .{code}, 0) catch return;
+        defer e.gpa.free(script);
+        e.evalScript(script);
+    }
+
+    /// `__oriel:export` (the page's __orielExport): the tree written to
+    /// <ORIEL_NUI_EXPORT>/<name>.oriel and <name>.props.json, views.zig
+    /// listing every view written. Answered on a turn of its own.
+    fn exportCommand(e: *Engine, call_id: u32, args: []const u8) void {
+        var ok = true;
+        const json = e.writeExport(args) catch |err| blk: {
+            ok = false;
+            break :blk std.fmt.allocPrint(e.gpa, "export failed: {s}", .{@errorName(err)}) catch return;
+        };
+        e.export_answers.append(e.gpa, .{ .call_id = call_id, .ok = ok, .json = json }) catch {
+            e.gpa.free(json);
+            return;
+        };
+        e.backend.add_timer(e.backend.ctx, e, export_timer_id, 0);
+    }
+
+    fn exportAnswers(e: *Engine) void {
+        const answers = e.export_answers.toOwnedSlice(e.gpa) catch return;
+        defer e.gpa.free(answers);
+        for (answers) |a| {
+            defer e.gpa.free(a.json);
+            e.resolve(a.call_id, a.ok, a.json);
+        }
+    }
+
+    fn writeExport(e: *Engine, args: []const u8) ![]u8 {
+        if (comptime builtin.os.tag != .linux) return error.Unsupported;
+        const dir = std.mem.span(std.c.getenv("ORIEL_NUI_EXPORT") orelse return error.ExportFolderNotSet);
+        const Viewport = struct { width: f32 = 0, height: f32 = 0, dark: bool = false };
+        const Args = struct { name: []const u8, names: std.json.Value, root: ?i64 = null, hollow: []const i64 = &.{}, variant: ?[]const u8 = null, media: ?[]const u8 = null, when: ?[]const u8 = null, viewport: Viewport = .{} };
+        const parsed = try std.json.parseFromSlice(Args, e.gpa, args, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        const a = parsed.value;
+        if (!exportName(a.name)) return error.BadViewName;
+        const label = a.variant orelse "";
+        if (label.len > 0 and !exportName(label)) return error.BadVariantName;
+        if ((label.len > 0) != (a.media != null or a.when != null)) return error.VariantNeedsMediaOrWhen;
+        if (a.when) |w| if (!exportName(w)) return error.BadState;
+        if (a.media) |m| for (m) |c| if (!(std.ascii.isAlphanumeric(c) or c == ':' or c == ' ' or c == '-' or c == '.')) return error.BadMedia;
+        var names: exporter.Names = .empty;
+        defer names.deinit(e.gpa);
+        if (a.names == .object) {
+            var it = a.names.object.iterator();
+            while (it.next()) |entry| {
+                const id = std.fmt.parseInt(i64, entry.key_ptr.*, 10) catch continue;
+                if (entry.value_ptr.* == .string) try names.put(e.gpa, id, entry.value_ptr.string);
+            }
+        }
+        const root = if (a.root) |id| e.tree.get(id) orelse return error.ElementNotRendered else e.tree.root orelse return error.NoPage;
+
+        // This variant as the page is now (replacing an earlier export of it).
+        var variant: ExportVariant = .{ .arena = .init(e.gpa), .label = "", .media = null, .snap = undefined, .header = "" };
+        // Owned by the view once it's in its list.
+        var owned = false;
+        errdefer if (!owned) variant.arena.deinit();
+        const va = variant.arena.allocator();
+        variant.label = try va.dupe(u8, label);
+        variant.media = if (a.media) |m| try va.dupe(u8, m) else null;
+        variant.when = if (a.when) |w| try va.dupe(u8, w) else null;
+        variant.snap = try exporter.snapshot(va, root, a.hollow);
+        {
+            var it = names.iterator();
+            while (it.next()) |entry| try variant.names.put(va, entry.key_ptr.*, try va.dupe(u8, entry.value_ptr.*));
+        }
+        // An element's export (a list's row) is made anew for each variant,
+        // its ids new or reused for other elements: the default's, by place.
+        if (label.len > 0 and a.root != null) for (e.exports.items) |v| if (std.mem.eql(u8, v.name, a.name)) {
+            if (v.variants.items.len > 0 and v.variants.items[0].label.len == 0) {
+                try exporter.alignIds(&v.variants.items[0].snap, &variant.snap);
+            }
+        };
+        variant.header = try std.json.Stringify.valueAlloc(va, .{
+            .controls = .{ .check = e.tree.controls.check, .button = e.tree.controls.button },
+            .width = if (a.viewport.width > 0) a.viewport.width else e.tree.width,
+            .dark = a.viewport.dark,
+            .states = if (a.when) |w| @as([]const []const u8, &.{w}) else &.{},
+        }, .{});
+        const view = for (e.exports.items) |v| {
+            if (std.mem.eql(u8, v.name, a.name)) break v;
+        } else blk: {
+            const v = try e.gpa.create(ExportView);
+            v.* = .{ .name = try e.gpa.dupe(u8, a.name) };
+            try e.exports.append(e.gpa, v);
+            break :blk v;
+        };
+        const replaced = for (view.variants.items) |*old| {
+            if (std.mem.eql(u8, old.label, label)) {
+                old.arena.deinit();
+                old.* = variant;
+                break true;
+            }
+        } else false;
+        if (!replaced) {
+            if (label.len == 0) try view.variants.insert(e.gpa, 0, variant) else try view.variants.append(e.gpa, variant);
+        }
+        owned = true;
+
+        // This variant's props, for check-views.
+        var props: std.Io.Writer.Allocating = .init(e.gpa);
+        defer props.deinit();
+        try props.writer.writeAll(variant.header);
+        try props.writer.writeAll("\n");
+        try exporter.props(e.gpa, &variant.snap, &props.writer);
+        const props_file = if (label.len == 0) try std.fmt.allocPrint(e.gpa, "{s}.props.json", .{a.name}) else try std.fmt.allocPrint(e.gpa, "{s}@{s}.props.json", .{ a.name, label });
+        defer e.gpa.free(props_file);
+        try writeFileC(e.gpa, dir, props_file, props.written());
+
+        // The view, its variants merged, once its default is exported.
+        var count: usize = 0;
+        if (view.variants.items.len > 0 and view.variants.items[0].label.len == 0) {
+            var variants: [exporter.max_variants]exporter.Variant = undefined;
+            if (view.variants.items.len > variants.len) return error.TooManyVariants;
+            for (view.variants.items, 0..) |v, i| variants[i] = .{ .root = v.snap, .media = v.media, .when = v.when };
+            var text: std.Io.Writer.Allocating = .init(e.gpa);
+            defer text.deinit();
+            count = try exporter.view(e.gpa, variants[0..view.variants.items.len], &view.variants.items[0].names, &text.writer);
+            const view_file = try std.fmt.allocPrint(e.gpa, "{s}.oriel", .{a.name});
+            defer e.gpa.free(view_file);
+            try writeFileC(e.gpa, dir, view_file, text.written());
+        }
+
+        var index: std.Io.Writer.Allocating = .init(e.gpa);
+        defer index.deinit();
+        try index.writer.writeAll("//! The views ORIEL_NUI_EXPORT wrote (zig build check-views -Dviews=<this folder>).\npub const list = .{\n");
+        for (e.exports.items) |v| {
+            if (v.variants.items.len == 0 or v.variants.items[0].label.len > 0) continue;
+            for (v.variants.items) |vv| {
+                if (vv.label.len == 0) {
+                    try index.writer.print("    .{{ \"{s}\", @embedFile(\"{s}.oriel\"), @embedFile(\"{s}.props.json\") }},\n", .{ v.name, v.name, v.name });
+                } else try index.writer.print("    .{{ \"{s}@{s}\", @embedFile(\"{s}.oriel\"), @embedFile(\"{s}@{s}.props.json\") }},\n", .{ v.name, vv.label, v.name, v.name, vv.label });
+            }
+        }
+        try index.writer.writeAll("};\n");
+        try writeFileC(e.gpa, dir, "views.zig", index.written());
+        log.info("native ui: exported {s}{s}{s} ({d} nodes)", .{ a.name, if (label.len > 0) "@" else "", label, count });
+        return std.fmt.allocPrint(e.gpa, "{{\"nodes\":{d}}}", .{count});
+    }
+
+    fn exportName(name: []const u8) bool {
+        if (name.len == 0 or name.len > 64) return false;
+        for (name) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_')) return false;
+        return true;
     }
 
     /// Evaluate a script in the page (internal.emit's `window.oriel.__emit(...)`).
@@ -687,6 +884,7 @@ pub const Engine = struct {
         if (id == core.display_frame_timer) return e.displayFrame(1000.0 / 60.0);
         if (id == core.dump_timer) return core.dumpNow(e);
         if (id == reload_timer_id) return e.reloadNow();
+        if (id == export_timer_id) return e.exportAnswers();
         if (id == jobs_timer_id) {
             e.jobs_pending = false;
             if (e.in_call == 0) e.settle(); // else that call's settle runs them
@@ -1009,30 +1207,62 @@ export fn oriel_nui_asset(p: *anyopaque, path: [*]const u8, len: usize, out: *[*
 /// Debugging (Linux): ORIEL_NUI_PAGE=<file> is read for index.html instead
 /// of the embedded one, so one build of an app renders any page
 /// (tools/flatten_diff compares a runtime's trees step by step).
-fn pageOverride(e: *Engine, path: []const u8) ?[]const u8 {
-    if (comptime @import("builtin").os.tag != .linux) return null;
-    if (!std.mem.eql(u8, path, "index.html")) return null;
-    if (e.page_override) |page| return page;
-    const file = std.c.getenv("ORIEL_NUI_PAGE") orelse return null;
+/// A whole file (debugging aids; Linux): null when it can't be read.
+fn readFileC(gpa: std.mem.Allocator, file: [*:0]const u8) ?[]u8 {
     const fd = std.c.open(file, .{ .ACCMODE = .RDONLY });
     if (fd < 0) return null;
     defer _ = std.c.close(fd);
     var buf: std.ArrayList(u8) = .empty;
     while (true) {
-        buf.ensureUnusedCapacity(e.gpa, 64 * 1024) catch break;
+        buf.ensureUnusedCapacity(gpa, 64 * 1024) catch {
+            buf.deinit(gpa);
+            return null;
+        };
         const n = std.c.read(fd, buf.unusedCapacitySlice().ptr, buf.unusedCapacitySlice().len);
-        if (n <= 0) break;
+        if (n < 0) {
+            buf.deinit(gpa);
+            return null;
+        }
+        if (n == 0) break;
         buf.items.len += @intCast(n);
     }
-    e.page_override = buf.toOwnedSlice(e.gpa) catch {
-        buf.deinit(e.gpa);
+    return buf.toOwnedSlice(gpa) catch {
+        buf.deinit(gpa);
         return null;
     };
+}
+
+/// `bytes` as <dir>/<name>, replacing it (ORIEL_NUI_EXPORT; Linux).
+fn writeFileC(gpa: std.mem.Allocator, dir: []const u8, name: []const u8, bytes: []const u8) !void {
+    const path = try std.fmt.allocPrintSentinel(gpa, "{s}/{s}", .{ dir, name }, 0);
+    defer gpa.free(path);
+    const fd = std.c.open(path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    if (fd < 0) return error.ExportWriteFailed;
+    defer _ = std.c.close(fd);
+    var at: usize = 0;
+    while (at < bytes.len) {
+        const n = std.c.write(fd, bytes[at..].ptr, bytes.len - at);
+        if (n <= 0) return error.ExportWriteFailed;
+        at += @intCast(n);
+    }
+}
+
+fn pageOverride(e: *Engine, path: []const u8) ?[]const u8 {
+    if (comptime builtin.os.tag != .linux) return null;
+    if (!std.mem.eql(u8, path, "index.html")) return null;
+    if (e.page_override) |page| return page;
+    const file = std.c.getenv("ORIEL_NUI_PAGE") orelse return null;
+    e.page_override = readFileC(e.gpa, file);
     return e.page_override;
 }
 
 export fn oriel_nui_invoke(p: *anyopaque, call_id: u32, cmd: [*]const u8, cmd_len: usize, args: [*]const u8, args_len: usize) void {
     const e = engineOf(p);
+    if (std.mem.eql(u8, cmd[0..cmd_len], "__oriel:export")) return e.exportCommand(call_id, args[0..args_len]);
+    if (std.mem.eql(u8, cmd[0..cmd_len], "__oriel:export-done") and std.c.getenv("ORIEL_NUI_EXPORT") != null) {
+        log.info("native ui: export done", .{});
+        std.process.exit(0);
+    }
     e.backend.invoke(e.backend.ctx, e, call_id, cmd[0..cmd_len], args[0..args_len]);
 }
 
@@ -1041,7 +1271,7 @@ export fn oriel_nui_timer(p: *anyopaque, id: u32, ms: f64) void {
     // Past the ids every earlier page used (timer_base), clear of the
     // engine's own (task 0, the display frame's, jobs and reload).
     const backend_id = std.math.add(u32, e.timer_base, id) catch return;
-    if (backend_id >= core.dump_timer) return;
+    if (backend_id >= Engine.export_timer_id) return;
     if (backend_id >= e.timer_next) e.timer_next = backend_id + 1;
     e.backend.add_timer(e.backend.ctx, e, backend_id, @intFromFloat(@max(0, @min(ms, 1e9))));
 }

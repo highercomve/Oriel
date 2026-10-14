@@ -152,24 +152,33 @@ pub fn focusTarget(t: *const Tree, id: i64) ?*Node {
 
 /// Move the ring to the focused node when it's drawn and focus is visible.
 pub fn updateRing(t: *Tree, st: *State, platform: interaction.Platform) !void {
-    const want: i64 = if (st.visible and st.id != 0) if (t.get(st.id)) |n| if (isNative(n)) 0 else st.id else 0 else 0;
+    // A native field draws its own ring, unless its view says how it looks
+    // focused (the page's :focus-visible outline, an .oriel @when (focus)).
+    const want: i64 = if (st.visible and st.id != 0) if (t.get(st.id)) |n| if (isNative(n) and !hasFocusLook(t, n)) 0 else st.id else 0 else 0;
     if (want == st.ring) return;
     try clearRing(t, st);
     if (want != 0) {
+        st.ring = want;
+        if (try t.focusLook(want, true)) return;
         const n = t.get(want).?;
         var props = n.props;
         props.ol = core.outline(interaction.ring(platform, ringKind(n)));
         try t.updateUiProps(n.id, props);
-        st.ring = want;
     }
+}
+
+fn hasFocusLook(t: *const Tree, n: *const Node) bool {
+    return t.hasLook(n);
 }
 
 /// Take the ring off (the accent changed: it's drawn again).
 pub fn clearRing(t: *Tree, st: *State) !void {
     if (st.ring != 0) if (t.get(st.ring)) |n| {
-        var props = n.props;
-        props.ol = null;
-        try t.updateUiProps(n.id, props);
+        if (!try t.focusLook(n.id, false)) {
+            var props = n.props;
+            props.ol = null;
+            try t.updateUiProps(n.id, props);
+        }
     };
     st.ring = 0;
 }

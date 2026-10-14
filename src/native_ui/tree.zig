@@ -1769,6 +1769,10 @@ pub const Tree = struct {
     /// match it, and the window's width, through `media_views`.
     dark: bool = false,
     media_views: std.ArrayListUnmanaged(MediaView) = .empty,
+    /// The node with the visible focus, and the nodes under the pointer, for
+    /// the views' @when (focus) and (hover) looks (MediaView.look).
+    look_focus: i64 = 0,
+    look_hover: std.AutoHashMapUnmanaged(i64, void) = .empty,
     on_text: ?*const fn (ctx: *anyopaque, node: *Node) void = null,
     /// A leaf style was defined (defineLeafStyle), with its props JSON, and a
     /// node was made from one (on_create: createLeaf, which host.leaf and
@@ -1812,6 +1816,7 @@ pub const Tree = struct {
     pub fn deinit(t: *Tree) void {
         if (t.ui_wire_buffer) |buffer| t.gpa.free(buffer);
         t.media_views.deinit(t.gpa);
+        t.look_hover.deinit(t.gpa);
         t.clearAx();
         t.ax.deinit(t.gpa);
         t.scrolled.deinit(t.gpa);
@@ -2706,7 +2711,74 @@ pub const Tree = struct {
 
     /// A mounted .oriel view with media blocks: `refresh` switches it to
     /// the variant the window matches (ui.zig), `mask` the one it shows.
-    pub const MediaView = struct { base: i64, refresh: *const fn (t: *Tree, base: i64, shown: u32) anyerror!u32, mask: u32 };
+    /// A mounted .oriel view with blocks: the ones it shows (`mask`), and
+    /// the app's states that are on (ui.View.setState).
+    /// A mounted view's look for one of its nodes as `look_focus` and
+    /// `look_hover` have it now (ui.View's @when (focus) and (hover)
+    /// blocks): false when the view says nothing of that node.
+    pub const MediaView = struct {
+        base: i64,
+        refresh: *const fn (t: *Tree, base: i64, shown: u64, states: u64) anyerror!u64,
+        mask: u64,
+        states: u64 = 0,
+        look: ?*const fn (t: *Tree, base: i64, id: i64) anyerror!bool = null,
+    };
+
+    /// Node `id` takes (`on`) or loses the visible focus: its view's focus
+    /// look, if it has one (false: the platform's ring is its).
+    pub fn focusLook(t: *Tree, id: i64, on: bool) !bool {
+        if (on) t.look_focus = id else if (t.look_focus == id) t.look_focus = 0;
+        return t.lookOf(id);
+    }
+
+    /// The nodes under the pointer (the hovered one and the ones around
+    /// it, as CSS's :hover): the looks of those that start or stop being.
+    pub fn setHovered(t: *Tree, ids: []const i64) !void {
+        var old = t.look_hover;
+        defer old.deinit(t.gpa);
+        t.look_hover = .empty;
+        for (ids) |id| try t.look_hover.put(t.gpa, id, {});
+        var it = old.keyIterator();
+        while (it.next()) |id| if (!t.look_hover.contains(id.*)) {
+            _ = try t.lookOf(id.*);
+        };
+        for (ids) |id| if (!old.contains(id)) {
+            _ = try t.lookOf(id);
+        };
+    }
+
+    /// Node `id` and the nodes around it, innermost first, up to `out.len`.
+    pub fn chainOf(t: *Tree, id: i64, out: []i64) []i64 {
+        var len: usize = 0;
+        var node = t.get(id);
+        while (node) |n| : (node = n.parent) {
+            if (len == out.len) break;
+            out[len] = n.id;
+            len += 1;
+        }
+        return out[0..len];
+    }
+
+    pub fn isHovered(t: *const Tree, id: i64) bool {
+        return t.look_hover.contains(id);
+    }
+
+    fn lookOf(t: *Tree, id: i64) !bool {
+        const n = t.get(id) orelse return false;
+        if (n.ui_template == null) return false;
+        for (t.media_views.items) |v| if (v.base == n.ui_base) {
+            const f = v.look orelse return false;
+            return f(t, v.base, id);
+        };
+        return false;
+    }
+
+    /// Node `id` has a view look for the focus.
+    pub fn hasLook(t: *const Tree, n: *const Node) bool {
+        if (n.ui_template == null) return false;
+        for (t.media_views.items) |v| if (v.base == n.ui_base) return v.look != null;
+        return false;
+    }
 
     /// Remember a mounted view with media blocks (once per base).
     pub fn addMediaView(t: *Tree, view: MediaView) !void {
@@ -2727,7 +2799,7 @@ pub const Tree = struct {
                 _ = t.media_views.swapRemove(i);
                 continue;
             }
-            v.mask = try v.refresh(t, v.base, v.mask);
+            v.mask = try v.refresh(t, v.base, v.mask, v.states);
             i += 1;
         }
     }

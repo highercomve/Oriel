@@ -21,6 +21,11 @@ pub const Driver = struct {
     shutdown: ?*const fn (*Engine) void = null,
     resolved: ?*const fn (*Engine, u32, bool, []const u8) anyerror!void = null,
     scrolled: ?*const fn (*Engine, i64) anyerror!void = null,
+    /// A drag over the window or a drop (the native renderer's "drag"
+    /// events: ["enter"|"over"|"leave"|"drop", x, y, allowed, ...]): the
+    /// effect the app takes (copy 1, move 2, link 4; 0 refuses). A dropped
+    /// file is a handle in `Engine.drops` (`drops.nativePath` for its path).
+    drag: ?*const fn (*Engine, i64, []const u8) u8 = null,
 };
 /// Configure on the UI thread before starting the app. Each engine takes a copy.
 pub var configured_driver: ?Driver = null;
@@ -35,6 +40,9 @@ pub const Engine = struct {
     serial: u64,
     booted: bool = false,
     dark: ?bool = null,
+    /// The app's color scheme over the platform's (setColorScheme): what
+    /// a page's `color-scheme`/data-theme pin does, kept through resizes.
+    scheme: ?bool = null,
     coarse: bool = false,
     in_call: u32 = 0,
     frame_pending: bool = false,
@@ -81,7 +89,7 @@ pub const Engine = struct {
     }
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
         e.dark = dark;
-        e.tree.dark = dark;
+        e.tree.dark = e.scheme orelse dark;
         e.coarse = coarse;
         e.driver.boot(e) catch |err| {
             log.err("boot: {s}", .{@errorName(err)});
@@ -133,6 +141,11 @@ pub const Engine = struct {
             if (e.focus.id == id) e.focus.id = 0;
         } else if (eq(u8, kind, "click")) {
             return e.clicked(id, data);
+        } else if (eq(u8, kind, "hover")) {
+            // :hover: the node under the pointer and the ones around it
+            // take their views' hover looks.
+            var chain: [64]i64 = undefined;
+            try e.tree.setHovered(if (id != 0) e.tree.chainOf(id, &chain) else &.{});
         } else if (eq(u8, kind, "key") or eq(u8, kind, "keyup")) {
             if (e.appEvent(id, kind, data)) return true;
             var name: [32]u8 = undefined;
@@ -275,12 +288,22 @@ pub const Engine = struct {
         e.tree.width = width;
         e.tree.height = height;
         e.dark = dark;
-        e.tree.dark = dark;
+        e.tree.dark = e.scheme orelse dark;
         e.tree.dirty = true;
         // .oriel media blocks first: the app's resized sees the new styles.
         e.tree.refreshMedia() catch |err| log.err("media: {s}", .{@errorName(err)});
         if (e.driver.resized) |cb| cb(e) catch |err| log.err("resize: {s}", .{@errorName(err)});
         e.paintNow();
+    }
+    /// The app's color scheme (true dark, false light; null: the platform's
+    /// again): the views' prefers-color-scheme blocks follow it.
+    pub fn setColorScheme(e: *Engine, dark: ?bool) !void {
+        e.scheme = dark;
+        const want = dark orelse e.dark orelse false;
+        if (e.tree.dark == want) return;
+        e.tree.dark = want;
+        try e.tree.refreshMedia();
+        e.show();
     }
     /// A wheel or touch scroll: a key scroll's glide there stops.
     pub fn scrollBy(e: *Engine, n: *Node, dy: f32) bool {
@@ -319,8 +342,13 @@ pub const Engine = struct {
         return e.event(0, "back", "null");
     }
     pub fn dragEvent(e: *Engine, id: i64, data: []const u8) u8 {
-        _ = e.event(id, "drag", data);
-        return 0;
+        const cb = e.driver.drag orelse return 0;
+        e.in_call += 1;
+        defer {
+            e.in_call -= 1;
+            e.show();
+        }
+        return cb(e, id, data) & 7;
     }
     pub fn setA11y(e: *Engine, on: bool) void {
         _ = on;
@@ -330,7 +358,15 @@ pub const Engine = struct {
         return 0;
     }
     pub fn collectGarbage(_: *Engine) void {}
-    pub fn evalScript(_: *Engine, _: [:0]const u8) void {}
+    /// A script for the page: there is none, but an event the app emits
+    /// (internal.emitJson's `window.oriel?.__emit(name, payload);`, on the
+    /// platforms that send events as a script) reaches the driver as the
+    /// "message" others send: {"__oriel_event": name, "payload": payload}.
+    pub fn evalScript(e: *Engine, script: [:0]const u8) void {
+        const json = emittedEvent(e.gpa, script) orelse return;
+        defer e.gpa.free(json);
+        e.message(json);
+    }
     pub fn message(e: *Engine, json: []const u8) void {
         _ = e.event(0, "message", json);
     }
@@ -340,10 +376,35 @@ pub const Engine = struct {
         e.in_call -= 1;
         e.show();
     }
-    pub fn dropPathCommand(_: *Engine, _: std.mem.Allocator, _: []const u8) ![]u8 {
-        return error.UnsupportedInZigUi;
+    /// Where a dropped file lives now, as the JSON string the page's
+    /// `drop:path` answers (null: unknown handle, changed file).
+    pub fn dropPathCommand(e: *Engine, arena: std.mem.Allocator, args_json: []const u8) ![]u8 {
+        const parsed = std.json.parseFromSliceLeaky(struct { handle: u32 }, arena, args_json, .{ .ignore_unknown_fields = true }) catch return arena.dupe(u8, "null");
+        const path = e.drops.nativePath(arena, parsed.handle) catch return arena.dupe(u8, "null");
+        return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
     }
 };
+
+const emit_prefix = "window.oriel?.__emit(";
+
+/// An emitted event's script as the message other platforms send.
+fn emittedEvent(gpa: std.mem.Allocator, script: []const u8) ?[]u8 {
+    if (!std.mem.startsWith(u8, script, emit_prefix) or !std.mem.endsWith(u8, script, ");")) return null;
+    const args = script[emit_prefix.len .. script.len - 2];
+    const array = std.fmt.allocPrint(gpa, "[{s}]", .{args}) catch return null;
+    defer gpa.free(array);
+    const parsed = std.json.parseFromSlice([2]std.json.Value, gpa, array, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value[0] != .string) return null;
+    return std.json.Stringify.valueAlloc(gpa, .{ .__oriel_event = parsed.value[0].string, .payload = parsed.value[1] }, .{}) catch null;
+}
+
+test "an emitted event's script is the message other platforms send" {
+    const json = emittedEvent(std.testing.allocator, "window.oriel?.__emit(\"tray_send\", {\"a\":[1,2]});").?;
+    defer std.testing.allocator.free(json);
+    try std.testing.expectEqualStrings("{\"__oriel_event\":\"tray_send\",\"payload\":{\"a\":[1,2]}}", json);
+    try std.testing.expect(emittedEvent(std.testing.allocator, "alert(1);") == null);
+}
 
 /// Which of `.check` and `.button` the backend hosts as platform widgets
 /// (its platform JSON's `controls`, as render.js reads it).

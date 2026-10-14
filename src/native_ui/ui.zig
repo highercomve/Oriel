@@ -14,6 +14,10 @@ pub const Props = tree.Props;
 pub const Dim = tree.Dim;
 pub const Color = tree.Color;
 pub const Binding = struct { name: []const u8, value: []const u8 };
+/// A view's blocks, a bit each (oriel_markup.max_media of them).
+const Mask = markup.Mask;
+/// A native tree written as an .oriel view (ORIEL_NUI_EXPORT, check-views).
+pub const exporter = @import("oriel_export.zig");
 
 pub fn configure(driver: Driver) void {
     engine.configured_driver = driver;
@@ -21,11 +25,32 @@ pub fn configure(driver: Driver) void {
 
 pub fn View(comptime source: []const u8) type {
     const plan = comptime markup.parse(source);
+    const links = comptime linksOf(plan);
     return struct {
-        pub const node_count = plan.len;
+        /// The ids a view takes from its base: its nodes', then its links'.
+        pub const node_count = plan.len + links.len;
+        /// The names of the `{bindings}` a mount needs, each once.
+        pub const binding_names: []const []const u8 = blk: {
+            @setEvalBranchQuota(100000000);
+            var out: []const []const u8 = &.{};
+            for (plan.nodes[0..plan.len]) |n| {
+                var values: []const ?[]const u8 = &.{ if (n.kind == .text) n.text else null, n.props.tip, n.props.al };
+                for (n.runs) |r| values = values ++ &[_]?[]const u8{r.t};
+                for (values) |v| if (isBinding(v)) {
+                    const name = v.?[1 .. v.?.len - 1];
+                    for (out) |o| {
+                        if (std.mem.eql(u8, o, name)) break;
+                    } else out = out ++ &[_][]const u8{name};
+                };
+            }
+            break :blk out;
+        };
         pub fn id(comptime name: []const u8, base: i64) i64 {
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (comptime std.mem.eql(u8, n.name, name)) return base + @as(i64, i);
+            }
+            inline for (links, 0..) |l, j| {
+                if (comptime std.mem.eql(u8, l.name, name)) return base + @as(i64, plan.len + j);
             }
             @compileError("Unknown .oriel node id: " ++ name);
         }
@@ -45,9 +70,12 @@ pub fn View(comptime source: []const u8) type {
         }
         pub fn mount(t: *tree.Tree, base: i64, style_base: i64, bindings: []const Binding) !i64 {
             try validateMount(t, base, style_base, bindings);
+            // A view made anew starts from its own look, whatever an earlier
+            // view at this base showed.
+            const fresh = t.get(base) == null;
             try mountNodes(t, base, style_base, bindings);
             try attachChildren(t, base);
-            try mountedBindings(t, base, bindings);
+            try mountedBindings(t, base, bindings, fresh);
             t.get(base).?.ui_mounted = true;
             return base;
         }
@@ -55,8 +83,9 @@ pub fn View(comptime source: []const u8) type {
         fn validateMount(t: *tree.Tree, base: i64, style_base: i64, bindings: []const Binding) !void {
             @setEvalBranchQuota(1000000);
             try validateBindings(bindings);
-            try validateIds(base, plan.len);
+            try validateIds(base, node_count);
             try validateIds(style_base, plan.len);
+            if (links.len > 0 and (base < 0 or base + @as(i64, node_count) > std.math.maxInt(u32))) return error.InvalidTemplate;
             if (t.get(base)) |root| if (root.ui_template) |template| {
                 if (template.ptr != source.ptr or template.len != source.len or root.ui_base != base or root.ui_style_base != style_base) return error.IdentityChanged;
             };
@@ -119,21 +148,25 @@ pub fn View(comptime source: []const u8) type {
             }
         }
 
-        fn mountedBindings(t: *tree.Tree, base: i64, bindings: []const Binding) !void {
+        fn mountedBindings(t: *tree.Tree, base: i64, bindings: []const Binding, fresh: bool) !void {
             @setEvalBranchQuota(1000000);
-            // Text with spans: their bound runs.
+            // Text with spans: their bound runs, and the ids their links'
+            // clicks go to.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (comptime hasBoundRun(n.runs)) try setRuns(t, base + @as(i64, i), n.runs, bindings);
+                if (comptime hasLink(n.runs)) try setLinks(t, base + @as(i64, i), base + @as(i64, plan.len), comptime firstLink(i), n.runs);
             }
-            // The media blocks the window matches (a remount keeps the
-            // variant it shows).
+            // The blocks the window and the view's states match (a remount
+            // keeps the blocks it shows and its states).
             if (comptime plan.media_len > 0) {
-                var shown: u32 = 0;
-                for (t.media_views.items) |v| if (v.base == base) {
+                var shown: Mask = 0;
+                var states: Mask = 0;
+                if (!fresh) for (t.media_views.items) |v| if (v.base == base) {
                     shown = v.mask;
+                    states = v.states;
                 };
-                shown = try refresh(t, base, shown);
-                try t.addMediaView(.{ .base = base, .refresh = refresh, .mask = shown });
+                shown = try refresh(t, base, shown, states);
+                try t.addMediaView(.{ .base = base, .refresh = refresh, .mask = shown, .states = states, .look = if (look_blocks != 0) lookOf else null });
             }
             // Bound tooltips and labels.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
@@ -149,7 +182,16 @@ pub fn View(comptime source: []const u8) type {
         }
 
         fn needsStorage(comptime n: markup.Spec, comptime i: usize) bool {
-            return n.kind != .view and n.kind != .text or n.ax != null or hasBoundRun(n.runs) or styledFields(i).len > 0 or runsChange(i);
+            return n.kind != .view and n.kind != .text or n.ax != null or hasBoundRun(n.runs) or hasLink(n.runs) or styledFields(i).len > 0 or runFields(i).len > 0;
+        }
+
+        /// The link slot of node `i`'s first linked run.
+        fn firstLink(comptime i: usize) usize {
+            var j: usize = 0;
+            for (plan.nodes[0..i]) |n| for (n.runs) |r| {
+                if (r.link != null) j += 1;
+            };
+            return j;
         }
 
         /// Update a mounted view's bindings without walking its static
@@ -201,91 +243,217 @@ pub fn View(comptime source: []const u8) type {
             }
         }
 
-        // --- Media blocks: each combination is a compiled variant ----------
+        // --- Blocks: media conditions and the app's states ------------------
+        //
+        // The view, and the view with each block alone, are compiled. A
+        // window that matches several blocks shows each one's changes over
+        // the view's, in the order they're written (later wins, as in the
+        // markup's cascade): check-views compares that with the page.
 
-        const variant_count: u32 = @as(u32, 1) << @intCast(plan.media_len);
-
-        /// Every variant, parsed once (bit i of the index: media block i).
-        const variants: [variant_count]markup.Plan = blk: {
-            var out: [variant_count]markup.Plan = undefined;
-            out[0] = plan;
-            for (1..variant_count) |m| out[m] = markup.parseVariant(source, m);
+        /// The view with block b alone (index b; the view itself at 0 is
+        /// not one of them).
+        const blocks: [plan.media_len]markup.Plan = blk: {
+            var out: [plan.media_len]markup.Plan = undefined;
+            for (0..plan.media_len) |b| out[b] = markup.parseVariant(source, @as(Mask, 1) << @intCast(b));
             break :blk out;
         };
 
-        /// The variant the window matches: bit i, media block i.
-        fn maskOf(t: *const tree.Tree) u32 {
-            var m: u32 = 0;
-            inline for (plan.media[0..plan.media_len], 0..) |c, i| {
-                if (c.matches(t.width, t.dark)) m |= @as(u32, 1) << i;
+        /// The `@when (focus)` and `@when (hover)` blocks: the looks of the
+        /// node with the visible focus and of the nodes under the pointer
+        /// (Tree.look_focus, look_hover), not states of the view.
+        const focus_blocks: Mask = pseudoBits("focus");
+        const hover_blocks: Mask = pseudoBits("hover");
+        const look_blocks: Mask = focus_blocks | hover_blocks;
+        fn pseudoBits(comptime name: []const u8) Mask {
+            var bits: Mask = 0;
+            for (plan.media[0..plan.media_len], 0..) |c, b| if (c.state) |st| {
+                if (std.mem.eql(u8, st, name)) bits |= @as(Mask, 1) << @intCast(b);
+            };
+            return bits;
+        }
+
+        /// The blocks a state's `@when (name)` writes.
+        fn stateBits(comptime name: []const u8) Mask {
+            var bits: Mask = 0;
+            for (plan.media[0..plan.media_len], 0..) |c, b| if (c.state) |st| {
+                if (std.mem.eql(u8, st, name)) bits |= @as(Mask, 1) << @intCast(b);
+            };
+            return bits;
+        }
+
+        /// The blocks the window and the view's states match: bit b, block b.
+        fn maskOf(t: *const tree.Tree, states: Mask) Mask {
+            var m: Mask = 0;
+            inline for (plan.media[0..plan.media_len], 0..) |c, b| {
+                const bit = @as(Mask, 1) << b;
+                if (look_blocks & bit == 0 and (c.state == null or states & bit != 0) and c.matches(t.width, t.dark)) m |= bit;
             }
             return m;
         }
 
-        /// Switch the view at `base` to the variant the window matches (it
-        /// shows `shown`); the variant it shows now.
-        fn refresh(t: *tree.Tree, base: i64, shown: u32) anyerror!u32 {
-            const m = maskOf(t);
-            if (m == shown) return m;
-            switch (m) {
-                inline 0...variant_count - 1 => |cm| try applyVariant(t, base, cm),
-                else => unreachable,
-            }
-            return m;
-        }
-
-        /// The props some variant sets otherwise, from variant `m` (a
-        /// text's runs keep their texts).
-        fn applyVariant(t: *tree.Tree, base: i64, comptime m: u32) !void {
-            @setEvalBranchQuota(4000000);
-            inline for (0..plan.len) |i| {
-                const fields = comptime styledFields(i);
-                const runs_change = comptime runsChange(i);
-                if (fields.len > 0 or runs_change) if (t.get(base + @as(i64, @intCast(i)))) |n| {
-                    const want = comptime propsOf(variants[m].nodes[i]);
-                    var props = n.props;
-                    inline for (fields) |f| @field(props, f) = @field(want, f);
-                    var runs: [if (want.runs) |r| r.len else 0]tree.Run = undefined;
-                    if (runs_change) if (n.props.runs) |current| if (current.len == runs.len) {
-                        inline for (want.runs.?, 0..) |r, j| {
-                            runs[j] = r;
-                            runs[j].t = current[j].t;
-                        }
-                        props.runs = &runs;
-                    };
-                    try t.updateUiProps(n.id, props);
+        /// Switch the view at `base` to the blocks the window and its states
+        /// match (it shows `shown`); the blocks it shows now.
+        fn refresh(t: *tree.Tree, base: i64, shown: Mask, states: Mask) anyerror!Mask {
+            const m = maskOf(t, states);
+            if (m != shown) {
+                try applyBlocks(t, base, m);
+            } else if (look_blocks != 0) {
+                // The focused and hovered nodes' looks follow the window too.
+                inline for (0..plan.len) |i| if (comptime lookStyled(i)) {
+                    const node = base + @as(i64, i);
+                    if (t.look_focus == node or t.isHovered(node)) try applyNode(t, base, i, m);
                 };
             }
+            return m;
         }
 
-        /// The props (but runs) of node `i` that differ in some variant.
-        fn styledFields(comptime i: usize) []const []const u8 {
+        /// Turn one of the view's states on or off (its `@when (name)`
+        /// blocks): `View.setState(tree, base, "selected", true)`.
+        pub fn setState(t: *tree.Tree, base: i64, comptime name: []const u8, on: bool) !void {
+            if (comptime std.mem.eql(u8, name, "focus") or std.mem.eql(u8, name, "hover")) @compileError(".oriel @when (" ++ name ++ ") follows the " ++ name ++ ", not setState");
+            const bits = comptime stateBits(name);
+            if (bits == 0) @compileError("No .oriel @when (" ++ name ++ ") in this view");
+            return setStateBits(t, base, bits, on);
+        }
+
+        /// setState with a name known only at run time (check-views):
+        /// error.UnknownState when the view has no `@when` for it.
+        pub fn setStateNamed(t: *tree.Tree, base: i64, name: []const u8, on: bool) !void {
+            var bits: Mask = 0;
+            inline for (plan.media[0..plan.media_len], 0..) |c, b| if (c.state) |st| {
+                if (std.mem.eql(u8, st, name)) bits |= @as(Mask, 1) << b;
+            };
+            if (bits == 0 or std.mem.eql(u8, name, "focus") or std.mem.eql(u8, name, "hover")) return error.UnknownState;
+            return setStateBits(t, base, bits, on);
+        }
+
+        fn setStateBits(t: *tree.Tree, base: i64, bits: Mask, on: bool) !void {
+            for (t.media_views.items) |*v| if (v.base == base) {
+                v.states = if (on) v.states | bits else v.states & ~bits;
+                v.mask = try refresh(t, base, v.mask, v.states);
+                return;
+            };
+            return error.UnknownNode;
+        }
+
+        /// Each node's styled props as the view has them, then each matched
+        /// block's changes in order (a text's runs keep their texts); the
+        /// focused node's focus blocks too.
+        fn applyBlocks(t: *tree.Tree, base: i64, m: Mask) !void {
+            @setEvalBranchQuota(400000000);
+            inline for (0..plan.len) |i| try applyNode(t, base, i, m);
+        }
+
+        fn applyNode(t: *tree.Tree, base: i64, comptime i: usize, m: Mask) !void {
+            @setEvalBranchQuota(400000000);
+            const fields = comptime styledFields(i);
+            const run_fields = comptime runFields(i);
+            if (fields.len == 0 and run_fields.len == 0) return;
+            const n = t.get(base + @as(i64, @intCast(i))) orelse return;
+            // The blocks that apply: the matched ones, and the focus and
+            // hover blocks the window matches while this node has that look.
+            var active = m;
+            const focus_on = t.look_focus == n.id;
+            const hover_on = t.isHovered(n.id);
+            if (focus_on or hover_on) inline for (plan.media[0..plan.media_len], 0..) |c, b| {
+                const bit = @as(Mask, 1) << b;
+                const look = (focus_on and focus_blocks & bit != 0) or (hover_on and hover_blocks & bit != 0);
+                if (look and c.matches(t.width, t.dark)) active |= bit;
+            };
+            const own = comptime propsOf(plan.nodes[i]);
+            var props = n.props;
+            inline for (fields) |f| @field(props, f) = @field(own, f);
+            inline for (0..plan.media_len) |b| if (active & (@as(Mask, 1) << b) != 0) {
+                const want = comptime propsOf(blocks[b].nodes[i]);
+                inline for (comptime blockFields(i, b)) |f| @field(props, f) = @field(want, f);
+            };
+            var runs: [run_fields.len]tree.Run = undefined;
+            if (run_fields.len > 0) if (n.props.runs) |current| if (current.len == runs.len) {
+                inline for (own.runs.?, 0..) |r, j| {
+                    runs[j] = r;
+                    runs[j].t = current[j].t;
+                    runs[j].k = current[j].k;
+                }
+                inline for (0..plan.media_len) |b| if (active & (@as(Mask, 1) << b) != 0) {
+                    const want = comptime propsOf(blocks[b].nodes[i]).runs.?;
+                    inline for (comptime blockRunFields(i, b)) |jf| @field(runs[jf.run], jf.field) = @field(want[jf.run], jf.field);
+                };
+                props.runs = &runs;
+            };
+            try t.updateUiProps(n.id, props);
+        }
+
+        /// `node`'s look as Tree.look_focus and look_hover have it now:
+        /// false when the view's focus and hover blocks say nothing of it
+        /// (the platform's focus ring, then).
+        fn lookOf(t: *tree.Tree, base: i64, node: i64) anyerror!bool {
+            @setEvalBranchQuota(400000000);
+            inline for (0..plan.len) |i| if (comptime lookStyled(i)) if (base + @as(i64, i) == node) {
+                var mask: Mask = 0;
+                for (t.media_views.items) |v| if (v.base == base) {
+                    mask = v.mask;
+                };
+                try applyNode(t, base, i, mask);
+                return true;
+            };
+            return false;
+        }
+
+        /// Node `i` looks otherwise focused or hovered.
+        fn lookStyled(comptime i: usize) bool {
+            for (0..plan.media_len) |b| if (look_blocks & (@as(Mask, 1) << @intCast(b)) != 0) {
+                if (blockFields(i, b).len > 0 or blockRunFields(i, b).len > 0) return true;
+            };
+            return false;
+        }
+
+        /// The props (but runs) of node `i` block `b` changes.
+        fn blockFields(comptime i: usize, comptime b: usize) []const []const u8 {
+            @setEvalBranchQuota(400000000);
             var out: []const []const u8 = &.{};
-            const base_props = propsOf(plan.nodes[i]);
+            const own = propsOf(plan.nodes[i]);
+            const in_block = propsOf(blocks[b].nodes[i]);
             for (std.meta.fields(tree.Props)) |f| {
                 if (std.mem.eql(u8, f.name, "runs")) continue;
-                for (1..variant_count) |m| {
-                    if (!same(f.type, @field(base_props, f.name), @field(propsOf(variants[m].nodes[i]), f.name))) {
-                        out = out ++ &[_][]const u8{f.name};
-                        break;
-                    }
-                }
+                if (!same(f.type, @field(own, f.name), @field(in_block, f.name))) out = out ++ &[_][]const u8{f.name};
             }
             return out;
         }
 
-        fn runsChange(comptime i: usize) bool {
-            const a = propsOf(plan.nodes[i]).runs orelse return false;
-            for (1..variant_count) |m| {
-                const b = propsOf(variants[m].nodes[i]).runs orelse continue;
-                if (a.len != b.len) return true;
-                for (a, b) |x, y| {
-                    var y2 = y;
-                    y2.t = x.t;
-                    if (!same(tree.Run, x, y2)) return true;
-                }
-            }
-            return false;
+        /// The props (but runs) of node `i` some block changes.
+        fn styledFields(comptime i: usize) []const []const u8 {
+            @setEvalBranchQuota(400000000);
+            var out: []const []const u8 = &.{};
+            for (0..plan.media_len) |b| for (blockFields(i, b)) |f| {
+                for (out) |o| {
+                    if (std.mem.eql(u8, o, f)) break;
+                } else out = out ++ &[_][]const u8{f};
+            };
+            return out;
+        }
+
+        const RunField = struct { run: usize, field: []const u8 };
+
+        /// The run fields (but texts and links) of node `i` block `b` changes.
+        fn blockRunFields(comptime i: usize, comptime b: usize) []const RunField {
+            @setEvalBranchQuota(400000000);
+            var out: []const RunField = &.{};
+            const own = propsOf(plan.nodes[i]).runs orelse return out;
+            const in_block = propsOf(blocks[b].nodes[i]).runs orelse return out;
+            if (own.len != in_block.len) @compileError(".oriel blocks can't change a text's spans");
+            for (own, in_block, 0..) |x, y, j| for (std.meta.fields(tree.Run)) |f| {
+                if (std.mem.eql(u8, f.name, "t") or std.mem.eql(u8, f.name, "k")) continue;
+                if (!same(f.type, @field(x, f.name), @field(y, f.name))) out = out ++ &[_]RunField{.{ .run = j, .field = f.name }};
+            };
+            return out;
+        }
+
+        /// Node `i`'s runs when some block changes them (its runs, else none).
+        fn runFields(comptime i: usize) []const tree.Run {
+            @setEvalBranchQuota(400000000);
+            const own = propsOf(plan.nodes[i]).runs orelse return &.{};
+            for (0..plan.media_len) |b| if (blockRunFields(i, b).len > 0) return own;
+            return &.{};
         }
     };
 }
@@ -436,10 +604,14 @@ fn runsOf(comptime runs: []const markup.RunSpec, comptime p: tree.Props) []const
         .t = if (isBinding(r.t)) "" else r.t,
         .sz = if (r.fz) |v| v else p.fz orelse 14,
         .w = if (r.fwt) |v| v else p.fwt orelse 400,
-        .ff = r.ff orelse p.ff,
+        .ff = if (r.ff) |v| v else p.ff,
         .mono = r.mono orelse p.mono,
         .i = r.it orelse p.it,
-        .lh = p.lh,
+        .u = r.u orelse false,
+        .bg = if (r.bg) |v| v else null,
+        .lh = if (r.lh) |v| v else p.lh,
+        .ol = if (r.ol) |v| v else null,
+        .ib = r.ib,
         .c = if (r.col) |c| c else p.col orelse .{ 230, 232, 236, 1 },
     };
     const final = out;
@@ -449,6 +621,49 @@ fn runsOf(comptime runs: []const markup.RunSpec, comptime p: tree.Props) []const
 fn hasBoundRun(comptime runs: []const markup.RunSpec) bool {
     for (runs) |r| if (isBinding(r.t)) return true;
     return false;
+}
+
+fn hasLink(comptime runs: []const markup.RunSpec) bool {
+    for (runs) |r| if (r.link != null) return true;
+    return false;
+}
+
+const Link = struct { name: []const u8 };
+
+/// The view's link runs, in the order written: their ids follow its
+/// nodes'. A link's name is unique among the view's ids.
+fn linksOf(comptime plan: markup.Plan) []const Link {
+    var out: []const Link = &.{};
+    for (plan.nodes[0..plan.len]) |n| for (n.runs) |r| if (r.link) |name| {
+        for (plan.nodes[0..plan.len]) |other| if (std.mem.eql(u8, other.name, name)) @compileError("Duplicate .oriel id: " ++ name);
+        for (out) |l| if (std.mem.eql(u8, l.name, name)) @compileError("Duplicate .oriel id: " ++ name);
+        out = out ++ &[_]Link{.{ .name = name }};
+    };
+    return out;
+}
+
+/// A text's link runs pointed at their ids (`first`: the slot of its first
+/// link after `links_base`).
+fn setLinks(t: *tree.Tree, id: i64, links_base: i64, comptime first: usize, comptime specs: []const markup.RunSpec) !void {
+    const n = t.get(id) orelse return error.UnknownNode;
+    const current = n.props.runs orelse return error.InvalidTextNode;
+    if (current.len != specs.len) return error.InvalidTextNode;
+    var runs: [specs.len]tree.Run = undefined;
+    var changed = false;
+    comptime var slot = first;
+    inline for (specs, 0..) |spec, i| {
+        runs[i] = current[i];
+        if (comptime spec.link != null) {
+            const k: u32 = @intCast(links_base + @as(i64, slot));
+            if (current[i].k != k) changed = true;
+            runs[i].k = k;
+            slot += 1;
+        }
+    }
+    if (!changed) return;
+    var props = n.props;
+    props.runs = &runs;
+    try t.updateUiProps(id, props);
 }
 
 /// A text's runs with its bindings' values, sent only when one changed.
@@ -792,4 +1007,179 @@ test "mount reserves enough storage for large permitted initial values" {
     props.val = "changed";
     try t.updateUiProps(100, props);
     try std.testing.expectEqualStrings("changed", n.props.val.?);
+}
+
+test "icons, rich spans and links mount as the native renderer's nodes" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const V = View(
+        \\<column border-width="0,0,1,0" border-color="#202020" gradient-stops="255,0,0,1,0; 0,0,255,1,1">
+        \\  <icon id="logo" viewbox="0,0,16,16" width="16" height="16"><path d="M0 0L16 16" stroke="#ff0000" /></icon>
+        \\  <text id="intro" font-size="13">Read <span underline="true" link="docs">the docs</span>, then <span link="faq" unset="font-family" box="1" box-padding="0,4,0,4">{faq}</span></text>
+        \\</column>
+    );
+    try std.testing.expectEqual(@as(usize, 5), V.node_count);
+    try std.testing.expectEqual(@as(i64, 103), V.id("docs", 100));
+    try std.testing.expectEqual(@as(i64, 104), V.id("faq", 100));
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{.{ .name = "faq", .value = "the FAQ" }});
+    const root = t.get(100).?;
+    try std.testing.expectEqual([4]f32{ 0, 0, 1, 0 }, root.props.bw.?);
+    try std.testing.expectEqual(@as(usize, 2), root.props.bg.?.gradient.?.stops.len);
+    const logo = t.get(V.id("logo", 100)).?;
+    try std.testing.expectEqual(tree.Kind.icon, logo.kind);
+    try std.testing.expectEqual(@as(usize, 1), logo.props.icon.?.shapes.len);
+    const runs = t.get(V.id("intro", 100)).?.props.runs.?;
+    try std.testing.expectEqual(@as(usize, 4), runs.len);
+    try std.testing.expect(runs[1].u and runs[1].k.? == 103);
+    try std.testing.expectEqual(@as(f32, 13), runs[1].sz);
+    try std.testing.expectEqualStrings("the FAQ", runs[3].t);
+    try std.testing.expectEqual(@as(?u32, 104), runs[3].k);
+    try std.testing.expectEqual([4]f32{ 0, 4, 0, 4 }, runs[3].ib.?.p);
+    try std.testing.expect(runs[0].k == null and !runs[0].u);
+    // An update keeps the links' ids.
+    try V.update(&t, 100, &.{.{ .name = "faq", .value = "questions" }});
+    const after = t.get(V.id("intro", 100)).?.props.runs.?;
+    try std.testing.expectEqualStrings("questions", after[3].t);
+    try std.testing.expectEqual(@as(?u32, 104), after[3].k);
+}
+
+test {
+    _ = @import("oriel_export.zig");
+}
+
+test "@when blocks follow the app's states, over the media blocks" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const V = View(
+        \\<style>
+        \\  chip: background=#e6ebdf padding=10
+        \\  label: color=#45624b
+        \\  @media (prefers-color-scheme: dark) { chip: background=#2b3327  label: color=#aec79f }
+        \\  @media (max-width: 680) { chip: padding=9 }
+        \\  @when (off) { chip: background=#f2ede4  label: color=#71756c }
+        \\</style>
+        \\<view id="chip" class="chip"><text id="label" class="label">Visible <span class="label">now</span></text></view>
+    );
+    t.width = 600;
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{});
+    const chip = V.id("chip", 100);
+    const label = V.id("label", 100);
+    try std.testing.expectEqual(tree.Color{ 230, 235, 223, 1 }, t.get(chip).?.props.bg.?.color.?);
+    try std.testing.expectEqual(@as(f32, 9), t.get(chip).?.props.pad.?[0].px);
+    try V.setState(&t, 100, "off", true);
+    try std.testing.expectEqual(tree.Color{ 242, 237, 228, 1 }, t.get(chip).?.props.bg.?.color.?);
+    try std.testing.expectEqual(tree.Color{ 113, 117, 108, 1 }, t.get(label).?.props.runs.?[1].c);
+    try std.testing.expectEqual(@as(f32, 9), t.get(chip).?.props.pad.?[0].px);
+    // Dark too: the state's block is written after the dark one, so it wins.
+    t.dark = true;
+    try t.refreshMedia();
+    try std.testing.expectEqual(tree.Color{ 242, 237, 228, 1 }, t.get(chip).?.props.bg.?.color.?);
+    try V.setStateNamed(&t, 100, "off", false);
+    try std.testing.expectEqual(tree.Color{ 43, 51, 39, 1 }, t.get(chip).?.props.bg.?.color.?);
+    try std.testing.expectEqual(tree.Color{ 174, 199, 159, 1 }, t.get(label).?.props.runs.?[0].c);
+    try std.testing.expectEqualStrings("now", t.get(label).?.props.runs.?[1].t);
+    try std.testing.expectError(error.UnknownState, V.setStateNamed(&t, 100, "missing", true));
+    // A remount keeps its states.
+    try V.setState(&t, 100, "off", true);
+    _ = try V.mount(&t, 100, 10, &.{});
+    try std.testing.expectEqual(tree.Color{ 242, 237, 228, 1 }, t.get(chip).?.props.bg.?.color.?);
+}
+
+test "@when (focus) is the look of the node with the visible focus" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const V = View(
+        \\<style>
+        \\  @when (focus) { save: outline=3,3,#a5b894  name: outline=3,3,#a5b894 }
+        \\  @when (focus) and (prefers-color-scheme: dark) { save: outline=3,3,#9db58c  name: outline=3,3,#9db58c }
+        \\</style>
+        \\<column><view id="save" class="save" clickable="true"><text>Save</text></view><input id="name" class="name" /><text id="plain">x</text></column>
+    );
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{});
+    const save = V.id("save", 100);
+    try std.testing.expect(t.get(save).?.props.ol == null);
+    try std.testing.expect(try t.focusLook(save, true));
+    try std.testing.expectEqual(tree.Color{ 165, 184, 148, 1 }, t.get(save).?.props.ol.?.c);
+    // Its look follows the theme while it has the focus.
+    t.dark = true;
+    try t.refreshMedia();
+    try std.testing.expectEqual(tree.Color{ 157, 181, 140, 1 }, t.get(save).?.props.ol.?.c);
+    try std.testing.expect(t.get(V.id("name", 100)).?.props.ol == null);
+    try std.testing.expect(try t.focusLook(save, false));
+    try std.testing.expect(t.get(save).?.props.ol == null);
+    // A node the blocks don't style takes the platform's ring.
+    try std.testing.expect(!try t.focusLook(V.id("plain", 100), true));
+}
+
+test "a view mounted anew where another was starts from its own look" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    t.dark = true;
+    const A = View("<style>a: background=#ffffff @media (prefers-color-scheme: dark) { a: background=#000000 }</style><view class=\"a\" />");
+    const B = View("<style>b: background=#eeeeee @media (prefers-color-scheme: dark) { b: background=#111111 }</style><view class=\"b\" />");
+    try A.prepare(&t, 10);
+    try B.prepare(&t, 20);
+    _ = try A.mount(&t, 100, 10, &.{});
+    t.destroy(100);
+    _ = try B.mount(&t, 100, 20, &.{});
+    try std.testing.expectEqual(tree.Color{ 17, 17, 17, 1 }, t.get(100).?.props.bg.?.color.?);
+}
+
+test "@when (hover) is the look of the nodes under the pointer" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const V = View(
+        \\<style>
+        \\  go: background=#d95e43
+        \\  @media (prefers-color-scheme: dark) { go: background=#f07a5a }
+        \\  @when (hover) { go: background=#c74f36 }
+        \\  @when (hover) and (prefers-color-scheme: dark) { go: background=#f5937a }
+        \\</style>
+        \\<column><view id="go" class="go" clickable="true"><text id="label">Go</text></view></column>
+    );
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{});
+    const go = V.id("go", 100);
+    // The pointer over the label: the button around it is hovered too.
+    var chain: [8]i64 = undefined;
+    try t.setHovered(t.chainOf(V.id("label", 100), &chain));
+    try std.testing.expectEqual(tree.Color{ 199, 79, 54, 1 }, t.get(go).?.props.bg.?.color.?);
+    t.dark = true;
+    try t.refreshMedia();
+    try std.testing.expectEqual(tree.Color{ 245, 147, 122, 1 }, t.get(go).?.props.bg.?.color.?);
+    try t.setHovered(&.{});
+    try std.testing.expectEqual(tree.Color{ 240, 122, 90, 1 }, t.get(go).?.props.bg.?.color.?);
 }

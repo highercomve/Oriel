@@ -19,12 +19,60 @@ _ = try Row.mount(&engine.tree, row_id, 2000, &.{
 });
 ```
 
-The markup parser runs at compile time. Supported tags are `column`, `row`,
-`view`, `text`, `button` and `canvas`; style attributes form a deliberately
-small schema of native properties. Unknown tags/attributes, duplicate names
-and malformed nesting fail compilation. Text supports literals or whole
-`{binding}` values. `View.id("name", base)` resolves a named node at compile
-time. There is no JavaScript, DOM, stylesheet matching or runtime markup parsing.
+The markup parser runs at compile time. Unknown tags/attributes, duplicate
+names and malformed nesting fail compilation. Text supports literals or whole
+`{binding}` values. `View.id("name", base)` resolves a named node (or a link
+span) at compile time. There is no JavaScript, DOM, stylesheet matching or
+runtime markup parsing.
+
+### Markup reference
+
+An attribute sets one of the native tree's props, the same ones the native
+renderer computes from HTML and CSS, so a view can draw anything a web page
+does on that renderer. A test (`oriel_markup.zig`, ".oriel can set every
+native prop") fails when a prop is added that no attribute sets.
+
+Elements: `view`, `row` and `column` (boxes; `row`/`column` set the
+direction), `button` (a drawn, focusable box), `text` (with `<span>`s),
+`canvas`, `input`, `textarea`, `select` (with `<option value="v">Label</option>`),
+`checkbox`, `radio`, `slider`, `control` (a native push button), `image` and
+`icon` (with `<path>`s).
+
+Values: lengths are px numbers, percentages (`50%`), calc's percentage plus
+px (`50%-8px`), `auto` or `none`. Colors are `#RRGGBB`, `#RRGGBBAA` or
+`rgba(r, g, b, a)`. Four-sided values run top, right, bottom, left; corners
+run top-left, top-right, bottom-right, bottom-left.
+
+| Group | Attributes |
+|---|---|
+| Flex | `direction` (row, column, row-reverse, column-reverse), `wrap`, `justify`, `align`, `align-self`, `align-content`, `grow`, `shrink`, `basis`, `gap`, `row-gap`, `column-gap` |
+| Size | `width`, `height`, `min-width`, `min-height`, `max-width`, `max-height`, `aspect-ratio`, `box-sizing` |
+| Spacing | `margin`, `padding` (one or four lengths) |
+| Position | `position` (relative, absolute), `top`, `right`, `bottom`, `left`, `relative` (four px offsets for position: relative, `auto` for none), `sticky` (four offsets), `z` |
+| Scrolling | `scroll`, `scroll-x`, `clip`, `scrollbar` (auto, always), `scrollbar-width` (thin, none), `scrollbar-color` (`#thumb #track`), `color-scheme` (light, dark) |
+| Tables | `table` (its border spacing), `table-row`, `table-cell` (its column span) |
+| Drawing | `background`, `gradient-stops` (`r,g,b,a,position; ...`), `gradient-angle`, `gradient-radial` (cx,cy,rx,ry), `gradient-extent`, `gradient-circle`, `gradient-repeat`, `gradient-units`, `gradient-offsets`, `radius` (one or four corners, each a length or `x/y`), `border-width` (one or four px), `border-bottom`, `border-color` (one or four colors), `border-style` (dashed, dotted), `opacity`, `shadow` (`x,y,blur[,spread],#color`), `outline` (`width,offset,#color`), `outline-style`, `outline-halo`, `outline-radius` |
+| Transforms | `translate-x`, `translate-y`, `scale`, `rotate` (degrees, around the center) |
+| Text | `color`, `font-size`, `font-weight`, `font-family`, `italic`, `mono`, `line-height`, `letter-spacing`, `text-align`, `nowrap`, `max-content`, `fit-content` |
+| Fields | `value`, `placeholder`, `disabled`, `readonly`, `password`, `rows`, `cols`, `checked`, `mixed`, `accent`, `min`, `max`, `step`, `type` (email, url, tel, number, search), `inputmode`, `enterkey`, `autocapitalize`, `autocorrect`, `spellcheck`, `control` (checkbox, radio), `baseline` |
+| Media | `src`, `fit` (images), `viewbox` (icons), `pixel-width`, `pixel-height` (a canvas's bitmap) |
+| Identity | `id`, `class`, `label`, `role`, `level`, `description`, `alt`, `focusable`, `tabindex`, `tooltip`, `clickable`, `visible`, `display` (flex, none), `root` |
+
+`unset="font-size left ..."` gives the props it names no value: not the
+element's default, and not inherited from the elements around it.
+
+A `<span>` in a `<text>` takes `color`, `font-size`, `font-weight`,
+`font-family`, `italic`, `mono`, `underline`, `background`, `line-height`,
+the `outline` attributes, an inline box (`box`, the number that tells one
+from a like one beside it, `box-padding`, `box-margin`, `box-border-width`,
+`box-border-color`, `box-radius`, `box-background`), `unset` (font-family,
+line-height, background, outline, box-background) and `link="name"`: a link
+whose clicks reach the app as `click` events on `View.id("name", base)`. A
+view's link ids follow its nodes' (`View.node_count` counts both).
+
+An `<icon viewbox="0,0,24,24">` holds `<path d="..." />`s with `fill`,
+`stroke` (a color or `none`), `stroke-width`, `linecap`, `linejoin` and
+`evenodd`.
 
 Prepare registers shared immutable styles outside workload timing. Mount
 creates an owned subtree or updates its existing text using explicit stable
@@ -111,6 +159,90 @@ Callbacks added inside a display frame begin on the following frame. The
 example state is single-window; this is an experiment, not a general component,
 effect, routing or automatic reconciliation framework. JavaScript page APIs
 and hot reload are outside this mode's current scope.
+
+### Blocks and states
+
+A `<style>` takes up to 64 blocks. `@media (max-width: 680)`,
+`(min-width: N)` and `(prefers-color-scheme: dark)` follow the window;
+`@when (name)` follows a state the app turns on and off for one mounted
+view, `View.setState(tree, base, "name", on)` (`setStateNamed` with a name
+known at run time). A block may combine them:
+`@when (presence-off) and (prefers-color-scheme: dark)`. The view and each
+block alone are compiled; a window and states that match several blocks show
+each one's changes over the view's in the order they're written, later
+blocks winning.
+
+`@when (focus)` and `@when (hover)` aren't states: they're the look of the
+node with the visible focus and of the nodes under the pointer (the hovered
+node and the ones around it, as CSS's `:hover`). The engine applies them
+(`Tree.focusLook`, `Tree.setHovered`); a node the focus blocks don't style
+takes the platform's focus ring, and a native field with a focus look draws
+it instead of its own.
+
+The app's color scheme: `engine.setColorScheme(true/false)` pins dark or
+light over the platform's (what a page's `data-theme` does), through resizes;
+`null` follows the platform again.
+
+## Porting a page
+
+A page drawn by the native renderer (`-Drenderer=native`) can be written as
+`.oriel` views that draw it the same on the Oriel renderer. The exporter
+writes each node's computed props as the attributes that make them, and only
+what the markup wouldn't give anyway (an element's defaults, the text styles
+it inherits).
+
+Run the native build with an export folder and a script (Linux):
+
+```sh
+ORIEL_NUI_EXPORT=views-out ORIEL_NUI_EXPORT_SCRIPT=export.js zig-out/bin/app
+```
+
+The script runs in the page once it booted, in an async function, with the
+page's globals: it brings the page to each state and exports it.
+
+```js
+await __orielExport("main");                                   // the page
+await __orielExport("main", { variant: "dark", media: "prefers-color-scheme: dark" });
+await __orielExport("main", { variant: "off", when: "presence-off" });
+await __orielExport("row", { element: document.querySelector(".row") }); // one element
+await __orielExport("main", { variant: "rows", when: "has-rows", hollow: [list] });
+__orielExportDone();                                           // quits
+```
+
+- `variant` with `media` (several joined by ` and `) or `when` is the same
+  view under that condition, after its default (`variant` unset). Nodes are
+  matched by element; an element exported anew for each variant (a list's
+  row) is matched by place. What a variant changes becomes the element's
+  style and that variant's block; a node a variant doesn't show is
+  `display=none` there.
+- `element` exports that element and what's in it (a list's row: the app
+  mounts it once per row).
+- `hollow` exports those elements without what's in them (a list whose rows
+  are views of their own, while it holds rows: its margins).
+- Elements' `id`s name the view's nodes and inline links' runs; `{name}` as a
+  text makes it a binding.
+- Every control in its focused look (`data-nui-focus-visible` on all of them)
+  under `when: "focus"`, everything hovered (`data-nui-hover`) under
+  `when: "hover"`, give the views their focus and hover looks.
+
+It writes `<name>.oriel`, each variant's props (`<name>@<variant>.props.json`)
+and `views.zig`. Then, in Oriel:
+
+```sh
+zig build check-views -Dzig_ui=true -Dviews=views-out
+```
+
+compiles every view and mounts it in each variant (its width, color scheme
+and states), comparing every node's props with the page's: a view that
+passes draws as the page did on the same renderer. Text whose spans a
+variant changes, a span hidden (a run, not a node) and kinds that change are
+reported: the page's export script works around them (an empty binding for a
+hidden span).
+
+HollerShare is ported this way: `views/export.js` exports its page in 36
+variants (theme, width, mode, visibility, its parts hidden, its lists full,
+focus and hover) and nine row views, and `src/oriel_frontend.zig` is its
+`app.js` in Zig. Its Oriel build draws the same pixels as its native one.
 
 ## Benchmark equivalence
 

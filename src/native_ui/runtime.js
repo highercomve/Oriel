@@ -308,7 +308,7 @@ globalThis.btoa ??= (s) => {
   var hyphen = (name) => name.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
   function installNativeDom(g2, document2) {
     const nd2 = g2.__nuiDom;
-    const { Node, CharacterData, Text, Comment, Element, HTMLElement, DocumentFragment, Document } = g2;
+    const { Node, CharacterData, Text, Comment, Element: Element2, HTMLElement, DocumentFragment, Document } = g2;
     const def = (proto, props) => {
       for (const [k, v] of Object.entries(props)) {
         Object.defineProperty(proto, k, typeof v === "function" ? { value: v, writable: true, configurable: true } : { ...v, configurable: true });
@@ -595,7 +595,7 @@ globalThis.btoa ??= (s) => {
         return n2;
       } }
     };
-    def(Element.prototype, { ...childNode, ...parentNode });
+    def(Element2.prototype, { ...childNode, ...parentNode });
     def(CharacterData.prototype, childNode);
     def(DocumentFragment.prototype, parentNode);
     def(Document.prototype, parentNode);
@@ -866,7 +866,7 @@ globalThis.btoa ??= (s) => {
       return out;
     };
     const xlinkName = (ns, name) => ns === "http://www.w3.org/1999/xlink" && !name.startsWith("xlink:") ? "xlink:" + name : name;
-    def(Element.prototype, {
+    def(Element2.prototype, {
       classList: { get() {
         let l = tokenLists.get(this);
         if (!l) tokenLists.set(this, l = new DOMTokenList(this));
@@ -1232,7 +1232,7 @@ globalThis.btoa ??= (s) => {
       for (const t of tags) nd2.setProto(t, ctor.prototype);
     }
     makeClass("HTMLUnknownElement", HTMLElement);
-    const SVGElement = makeClass("SVGElement", Element, { ownerSVGElement: { get() {
+    const SVGElement = makeClass("SVGElement", Element2, { ownerSVGElement: { get() {
       return this.parentNode?.closest?.("svg") ?? null;
     } } });
     nd2.setProto("#foreign", SVGElement.prototype);
@@ -1540,7 +1540,7 @@ globalThis.btoa ??= (s) => {
       CharacterData,
       Text,
       Comment,
-      Element,
+      Element: Element2,
       HTMLElement,
       DocumentFragment,
       Document,
@@ -9624,6 +9624,27 @@ ${a.stack || ""}`;
       host.invoke(id, String(cmd), JSON.stringify(args ?? null));
     });
   }
+  Object.defineProperty(g, "__orielExport", {
+    value: (name, options = {}) => {
+      renderer?.render();
+      const names = {};
+      if (renderer) for (const el of document.querySelectorAll("[id]")) names[renderer.idOf(el, "el")] = el.id;
+      const { element, variant, media, when, hollow = [] } = options instanceof Element ? { element: options } : options;
+      const root = element && renderer ? renderer.idOf(element, "el") : null;
+      const hollowIds = renderer ? hollow.map((el) => renderer.idOf(el, "el")) : [];
+      return invoke("__oriel:export", {
+        name: String(name),
+        names,
+        root,
+        hollow: hollowIds,
+        variant: variant ?? null,
+        media: media ?? null,
+        when: when ?? null,
+        viewport: { width: viewport.width, height: viewport.height, dark: !!viewport.dark }
+      });
+    }
+  });
+  Object.defineProperty(g, "__orielExportDone", { value: () => invoke("__oriel:export-done", null) });
   Object.defineProperty(g, "oriel", { value: orielApi({
     invoke,
     listeners: /* @__PURE__ */ new Map(),

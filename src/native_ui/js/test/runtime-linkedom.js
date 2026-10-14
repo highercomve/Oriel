@@ -3695,7 +3695,7 @@ globalThis.btoa ??= (s) => {
       return 9;
     }
   };
-  var Element = class extends NodeWithChildren {
+  var Element2 = class extends NodeWithChildren {
     /**
      * @param name Name of the tag, eg. `div`, `span`.
      * @param attribs Object mapping attribute names to attribute values.
@@ -3762,7 +3762,7 @@ globalThis.btoa ??= (s) => {
       result = new Comment2(node.data);
     } else if (isTag2(node)) {
       const children = recursive ? cloneChildren(node.children) : [];
-      const clone = new Element(node.name, { ...node.attribs }, children);
+      const clone = new Element2(node.name, { ...node.attribs }, children);
       children.forEach((child) => child.parent = clone);
       if (node.namespace != null) {
         clone.namespace = node.namespace;
@@ -3879,7 +3879,7 @@ globalThis.btoa ??= (s) => {
     }
     onopentag(name, attribs) {
       const type = this.options.xmlMode ? ElementType.Tag : void 0;
-      const element = new Element(name, attribs, void 0, type);
+      const element = new Element2(name, attribs, void 0, type);
       this.addNode(element);
       this.tagStack.push(element);
     }
@@ -9619,7 +9619,7 @@ globalThis.btoa ??= (s) => {
   var isVoid = ({ localName, ownerDocument }) => {
     return ownerDocument[MIME].voidElements.test(localName);
   };
-  var Element2 = class extends ParentNode {
+  var Element3 = class extends ParentNode {
     constructor(ownerDocument, localName) {
       super(ownerDocument, localName, ELEMENT_NODE);
       this[CLASS_LIST] = null;
@@ -10082,7 +10082,7 @@ globalThis.btoa ??= (s) => {
       return true;
     }
   };
-  var SVGElement = class extends Element2 {
+  var SVGElement = class extends Element3 {
     constructor(ownerDocument, localName, ownerSVGElement = null) {
       super(ownerDocument, localName);
       this.ownerSVGElement = ownerSVGElement;
@@ -10150,11 +10150,11 @@ globalThis.btoa ??= (s) => {
   }
   setPrototypeOf(DocumentType2, DocumentType);
   DocumentType2.prototype = DocumentType.prototype;
-  function Element3() {
+  function Element4() {
     illegalConstructor();
   }
-  setPrototypeOf(Element3, Element2);
-  Element3.prototype = Element2.prototype;
+  setPrototypeOf(Element4, Element3);
+  Element4.prototype = Element3.prototype;
   function Node3() {
     illegalConstructor();
   }
@@ -10182,7 +10182,7 @@ globalThis.btoa ??= (s) => {
     Comment: Comment5,
     DocumentFragment: DocumentFragment2,
     DocumentType: DocumentType2,
-    Element: Element3,
+    Element: Element4,
     Node: Node3,
     ShadowRoot: ShadowRoot2,
     Text: Text5,
@@ -10206,7 +10206,7 @@ globalThis.btoa ??= (s) => {
         element.addEventListener(type, value, false);
     }
   };
-  var HTMLElement = class extends Element2 {
+  var HTMLElement = class extends Element3 {
     static get observedAttributes() {
       return [];
     }
@@ -12193,7 +12193,7 @@ globalThis.btoa ??= (s) => {
       return new DocumentType(this, name, publicId, systemId);
     }
     createElement(localName) {
-      return new Element2(this, localName);
+      return new Element3(this, localName);
     }
     createRange() {
       const range = new Range();
@@ -20696,6 +20696,27 @@ ${a.stack || ""}`;
       host.invoke(id, String(cmd), JSON.stringify(args ?? null));
     });
   }
+  Object.defineProperty(g, "__orielExport", {
+    value: (name, options = {}) => {
+      renderer?.render();
+      const names = {};
+      if (renderer) for (const el of document.querySelectorAll("[id]")) names[renderer.idOf(el, "el")] = el.id;
+      const { element, variant, media, when, hollow = [] } = options instanceof Element ? { element: options } : options;
+      const root = element && renderer ? renderer.idOf(element, "el") : null;
+      const hollowIds = renderer ? hollow.map((el) => renderer.idOf(el, "el")) : [];
+      return invoke("__oriel:export", {
+        name: String(name),
+        names,
+        root,
+        hollow: hollowIds,
+        variant: variant ?? null,
+        media: media ?? null,
+        when: when ?? null,
+        viewport: { width: viewport.width, height: viewport.height, dark: !!viewport.dark }
+      });
+    }
+  });
+  Object.defineProperty(g, "__orielExportDone", { value: () => invoke("__oriel:export-done", null) });
   Object.defineProperty(g, "oriel", { value: orielApi({
     invoke,
     listeners: /* @__PURE__ */ new Map(),

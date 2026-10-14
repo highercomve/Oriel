@@ -315,6 +315,28 @@ pub fn build(b: *std.Build) void {
         });
         b.step("bench-ui-updates", "Compare retained view and typed property updates (no layout/paint)").dependOn(&b.addRunArtifact(update_bench).step);
     }
+    // The views an export wrote (ORIEL_NUI_EXPORT), compiled and compared
+    // node by node with the props the page computed.
+    const views_dir = b.option([]const u8, "views", "check-views: the folder an export (ORIEL_NUI_EXPORT) wrote");
+    if (features.zig_ui) if (views_dir) |dir| {
+        const copied = b.addWriteFiles();
+        _ = copied.addCopyDirectory(.{ .cwd_relative = dir }, "", .{});
+        const check_views = b.addExecutable(.{
+            .name = "check-views",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/check_views.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "oriel", .module = oriel },
+                    .{ .name = "views", .module = b.createModule(.{ .root_source_file = copied.getDirectory().path(b, "views.zig") }) },
+                },
+            }),
+            .use_llvm = true,
+            .use_lld = useLld(target),
+        });
+        b.step("check-views", "Compare exported .oriel views with the page's props (-Dzig_ui -Dviews=<dir>)").dependOn(&b.addRunArtifact(check_views).step);
+    };
     const package_tests = b.addTest(.{
         .root_module = package_tool_mod,
         .use_llvm = true,
