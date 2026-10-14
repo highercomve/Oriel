@@ -8,6 +8,8 @@ pub const available = true;
 pub const Engine = engine.Engine;
 pub const Driver = engine.Driver;
 pub const Program = @import("zig_canvas.zig").Program;
+pub const Tree = tree.Tree;
+pub const Node = tree.Node;
 pub const Props = tree.Props;
 pub const Dim = tree.Dim;
 pub const Color = tree.Color;
@@ -42,7 +44,22 @@ pub fn View(comptime source: []const u8) type {
             }
         }
         pub fn mount(t: *tree.Tree, base: i64, style_base: i64, bindings: []const Binding) !i64 {
+            try validateMount(t, base, style_base, bindings);
+            try mountNodes(t, base, style_base, bindings);
+            try attachChildren(t, base);
+            try mountedBindings(t, base, bindings);
+            t.get(base).?.ui_mounted = true;
+            return base;
+        }
+
+        fn validateMount(t: *tree.Tree, base: i64, style_base: i64, bindings: []const Binding) !void {
             @setEvalBranchQuota(1000000);
+            try validateBindings(bindings);
+            try validateIds(base, plan.len);
+            try validateIds(style_base, plan.len);
+            if (t.get(base)) |root| if (root.ui_template) |template| {
+                if (template.ptr != source.ptr or template.len != source.len or root.ui_base != base or root.ui_style_base != style_base) return error.IdentityChanged;
+            };
             // Call prepare outside a timed construction loop.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (n.kind == .text) _ = try resolve(n.text, bindings);
@@ -53,6 +70,10 @@ pub fn View(comptime source: []const u8) type {
                     if (existing.kind != kindOn(t, n.kind) or existing.leaf_style != style_base + @as(i64, i)) return error.IdentityChanged;
                 }
             }
+        }
+
+        fn mountNodes(t: *tree.Tree, base: i64, style_base: i64, bindings: []const Binding) !void {
+            @setEvalBranchQuota(1000000);
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 const node_id = base + @as(i64, i);
                 const style_id = style_base + @as(i64, i);
@@ -67,8 +88,19 @@ pub fn View(comptime source: []const u8) type {
                 // The template owns its native subtree. Removing a view
                 // must destroy its children, rather than leave detached
                 // records that a later build could accidentally reuse.
-                t.get(node_id).?.stamp_owned = true;
+                const current = t.get(node_id).?;
+                current.stamp_owned = true;
+                current.ui_template = source;
+                current.ui_base = base;
+                current.ui_style_base = style_base;
+                // Scalar edits need no storage. Reserve for dynamic strings,
+                // styled spans, focusable controls and responsive variants.
+                if (comptime needsStorage(n, i)) try t.reserveUiProps(node_id, tree.default_ui_props_bytes);
             }
+        }
+
+        fn attachChildren(t: *tree.Tree, base: i64) !void {
+            @setEvalBranchQuota(1000000);
             inline for (plan.nodes[0..plan.len], 0..) |_, i| {
                 const children = comptime blk: {
                     var indices: [plan.len]usize = undefined;
@@ -85,6 +117,10 @@ pub fn View(comptime source: []const u8) type {
                 inline for (children, 0..) |j, at| ids[at] = base + @as(i64, j);
                 if (children.len > 0 and !try t.stampKids(base + @as(i64, i), &ids)) return error.InvalidTemplate;
             }
+        }
+
+        fn mountedBindings(t: *tree.Tree, base: i64, bindings: []const Binding) !void {
+            @setEvalBranchQuota(1000000);
             // Text with spans: their bound runs.
             inline for (plan.nodes[0..plan.len], 0..) |n, i| {
                 if (comptime hasBoundRun(n.runs)) try setRuns(t, base + @as(i64, i), n.runs, bindings);
@@ -110,7 +146,59 @@ pub fn View(comptime source: []const u8) type {
                 if (comptime n.ax) |spec| try setAx(t, base + @as(i64, i), spec);
                 if (comptime n.kind == .check or n.kind == .button) if (drawnAx(t, n)) |spec| try setAx(t, base + @as(i64, i), spec);
             }
-            return base;
+        }
+
+        fn needsStorage(comptime n: markup.Spec, comptime i: usize) bool {
+            return n.kind != .view and n.kind != .text or n.ax != null or hasBoundRun(n.runs) or styledFields(i).len > 0 or runsChange(i);
+        }
+
+        /// Update a mounted view's bindings without walking its static
+        /// structure. Missing bindings/nodes are checked before any edits.
+        pub fn update(t: *tree.Tree, base: i64, bindings: []const Binding) !void {
+            @setEvalBranchQuota(1000000);
+            try validateBindings(bindings);
+            try validateIds(base, plan.len);
+            const root = t.get(base) orelse return error.UnknownNode;
+            const template = root.ui_template orelse return error.IdentityChanged;
+            if (!root.ui_mounted or template.ptr != source.ptr or template.len != source.len or root.ui_base != base or root.kind != kindOn(t, plan.nodes[0].kind)) return error.IdentityChanged;
+            try validateIds(root.ui_style_base, plan.len);
+            inline for (plan.nodes[0..plan.len], 0..) |n, i| {
+                if (comptime boundNode(n)) {
+                    const current = t.get(base + @as(i64, i)) orelse return error.UnknownNode;
+                    if (current.kind != kindOn(t, n.kind) or current.ui_base != base or current.leaf_style != root.ui_style_base + @as(i64, i)) return error.IdentityChanged;
+                    const node_template = current.ui_template orelse return error.IdentityChanged;
+                    if (node_template.ptr != source.ptr or node_template.len != source.len) return error.IdentityChanged;
+                    if (comptime n.kind == .text) {
+                        const runs = current.props.runs orelse return error.InvalidTextNode;
+                        const expected = if (n.runs.len > 0) n.runs.len else 1;
+                        if (runs.len != expected) return error.InvalidTextNode;
+                    }
+                    if (comptime isBinding(n.text)) _ = try resolve(n.text, bindings);
+                    inline for (n.runs) |r| if (comptime isBinding(r.t)) {
+                        _ = try resolve(r.t, bindings);
+                    };
+                    if (comptime isBinding(n.props.tip)) _ = try resolve(n.props.tip.?, bindings);
+                    if (comptime isBinding(n.props.al)) _ = try resolve(n.props.al.?, bindings);
+                }
+            }
+            inline for (plan.nodes[0..plan.len], 0..) |n, i| {
+                const node_id = base + @as(i64, i);
+                if (comptime n.kind == .text and n.runs.len == 0 and isBinding(n.text)) {
+                    if (!try t.updateText(node_id, try resolve(n.text, bindings))) return error.InvalidTextNode;
+                }
+                if (comptime hasBoundRun(n.runs)) try setRuns(t, node_id, n.runs, bindings);
+                if (comptime isBinding(n.props.tip)) try t.setBound(node_id, .tip, try resolve(n.props.tip.?, bindings));
+                if (comptime isBinding(n.props.al)) try t.setBound(node_id, .label, try resolve(n.props.al.?, bindings));
+            }
+            // Names derived from descendant text must see all edited runs.
+            inline for (plan.nodes[0..plan.len], 0..) |n, i| {
+                if (comptime n.ax) |spec| if (comptime spec.name_from_content or isBinding(n.props.al)) {
+                    try setAx(t, base + @as(i64, i), spec);
+                };
+                if (comptime (n.kind == .check or n.kind == .button) and isBinding(n.props.al)) {
+                    if (drawnAx(t, n)) |spec| try setAx(t, base + @as(i64, i), spec);
+                }
+            }
         }
 
         // --- Media blocks: each combination is a compiled variant ----------
@@ -365,8 +453,8 @@ fn hasBoundRun(comptime runs: []const markup.RunSpec) bool {
 
 /// A text's runs with its bindings' values, sent only when one changed.
 fn setRuns(t: *tree.Tree, id: i64, comptime specs: []const markup.RunSpec, bindings: []const Binding) !void {
-    const n = t.get(id) orelse return;
-    const current = n.props.runs orelse return;
+    const n = t.get(id) orelse return error.UnknownNode;
+    const current = n.props.runs orelse return error.InvalidTextNode;
     if (current.len != specs.len) return error.InvalidTextNode;
     var runs: [specs.len]tree.Run = undefined;
     var changed = false;
@@ -382,6 +470,27 @@ fn setRuns(t: *tree.Tree, id: i64, comptime specs: []const markup.RunSpec, bindi
     var props = n.props;
     props.runs = &runs;
     try t.updateUiProps(id, props);
+}
+
+const max_bindings = 512;
+
+fn validateIds(base: i64, count: usize) !void {
+    if (count == 0 or base > std.math.maxInt(i64) - @as(i64, @intCast(count - 1))) return error.InvalidTemplate;
+}
+
+fn validateBindings(bindings: []const Binding) !void {
+    if (bindings.len > max_bindings) return error.UiPropsTooLarge;
+    var bytes: usize = 0;
+    for (bindings) |binding| {
+        if (binding.name.len > 256 or binding.value.len > tree.max_ui_string_bytes) return error.UiPropsTooLarge;
+        const size = binding.name.len + binding.value.len;
+        if (size > tree.max_ui_props_bytes - bytes) return error.UiPropsTooLarge;
+        bytes += size;
+    }
+}
+
+fn boundNode(comptime n: markup.Spec) bool {
+    return isBinding(n.text) or hasBoundRun(n.runs) or isBinding(n.props.tip) or isBinding(n.props.al);
 }
 
 fn isBinding(comptime v: ?[]const u8) bool {
@@ -422,7 +531,7 @@ test ".oriel mounts own text, retain identity and preserve keyed rows when reord
     const text = t.get(V.id("title", 100)).?;
     row.scroll_y = 17;
     var bytes = [_]u8{ 'n', 'e', 'w' };
-    _ = try V.mount(&t, 100, 10, &.{.{ .name = "title", .value = &bytes }});
+    try V.update(&t, 100, &.{.{ .name = "title", .value = &bytes }});
     @memset(&bytes, 'x');
     try std.testing.expectEqualStrings("new", text.props.runs.?[0].t);
     try std.testing.expect(row == t.get(100).?);
@@ -452,7 +561,7 @@ test "bound tooltips and labels are owned and follow the bindings" {
     const n = t.get(100).?;
     try std.testing.expectEqualStrings("end", n.props.tip.?);
     try std.testing.expectEqualStrings("Terminate firefox", t.ax.get(100).?.n.?);
-    _ = try V.mount(&t, 100, 10, &.{ .{ .name = "why", .value = "stop" }, .{ .name = "name", .value = "Terminate bash" } });
+    try V.update(&t, 100, &.{ .{ .name = "why", .value = "stop" }, .{ .name = "name", .value = "Terminate bash" } });
     try std.testing.expectEqualStrings("stop", n.props.tip.?);
     try std.testing.expectEqualStrings("Terminate bash", t.ax.get(100).?.n.?);
     try std.testing.expectError(error.MissingBinding, V.mount(&t, 100, 10, &.{}));
@@ -479,7 +588,7 @@ test "text with spans: styled runs, bound ones updated only when they change" {
     try std.testing.expectEqual(tree.Color{ 143, 151, 168, 1 }, runs[0].c);
     try std.testing.expectEqualStrings("7", runs[1].t);
     try std.testing.expectEqual(@as(f32, 700), runs[1].w);
-    _ = try V.mount(&t, 100, 10, &.{.{ .name = "score", .value = "42" }});
+    try V.update(&t, 100, &.{.{ .name = "score", .value = "42" }});
     try std.testing.expectEqualStrings("42", t.get(100).?.props.runs.?[1].t);
 }
 
@@ -577,4 +686,110 @@ test "typed controls own dynamic values and retain template identity" {
     try t.updateUiProps(input.id, props);
     try std.testing.expectEqualStrings("", input.props.val.?);
     try std.testing.expect(input.ui_value == null);
+}
+
+test "binding updates preserve structure, media styles and content accessibility" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const V = View(
+        \\<style>
+        \\title: font-size=16
+        \\@media (max-width: 520) { title: font-size=12 }
+        \\</style>
+        \\<button id="root"><text id="title" class="title">{title}</text><text>{detail}</text></button>
+    );
+    t.width = 600;
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{ .{ .name = "title", .value = "Old" }, .{ .name = "detail", .value = "detail" } });
+    const root = t.get(100).?;
+    const title = t.get(V.id("title", 100)).?;
+    const children = root.kids.items.ptr;
+    root.scroll_y = 19;
+    t.width = 400;
+    try t.refreshMedia();
+    try std.testing.expectError(error.MissingBinding, V.update(&t, 100, &.{.{ .name = "title", .value = "Bad" }}));
+    try std.testing.expectEqualStrings("Old", title.props.runs.?[0].t);
+    try V.update(&t, 100, &.{ .{ .name = "title", .value = "New" }, .{ .name = "detail", .value = "detail" } });
+    try std.testing.expectEqualStrings("New detail", t.ax.get(100).?.n.?);
+    try std.testing.expectEqual(@as(?f32, 12), title.props.fz);
+    try std.testing.expect(root == t.get(100).? and children == root.kids.items.ptr);
+    try std.testing.expectEqual(@as(f32, 19), root.scroll_y);
+    t.dirty = false;
+    t.paint_dirty = false;
+    try V.update(&t, 100, &.{ .{ .name = "title", .value = "New" }, .{ .name = "detail", .value = "detail" } });
+    try std.testing.expect(!t.dirty and !t.paint_dirty);
+    t.destroy(100);
+    try std.testing.expectError(error.UnknownNode, V.update(&t, 100, &.{ .{ .name = "title", .value = "New" }, .{ .name = "detail", .value = "detail" } }));
+}
+
+test "binding updates reject wrong templates, styles and invalid runs before edits" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const A = View("<column><text id=\"first\">{first}</text><text id=\"second\"><span>{second}</span></text></column>");
+    const B = View("<row><text id=\"first\">{first}</text><text id=\"second\"><span>{second}</span></text></row>");
+    const Static = View("<column />");
+    const bindings = [_]Binding{ .{ .name = "first", .value = "old" }, .{ .name = "second", .value = "second" } };
+    try std.testing.expectError(error.UnknownNode, Static.update(&t, 100, &.{}));
+    try A.prepare(&t, 10);
+    _ = try A.mount(&t, 100, 10, &bindings);
+    try std.testing.expectError(error.IdentityChanged, B.update(&t, 100, &bindings));
+    const first = t.get(A.id("first", 100)).?;
+    const second = t.get(A.id("second", 100)).?;
+    const changed = [_]Binding{ .{ .name = "first", .value = "new" }, .{ .name = "second", .value = "changed" } };
+    const style = second.leaf_style;
+    second.leaf_style = 999;
+    try std.testing.expectError(error.IdentityChanged, A.update(&t, 100, &changed));
+    second.leaf_style = style;
+    const runs = second.props.runs;
+    second.props.runs = null;
+    try std.testing.expectError(error.InvalidTextNode, A.update(&t, 100, &changed));
+    try std.testing.expectEqualStrings("old", first.props.runs.?[0].t);
+    second.props.runs = runs;
+    var excessive: [tree.max_ui_string_bytes + 1]u8 = @splat('x');
+    try std.testing.expectError(error.UiPropsTooLarge, A.update(&t, 100, &.{ .{ .name = "first", .value = "new" }, .{ .name = "second", .value = &excessive } }));
+    try std.testing.expectEqualStrings("old", first.props.runs.?[0].t);
+    var too_many: [max_bindings + 1]Binding = @splat(.{ .name = "first", .value = "old" });
+    try std.testing.expectError(error.UiPropsTooLarge, A.update(&t, 100, &too_many));
+    var chunk: [tree.max_ui_string_bytes]u8 = @splat('x');
+    var aggregate: [9]Binding = @splat(.{ .name = "first", .value = &chunk });
+    try std.testing.expectError(error.UiPropsTooLarge, A.update(&t, 100, &aggregate));
+    try std.testing.expectEqualStrings("old", first.props.runs.?[0].t);
+    try std.testing.expectError(error.InvalidTemplate, A.mount(&t, std.math.maxInt(i64), 10, &bindings));
+    try A.update(&t, 100, &changed);
+    try std.testing.expectEqualStrings("new", first.props.runs.?[0].t);
+    try std.testing.expectEqualStrings("changed", second.props.runs.?[0].t);
+}
+
+test "mount reserves enough storage for large permitted initial values" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *tree.Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+    };
+    var ctx: u8 = 0;
+    var t = tree.Tree.init(std.testing.allocator, &ctx, Host.measure);
+    defer t.deinit();
+    const initial = "a" ** (tree.default_ui_props_bytes + 1);
+    const V = View("<input value=\"" ++ initial ++ "\" />");
+    try V.prepare(&t, 10);
+    _ = try V.mount(&t, 100, 10, &.{});
+    const n = t.get(100).?;
+    try std.testing.expect(n.ui_props_storage.?.capacity >= initial.len);
+    try std.testing.expectEqualStrings(initial, n.pending_value.?);
+    var props = n.props;
+    props.val = "changed";
+    try t.updateUiProps(100, props);
+    try std.testing.expectEqualStrings("changed", n.props.val.?);
 }

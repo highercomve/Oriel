@@ -119,6 +119,7 @@ pub fn hookTree(e: anytype, width: f32, height: f32) void {
     e.tree.height = height;
     e.tree.on_remove = backend.removed;
     e.tree.on_props = backend.props;
+    e.tree.props_need_value = backend.mirrors_props;
     e.tree.on_ax = backend.ax_changed;
     e.tree.on_text = backend.text;
     e.tree.measure_texts = backend.measure_texts;

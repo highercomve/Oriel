@@ -928,6 +928,162 @@ pub const Props = struct {
     none: bool = false,
 };
 
+/// Bounds for the typed UI API, independent of the JSON/DOM renderer.
+pub const max_ui_string_bytes = 8192;
+pub const max_ui_slice_elements = 256;
+pub const max_ui_props_bytes = 64 * 1024;
+pub const default_ui_props_bytes = 4096;
+const max_ui_values = 4096;
+const max_ui_wire_bytes = 512 * 1024;
+
+const UiBudget = struct {
+    bytes: usize = 0,
+    values: usize = 0,
+
+    fn add(b: *UiBudget, bytes: usize) !void {
+        if (b.values == max_ui_values or bytes > max_ui_props_bytes - b.bytes) return error.UiPropsTooLarge;
+        b.values += 1;
+        b.bytes += bytes;
+    }
+};
+
+/// Acyclic type traversal; reject dynamic sizes before any allocation/walk.
+fn validateUiValue(comptime T: type, value: T, budget: *UiBudget) error{UiPropsTooLarge}!void {
+    try budget.add(0);
+    switch (@typeInfo(T)) {
+        .optional => |o| if (value) |v| try validateUiValue(o.child, v, budget),
+        .pointer => |ptr| {
+            if (ptr.size != .slice) @compileError("UI properties require slice pointers");
+            const limit = if (ptr.child == u8) max_ui_string_bytes else max_ui_slice_elements;
+            if (value.len > limit) return error.UiPropsTooLarge;
+            const bytes = std.math.mul(usize, value.len, @sizeOf(ptr.child)) catch return error.UiPropsTooLarge;
+            try budget.add(bytes + @alignOf(ptr.child) - 1);
+            if (ptr.child != u8) for (value) |v| try validateUiValue(ptr.child, v, budget);
+        },
+        .array => |arr| for (value) |v| try validateUiValue(arr.child, v, budget),
+        .@"struct" => |st| inline for (st.fields) |f| try validateUiValue(f.type, @field(value, f.name), budget),
+        .@"union" => switch (value) {
+            inline else => |v| try validateUiValue(@TypeOf(v), v, budget),
+        },
+        else => {},
+    }
+}
+
+/// True when every slice in the proposed value already belongs to the
+/// current value. Scalar patches can retain its storage without copying.
+fn borrowsUiValue(comptime T: type, value: T, current: ?T) bool {
+    switch (@typeInfo(T)) {
+        .optional => |o| return if (value) |v| borrowsUiValue(o.child, v, if (current) |c| c else null) else true,
+        .pointer => |ptr| {
+            if (ptr.size != .slice) @compileError("UI properties require slice pointers");
+            if (value.len == 0) return true;
+            const c = current orelse return false;
+            return value.ptr == c.ptr and value.len == c.len;
+        },
+        .array => |arr| {
+            for (value, 0..) |v, i| if (!borrowsUiValue(arr.child, v, if (current) |c| c[i] else null)) return false;
+            return true;
+        },
+        .@"struct" => |st| {
+            inline for (st.fields) |f| if (!borrowsUiValue(f.type, @field(value, f.name), if (current) |c| @field(c, f.name) else null)) return false;
+            return true;
+        },
+        .@"union" => return switch (value) {
+            inline else => |v, tag| borrowsUiValue(@TypeOf(v), v, if (current) |c| if (std.meta.activeTag(c) == tag) @field(c, @tagName(tag)) else null else null),
+        },
+        else => return true,
+    }
+}
+
+const UiPropsStorage = struct {
+    bytes: []align(@alignOf(Props)) u8,
+    capacity: usize,
+    active: u1 = 0,
+
+    fn scratch(s: *const UiPropsStorage) []u8 {
+        std.debug.assert(s.capacity > 0 and s.capacity <= max_ui_props_bytes);
+        std.debug.assert(s.bytes.len == s.capacity * 2);
+        const offset = @as(usize, s.active ^ 1) * s.capacity;
+        return s.bytes[offset..][0..s.capacity];
+    }
+};
+
+/// These walks are expanded from the finite Props type at compile time.
+/// Every slice is copied, including nested runs, options and gradients.
+fn cloneUiValue(comptime T: type, a: std.mem.Allocator, value: T) std.mem.Allocator.Error!T {
+    switch (@typeInfo(T)) {
+        .optional => |o| return if (value) |v| try cloneUiValue(o.child, a, v) else null,
+        .pointer => |p| {
+            if (p.size != .slice) @compileError("UI props must contain only slice pointers");
+            if (p.child == u8) return a.dupe(u8, value);
+            const out = try a.alloc(p.child, value.len);
+            for (value, out) |v, *dst| dst.* = try cloneUiValue(p.child, a, v);
+            return out;
+        },
+        .array => |arr| {
+            var out: T = undefined;
+            for (value, 0..) |v, i| out[i] = try cloneUiValue(arr.child, a, v);
+            return out;
+        },
+        .@"struct" => |st| {
+            var out: T = undefined;
+            inline for (st.fields) |f| @field(out, f.name) = try cloneUiValue(f.type, a, @field(value, f.name));
+            return out;
+        },
+        .@"union" => return switch (value) {
+            inline else => |v, tag| @unionInit(T, @tagName(tag), try cloneUiValue(@TypeOf(v), a, v)),
+        },
+        else => return value,
+    }
+}
+
+/// Legacy mirroring backends receive the same JSON value shape, directly
+/// from typed props, without formatting or parsing JSON text.
+fn uiWireValue(comptime T: type, a: std.mem.Allocator, value: T) std.mem.Allocator.Error!std.json.Value {
+    if (T == Dim) {
+        return switch (value) {
+            .px => |v| .{ .float = v },
+            .pct => |v| .{ .string = try std.fmt.allocPrint(a, "{d}%", .{v}) },
+            .calc => |v| .{ .string = try std.fmt.allocPrint(a, "{d}%{s}{d}px", .{ v.pct, if (v.px >= 0) "+" else "", v.px }) },
+            .auto => .{ .string = "auto" },
+            .none => .{ .string = "none" },
+        };
+    }
+    if (T == Corner) return uiWireValue([2]Dim, a, .{ value.x, value.y });
+    switch (@typeInfo(T)) {
+        .optional => |o| return if (value) |v| try uiWireValue(o.child, a, v) else .null,
+        .bool => return .{ .bool = value },
+        .int => return .{ .integer = @intCast(value) },
+        .float => return .{ .float = value },
+        .@"enum" => return .{ .string = @tagName(value) },
+        .pointer => |p| {
+            if (p.size != .slice) @compileError("UI props must contain only slice pointers");
+            if (p.child == u8) return .{ .string = value };
+            var out = std.json.Array.init(a);
+            try out.ensureTotalCapacity(value.len);
+            for (value) |v| out.appendAssumeCapacity(try uiWireValue(p.child, a, v));
+            return .{ .array = out };
+        },
+        .array => |arr| {
+            var out = std.json.Array.init(a);
+            try out.ensureTotalCapacity(arr.len);
+            for (value) |v| out.appendAssumeCapacity(try uiWireValue(arr.child, a, v));
+            return .{ .array = out };
+        },
+        .@"struct" => |st| {
+            var out: std.json.ObjectMap = .empty;
+            inline for (st.fields) |f| {
+                const v = @field(value, f.name);
+                if (comptime @typeInfo(f.type) == .optional) {
+                    if (v != null) try out.put(a, f.name, try uiWireValue(f.type, a, v));
+                } else try out.put(a, f.name, try uiWireValue(f.type, a, v));
+            }
+            return .{ .object = out };
+        },
+        else => @compileError("Unsupported UI wire type: " ++ @typeName(T)),
+    }
+}
+
 pub const Rect = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -1267,6 +1423,12 @@ pub const Node = struct {
     kids: std.ArrayList(*Node) = .empty,
     arena: std.heap.ArenaAllocator,
     props: Props = .{},
+    /// Reserved during mounting; updates swap buffers, never grow them.
+    ui_props_storage: ?UiPropsStorage = null,
+    ui_template: ?[]const u8 = null,
+    ui_mounted: bool = false,
+    ui_base: i64 = 0,
+    ui_style_base: i64 = 0,
     /// The value the page last set (fields); null once the backend took it.
     pending_value: ?[]const u8 = null,
     /// A value already edited by the native control; never echoed back.
@@ -1590,6 +1752,11 @@ pub const Tree = struct {
     /// Called after a node's props changed, with the props as sent (backends
     /// that keep their own copy: Android).
     on_props: ?*const fn (ctx: *anyopaque, node: *Node, props: std.json.Value) void = null,
+    /// Mirroring hosts need a wire value; desktop hooks read Node.props.
+    props_need_value: bool = true,
+    /// Shared, bounded scratch for synchronous mirroring callbacks.
+    ui_wire_buffer: ?[]align(@alignOf(std.json.Value)) u8 = null,
+    ui_wire_busy: bool = false,
     /// The accessibility entries (the "a" op), by element id, and a hook
     /// told when one changed or went (id -2: all cleared).
     ax: std.AutoHashMapUnmanaged(i64, *Ax) = .empty,
@@ -1642,6 +1809,7 @@ pub const Tree = struct {
     }
 
     pub fn deinit(t: *Tree) void {
+        if (t.ui_wire_buffer) |buffer| t.gpa.free(buffer);
         t.media_views.deinit(t.gpa);
         t.clearAx();
         t.ax.deinit(t.gpa);
@@ -1682,6 +1850,7 @@ pub const Tree = struct {
         yg.YGNodeFree(n.yn);
         n.kids.deinit(t.gpa);
         n.arena.deinit();
+        if (n.ui_props_storage) |storage| t.gpa.free(storage.bytes);
         t.node_pool.destroy(n);
     }
 
@@ -1751,13 +1920,8 @@ pub const Tree = struct {
         n.pending_value = n.props.val;
         yg.YGNodeCopyStyle(n.yn, style.yn);
         n.leaf_style = style_id;
-        if (t.on_props) |cb| {
-            const json = try std.json.Stringify.valueAlloc(t.gpa, n.props, .{ .emit_null_optional_fields = false });
-            defer t.gpa.free(json);
-            const value = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
-            defer value.deinit();
-            cb(t.measure_ctx, n, value.value);
-        }
+        try t.prepareUiWire();
+        try t.notifyUiProps(n);
         t.dirty = true;
     }
 
@@ -2573,6 +2737,7 @@ pub const Tree = struct {
     /// .oriel `{binding}`); no change when it already says that. A native
     /// widget's backend hears of a new label.
     pub fn setBound(t: *Tree, id: i64, which: Bound, value: []const u8) !void {
+        if (value.len > max_ui_string_bytes) return error.UiPropsTooLarge;
         const n = t.get(id) orelse return error.UnknownNode;
         const slot = switch (which) {
             .tip => &n.bound_tip,
@@ -2593,27 +2758,109 @@ pub const Tree = struct {
             .label => props.al = owned,
         }
         const notify = which == .label and n.kind != .view and n.kind != .text and t.on_props != null;
-        const parsed = if (notify) blk: {
-            const json = try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false });
-            defer t.gpa.free(json);
-            break :blk try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
-        } else null;
-        defer if (parsed) |v| v.deinit();
+        var budget: UiBudget = .{};
+        try validateUiValue(Props, props, &budget);
+        const wire = if (notify) try t.uiWireProps(props) else .null;
+        defer {
+            if (notify) t.ui_wire_busy = false;
+        }
         if (slot.*) |old| t.gpa.free(old);
         slot.* = owned;
         n.props = props;
-        if (parsed) |v| t.on_props.?(t.measure_ctx, n, v.value);
+        if (notify) t.on_props.?(t.measure_ctx, n, wire);
     }
 
-    /// A typed update owns every slice and uses the same host notifications as
-    /// DOM updates. Immutable template identity is retained across edits.
+    /// Initialization only: reserve the largest dynamic property payload
+    /// this node will accept. Growing a live buffer copies its owned data.
+    pub fn reserveUiProps(t: *Tree, id: i64, capacity: usize) !void {
+        const n = t.get(id) orelse return error.UnknownNode;
+        if (capacity == 0 or capacity > max_ui_props_bytes) return error.UiPropsTooLarge;
+        try t.prepareUiWire();
+        if (n.ui_props_storage) |storage| if (storage.capacity >= capacity) return;
+        var budget: UiBudget = .{};
+        try validateUiValue(Props, n.props, &budget);
+        const pending_from_value = if (n.pending_value) |pending| if (n.props.val) |value| pending.ptr == value.ptr and pending.len == value.len else false else false;
+        const pending_bytes = if (pending_from_value or n.pending_value == null) 0 else n.pending_value.?.len;
+        if (pending_bytes > max_ui_string_bytes or pending_bytes > max_ui_props_bytes - budget.bytes) return error.UiPropsTooLarge;
+        const aligned_capacity = std.mem.alignForward(usize, @max(capacity, budget.bytes + pending_bytes), @alignOf(Props));
+        const bytes = try t.gpa.alignedAlloc(u8, .of(Props), aligned_capacity * 2);
+        errdefer t.gpa.free(bytes);
+        var fixed = std.heap.FixedBufferAllocator.init(bytes[0..aligned_capacity]);
+        const owned = cloneUiValue(Props, fixed.allocator(), n.props) catch return error.UiPropsCapacityExceeded;
+        const pending = if (pending_from_value) owned.val else if (n.pending_value) |v| fixed.allocator().dupe(u8, v) catch return error.UiPropsCapacityExceeded else null;
+        const old = n.ui_props_storage;
+        n.ui_props_storage = .{ .bytes = bytes, .capacity = aligned_capacity };
+        t.dropTextOverride(n);
+        n.props = owned;
+        n.pending_value = pending;
+        if (n.ui_value) |v| t.gpa.free(v);
+        n.ui_value = null;
+        if (!n.canvas_from_props) _ = n.arena.reset(.free_all);
+        if (old) |storage| t.gpa.free(storage.bytes);
+    }
+
+    pub fn prepareUiWire(t: *Tree) !void {
+        if (t.on_props != null and t.props_need_value and t.ui_wire_buffer == null) {
+            t.ui_wire_buffer = try t.gpa.alignedAlloc(u8, .of(std.json.Value), max_ui_wire_bytes);
+        }
+    }
+
+    fn uiWireProps(t: *Tree, props: Props) !std.json.Value {
+        if (t.on_props == null or !t.props_need_value) return .null;
+        if (t.ui_wire_busy) return error.ReentrantUiProps;
+        const buffer = t.ui_wire_buffer orelse return error.UiPropsNotPrepared;
+        var fixed = std.heap.FixedBufferAllocator.init(buffer);
+        const value = uiWireValue(Props, fixed.allocator(), props) catch return error.UiWireCapacityExceeded;
+        t.ui_wire_busy = true;
+        return value;
+    }
+
+    fn notifyUiProps(t: *Tree, n: *Node) !void {
+        const cb = t.on_props orelse return;
+        var budget: UiBudget = .{};
+        try validateUiValue(Props, n.props, &budget);
+        const value = try t.uiWireProps(n.props);
+        defer t.ui_wire_busy = false;
+        cb(t.measure_ctx, n, value);
+    }
+
+    /// Scalar patches retain current slices. New slices are copied into
+    /// reserved scratch, then committed; failure leaves the old node intact.
     pub fn updateUiProps(t: *Tree, id: i64, props: Props) !void {
         const n = t.get(id) orelse return error.UnknownNode;
-        const json = try std.json.Stringify.valueAlloc(t.gpa, props, .{ .emit_null_optional_fields = false });
-        defer t.gpa.free(json);
-        const value = try std.json.parseFromSlice(std.json.Value, t.gpa, json, .{});
-        defer value.deinit();
-        try t.setProps(n, value.value);
+        var budget: UiBudget = .{};
+        try validateUiValue(Props, props, &budget);
+        const replaces_edit = if (n.ui_value) |edit| if (props.val) |value| value.ptr != edit.ptr or value.len != edit.len else true else false;
+        const reuse = !replaces_edit and borrowsUiValue(Props, props, n.props);
+        var owned = props;
+        var pending = props.val orelse n.pending_value;
+        if (!reuse) {
+            const storage = n.ui_props_storage orelse return error.UiPropsNotPrepared;
+            var fixed = std.heap.FixedBufferAllocator.init(storage.scratch());
+            owned = cloneUiValue(Props, fixed.allocator(), props) catch return error.UiPropsCapacityExceeded;
+            pending = owned.val orelse if (n.pending_value) |v| fixed.allocator().dupe(u8, v) catch return error.UiPropsCapacityExceeded else null;
+        }
+        const value = try t.uiWireProps(owned);
+        defer t.ui_wire_busy = false;
+        if (!reuse) {
+            t.dropTextOverride(n);
+            if (n.ui_value) |v| t.gpa.free(v);
+            n.ui_value = null;
+            n.ui_props_storage.?.active ^= 1;
+            _ = n.arena.reset(.free_all);
+        }
+        n.props = owned;
+        n.pending_value = pending;
+        n.measured_text_size = null;
+        n.baseline = std.math.nan(f32);
+        if (n.kind == .view) yg.YGNodeSetBaselineFunc(n.yn, if (owned.blb != null) baselineFn else null);
+        if (!n.canvas_zig and n.canvas_from_props) n.canvas = null;
+        styleYoga(n);
+        if (t.on_props) |cb| cb(t.measure_ctx, n, value);
+        wordMinWidth(t, n);
+        for (n.kids.items) |k| wordMinWidth(t, k);
+        if (growBoxOf(n)) |box| wordMinWidth(t, box);
+        if (yg.YGNodeHasMeasureFunc(n.yn)) yg.YGNodeMarkDirty(n.yn);
         t.syncAxState(n);
         t.dirty = true;
     }
@@ -4989,4 +5236,133 @@ test "typed dimensions and corners round trip through the native property wire f
     const decoded = try std.json.parseFromSlice(Corner, a, encoded, .{});
     defer decoded.deinit();
     try std.testing.expectEqualDeep(corner, decoded.value);
+}
+
+test "typed props own nested slices, retain pending values and notify hosts" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+        fn props(ctx: *anyopaque, n: *Node, value: std.json.Value) void {
+            const count: *usize = @ptrCast(@alignCast(ctx));
+            count.* += 1;
+            if (value == .null) return;
+            const parsed = std.json.parseFromValue(Props, std.testing.allocator, value, .{}) catch unreachable;
+            defer parsed.deinit();
+            std.testing.expectEqualDeep(n.props, parsed.value) catch unreachable;
+        }
+    };
+    var count: usize = 0;
+    var t = Tree.init(std.testing.allocator, &count, Host.measure);
+    defer t.deinit();
+    t.on_props = Host.props;
+    try t.create(1, .input);
+    try t.reserveUiProps(1, default_ui_props_bytes);
+    var label = [_]u8{ 'o', 'l', 'd' };
+    const options = [_][2][]const u8{.{ &label, "value" }};
+    const runs = [_]Run{.{ .t = &label, .ff = "serif" }};
+    var props = Props{ .runs = &runs, .options = &options, .val = &label, .w = .{ .pct = 50 }, .bg = .{ .gradient = .{ .stops = &.{.{ 1, 2, 3, 1, 0 }} } } };
+    try t.updateUiProps(1, props);
+    @memset(&label, 'x');
+    const n = t.get(1).?;
+    try std.testing.expectEqualStrings("old", n.props.runs.?[0].t);
+    try std.testing.expectEqualStrings("old", n.props.options.?[0][0]);
+    props = n.props;
+    props.val = null;
+    props.h = .{ .px = 25 };
+    try t.updateUiProps(1, props);
+    try std.testing.expectEqualStrings("old", n.pending_value.?);
+    try std.testing.expectEqualStrings("old", n.props.runs.?[0].t);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    t.props_need_value = false;
+    try t.updateUiProps(1, n.props);
+    try std.testing.expectEqual(@as(usize, 3), count);
+}
+
+fn typedPropsAllocationFailures(a: std.mem.Allocator) !void {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+        fn props(_: *anyopaque, _: *Node, _: std.json.Value) void {}
+    };
+    var ctx: u8 = 0;
+    var t = Tree.init(a, &ctx, Host.measure);
+    defer t.deinit();
+    try t.create(1, .input);
+    try t.reserveUiProps(1, default_ui_props_bytes);
+    try t.updateUiProps(1, .{ .val = "original", .options = &.{.{ "label", "value" }} });
+    const n = t.get(1).?;
+    const old_props = n.props;
+    const old_pending = n.pending_value;
+    t.on_props = Host.props;
+    try t.prepareUiWire();
+    var next = n.props;
+    next.val = "changed";
+    next.w = .{ .calc = .{ .pct = 50, .px = -8 } };
+    t.updateUiProps(1, next) catch |err| {
+        try std.testing.expectEqualDeep(old_props, n.props);
+        try std.testing.expectEqualDeep(old_pending, n.pending_value);
+        return err;
+    };
+    try std.testing.expectEqualStrings("changed", n.props.val.?);
+}
+
+test "typed property allocation failures preserve the old node" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, typedPropsAllocationFailures, .{});
+}
+
+test "prepared typed updates allocate no heap memory and preserve failures" {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+        fn props(_: *anyopaque, _: *Node, value: std.json.Value) void {
+            std.debug.assert(value == .object);
+        }
+    };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var ctx: u8 = 0;
+    var t = Tree.init(failing.allocator(), &ctx, Host.measure);
+    defer t.deinit();
+    t.on_props = Host.props;
+    try t.create(1, .input);
+    try t.reserveUiProps(1, default_ui_props_bytes);
+    try t.updateUiProps(1, .{ .val = "initial", .options = &.{.{ "label", "value" }} });
+    const allocations = failing.allocations;
+    const deallocations = failing.deallocations;
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    const n = t.get(1).?;
+    for (0..100) |i| {
+        var props = n.props;
+        props.val = if (i % 2 == 0) "changed" else "initial";
+        props.w = .{ .px = @floatFromInt(i) };
+        try t.updateUiProps(1, props);
+        props = n.props;
+        props.h = .{ .px = @floatFromInt(i + 1) };
+        try t.updateUiProps(1, props);
+    }
+    try std.testing.expectEqual(allocations, failing.allocations);
+    try std.testing.expectEqual(deallocations, failing.deallocations);
+    const old = n.props;
+    const pending = n.pending_value;
+    try std.testing.expectError(error.OutOfMemory, t.reserveUiProps(1, default_ui_props_bytes * 2));
+    try std.testing.expectEqualDeep(old, n.props);
+    try std.testing.expectEqualDeep(pending, n.pending_value);
+    var too_large: [default_ui_props_bytes + 1]u8 = @splat('x');
+    var props = n.props;
+    props.val = &too_large;
+    try std.testing.expectError(error.UiPropsCapacityExceeded, t.updateUiProps(1, props));
+    try std.testing.expectEqualDeep(old, n.props);
+    try std.testing.expectEqualDeep(pending, n.pending_value);
+    var excessive: [max_ui_string_bytes + 1]u8 = @splat('x');
+    props.val = &excessive;
+    try std.testing.expectError(error.UiPropsTooLarge, t.updateUiProps(1, props));
+    try std.testing.expectEqualDeep(old, n.props);
+    var options: [max_ui_slice_elements + 1][2][]const u8 = @splat(.{ "label", "value" });
+    props = n.props;
+    props.options = &options;
+    try std.testing.expectError(error.UiPropsTooLarge, t.updateUiProps(1, props));
+    try std.testing.expectEqualDeep(old, n.props);
 }

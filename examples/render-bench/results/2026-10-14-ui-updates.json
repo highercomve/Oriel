@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-14",
+  "platform": "Linux x86_64",
+  "zig": "0.16.0",
+  "optimization": "ReleaseFast",
+  "rows": 1000,
+  "passes": 10,
+  "trials": 7,
+  "statistic": "median",
+  "unit": "ms",
+  "scope": "mutation only; no windows, layout or paint",
+  "comparison": "remount and bindings both use the new typed setter; json_props is the JSON bridge including an operation envelope, not an exact reproduction of the old typed setter",
+  "conditions": "final serial benchmark run after build and test jobs completed; no claim of application FPS or Android timing",
+  "results": {
+    "unchanged": {
+      "remount": 2.68,
+      "bindings": 1.376,
+      "json_props": 42.29,
+      "typed_props": 4.678
+    },
+    "changed": {
+      "remount": 8.481,
+      "bindings": 7.015,
+      "json_props": 42.128,
+      "typed_props": 4.75
+    }
+  }
+}

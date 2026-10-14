@@ -81,7 +81,7 @@ fn nowMs() f64 {
 fn boot(e: *ui.Engine) !void {
     s.started = std.Io.Clock.Timestamp.now(s.io, .awake);
     try View.prepare(&e.tree, style_base);
-    try mount(e);
+    try updateView(e);
     e.tree.root = e.tree.get(base);
     e.tree.layout();
     const board = boardSize(e);
@@ -100,9 +100,9 @@ fn shutdown(e: *ui.Engine) void {
 }
 
 /// The view with what it shows now (the HUD, the stats, the labels).
-fn mount(e: *ui.Engine) !void {
+fn updateView(e: *ui.Engine) !void {
     const t = &s.texts;
-    _ = try View.mount(&e.tree, base, style_base, &.{
+    const bindings = [_]ui.Binding{
         .{ .name = "score", .value = t.score },
         .{ .name = "lives", .value = t.lives },
         .{ .name = "level", .value = t.level },
@@ -118,7 +118,10 @@ fn mount(e: *ui.Engine) !void {
         .{ .name = "balls_label", .value = t.balls_label },
         .{ .name = "rows_label", .value = t.rows_label },
         .{ .name = "help", .value = helpText(e) },
-    });
+    };
+    if (e.tree.get(base) == null) {
+        _ = try View.mount(&e.tree, base, style_base, &bindings);
+    } else try View.update(&e.tree, base, &bindings);
 }
 
 /// Show or hide a part of the view (game.js's `hidden`).
@@ -215,7 +218,7 @@ fn stats(e: *ui.Engine, t: f64, w: *const game.World) !void {
     s.texts.stats_fps = try std.fmt.bufPrint(&b.fps, "{d:.0} fps · {d:.2} ms/frame", .{ fps, frame_ms });
     s.texts.stats_time = try std.fmt.bufPrint(&b.time, "Zig {d:.2} ms (physics {d:.2}, draw {d:.2})", .{ phys + drw, phys, drw });
     s.texts.stats_count = try std.fmt.bufPrint(&b.count, "{d} balls · {d} particles", .{ w.balls.items.len, w.particles.items.len });
-    try mount(e);
+    try updateView(e);
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +229,7 @@ fn hud(e: *ui.Engine) !void {
     s.texts.score = try std.fmt.bufPrint(&s.hud.score, "{d}", .{w.score});
     s.texts.lives = try std.fmt.bufPrint(&s.hud.lives, "{d}", .{w.lives});
     s.texts.level = try std.fmt.bufPrint(&s.hud.level, "{d}", .{w.level});
-    try mount(e);
+    try updateView(e);
 }
 
 fn gameOver(e: *ui.Engine) !void {
@@ -234,7 +237,7 @@ fn gameOver(e: *ui.Engine) !void {
     s.texts.final = try std.fmt.bufPrint(&s.hud.final, "{d}", .{w.score});
     s.texts.final_level = try std.fmt.bufPrint(&s.hud.final_level, "{d}", .{w.level});
     s.over_shown = true;
-    try mount(e);
+    try updateView(e);
     try show(e, id("over"), true);
 }
 
@@ -259,7 +262,7 @@ fn restart(e: *ui.Engine) !void {
 fn setPaused(e: *ui.Engine, on: bool) !void {
     s.paused = on;
     try show(e, id("pause"), on and !s.settings_open);
-    try mount(e); // the Pause button's label
+    try updateView(e); // the Pause button's label
     s.redraw = true;
 }
 
@@ -422,7 +425,7 @@ fn control(e: *ui.Engine, node: i64, data: []const u8) !bool {
             try w.buildLevel();
             s.redraw = true;
         }
-        try mount(e);
+        try updateView(e);
         return true;
     }
     const on = std.mem.eql(u8, data, "true");
