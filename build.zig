@@ -301,6 +301,20 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = useLld(target),
     });
+    if (features.zig_ui) {
+        const update_bench = b.addExecutable(.{
+            .name = "ui-update-bench",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/ui_update_bench.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "oriel", .module = oriel }},
+            }),
+            .use_llvm = true,
+            .use_lld = useLld(target),
+        });
+        b.step("bench-ui-updates", "Compare retained view and typed property updates (no layout/paint)").dependOn(&b.addRunArtifact(update_bench).step);
+    }
     const package_tests = b.addTest(.{
         .root_module = package_tool_mod,
         .use_llvm = true,

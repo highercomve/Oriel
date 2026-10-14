@@ -316,7 +316,11 @@ fn render_disks(e: *ui.Engine) !void {
         var rw: [140]u8 = undefined;
         const size_text = try std.fmt.bufPrint(&size, "{s} / {s}", .{ try fmt.bytes(&a, @floatFromInt(disk.used_bytes)), try fmt.bytes(&b, @floatFromInt(disk.total_bytes)) });
         const rw_text = try std.fmt.bufPrint(&rw, "R {s} · W {s}", .{ try fmt.rate(&a, disk.read_bps), try fmt.rate(&b, disk.write_bps) });
-        ids[i] = try Disk.mount(&e.tree, id, 12000, &.{ .{ .name = "name", .value = disk.name }, .{ .name = "size", .value = size_text }, .{ .name = "mount", .value = try std.fmt.bufPrint(&mount, "{s} · {s}", .{ disk.mount, disk.fs }) }, .{ .name = "rw", .value = rw_text } });
+        const bindings = [_]ui.Binding{ .{ .name = "name", .value = disk.name }, .{ .name = "size", .value = size_text }, .{ .name = "mount", .value = try std.fmt.bufPrint(&mount, "{s} · {s}", .{ disk.mount, disk.fs }) }, .{ .name = "rw", .value = rw_text } };
+        if (e.tree.get(id) == null) {
+            _ = try Disk.mount(&e.tree, id, 12000, &bindings);
+        } else try Disk.update(&e.tree, id, &bindings);
+        ids[i] = id;
         read += disk.read_bps;
         write += disk.write_bps;
     }
@@ -403,7 +407,11 @@ fn render_rows(e: *ui.Engine) !void {
         offset = writer.end;
         try writer.print("Send SIGTERM to {s} ({d})", .{ row.name, row.pid });
         bindings[8] = .{ .name = "kill_tip", .value = buf[offset..writer.end] };
-        ids[i] = try Row.mount(&e.tree, rows_base + @as(i64, @intCast(i)) * 20, 11000, &bindings);
+        const id = rows_base + @as(i64, @intCast(i)) * 20;
+        if (e.tree.get(id) == null) {
+            _ = try Row.mount(&e.tree, id, 11000, &bindings);
+        } else try Row.update(&e.tree, id, &bindings);
+        ids[i] = id;
     }
     if (!try e.tree.stampKids(sid("rows"), ids[0..count])) return error.InvalidTemplate;
     try height(e, sid("before"), @floatFromInt(start * row_height));

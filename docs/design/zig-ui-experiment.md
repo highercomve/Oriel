@@ -34,6 +34,77 @@ Changing a retained node's kind or style identity returns an error. Dynamic
 lists use the tree's existing child-stamping operation, and animation updates
 native paint properties directly.
 
+For repeated refreshes, mount once and call the compiled binding updater:
+
+```zig
+try Row.update(&engine.tree, row_id, &.{
+    .{ .name = "index", .value = index_text },
+    .{ .name = "label", .value = label_text },
+});
+```
+
+Supply all bindings required by the view. The generated updater checks the
+mounted template, base/style IDs, expected text-run shapes and binding limits
+before editing, compares values with retained text/runs/tooltips/labels, and
+changes only values that differ. Invalid input does not partially edit earlier
+bindings; allocation failures during text/accessibility updates can still leave
+a partially refreshed view and should be reported/retried by the app. It preserves child attachments, native
+control identity, scroll position and the current responsive styles.
+Accessibility names derived from edited content are refreshed. Missing bound
+nodes or bindings return errors; mounting remains the operation for new rows.
+System monitor uses this for retained disk/process rows, and Breakout for HUD
+and stats updates. Render bench's plain-text workload keeps its existing direct
+`updateText` path.
+
+Typed scalar property patches retain the existing slices. Nodes needing new
+strings or styled runs reserve two fixed property buffers during mounting;
+updates copy into the inactive buffer and swap only after validation succeeds.
+Edits may safely start from `node.props`, and failed copies preserve the old
+properties and pending control value. Mount reserves at least 4 KiB per buffer,
+or enough for larger permitted initial properties. `Tree.reserveUiProps(id,
+capacity)` reserves a larger capacity during setup.
+Calls needing unprepared storage return `UiPropsNotPrepared`, and updates that
+outgrow reserved storage return `UiPropsCapacityExceeded` rather than allocate.
+
+Typed properties accept strings up to 8 KiB, slices up to 256 elements, and a
+64 KiB aggregate copy budget (including alignment), with at most 4,096 visited
+values. Bindings accept at most 512 entries, 256-byte names, 8 KiB values, and
+64 KiB combined names/values. Excesses return `UiPropsTooLarge`. These limits
+apply to the typed UI API; they do not change the JavaScript/DOM API.
+
+Desktop property hooks read the typed node. Android receives its existing value
+format generated into 512 KiB of reusable per-tree scratch; oversized wire data
+and reentrant mirroring updates return errors. Typed property copying and wire
+conversion use no heap allocation after setup. Native text edits, plain-text
+binding updates, accessibility storage and platform caches still have their own
+allocation paths: the whole renderer is not allocation-free.
+
+Static Android style registration and the JavaScript renderer's JSON input path
+remain separate. Reserved buffers trade some retained memory for predictable
+update work; whole-application RAM savings must be measured separately.
+
+Run the mutation-only diagnostic with:
+
+```sh
+zig build bench-ui-updates -Dzig_ui=true -Doptimize=ReleaseFast
+```
+
+It reports seven-trial medians for remount versus binding updates and the JSON
+bridge versus typed property updates, with 1,000 rows and ten passes. It excludes
+platform rendering, layout and painting; the JSON case includes the bridge's
+operation envelope, so it is not an exact reproduction of the previous typed
+setter. These timings measure mutation overhead, not application FPS.
+
+A serial Linux x86_64 diagnostic on 2026-10-14 measured:
+
+| Mutation workload (10,000 updates) | Previous operation | New operation |
+|---|---:|---:|
+| Changed bindings | Remount 8.481 ms | Binding update 7.015 ms |
+| Unchanged bindings | Remount 2.680 ms | Binding update 1.376 ms |
+| Changed typed properties | JSON bridge 42.128 ms | Typed setter 4.750 ms |
+
+[Diagnostic metadata and medians](../../examples/render-bench/results/2026-10-14-ui-updates.json).
+
 `ui.configure` registers a driver before application startup. Its typed boot,
 event, timer and frame callbacks connect to the existing platform lifecycle.
 Callbacks added inside a display frame begin on the following frame. The
