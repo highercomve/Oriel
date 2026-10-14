@@ -143,6 +143,9 @@ extern fn g_object_set_data(obj: *anyopaque, key: [*:0]const u8, data: ?*anyopaq
 extern fn g_object_get_data(obj: *anyopaque, key: [*:0]const u8) ?*anyopaque;
 extern fn g_object_get(obj: *anyopaque, first: [*:0]const u8, ...) void;
 extern fn g_object_unref(obj: *anyopaque) void;
+extern fn g_signal_handler_disconnect(instance: *anyopaque, handler: c_ulong) void;
+extern fn g_object_add_weak_pointer(object: *anyopaque, location: *?*anyopaque) void;
+extern fn g_object_remove_weak_pointer(object: *anyopaque, location: *?*anyopaque) void;
 extern fn g_signal_handlers_disconnect_matched(instance: *anyopaque, mask: c_int, signal_id: c_uint, detail: c_uint, closure: ?*anyopaque, func: ?*anyopaque, data: ?*anyopaque) c_uint;
 extern fn gtk_style_context_remove_provider_for_display(display: *anyopaque, provider: *GtkCssProvider) void;
 extern fn g_free(p: ?*anyopaque) void;
@@ -404,8 +407,10 @@ pub const Surface = struct {
     /// each wheel step (same point) would hover a new row each step: a
     /// restyle and a second draw per step.
     settle_id: c_uint = 0,
-    /// The window surface whose scale changes redraw (onRealize).
+    /// The window surface whose scale changes redraw (onRealize), and the
+    /// handler on it; null once either goes.
     scale_surface: ?*anyopaque = null,
+    scale_handler: c_ulong = 0,
     /// The page in tiles kept from frame to frame (paintTiles), painted
     /// again when everything changed or under patches let go.
     tiles: std.ArrayList(?*GskRenderNode) = .empty,
@@ -421,6 +426,8 @@ pub const Surface = struct {
     stale: std.ArrayList(Rect) = .empty,
     /// The tile being painted: paint skips what can't reach it.
     cull: ?Rect = null,
+    /// How deep paint is in the tree (bounded: damage_mod.max_depth).
+    paint_depth: u32 = 0,
     /// The rounded clips the boxes being painted put on their children,
     /// not yet applied (paint): each child is clipped to the rectangle,
     /// and to the rounded path only where it reaches into a corner.
@@ -492,9 +499,9 @@ pub const Surface = struct {
             .request_display_frame = requestDisplayFrame,
             .warm_fonts = warmFonts,
             .font_metrics = fontMetrics,
-        .font_metrics_family = fontMetricsFamily,
-        .run_rects = runRects,
-        .font_x_height = fontXHeight,
+            .font_metrics_family = fontMetricsFamily,
+            .run_rects = runRects,
+            .font_x_height = fontXHeight,
         }, assets, look orelse platform_json, label, url, width, height);
         s.engine.tree.reuse_text_layout = true;
         s.engine.tree.fields_sized = true;
@@ -572,6 +579,7 @@ pub const Surface = struct {
         s.warm.deinit(s.gpa);
         s.keys_down.deinit(s.gpa);
         g_object_set_data(@ptrCast(s.area), "oriel-surface", null);
+        forgetScaleSurface(s);
         dropTiles(s);
         s.tiles.deinit(s.gpa);
         dropPatches(s);
@@ -1478,11 +1486,11 @@ fn updateCss(s: *Surface) void {
                 if (n.props.bg) |bg| if (bg.color) |c| {
                     s.css_text.print(a, ".nui-f{d} {{ background: rgba({d:.0},{d:.0},{d:.0},{d:.2}); background-image: none; box-shadow: none; }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
                 };
-                const color = if (n.props.bc) |colors| colors[0] else tree_mod.Color{48,54,61,1};
+                const color = if (n.props.bc) |colors| colors[0] else tree_mod.Color{ 48, 54, 61, 1 };
                 const border_width = if (n.props.bw) |widths| widths[0] else 1;
                 const radius = n.radiusXY().x[0];
-                s.css_text.print(a, ".nui-f{d} {{ border: {d:.1}px solid rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-radius: {d:.1}px; font-weight: {d:.0}; }}\n", .{n.id,border_width,color[0],color[1],color[2],color[3],radius,n.props.fwt orelse 500}) catch return;
-                if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d} {{ font-family: '{s}'; }}\n", .{n.id, resolveFamily(s,family)}) catch return;
+                s.css_text.print(a, ".nui-f{d} {{ border: {d:.1}px solid rgba({d:.0},{d:.0},{d:.0},{d:.2}); border-radius: {d:.1}px; font-weight: {d:.0}; }}\n", .{ n.id, border_width, color[0], color[1], color[2], color[3], radius, n.props.fwt orelse 500 }) catch return;
+                if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d} {{ font-family: '{s}'; }}\n", .{ n.id, resolveFamily(s, family) }) catch return;
             }
             // The page's own color on the label; else the theme's.
             if (n.props.col) |c| s.css_text.print(a, ".nui-f{d} label {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); }}\n", .{ n.id, c[0], c[1], c[2], c[3] }) catch return;
@@ -1735,9 +1743,23 @@ fn onRealize(_: *Widget, data: ?*anyopaque) callconv(.c) void {
     const native = gtk_widget_get_native(s.area) orelse return;
     const surface = gtk_native_get_surface(native) orelse return;
     if (surface == s.scale_surface) return;
+    forgetScaleSurface(s);
+    // The token, not the Surface: the handler goes in destroy, but a
+    // signal on its way when the page goes finds nothing.
+    s.scale_handler = g_signal_connect_data(surface, "notify::scale", @ptrCast(&onScaleChanged), @ptrFromInt(s.token), null, 0);
+    if (s.scale_handler == 0) return;
     s.scale_surface = surface;
-    // The token, not the Surface: the window's surface can outlive it.
-    _ = g_signal_connect_data(surface, "notify::scale", @ptrCast(&onScaleChanged), @ptrFromInt(s.token), null, 0);
+    // Cleared by GLib if the window's surface goes first.
+    g_object_add_weak_pointer(surface, &s.scale_surface);
+}
+
+/// The scale handler off the window's surface, if that is still there.
+fn forgetScaleSurface(s: *Surface) void {
+    const surface = s.scale_surface orelse return;
+    g_signal_handler_disconnect(surface, s.scale_handler);
+    g_object_remove_weak_pointer(surface, &s.scale_surface);
+    s.scale_surface = null;
+    s.scale_handler = 0;
 }
 
 fn onScaleChanged(_: *anyopaque, _: *anyopaque, data: ?*anyopaque) callconv(.c) void {
@@ -2633,7 +2655,7 @@ fn dropDeliver(job: *DropJob) void {
     const gpa = job.gpa; // the job goes before the JSON
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
-    json.print(gpa,"[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.suggested, job.mods, job.session, job.items.items }) catch {
+    json.print(gpa, "[\"drop\",{d:.2},{d:.2},{d},{d},{d},{d},[{s}]]", .{ job.at[0], job.at[1], job.allowed, job.suggested, job.mods, job.session, job.items.items }) catch {
         sendDragLeave(s, job.session);
         return dropAbandon(job);
     };
@@ -3354,7 +3376,7 @@ fn addPatches(s: *Surface, root: *Node) bool {
     for (s.damage.rects.items) |r| if (onPixels(s.grid, r)) |p| {
         s.regions.append(s.gpa, p) catch return false;
     };
-    mergeRegions(&s.regions);
+    if (!mergeRegions(&s.regions)) return false;
     var total: f32 = 0;
     for (s.regions.items) |r| total += areaOf(r);
     const whole = @as(f32, @floatFromInt(s.grid.w)) * @as(f32, @floatFromInt(s.grid.h));
@@ -3384,9 +3406,16 @@ fn addPatches(s: *Surface, root: *Node) bool {
 
 /// Changed areas near each other as one: what's between them is painted
 /// once more, but there are fewer patches, and less drawn twice at edges.
-fn mergeRegions(list: *std.ArrayList(Rect)) void {
+/// False: more steps than `max_rects` areas can take (it couldn't finish).
+fn mergeRegions(list: *std.ArrayList(Rect)) bool {
+    // Each step merges two (one fewer) or moves on: n areas end within n².
+    const max_steps = damage_mod.max_rects * damage_mod.max_rects;
+    if (list.items.len > damage_mod.max_rects) return false;
+    var steps: usize = 0;
     var i: usize = 0;
     while (i < list.items.len) {
+        steps += 1;
+        if (steps > max_steps) return false;
         var grew = false;
         var j = i + 1;
         while (j < list.items.len) {
@@ -3402,6 +3431,7 @@ fn mergeRegions(list: *std.ArrayList(Rect)) void {
         // Grown: it may reach ones it didn't before.
         if (!grew) i += 1;
     }
+    return true;
 }
 
 fn dropPatches(s: *Surface) void {
@@ -3538,40 +3568,69 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         // Off screen: its children may still be (absolute ones).
         if (n.kids.items.len == 0) return;
     }
+    // Deeper than any page (a cycle the tree let through): not drawn, as
+    // the damage walk takes it as everything changed (damage.zig).
+    if (s.paint_depth >= damage_mod.max_depth) return;
+    s.paint_depth += 1;
+    defer s.paint_depth -= 1;
     cairo_save(cr);
     defer cairo_restore(cr);
     cairo_rectangle(cr, n.clip.x, n.clip.y, n.clip.w, n.clip.h);
     cairo_clip(cr);
-    // scale and rotate: around the box's center, for it and its children.
-    const sc = p.sc orelse 1;
-    const rot = p.rot orelse 0;
-    // A transformed box: the rounded clips waiting are applied here, in
-    // the space they were made in (its own frame is no longer theirs).
     const waiting = s.round_clip_count;
     defer s.round_clip_count = waiting;
-    if (sc != 1 or rot != 0) {
-        applyRoundClips(s, cr, null);
-        s.round_clip_count = 0;
-        const cx = f.x + f.w / 2;
-        const cy = f.y + f.h / 2;
-        cairo_translate(cr, cx, cy);
-        if (rot != 0) cairo_rotate(cr, rot * std.math.pi / 180.0);
-        if (sc != 1) cairo_scale(cr, sc, sc);
-        cairo_translate(cr, -cx, -cy);
-    }
+    transformBox(s, cr, n);
     const alpha = p.op orelse 1;
     if (alpha < 1) cairo_push_group(cr);
-
     // Elliptical corners, as CSS draws them (tree.zig radiusXY).
     const r = n.radiusXY();
-    // The box itself, clipped to the rounded corners it reaches into (a
-    // shadow or outline paints past its frame: every waiting clip).
+    // The rounded clips waiting for what this box paints itself.
     const own_base = s.round_clip_count;
-    const own_clipped = own_base > 0;
+    paintBox(s, cr, n, r, own_base > 0);
+    paintKids(s, cr, n, own_base);
+    if (p.ol) |ol| {
+        if (own_base > 0) {
+            cairo_save(cr);
+            applyRoundClips(s, cr, null);
+        }
+        outline(cr, f, r, ol);
+        if (own_base > 0) cairo_restore(cr);
+    }
+    if (alpha < 1) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, alpha);
+    }
+}
+
+/// scale and rotate: around the box's center, for it and its children. A
+/// transformed box: the rounded clips waiting are applied here, in the
+/// space they were made in (its own frame is no longer theirs).
+fn transformBox(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const sc = n.props.sc orelse 1;
+    const rot = n.props.rot orelse 0;
+    if (sc == 1 and rot == 0) return;
+    applyRoundClips(s, cr, null);
+    s.round_clip_count = 0;
+    const f = n.frame;
+    const cx = f.x + f.w / 2;
+    const cy = f.y + f.h / 2;
+    cairo_translate(cr, cx, cy);
+    if (rot != 0) cairo_rotate(cr, rot * std.math.pi / 180.0);
+    if (sc != 1) cairo_scale(cr, sc, sc);
+    cairo_translate(cr, -cx, -cy);
+}
+
+/// The box itself (shadow, background, border, and what its kind draws),
+/// clipped to the rounded corners it reaches into (a shadow or outline
+/// paints past its frame: every waiting clip).
+fn paintBox(s: *Surface, cr: *cairo_t, n: *Node, r: Radii, own_clipped: bool) void {
+    const p = n.props;
+    const f = n.frame;
     if (own_clipped) {
         cairo_save(cr);
         applyRoundClips(s, cr, if (p.sh != null or p.ol != null) null else f);
     }
+    defer if (own_clipped) cairo_restore(cr);
     if (p.sh) |sh| shadow(cr, f, r, sh);
     if (p.bg) |bg| {
         // The color under the gradient (CSS layers).
@@ -3595,15 +3654,19 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         .image => paintImage(s, cr, n),
         .textarea => paintPlaceholder(s, cr, n),
         .canvas => paintCanvas(s, cr, n),
-        .view => if (n.props.ctl != null) paintControl(cr, n),
+        .view => if (p.ctl != null) paintControl(cr, n),
         else => {},
     }
-    if (own_clipped) cairo_restore(cr);
-    // A box that clips its content (overflow hidden, or a scroller) with
-    // rounded corners: the children are clipped to its rounded padding box.
-    // To its rectangle here; the rounded path waits for the children that
-    // reach into a corner. A path clip is a mask Cairo composites
-    // everything under through, every row of a list each scroll frame.
+}
+
+/// The children, in CSS paint order (a sticky header over the rows
+/// scrolled under it). A box that clips its content (overflow hidden, or
+/// a scroller) with rounded corners: the children are clipped to its
+/// rounded padding box. To its rectangle here; the rounded path waits for
+/// the children that reach into a corner. A path clip is a mask Cairo
+/// composites everything under through, every row of a list each scroll
+/// frame.
+fn paintKids(s: *Surface, cr: *cairo_t, n: *Node, own_base: usize) void {
     const round_clip = n.roundClips();
     if (round_clip) {
         cairo_save(cr);
@@ -3615,24 +3678,11 @@ fn paint(s: *Surface, cr: *cairo_t, n: *Node) void {
         } else roundRectXY(cr, pb.rect, pb.radii);
         cairo_clip(cr);
     }
-    // CSS paint order: a sticky header over the rows scrolled under it.
     var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
     while (it.next()) |k| paint(s, cr, k);
     if (round_clip) {
         cairo_restore(cr);
         s.round_clip_count = own_base;
-    }
-    if (p.ol) |ol| {
-        if (own_clipped) {
-            cairo_save(cr);
-            applyRoundClips(s, cr, null);
-        }
-        outline(cr, f, r, ol);
-        if (own_clipped) cairo_restore(cr);
-    }
-    if (alpha < 1) {
-        cairo_pop_group_to_source(cr);
-        cairo_paint_with_alpha(cr, alpha);
     }
 }
 
