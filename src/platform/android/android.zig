@@ -130,6 +130,12 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
         notification_common.dispatch(t.id, t.action);
         return;
     }
+    if (std.mem.eql(u8, name, "ble-advertise")) {
+        // oriel.bluetooth: an advertisement started, failed or stopped
+        // (OrielBluetooth's AdvertiseCallback). Off, the module isn't built.
+        if (@import("build_options").bluetooth) @import("../../modules/bluetooth/android.zig").onSystemEvent(data);
+        return;
+    }
     if (system_event_handler) |h| h(name, data);
     internal.emit("android:event", .{ .name = name, .data = data });
 }

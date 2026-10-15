@@ -1,6 +1,8 @@
-//! Bluetooth LE on a platform without a backend yet: nothing to advertise.
+//! Bluetooth LE where no backend exists: nothing to advertise.
 
 const common = @import("common.zig");
+
+pub const backend = "none";
 
 pub fn capabilities() common.Capabilities {
     return .{};

@@ -7,7 +7,6 @@
 
 const std = @import("std");
 const common = @import("common.zig");
-const heap = @import("../../core/heap.zig");
 const runtime = @import("../../platform/android/runtime.zig");
 const ShellMod = @import("../../platform/android/Shell.zig");
 
@@ -15,6 +14,11 @@ const Advertisement = common.Advertisement;
 const Capabilities = common.Capabilities;
 const Handle = common.Handle;
 
+pub const backend = "BluetoothLeAdvertiser";
+
+/// OrielRuntime.bleCapabilities' bits: 1 an LE advertiser (or an
+/// adapter that is off), 2 it's on, 4 extended advertising; bits 16+ the most
+/// data bytes.
 pub fn capabilities() Capabilities {
     const Ctx = struct {
         bits: i32 = 0,
@@ -26,12 +30,13 @@ pub fn capabilities() Capabilities {
     ShellMod.runOnMainThread(Ctx, &ctx, Ctx.run) catch return .{};
     const b: u32 = @bitCast(ctx.bits);
     const can_advertise = b & 1 != 0;
+    const f = common.fieldsOf(.android);
     return .{
         .advertise = can_advertise,
-        .service_data = can_advertise,
-        .local_name = can_advertise,
-        .connectable = can_advertise,
-        .non_connectable = can_advertise,
+        .service_data = can_advertise and f.service_data,
+        .local_name = can_advertise and f.local_name,
+        .connectable = can_advertise and f.connectable,
+        .non_connectable = can_advertise and f.non_connectable,
         .extended = b & 4 != 0,
         .max_bytes = if (can_advertise) @intCast(b >> 16) else 0,
         .scan = false, // no scanning API yet
@@ -40,7 +45,7 @@ pub fn capabilities() Capabilities {
     };
 }
 
-/// Start advertising `ad`: its handle. Android reports the start (or a
+/// Start advertising `ad` (validated by bluetooth.zig): its handle. Android reports the start (or a
 /// failure that comes after this returns) as the advertisement's state.
 pub fn advertise(ad: Advertisement) common.Error!Handle {
     // The device name's length isn't known here: a named advertisement is
@@ -101,4 +106,10 @@ pub fn errorOf(code: i32) common.Error {
 pub fn onSystemEvent(data: []const u8) void {
     const r = common.parseState(data) orelse return;
     common.dispatchState(r.handle, r.state, if (r.state == .failed) errorOf(r.code) else null);
+}
+
+test errorOf {
+    try std.testing.expectEqual(error.TooLarge, errorOf(1));
+    try std.testing.expectEqual(error.Unsupported, errorOf(5));
+    try std.testing.expectEqual(error.Failed, errorOf(3));
 }

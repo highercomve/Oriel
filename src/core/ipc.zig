@@ -301,6 +301,7 @@ test fail {
 /// Check if `cmd` is a framework built-in command.
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
+        std.mem.eql(u8, cmd, "bluetooth:capabilities") or std.mem.eql(u8, cmd, "bluetooth:advertise") or std.mem.eql(u8, cmd, "bluetooth:stop") or
         std.mem.eql(u8, cmd, "events:ready") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
@@ -386,6 +387,25 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const build_options = @import("build_options");
         if (!build_options.share) return arena.dupe(u8, "{\"receive\":null,\"send\":{\"supported\":false}}");
         return std.json.Stringify.valueAlloc(arena, @import("../modules/share.zig").capabilities(), .{});
+    } else if (std.mem.startsWith(u8, request.cmd, "bluetooth:")) {
+        // The page's oriel.bluetooth (bluetooth/common.zig's JSON). Off, the
+        // module isn't compiled: nothing can advertise.
+        const build_options = @import("build_options");
+        const bt_common = @import("../modules/bluetooth/common.zig");
+        if (std.mem.eql(u8, request.cmd, "bluetooth:capabilities")) {
+            const caps: bt_common.Capabilities = if (build_options.bluetooth) @import("../modules/bluetooth.zig").capabilities() else .{};
+            return std.json.Stringify.valueAlloc(arena, bt_common.pageCapabilities(caps), .{});
+        }
+        if (!build_options.bluetooth) return error.Unsupported;
+        const bluetooth = @import("../modules/bluetooth.zig");
+        if (std.mem.eql(u8, request.cmd, "bluetooth:advertise")) {
+            const handle = try bluetooth.advertise(try bt_common.pageAdvertisement(arena, request.args));
+            return std.fmt.allocPrint(arena, "{{\"id\":{d}}}", .{handle});
+        }
+        const StopArgs = struct { id: bt_common.Handle };
+        const args = std.json.parseFromValueLeaky(StopArgs, arena, request.args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
+        bluetooth.stop(args.id);
+        return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "share:read")) {
         // A received file's bytes, base64, for the page's oriel.share.file
         // (it reads in chunks; the handle came in share:received).
@@ -614,6 +634,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             events = events ++ "  \"permission-changed\": { name: PermissionName; status: PermissionStatus };\n";
         }
         if (!@hasField(Events, "lifecycle")) events = events ++ "  lifecycle: LifecycleEvent;\n";
+        if (!@hasField(Events, "bluetooth:advertise")) events = events ++ "  \"bluetooth:advertise\": BluetoothAdvertiseEvent;\n";
         if (!@hasField(Events, "window:created")) events = events ++ "  \"window:created\": { label: string };\n";
         if (!@hasField(Events, "window:closed")) events = events ++ "  \"window:closed\": { label: string };\n";
         var permission_names: []const u8 = "";
@@ -748,6 +769,43 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  path(file: File | number): Promise<string | null>;
             \\}
             \\
+            \\export interface BluetoothCapabilities {
+            \\  advertise: boolean;
+            \\  serviceData: boolean;
+            \\  localName: boolean;
+            \\  connectable: boolean;
+            \\  /** False on Apple, where a non-connectable advertisement is best-effort. */
+            \\  nonConnectable: boolean;
+            \\  extended: boolean;
+            \\  maxBytes: number;
+            \\  scan: boolean;
+            \\  scanServiceData: boolean;
+            \\  powered: boolean;
+            \\}
+            \\
+            \\export interface BluetoothAdvertisement {
+            \\  serviceUuids16?: number[];
+            \\  serviceData?: { uuid16: number; data: Uint8Array | number[] } | null;
+            \\  /** Include the device's name. */
+            \\  localName?: boolean;
+            \\  connectable?: boolean;
+            \\  mode?: "low_latency" | "balanced" | "low_power";
+            \\  txPower?: "high" | "medium" | "low" | "ultra_low";
+            \\}
+            \\
+            \\export interface BluetoothAdvertiseEvent {
+            \\  id: number;
+            \\  state: "started" | "failed" | "stopped";
+            \\  error: "Unsupported" | "PermissionDenied" | "AdapterOff" | "TooLarge" | "Failed" | null;
+            \\}
+            \\
+            \\export interface BluetoothApi {
+            \\  capabilities(): Promise<BluetoothCapabilities>;
+            \\  /** Rejects with "Unsupported", "PermissionDenied", "AdapterOff", "TooLarge" or "Failed". Needs `features.bluetooth`. */
+            \\  advertise(ad: BluetoothAdvertisement): Promise<{ id: number }>;
+            \\  stop(id: number | { id: number }): Promise<void>;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -769,6 +827,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      extensions: ExtensionsApi;
             \\      systemAi: SystemAiApi;
             \\      camera: CameraApi;
+            \\      bluetooth: BluetoothApi;
             \\      permissions: PermissionsApi;
             \\      drop: DropApi;
             \\      openExternal(url: string): Promise<void>;
@@ -803,6 +862,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const systemAi: SystemAiApi = (globalThis as any).oriel?.systemAi;
             \\/** Photos from the camera or the library (oriel.camera; `features.camera`). */
             \\export const camera: CameraApi = (globalThis as any).oriel?.camera;
+            \\/** Bluetooth LE advertising (oriel.bluetooth; `features.bluetooth`). */
+            \\export const bluetooth: BluetoothApi = (globalThis as any).oriel?.bluetooth;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** Dropped files' paths (oriel.drop.path; native renderer). */
@@ -1054,6 +1115,7 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "extensions: ExtensionsApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "camera: CameraApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "bluetooth: BluetoothApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:created\": { label: string };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:closed\": { label: string };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  startDragging(): Promise<void>;\n") != null);
