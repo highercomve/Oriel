@@ -12,11 +12,13 @@
 //! private serial dispatch queue: callbacks don't need the main run loop,
 //! and every CoreBluetooth call and every piece of state below is touched
 //! only on that queue (dispatch_sync from `advertise`/`stop`), so the queue
-//! is the lock. Creating the manager shows the system's Bluetooth prompt
-//! while the permission is undecided: call `oriel.permissions.request(.bluetooth)`
-//! first. `capabilities()` never creates it before the permission is
-//! granted; `advertise` does (the prompt then shows, and the advertisement
-//! starts, or fails, once the user answers).
+//! is the lock. The manager is made only once the permission is granted:
+//! made while undecided, it doesn't show macOS's prompt. `advertise` while
+//! undecided asks through the permission's own request (the prompt shows)
+//! and its advertisement waits; it starts once the user allows, or fails
+//! with PermissionDenied. Apps should still call
+//! `oriel.permissions.request(.bluetooth)` first. `capabilities()` never
+//! asks.
 //!
 //! CBPeripheralManager has one advertisement at a time: a second
 //! `advertise` while one is active is error.Failed (stop the first one;
@@ -32,6 +34,7 @@ const common = @import("common.zig");
 const target = @import("../../core/target.zig");
 const apple = @import("../../platform/apple/apple.zig");
 const permission = @import("../../core/permissions/bluetooth_apple.zig").Bluetooth;
+const permission_common = @import("../../core/permissions/common.zig");
 
 const Object = apple.Object;
 const Advertisement = common.Advertisement;
@@ -108,11 +111,28 @@ pub fn advertise(ad: Advertisement) Error!Handle {
     sized.local_name = false;
     try common.checkSize(sized, 0, common.legacy_max);
     if (loadFramework() == null) return error.Unsupported;
-    if (permission.status() == .denied) return error.PermissionDenied;
-    // While undecided this shows the prompt; the start waits for the answer.
+    switch (permission.status()) {
+        .denied => return error.PermissionDenied,
+        // A CBPeripheralManager made while undecided doesn't show macOS's
+        // prompt (macOS 15: the advertisement waited forever); the
+        // permission's own request (a CBCentralManager on the main queue)
+        // does. Ask that way; the manager is made once the user answers,
+        // and the advertisement waits for it.
+        .prompt => if (!manager_ready.load(.acquire)) {
+            if (!ensureQueue()) return error.Failed;
+            const handle = try startPending(ad);
+            permission.request(&answered);
+            return handle;
+        },
+        .granted, .unknown => {},
+    }
     _ = ensureManager();
     if (!manager_ready.load(.acquire)) return error.Failed;
+    return startPending(ad);
+}
 
+/// startOnQueue on `queue`.
+fn startPending(ad: Advertisement) Error!Handle {
     const Ctx = struct {
         ad: *const Advertisement,
         result: Error!Handle = error.Failed,
@@ -125,9 +145,27 @@ pub fn advertise(ad: Advertisement) Error!Handle {
     return ctx.result;
 }
 
+/// The permission's answer to `advertise`'s request: granted makes the
+/// manager (the waiting advertisement starts at its first powered-on
+/// state); anything else fails it. On the main thread.
+fn answered(_: permission_common.Kind, status: permission_common.Status) void {
+    switch (status) {
+        .granted, .unknown => if (ensureManager()) return,
+        .denied, .prompt => {},
+    }
+    const Ctx = struct {
+        err: Error,
+        fn run(self: *@This()) void {
+            if (active != 0 and phase == .pending) finish(.failed, self.err);
+        }
+    };
+    var ctx: Ctx = .{ .err = if (status == .denied) error.PermissionDenied else error.Failed };
+    onQueue(Ctx, &ctx, Ctx.run);
+}
+
 /// Stop the advertisement `handle`; another (or an old) handle is ignored.
 pub fn stop(handle: Handle) void {
-    if (!manager_ready.load(.acquire)) return; // nothing was ever started
+    if (queue == null) return; // nothing was ever started
     const Ctx = struct {
         handle: Handle,
         fn run(self: *@This()) void {
@@ -349,7 +387,7 @@ fn ensureManager() bool {
     if (manager_ready.load(.acquire)) return true;
     if (framework_handle == null) return false;
     const cls = apple.objc.getClass("CBPeripheralManager") orelse return false;
-    if (queue == null) queue = dispatch_queue_create("dev.oriel.bluetooth", null) orelse return false;
+    if (!makeQueue()) return false;
     if (first_state == null) {
         first_state = dispatch_group_create() orelse return false;
         dispatch_group_enter(first_state.?);
@@ -363,6 +401,19 @@ fn ensureManager() bool {
     if (manager.value == null) return false;
     manager_ready.store(true, .release);
     return true;
+}
+
+/// The private queue the advertisement's state lives on, made once.
+fn ensureQueue() bool {
+    _ = std.c.pthread_mutex_lock(&init_mutex);
+    defer _ = std.c.pthread_mutex_unlock(&init_mutex);
+    return makeQueue();
+}
+
+/// ensureQueue with `init_mutex` held.
+fn makeQueue() bool {
+    if (queue == null) queue = dispatch_queue_create("dev.oriel.bluetooth", null);
+    return queue != null;
 }
 
 fn waitFirstState() void {
