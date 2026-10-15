@@ -12,6 +12,8 @@ const linux = std.os.linux;
 const Io = std.Io;
 
 const tm = @import("telemetry.zig");
+const applications = @import("applications.zig");
+const DesktopCatalog = @import("desktop_apps.zig").Catalog;
 const CoreSample = tm.CoreSample;
 const CpuInfo = tm.CpuInfo;
 const MemInfo = tm.MemInfo;
@@ -42,6 +44,9 @@ const ProcMeta = struct {
     command: []u8,
     uid: u32,
     seen: u64,
+    executable: []u8,
+    app_key: []const u8 = "",
+    app_name: []const u8 = "",
 };
 
 const Mount = struct {
@@ -80,6 +85,8 @@ pub const Sampler = struct {
     gpa: std.mem.Allocator,
     /// The page's process filter for the next sample (borrowed; main.zig).
     filter: []const u8 = "",
+    application_id: u64 = 0,
+    desktop_apps: ?DesktopCatalog = null,
     proc_dir: ?Io.Dir = null,
     prev: Ticks = .{},
     prev_cores: std.ArrayList(Ticks) = .empty,
@@ -120,6 +127,7 @@ pub const Sampler = struct {
             s.stat_fd_cap = statFdCap();
             s.initCpuModel(actual_io);
             s.loadUsers(actual_io);
+            s.desktop_apps = DesktopCatalog.init(gpa, actual_io);
             s.findSensors(actual_io);
             s.loadMounts(actual_io);
             // A first sample: the next one has deltas to work from.
@@ -131,6 +139,7 @@ pub const Sampler = struct {
     }
 
     pub fn deinit(s: *Sampler, io: Io) void {
+        if (s.desktop_apps) |*catalog| catalog.deinit();
         if (s.proc_dir) |d| d.close(io);
         s.prev_cores.deinit(s.gpa);
         s.prev_proc_ticks.deinit();
@@ -167,6 +176,7 @@ pub const Sampler = struct {
     fn freeMeta(gpa: std.mem.Allocator, m: ProcMeta) void {
         gpa.free(m.name);
         gpa.free(m.command);
+        gpa.free(m.executable);
     }
 
     fn freeMount(gpa: std.mem.Allocator, m: Mount) void {
@@ -371,8 +381,6 @@ pub const Sampler = struct {
         };
     }
 
-
-
     fn parseKb(line: []const u8) u64 {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse return 0;
         var t = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
@@ -535,6 +543,8 @@ pub const Sampler = struct {
                 starts.put(arena, pid, std.fmt.parseInt(u64, f[19], 10) catch 0) catch {};
                 procs.append(arena, .{
                     .pid = pid,
+                    .parent_pid = std.fmt.parseInt(u32, f[1], 10) catch 0,
+                    .start_time = std.fmt.parseInt(u64, f[19], 10) catch 0,
                     .name = try arena.dupe(u8, stat[open + 1 .. close]),
                     .command = "",
                     .user = "",
@@ -557,11 +567,8 @@ pub const Sampler = struct {
         std.mem.swap(std.AutoHashMap(u32, u64), &s.prev_proc_ticks, &s.curr_proc_ticks);
         const total_procs: u32 = @intCast(procs.items.len);
 
-        tm.orderRows(procs.items, s.filter);
-        const top = procs.items[0..@min(procs.items.len, max_rows)];
-
-        // The top rows' names, command lines and users: read once per process.
-        for (top) |*p| {
+        // Cached metadata for all rows: grouping must precede the display cut.
+        for (procs.items) |*p| {
             const start = starts.get(p.pid) orelse 0;
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
@@ -582,7 +589,14 @@ pub const Sampler = struct {
             // table shows the start; copying asks for the whole (command_line).
             p.command = try arena.dupe(u8, m.command[0..@min(m.command.len, max_command)]);
             p.user = if (s.users.get(m.uid)) |u| try arena.dupe(u8, u) else try std.fmt.allocPrint(arena, "{d}", .{m.uid});
+            p.executable = try arena.dupe(u8, m.executable);
+            p.app_key = try arena.dupe(u8, m.app_key);
+            p.app_name = try arena.dupe(u8, m.app_name);
         }
+        const apps = applications.visible(try applications.collect(arena, procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
+        const top = procs.items[0..@min(procs.items.len, max_rows)];
         // Processes gone (or out of the top rows a while): forgotten.
         if (s.samples % 16 == 0) {
             var stale: std.ArrayList(u32) = .empty;
@@ -705,6 +719,11 @@ pub const Sampler = struct {
             .mem = mem,
             .uptime_seconds = uptime_seconds,
             .processes = top,
+            .applications = apps[0..@min(apps.len, max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
             .total_processes = total_procs,
             .threads_total = threads_total,
             .running = running,
@@ -807,7 +826,16 @@ pub const Sampler = struct {
             var stx: linux.Statx = undefined;
             if (dir_path.len > 0 and linux.statx(dir.handle, dir_path, 0, .{ .UID = true }, &stx) == 0) uid = stx.uid;
         }
-        return .{ .start = start, .name = owned_name, .command = command, .uid = uid, .seen = s.samples };
+        var exe_buf: [4096]u8 = undefined;
+        const exe_path = std.fmt.bufPrint(&path_buf, "{d}/exe", .{pid}) catch "";
+        const exe_len = dir.readLink(io, exe_path, &exe_buf) catch 0;
+        const executable = s.gpa.dupe(u8, std.mem.trimEnd(u8, exe_buf[0..exe_len], "\x00")) catch {
+            s.gpa.free(command);
+            s.gpa.free(owned_name);
+            return null;
+        };
+        const desktop = if (s.desktop_apps) |*catalog| catalog.lookup(executable, arg0, comm) else null;
+        return .{ .start = start, .name = owned_name, .command = command, .uid = uid, .seen = s.samples, .executable = executable, .app_key = if (desktop) |d| d.key else "", .app_name = if (desktop) |d| d.name else "" };
     }
 
     /// Total and used bytes of the filesystem mounted at `path`.

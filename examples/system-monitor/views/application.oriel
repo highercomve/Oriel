@@ -1,0 +1,11 @@
+<row id="row" height="34" padding="0,16,0,16" align="center" border-bottom="1" border-color="#30363d66">
+  <view grow="1" basis="0" min-width="0" clip="true" justify="center" padding="0,12,0,0">
+    <text id="name" font-size="12" color="#f0f6fc" nowrap="true" tooltip="{name}">{name}</text>
+  </view>
+  <view width="100" min-width="0" clip="true" justify="center"><text id="user" font-size="12" color="#8b949e" nowrap="true">{user}</text></view>
+  <view width="90" min-width="0" clip="true" justify="center"><text id="count" font-size="12" color="#8b949e" mono="true">{count}</text></view>
+  <view width="70" min-width="0" clip="true" justify="center"><text id="threads" font-size="12" color="#8b949e" mono="true">{threads}</text></view>
+  <view width="90" min-width="0" clip="true" justify="center"><text id="cpu" font-size="12" color="#f0f6fc" mono="true">{cpu}</text></view>
+  <view width="110" min-width="0" clip="true" justify="center"><text id="mem" font-size="12" color="#8b949e" mono="true">{mem}</text></view>
+  <control id="details" value="Show processes" label="Show processes for {name}" tooltip="Show individual processes for {name}" width="110" height="24" font-size="11" color="#58a6ff" background="#161b22" border-width="1" border-color="#30363d" radius="4" />
+</row>

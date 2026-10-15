@@ -24,6 +24,30 @@ command pool with one request in flight; graphs redraw on samples and relevant
 UI changes, with no continuous frame callback. When processes are the only
 visible section, the table fills the available height.
 
+**Applications** is the default list in all three renderers. It shows each
+recognized desktop app's combined CPU, summed resident memory (RSS), threads,
+and process count. **Show processes** opens that app's individual members as a
+parent/child tree, like `ps --forest`. Sorting applies to roots and siblings,
+keeping children under their parent. A missing or filtered parent leaves a
+visible root rather than hiding its children;
+**All processes** includes background services, command-line programs, and
+system tasks. Searching and sorting work in both views, and the view preference
+is saved. App totals include every readable member before the 256-row display
+limit; an app with more members still reports its full total.
+
+Grouping uses installed desktop entries plus parent processes on Linux,
+the outer `.app` bundle plus ancestry on macOS, and visible top-level window
+owners plus executable paths and ancestry on Windows. Ancestry alone does not
+make an external command part of an app: unrecognized helpers must use the
+same executable or live inside that app's installation directory (not shared
+directories such as `/usr/bin` or Windows System32). Users stay separate,
+and a nested recognized app keeps its own group. The grouping is best effort:
+unreadable metadata and helpers whose app identity and ancestry are unavailable
+remain in All processes. Shared pages may be counted more than once in summed
+RSS; the number is not private or proportional memory. CPU uses the existing
+per-process scale (100% is one core). Process shutdown still affects only the
+chosen individual process, with confirmation.
+
 Oriel settings are independent of the web frontends, persisted in
 `oriel-settings.json` under `oriel.paths.appConfig` (Linux:
 `~/.config/dev.oriel.SystemMonitor/`). Settings and process action panels scroll

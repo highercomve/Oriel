@@ -113,6 +113,11 @@
       </column>
     </row>
     <column id="proc" gap="14" min-height="460" grow="1">
+      <row id="view-switch" gap="8" align="center">
+        <control id="view-applications" value="Applications" label="Show applications" width="112" height="30" font-size="12" color="#f0f6fc" background="#1f6feb" radius="6" />
+        <control id="view-processes" value="All processes" label="Show all processes" width="112" height="30" font-size="12" color="#8b949e" background="#21262d" radius="6" />
+        <text id="view-description" font-size="11" color="#8b949e" shrink="1" min-width="0">Combined CPU and summed RSS for each app, including helpers.</text>
+      </row>
       <row id="toolbar" align="center" gap="8" padding="8,12,8,12" background="#161b22" border-width="1" border-color="#30363d" radius="8">
         <control font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" id="pause" value="⏸ Pause" width="76" height="28" font-size="12" font-weight="500" color="#f0f6fc" background="#21262d" border-width="1" border-color="#30363d" radius="6" />
         <control font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" id="refresh" value="⟳ Refresh" width="82" height="28" font-size="12" font-weight="500" color="#8b949e" background="#161b22" border-width="1" border-color="#30363d" radius="6" />
@@ -134,12 +139,12 @@
       </row>
       <column id="table" grow="1" min-height="0" background="#161b22" border-width="1" border-color="#30363d" radius="8" clip="true">
         <row align="center" gap="8" padding="10,14,10,14" border-bottom="1" border-color="#30363d">
-          <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" color="#f0f6fc" shrink="0" font-weight="600" line-height="19.5">Processes</text>
+          <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="13" color="#f0f6fc" shrink="0" font-weight="600" line-height="19.5" id="proc-title">Applications</text>
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" id="proc-detail" background="#21262d" radius="12" padding="2,7,2,7" line-height="16.5">0 of 0</text>
           <view grow="1" />
-          <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#6e7681" shrink="0" line-height="16.5">Right-click or click Terminate for polite SIGTERM (confirmed first)</text>
+          <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#6e7681" shrink="0" line-height="16.5" id="proc-hint">Right-click or click Terminate for polite SIGTERM (confirmed first)</text>
         </row>
-        <row height="32" align="center" padding="0,16,0,16" background="#1f242c" border-bottom="1" border-color="#30363d">
+        <row id="process-header" height="32" align="center" padding="0,16,0,16" background="#1f242c" border-bottom="1" border-color="#30363d">
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" width="90" line-height="16.5">PID</text>
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" width="190" line-height="16.5">Name</text>
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" width="90" line-height="16.5">User</text>
@@ -149,6 +154,15 @@
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" width="110" line-height="16.5">Memory</text>
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" basis="0" grow="1" min-width="0" line-height="16.5">Command line</text>
           <text font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="11" color="#8b949e" shrink="0" font-weight="600" width="140" line-height="16.5">Actions</text>
+        </row>
+        <row id="application-header" height="32" align="center" padding="0,16,0,16" background="#1f242c" border-bottom="1" border-color="#30363d">
+          <text font-size="11" color="#8b949e" grow="1" basis="0" min-width="0">Application</text>
+          <text font-size="11" color="#8b949e" width="100">User</text>
+          <text font-size="11" color="#8b949e" width="90">Processes</text>
+          <text font-size="11" color="#8b949e" width="70">Threads</text>
+          <text font-size="11" color="#8b949e" width="90">CPU %</text>
+          <text font-size="11" color="#8b949e" width="110">Memory (RSS)</text>
+          <view width="110" />
         </row>
         <column id="proc-scroll" scroll="true" clip="true" grow="1" basis="0" min-height="0">
           <view id="before" height="0" />

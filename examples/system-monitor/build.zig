@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Test histories and process filtering/sorting").dependOn(&b.addRunArtifact(model_tests).step);
     // The .oriel views, embedded by name (@embedFile("monitor.oriel")):
     // views/ is outside src/, the app module's root.
-    const view_names = [_][]const u8{ "monitor", "process", "disk", "settings", "actions", "confirm" };
+    const view_names = [_][]const u8{ "monitor", "process", "application", "disk", "settings", "actions", "confirm" };
     var views: [view_names.len]std.Build.Module.Import = undefined;
     for (view_names, &views) |name, *view| view.* = .{
         .name = b.fmt("{s}.oriel", .{name}),
