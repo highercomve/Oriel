@@ -16,8 +16,9 @@
 //!   that can't hold the model falls back to the CPU.
 //! - `.schema`: a JSON schema the reply follows (a grammar, checked per
 //!   token only when the usual pick breaks it).
-//! - Tokens stream to the page as "chat:token" events; `cancel` stops a
-//!   reply (and a long prompt) early.
+//! - Tokens stream to the page as "chat:token" events, each with its
+//!   reply's id; `cancelReply(id)` stops that reply (and a long prompt)
+//!   early, and `cancel` the one running or about to start.
 //! - Turns reuse the conversation's KV cache: only what's new since the
 //!   last reply is evaluated, so a long chat doesn't get slower per turn.
 //! - The CPU or the GPU per device and model (`.backend = .auto`): what
@@ -111,8 +112,9 @@ pub const Options = struct {
 
 pub const Events = struct {
     @"chat:download": struct { model: []const u8, done_mb: u32, total_mb: u32 },
-    /// The reply so far grew by `text` (whole UTF-8 characters).
-    @"chat:token": struct { text: []const u8 },
+    /// The reply so far grew by `text` (whole UTF-8 characters). `reply`
+    /// identifies the reply (`cancelReply`), the same for all its tokens.
+    @"chat:token": struct { text: []const u8, reply: u64 },
     /// `compare`: one backend's run finished.
     @"chat:compare": struct { backend: []const u8, tokens_per_s: f32 },
 };
@@ -139,6 +141,12 @@ var downloading: ?*const Model = null;
 var generating = std.atomic.Value(bool).init(false);
 /// Set by `cancel`; cleared when a reply ends.
 var cancelled = std.atomic.Value(bool).init(false);
+/// The running reply's id (0: none), and the last id given out. Guarded by
+/// `cancel_mutex` with the clearing of `cancelled` when a reply ends, so
+/// `cancelReply` can't leave a stale flag behind for the next reply.
+var running_reply: u64 = 0;
+var last_reply: u64 = 0;
+var cancel_mutex: std.Io.Mutex = .init;
 var ever_init = std.atomic.Value(bool).init(false);
 
 const Loaded = struct {
@@ -517,6 +525,16 @@ pub fn cancel() void {
     cancelled.store(true, .release);
 }
 
+/// Stop reply `id` (its "chat:token" events' `reply`) if it's still
+/// running; once it has ended this does nothing. A page's Stop that comes
+/// after the reply's last token (tokens can reach the page in a burst after
+/// the model finished) so never cancels the next reply, as `cancel` would.
+pub fn cancelReply(id: u64) void {
+    cancel_mutex.lockUncancelable(io);
+    defer cancel_mutex.unlock(io);
+    if (id != 0 and running_reply == id) cancelled.store(true, .release);
+}
+
 /// The assistant's reply to `messages`, streamed as "chat:token" events
 /// and returned whole (allocated with `a`). Blocks: call it from a worker.
 /// Replies run one at a time; another `generate` waits for this one.
@@ -531,8 +549,18 @@ fn reply(a: std.mem.Allocator, messages: []const Message, opts: Options, fresh: 
     reply_mutex.lockUncancelable(io);
     defer reply_mutex.unlock(io);
     generating.store(true, .release);
+    const id = blk: {
+        cancel_mutex.lockUncancelable(io);
+        defer cancel_mutex.unlock(io);
+        last_reply += 1;
+        running_reply = last_reply;
+        break :blk last_reply;
+    };
     defer {
+        cancel_mutex.lockUncancelable(io);
+        running_reply = 0;
         cancelled.store(false, .release);
+        cancel_mutex.unlock(io);
         generating.store(false, .release);
     }
 
@@ -655,7 +683,7 @@ fn reply(a: std.mem.Allocator, messages: []const Message, opts: Options, fresh: 
             answering = true;
             const upto = format.completeUtf8(vis);
             if (upto > sent) {
-                emit("chat:token", .{ .text = try format.validUtf8(arena, vis[sent..upto]) });
+                emit("chat:token", .{ .text = try format.validUtf8(arena, vis[sent..upto]), .reply = id });
                 sent = upto;
             }
         }
@@ -667,7 +695,7 @@ fn reply(a: std.mem.Allocator, messages: []const Message, opts: Options, fresh: 
         try l.cache.append(gpa, tok);
     }
     const visible = filter.visible(raw.items) orelse "";
-    if (visible.len > sent) emit("chat:token", .{ .text = try format.validUtf8(arena, visible[sent..]) });
+    if (visible.len > sent) emit("chat:token", .{ .text = try format.validUtf8(arena, visible[sent..]), .reply = id });
     const generate_ms = elapsedMs(t_gen);
     return .{
         .text = try a.dupe(u8, try format.validUtf8(arena, visible)),
@@ -859,6 +887,24 @@ test selectedToken {
     try std.testing.expectEqual(@as(c.llama_token, 9), try selectedToken(.{ .data = &data, .size = 2, .selected = 1, .sorted = false }));
     try std.testing.expectError(error.SampleFailed, selectedToken(.{ .data = &data, .size = 2, .selected = -1, .sorted = false }));
     try std.testing.expectError(error.SampleFailed, selectedToken(.{ .data = &data, .size = 2, .selected = 2, .sorted = false }));
+}
+
+test cancelReply {
+    defer cancelled.store(false, .release);
+    // No reply running: a late Stop for one that ended leaves nothing for
+    // the next reply, unlike `cancel`.
+    running_reply = 0;
+    cancelReply(3);
+    try std.testing.expect(!cancelled.load(.acquire));
+    // Reply 4 running: a Stop for 3 is late, one for 4 stops it.
+    running_reply = 4;
+    defer running_reply = 0;
+    cancelReply(3);
+    try std.testing.expect(!cancelled.load(.acquire));
+    cancelReply(0);
+    try std.testing.expect(!cancelled.load(.acquire));
+    cancelReply(4);
+    try std.testing.expect(cancelled.load(.acquire));
 }
 
 test {

@@ -71,8 +71,8 @@ pub const Commands = struct {
     pub fn chat_send(gpa: std.mem.Allocator, args: struct { messages: []const chat.Message, options: chat.Options = .{} }) !chat.Result {
         return chat.generate(gpa, args.messages, args.options);
     }
-    pub fn chat_stop(_: std.mem.Allocator) void {
-        chat.cancel();
+    pub fn chat_stop(_: std.mem.Allocator, args: struct { reply: u64 = 0 }) void {
+        if (args.reply != 0) chat.cancelReply(args.reply) else chat.cancel();
     }
 };
 
@@ -191,7 +191,12 @@ abort callback checks it during long prompt evaluations. During the reply,
 `generate` returns what it has with `stop = "cancelled"`; during the prompt,
 it returns `error.Cancelled`. The flag is cleared when a reply ends, so a
 `cancel()` while none runs stops the next `generate` to start: a Stop
-pressed before the request reached a worker still counts.
+pressed before the request reached a worker still counts. Each reply has an
+id, the `reply` of its `chat:token` events; `cancelReply(id)` stops that
+reply only while it runs. Tokens can reach the page in a burst after the
+model finished, so a Stop pressed during that burst would otherwise stop
+the next reply: send the `reply` of the tokens showing, and `cancel()` only
+before the first one.
 
 **Locking.** A reply holds its own lock from start to end (replies run one
 at a time; another `generate` waits), apart from the lock on the module's
@@ -222,12 +227,13 @@ makes that cheap.
 ```js
 const { invoke, listen } = window.oriel;
 const history = [{ role: "system", content: "You are a helpful assistant." }];
-let live = null;
-listen("chat:token", ({ text }) => { if (live) live.textContent += text; });
+let live = null, replyId = 0;
+listen("chat:token", ({ text, reply }) => { if (live) { live.textContent += text; replyId = reply; } });
 
 async function send(text) {
   history.push({ role: "user", content: text });
   live = addBubble("assistant");
+  replyId = 0;
   try {
     const r = await invoke("chat_send", { messages: history, options: { max_tokens: 1024 } });
     history.push({ role: "assistant", content: r.text });
@@ -237,7 +243,7 @@ async function send(text) {
     live = null;
   }
 }
-stopButton.onclick = () => invoke("chat_stop");
+stopButton.onclick = () => invoke("chat_stop", { reply: replyId });
 ```
 
 `examples/showcase`'s Chat tab does this, with a model picker, downloads,
@@ -300,6 +306,7 @@ the desktop, and a follow-up that reuses the KV cache: `src/main.zig`'s
 | `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where the models live (created when needed); `dir` must outlive the app. Silences llama.cpp's logging and subscribes to `oriel.lifecycle`. |
 | `generate(a, messages: []const Message, opts: Options) !Result` | worker | The reply, streamed as `chat:token` and returned whole (strings allocated with `a`). Loads the model the first time. |
 | `cancel() void` | any | Stop the reply in progress, or the next one to start when none runs. |
+| `cancelReply(id: u64) void` | any | Stop reply `id` (its `chat:token` events' `reply`) if it's still running; nothing once it ended. |
 | `status() Status` | worker | The catalog with what's on the device, the backend, the loaded model. Loads the GPU backend the first time. |
 | `download(name) !void` | worker | Fetch a catalog model from Hugging Face, emitting `chat:download`. |
 | `delete(name) !void` | worker | Remove a model (unloading it first) and a half-finished download of it; `error.Generating` while it answers. |
@@ -398,7 +405,7 @@ the page (`oriel.chat.Events` has the payload types).
 
 | Event | Payload | When |
 |---|---|---|
-| `chat:token` | `{ text }` | The reply grew (whole UTF-8 characters). |
+| `chat:token` | `{ text, reply }` | The reply grew (whole UTF-8 characters); `reply` is its id, for `cancelReply`. |
 | `chat:download` | `{ model, done_mb, total_mb }` | Each megabyte of a download. |
 | `chat:compare` | `{ backend: "GPU" or "CPU", tokens_per_s }` | Each run of `compare`. |
 
@@ -439,6 +446,10 @@ the page (`oriel.chat.Events` has the payload types).
 - **Stop takes a while to act.** `cancel()` returns at once, so its command
   needn't be async; listed in `async_commands`, it waits for a free worker
   (they may all be busy with replies, downloads and comparisons).
+- **The reply after a Stop comes back empty.** The Stop reached no reply
+  (the last tokens were still arriving after it ended), and `cancel()`
+  stopped the next one. Stop with `cancelReply` and the `reply` of the
+  tokens showing.
 - **The log says `cannot load ... on the GPU`.** The model didn't fit in GPU
   memory; it runs on the CPU. Use a smaller model or quantization.
 
