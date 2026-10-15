@@ -47,6 +47,7 @@
 				<a href="$site.page('docs/chat').link()">Chat</a>
 				<a href="$site.page('docs/dictation').link()">Dictation</a>
 				<a href="$site.page('docs/tts').link()">Text to speech</a>
+				<a href="$site.page('docs/speakers').link()">Speakers</a>
 				<a href="$site.page('docs/system-ai').link()">System AI</a>
 				<h4>Native code</h4>
 				<a href="$site.page('docs/platform-hooks').link()">Platform hooks</a>

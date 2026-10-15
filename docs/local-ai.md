@@ -6,7 +6,8 @@ On-device inference with llama.cpp, whisper.cpp and Kokoro on one shared ggml bu
 
 Oriel compiles [llama.cpp](https://github.com/ggml-org/llama.cpp) (text and
 vision models), [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
-(speech recognition) and kokoro.cpp (speech synthesis) into the app, on one
+(speech recognition), kokoro.cpp (speech synthesis) and voice-detect.cpp
+(speaker embeddings) into the app, on one
 shared build of their tensor library, ggml. This page is the low-level
 layer: the build flags, the GPU backends, the thin Zig bindings
 `oriel.llama`, `oriel.whisper` and `oriel.ggml_gpu`, how models are
@@ -20,6 +21,7 @@ model catalogs, the downloads and the page events:
 | A chat or a completion from a local LLM | [Chat](chat.md) (`oriel.chat`) | `oriel.llama` |
 | Live dictation, or the text of a recording | [Dictation](dictation.md) (`oriel.dictation`) | `oriel.whisper`, `oriel.audio_capture` |
 | Text read aloud | [Text to speech](tts.md) (`oriel.tts`) | `oriel.kokoro`, `oriel.audio_play` |
+| Who spoke when, and whose voice it is | [Speakers](speakers.md) (`oriel.speakers`) | voice-detect.cpp |
 | The phone's own model, nothing to download | [System AI](system-ai.md) (`oriel.system_ai`) | Gemini Nano, Foundation Models (no ggml) |
 | Your own pipeline: vision models, embeddings, timestamps | This page | ggml |
 
@@ -43,6 +45,7 @@ The low-level modules stay public next to the high-level ones: an app can use
 | llama.cpp's multimodal library (`mtmd`) | `.llama_mtmd = true` | needs `.llama` |
 | `oriel.whisper` | `.whisper = true` | MIT; Silero VAD built in |
 | `oriel.kokoro` | `.kokoro = true` | needs `.llama` or `.whisper`; GPL-3 data ([Text to speech](tts.md)) |
+| `oriel.speakers` | `.speakers = true` | MIT; needs `.llama` or `.whisper`; desktop only ([Speakers](speakers.md)) |
 | `oriel.ggml_gpu` | any of `.llama`, `.whisper` | |
 
 All are off by default; an app without them downloads, compiles and links
@@ -127,8 +130,10 @@ flowchart TB
 two copies would collide (duplicate symbols, and different struct layouts
 behind the same names). `build/ggml.zig` compiles a single `ggml` and
 `ggml-cpu` from llama.cpp's tree when `.llama` is on (else whisper.cpp's),
-and compiles llama.cpp, whisper.cpp and kokoro.cpp against it. Kokoro has no
-ggml of its own, which is why `.kokoro` needs `.llama` or `.whisper`.
+and compiles llama.cpp, whisper.cpp, kokoro.cpp and voice-detect.cpp against
+it. Kokoro and voice-detect have no ggml of their own (voice-detect's
+submodule is not used), which is why `.kokoro` and `.speakers` need `.llama`
+or `.whisper`.
 
 **Always optimized.** ggml, llama.cpp and whisper.cpp are compiled with
 `-O2` even in a Debug app: at `-O0` whisper ran about 30 times slower (223 s
@@ -410,6 +415,7 @@ above).
 | `llama_mtmd` | bool | `false` | llama.cpp's multimodal library in `oriel.llama.c`. Needs `llama` (else: `llama_mtmd requires llama (-Dllama)`). |
 | `whisper` | bool | `false` | whisper.cpp; `oriel.whisper`, `oriel.ggml_gpu`; with `audio_capture`, `oriel.dictation`. |
 | `kokoro` | bool | `false` | kokoro.cpp, espeak-ng and miniaudio; `oriel.kokoro`, `oriel.audio_play`, `oriel.tts`. Needs `llama` or `whisper`. See [Text to speech](tts.md). |
+| `speakers` | bool | `false` | voice-detect.cpp; `oriel.speakers`. Needs `llama` or `whisper`. Linux, Windows and macOS. See [Speakers](speakers.md). |
 | `ggml_cuda` | bool | `false` | ggml's CUDA backend, built by `nvcc` into `libggml-cuda.so`. Linux targets only; needs `llama`, `whisper` or `kokoro`. |
 | `cuda_path` | string | `$CUDA_PATH`, else `/opt/cuda` | The CUDA toolkit (`bin/nvcc`, `lib64`). |
 | `cuda_arch` | string | `native` | nvcc `-arch` (`native`: the build machine's GPUs; `sm_89`, `all-major`...), or a comma-separated list of compute capabilities (`75,86,89,120a`; an `a` or `f` suffix is an architecture- or family-specific target): machine code for each, PTX for the newest plain one. |
@@ -566,7 +572,7 @@ collide.
 
 ### Licenses
 
-llama.cpp, whisper.cpp, ggml and Silero VAD are MIT. kokoro.cpp's
+llama.cpp, whisper.cpp, voice-detect.cpp, ggml and Silero VAD are MIT. kokoro.cpp's
 phonemizer, espeak-ng, is GPL-3.0-or-later, and apps built with `.kokoro`
 ship its data ([Text to speech](tts.md#licenses)).
 Models are downloaded at run time under their authors' licenses.

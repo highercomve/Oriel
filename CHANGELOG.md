@@ -2,6 +2,20 @@
 
 Notable changes in Oriel releases.
 
+## Unreleased
+
+### Added
+
+- `oriel.speakers` (`.speakers = true`, needs `.llama` or `.whisper`;
+  Linux, Windows, macOS): speaker embeddings and offline diarization on
+  voice-detect.cpp, compiled against the shared ggml build. `Encoder`
+  loads a GGUF encoder (`catalog`: ECAPA-TDNN, WeSpeaker ResNet34) and
+  embeds 16 kHz speech; `diarize` embeds sliding windows over the speech
+  regions, clusters them (average-linkage, cosine; or a known speaker
+  count) and returns speaker turns with one centroid per speaker; `match`
+  finds a known voice for a centroid. Progress and cancellation for long
+  recordings. See docs/speakers.md.
+
 ## [0.16.1] — 2026-10-15
 
 ### Added

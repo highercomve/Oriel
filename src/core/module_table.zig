@@ -27,9 +27,10 @@ pub fn missingOn(platform: Platform) []const []const u8 {
         // system_ai is the phone's own model (ML Kit, Foundation Models).
         .linux, .other => &.{"system_ai"},
         // global_shortcut (in-app shortcuts), fs_watch (inotify) and updater
-        // (checking for a release) have real Android backends.
-        .android => &.{ "tray", "menu", "input", "media_server", "layer_shell" },
-        .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch" },
+        // (checking for a release) have real Android backends. speakers
+        // (voice-detect.cpp) isn't built or tested for the phones yet.
+        .android => &.{ "tray", "menu", "input", "media_server", "layer_shell", "speakers" },
+        .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch", "speakers" },
         // gtk4-layer-shell is a Wayland thing. system_ai: Windows AI and
         // macOS Foundation Models are later work.
         .windows, .macos => &.{ "layer_shell", "system_ai" },
@@ -77,6 +78,7 @@ pub const namespaces = [_]Namespace{
     ns("kokoro", "src/modules/kokoro.zig"),
     .{ .name = "audio_play", .path = "src/modules/audio_play.zig", .feature = "kokoro", .enable = ".kokoro = true" },
     .{ .name = "tts", .path = "src/modules/tts.zig", .feature = "kokoro", .enable = ".kokoro = true" },
+    ns("speakers", "src/modules/speakers.zig"),
     ns("audio_capture", "src/modules/audio_capture.zig"),
     ns("system_ai", "src/modules/system_ai.zig"),
     .{ .name = "ggml_gpu", .path = "src/modules/ggml_gpu.zig", .feature = "llama", .enable = ".llama = true or .whisper = true" },
@@ -113,6 +115,7 @@ test supported {
     try std.testing.expect(!supported("layer_shell", .windows));
     try std.testing.expect(supported("system_ai", .android) and supported("system_ai", .ios));
     try std.testing.expect(!supported("system_ai", .linux) and !supported("system_ai", .macos));
+    try std.testing.expect(supported("speakers", .windows) and !supported("speakers", .android));
 }
 
 test reason {

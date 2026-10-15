@@ -76,6 +76,13 @@
             .hash = "N-V-__8AAM9KCAAqFdC_LKX4-mlNf_snnwVFI3Kv8nfrXB8L",
             .lazy = true,
         },
+        // -Dspeakers: speaker embeddings (ECAPA-TDNN, WeSpeaker), compiled
+        // against the shared ggml tree; its own ggml submodule is not used.
+        .voice_detect = .{
+            .url = "https://github.com/localai-org/voice-detect.cpp/archive/cf9e1d5641c710bf7d6fc9642f9b4cf7d2bde9b6.tar.gz",
+            .hash = "N-V-__8AALtHTgBGSwGBd4VDY6LGop4ZQZIebDnzyViSrzoB",
+            .lazy = true,
+        },
         .highway = .{
             .url = "https://github.com/google/highway/archive/2607d3b5b0113992fe84d3848859eae13b3b52c1.tar.gz",
             .hash = "N-V-__8AAD_MkACxo3rELIYCI7ap_7GsxHN1WH6AsMLDYp6L",
