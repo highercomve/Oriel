@@ -1,10 +1,35 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.15.1, 0.15.0 and earlier.",
-.date = .date("2026-10-14T00:00:00"),
+.description = "Release notes for Oriel 0.16.0, 0.15.1 and earlier.",
+.date = .date("2026-10-15T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.16.0 · October 15, 2026]($heading.id('oriel-0-16-0-october-15-2026'))
+
+Oriel apps can advertise over Bluetooth LE: `oriel.bluetooth` sends a
+beacon nearby devices see, from Zig or the page, on every platform.
+
+## [Added]($heading.id('added'))
+
+- `oriel.bluetooth`: Bluetooth LE advertising, a beacon nearby devices
+  see (docs/bluetooth.md). The same API on every platform, with
+  `capabilities()` saying what each stack can send; a field the device
+  can't send is `error.Unsupported`, never dropped. Starts, failures and
+  platform stops come later as the advertisement's state
+  (`onAdvertiseState`, the page's `bluetooth:advertise` event). On when
+  the app declares `.permissions.bluetooth` (or `-Dbluetooth`); the page
+  gets `oriel.bluetooth.capabilities()`, `advertise(ad)` and `stop(id)`.
+  - Android and ChromeOS: BluetoothLeAdvertiser, every field (tested on a
+    Chromebook's ARC, one advertisement at a time there).
+  - Linux: BlueZ over the system bus, every field (tested on a BlueZ
+    adapter).
+  - macOS and iOS: CBPeripheralManager, service UUIDs and the device name
+    (Apple can't advertise service data); `advertise` while the
+    permission is undecided shows the prompt (tested on macOS 15).
+  - Windows: BluetoothLEAdvertisementPublisher, service UUIDs and service
+    data, no device name (not yet tested on a Windows machine).
 
 # [Oriel 0.15.1 · October 14, 2026]($heading.id('oriel-0-15-1-october-14-2026'))
 
@@ -23,7 +48,7 @@ page exports itself as views, and `zig build check-views` proves it.
 HollerShare is the first app ported this way. GTK windows paint only what
 changed.
 
-## [Added]($heading.id('added'))
+## [Added]($heading.id('added-2'))
 
 - `.oriel` views can say everything the native renderer computes from
   HTML and CSS, so an Oriel-renderer view can look exactly like the web
@@ -106,7 +131,7 @@ the same view), styled text runs, and `oriel fmt` keeps them tidy. The
 Breakout example now runs in all three renderers and fits a phone held
 upright.
 
-## [Added]($heading.id('added-2'))
+## [Added]($heading.id('added-3'))
 
 - `.oriel` text with `<span>`s: runs in their own color, weight, size,
   font or monospace, with `{binding}` text, spaces collapsed as HTML does
@@ -156,7 +181,7 @@ Zig). A fix or feature in a shared layer reaches both. The new
 behavior belongs. **Breaking** only for the example apps' build flags (see
 Changed).
 
-## [Added]($heading.id('added-3'))
+## [Added]($heading.id('added-4'))
 
 - **Oriel renderer (experimental, `-Dzig_ui`)**: `.oriel` markup compiled at
   build time into native views driven from Zig (`oriel.ui`), without
@@ -322,7 +347,7 @@ simulator builds that carry their entitlements like Xcode's. **Breaking:**
 Android (Poco X3), macOS 15.2, the iOS 18.4 simulator and CI's Xcode 26;
 the Windows hooks compile but haven't run on Windows yet.
 
-## [Added]($heading.id('added-4'))
+## [Added]($heading.id('added-5'))
 
 - **Platform hooks in Zig: `oriel.hooks`** (Linux, macOS, Windows). The app's
   Zig code sees each window and web view Oriel creates, with its native
@@ -427,7 +452,7 @@ Android, Apple Foundation Models on iOS 26) and app directories. See
 modules are gone; guard calls to desktop-only modules with
 `if (oriel.<module>.available)`.
 
-## [Added]($heading.id('added-5'))
+## [Added]($heading.id('added-6'))
 
 - `oriel.lifecycle`: the app's lifecycle with one API on every platform
   (core, always on). `subscribe(handler)` (up to 16, called on the main
@@ -719,7 +744,7 @@ macOS Services to share targets, and turns the system monitor example into
 a btop-style monitor for Linux, Windows and macOS. Native renderer frames
 on Linux are cheaper, and `JSON.parse` no longer depends on the locale.
 
-## [Added]($heading.id('added-6'))
+## [Added]($heading.id('added-7'))
 
 - Share targets on macOS: `.share_target` also gives the `.app` an entry
   in the Services menu, titled with the share label (else the app's name),
@@ -781,7 +806,7 @@ Oriel 0.9.11 adds `location.reload()` to the native renderer, makes live
 tables much cheaper to update, and fixes the macOS and iOS builds of apps
 with text to speech.
 
-## [Added]($heading.id('added-7'))
+## [Added]($heading.id('added-8'))
 
 - Native renderer: `location.reload()` starts the page again in its window,
   with a new JavaScript runtime and DOM. It runs on a turn of its own, after
@@ -840,7 +865,7 @@ box, with Kokoro-82M voices, verified downloads, bundled phoneme data and
 streaming playback on the CPU or the GPU. It also brings mDNS to Windows,
 drag and drop to the iOS native renderer, and Windows fixes.
 
-## [Added]($heading.id('added-8'))
+## [Added]($heading.id('added-9'))
 
 - `oriel.tts`: Kokoro-82M text to speech, the counterpart of `oriel.chat`
   and `oriel.dictation`. A catalog of models (`kokoro-82m-q8_0`, the
@@ -987,7 +1012,7 @@ CLI tooling.
 Oriel 0.9.7 adds opt-in offline text-to-speech with Kokoro-82M and
 built-in PCM playback.
 
-## [Added]($heading.id('added-9'))
+## [Added]($heading.id('added-10'))
 
 - `oriel.kokoro`: typed C-ABI bindings for model initialization, voice loading,
   language selection, synthesis, error reporting and PCM cleanup.
@@ -1075,7 +1100,7 @@ findings were not supported by the current code.
 Oriel 0.9.4 adds desktop wrappers for web apps, app-owned Android extensions,
 and searchable documentation.
 
-## [Added]($heading.id('added-10'))
+## [Added]($heading.id('added-11'))
 
 - `oriel wrap <url>` (alias `oriel pake`) scaffolds a desktop app for a website,
   with tray controls, close-to-tray behavior, automatic favicon fetching,
@@ -1113,7 +1138,7 @@ and searchable documentation.
 Oriel 0.9.2 lets a page find out where a dropped file lives now, so a handler
 can send it on to the system.
 
-## [Added]($heading.id('added-11'))
+## [Added]($heading.id('added-12'))
 
 - `oriel.drop.path(file)` for native-renderer pages: where a dropped file lives
   now, for a handler that forwards it (a transfer engine opens the path). The
@@ -1129,7 +1154,7 @@ can send it on to the system.
 Oriel 0.9.1 adds system sharing, persistent folder access and service discovery,
 and improves native controls, accessibility and platform integration.
 
-## [Added]($heading.id('added-12'))
+## [Added]($heading.id('added-13'))
 
 - `oriel.network.mdns` service registration and browsing, with Android's
   NsdManager backend and the `oriel_mdns_*` C ABI for native libraries.
@@ -1172,7 +1197,7 @@ Oriel 0.9.0 lets apps react to notification clicks and buttons, brings
 drag and drop to the native renderer, and closes desktop input gaps for
 ChromeOS and desktop Android. Windows support for these lands in 0.9.1. See [Notifications]($link.page('docs/modules')) for the notification API.
 
-## [Added]($heading.id('added-13'))
+## [Added]($heading.id('added-14'))
 
 - Notification click actions: `oriel.notification.notify` takes `.actions`
   (buttons), and clicks on a notification or one of its buttons reach
@@ -1224,7 +1249,7 @@ Oriel 0.8.0 introduces the optional, experimental native UI renderer alongside
 the default system WebView. The same app HTML, CSS and JavaScript run in
 QuickJS and draw through Oriel's native platform backends.
 
-## [Added]($heading.id('added-14'))
+## [Added]($heading.id('added-15'))
 
 - Build with `-Dnative_ui` on Linux, Windows, macOS, Android and iOS.
 - `oriel android dev/build` and `oriel ios dev/build` forward Zig `-D` options.
