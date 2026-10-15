@@ -38,8 +38,12 @@ pub const ClusterOptions = struct {
     /// then stops at that many and `min_size` / `merge_above` are skipped:
     /// the count is the caller's.
     speakers: u32 = 0,
-    /// Clusters with fewer members than this are folded into their nearest one.
+    /// Clusters with fewer members than this are folded into their nearest
+    /// bigger one: a single window always, a smaller cluster only when its
+    /// centroid is at least `fold_above` similar to it. In a short meeting
+    /// each person may get only two windows: those stay a speaker of their own.
     min_size: usize = 3,
+    fold_above: f32 = 0.3,
     /// Clusters whose centroids are this similar are merged afterwards.
     merge_above: f32 = 0.8,
 };
@@ -74,7 +78,7 @@ pub fn cluster(gpa: std.mem.Allocator, embeddings: []const []const f32, opts: Cl
     }
 
     if (opts.speakers == 0) {
-        try foldSmall(gpa, embeddings, labels, opts.min_size);
+        try foldSmall(gpa, embeddings, labels, opts.min_size, opts.fold_above);
         try mergeSimilar(gpa, embeddings, labels, opts.merge_above);
     }
     relabel(labels);
@@ -227,8 +231,9 @@ fn nearest(e: []const f32, cents: []const []const f32) ?usize {
 }
 
 /// Members of clusters smaller than `min_size` move to the nearest cluster
-/// that is big enough (by centroid). Nothing moves when none is.
-fn foldSmall(gpa: std.mem.Allocator, embeddings: []const []const f32, labels: []u32, min_size: usize) !void {
+/// that is big enough (by centroid): single windows always, larger ones when
+/// at least `fold_above` similar. Nothing moves when no cluster is big enough.
+fn foldSmall(gpa: std.mem.Allocator, embeddings: []const []const f32, labels: []u32, min_size: usize, fold_above: f32) !void {
     relabel(labels);
     const cents = try centroids(gpa, embeddings, labels);
     defer freeCentroids(gpa, cents);
@@ -253,6 +258,8 @@ fn foldSmall(gpa: std.mem.Allocator, embeddings: []const []const f32, labels: []
                 t.* = @intCast(j);
             }
         }
+        // A voice of its own, heard only briefly: kept.
+        if (count > 1 and best_sim < fold_above) t.* = @intCast(i);
     }
     for (labels) |*l| l.* = into[l.*];
 }
@@ -551,4 +558,28 @@ test turns {
         .{ .start = 6, .end = 7, .speaker = 1 },     .{ .start = 8, .end = 9, .speaker = 1 },
     };
     try std.testing.expectEqualSlices(Turn, &want, t);
+}
+
+test "cluster: a short meeting's briefly heard voices stay apart" {
+    // One speaker with 5 windows, three with 2 each: min_size folding must
+    // not swallow the pairs (a 45 s meeting with five people came out as one).
+    const gpa = std.testing.allocator;
+    // Four orthonormal voices, interleaved (window i is voice i % 4).
+    const e = try synthetic(gpa, 4, 5, 16, 0.2, 21);
+    defer freeSynthetic(gpa, e);
+    var all: [11][]const f32 = undefined;
+    var n: usize = 0;
+    for (e, 0..) |x, i| {
+        const voice = i % 4;
+        const nth = i / 4;
+        if (voice == 0 or nth < 2) {
+            all[n] = x;
+            n += 1;
+        }
+    }
+    const labels = try cluster(gpa, all[0..11], .{});
+    defer gpa.free(labels);
+    var k: u32 = 0;
+    for (labels) |l| k = @max(k, l + 1);
+    try std.testing.expectEqual(@as(u32, 4), k);
 }
