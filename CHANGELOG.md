@@ -2,6 +2,21 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Fixed
+
+- `oriel.chat`: a Stop that comes after its reply ended no longer stops
+  the next one. Tokens can reach the page in a burst after the model
+  finished, and `cancel()` with no reply running stops the next to start,
+  so a Stop pressed during the burst left the next message empty.
+  `chat:token` events now carry their reply's id (`reply`), and
+  `cancelReply(id)` stops that reply only while it runs; the showcase's
+  Stop sends it. `cancel()` is unchanged.
+- The showcase's chat UI test (iOS CI) no longer waits 5 minutes for a
+  reply its own late Stop had cancelled: it stops only while the reply
+  runs, and asks again after a reply with no tokens.
+
 ## [0.16.0] — 2026-10-15
 
 Oriel apps can advertise over Bluetooth LE: `oriel.bluetooth` sends a

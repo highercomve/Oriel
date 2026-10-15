@@ -697,7 +697,7 @@ async function compare(card, btn) {
 // Chat: oriel.chat, a local LLM (llama.cpp) with the model's own chat
 // template, streamed tokens and the conversation's KV cache reused per turn.
 
-const chatState = { status: null, model: null, backend: "auto", messages: [], busy: false, bubble: null };
+const chatState = { status: null, model: null, backend: "auto", messages: [], busy: false, bubble: null, reply: 0 };
 
 async function chatRefresh() {
   const st = await invoke("chat_status");
@@ -793,6 +793,7 @@ function bubble(role, text) {
 }
 listen("chat:token", (t) => {
   if (!chatState.bubble) return;
+  chatState.reply = t.reply;
   const p = chatState.bubble.querySelector("p");
   p.textContent += t.text;
   chatState.bubble.scrollIntoView({ block: "end" });
@@ -802,7 +803,9 @@ const chatOptions = () => ({ model: chatState.model, backend: chatState.backend 
 
 $("chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (chatState.busy) return invoke("chat_cancel");
+  // Stop: the reply whose tokens are showing, so a Stop that comes after
+  // it ended (its last tokens still arriving) doesn't stop the next one.
+  if (chatState.busy) return invoke("chat_cancel", { reply: chatState.reply || 0 });
   const text = $("chat-input").value.trim();
   if (!text) return;
   $("chat-input").value = "";
@@ -811,6 +814,7 @@ $("chat-form").addEventListener("submit", async (e) => {
   bubble("user", text);
   chatState.bubble = bubble("assistant", "");
   chatState.bubble.classList.add("typing");
+  chatState.reply = 0;
   chatState.busy = true;
   chatRender();
   $("chat-state").textContent = "Thinking…";

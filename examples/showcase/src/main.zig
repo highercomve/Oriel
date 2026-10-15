@@ -161,8 +161,10 @@ pub const Commands = struct {
     }
 
     /// Not async: it must run while chat_send is busy on a worker.
-    pub fn chat_cancel(_: std.mem.Allocator) void {
-        chat.cancel();
+    /// `reply`: the reply the page saw tokens of (0: none yet, so the one
+    /// running or about to start).
+    pub fn chat_cancel(_: std.mem.Allocator, args: struct { reply: u64 = 0 }) void {
+        if (args.reply != 0) chat.cancelReply(args.reply) else chat.cancel();
     }
 
     pub fn chat_compare(_: std.mem.Allocator, args: chat.Options) !chat.Comparison {

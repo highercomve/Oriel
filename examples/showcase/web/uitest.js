@@ -69,13 +69,21 @@
     // the 3rd and the 8th token, then Stop. Counting is long and never
     // refused (a 0.5B model sometimes declines a story), but it may still
     // shorten it ("1 … 200") and finish before Stop arrives: then ask again.
+    // The tokens can also arrive in one burst after the model has finished
+    // (v0.15.1's run: the first after 18 s, for 291 tokens at 44 tok/s);
+    // a Stop then reaches no reply, and chat.cancel() keeps it for the next
+    // one, which ends at once with no tokens. That attempt only uses up the
+    // late Stop: ask again.
     let tokens = 0, len3 = 0, len8 = 0;
     const bubbleText = () => { const b = $("chat-log").querySelectorAll(".bubble"); return b[b.length - 1].querySelector("p").textContent; };
     const meta = () => { const s = $("chat-log").querySelectorAll(".bubble small"); return s.length ? s[s.length - 1].textContent : ""; };
     const offTok = listen("chat:token", () => {
       tokens += 1; // after the page's own listener, which appended the token
       if (tokens === 3) len3 = bubbleText().length;
-      if (tokens === 8) { len8 = bubbleText().length; $("chat-send").click(); } // Stop while busy
+      if (tokens === 8) {
+        len8 = bubbleText().length;
+        if (chatState.busy) $("chat-send").click(); // Stop while busy
+      }
     });
     for (let attempt = 1; ; attempt++) {
       // A fresh conversation each time: asked again in the same one, the
@@ -85,11 +93,13 @@
       $("chat-input").value = "Count from 1 to 200, one number per line.";
       $("chat-form").requestSubmit();
       const t0 = Date.now();
-      await until(() => tokens >= 1, 5 * 60000, "the first token");
-      await log(`first token after ${Date.now() - t0} ms`);
+      await until(() => tokens >= 1 || !chatState.busy, 5 * 60000, "the first token");
+      if (tokens >= 1) await log(`first token after ${Date.now() - t0} ms`);
       await until(() => !chatState.busy, 5 * 60000, "the reply to end");
-      if (/stopped/.test(meta()) || attempt === 4) break;
-      await log(`attempt ${attempt}: the answer ended on its own after ${tokens} tokens (${meta()}): asking again`);
+      const stopped = /stopped/.test(meta());
+      if ((stopped && len8 > 0) || attempt === 6) break;
+      if (tokens === 0) await log(`attempt ${attempt}: no tokens (${meta()}): the last Stop came after its reply ended and stopped this one: asking again`);
+      else await log(`attempt ${attempt}: the answer ended on its own after ${tokens} tokens (${meta()}): asking again`);
     }
     await log(`streaming: the bubble had ${len3} characters after 3 tokens, ${len8} after 8; ${tokens} tokens reached the page`);
     check(len8 > len3 && len3 > 0, "the reply didn't grow while streaming");
