@@ -22,7 +22,7 @@ pub const Commands = struct {
     /// Samples live CPU (per core), memory, disks, network, sensors and the
     /// busiest processes; those matching the page's `filter` first, so an
     /// idle one it searches for is among the rows sent.
-    pub fn sample(gpa: std.mem.Allocator, actual_io: std.Io, args: struct { filter: []const u8 = "" }) !sampler_mod.SystemSample {
+    pub fn sample(gpa: std.mem.Allocator, actual_io: std.Io, args: struct { filter: []const u8 = "", application_id: u64 = 0 }) !sampler_mod.SystemSample {
         sampler_lock.lockUncancelable(actual_io);
         defer sampler_lock.unlock(actual_io);
         if (!sampler_initialized) {
@@ -31,6 +31,10 @@ pub const Commands = struct {
         }
         sampler.filter = std.mem.trim(u8, args.filter[0..@min(args.filter.len, tm.max_filter)], " \t");
         defer sampler.filter = "";
+        if (@hasField(sampler_mod.Sampler, "application_id")) sampler.application_id = args.application_id;
+        defer if (@hasField(sampler_mod.Sampler, "application_id")) {
+            sampler.application_id = 0;
+        };
         return sampler.sample(actual_io, gpa);
     }
 

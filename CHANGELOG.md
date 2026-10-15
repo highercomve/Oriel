@@ -4,6 +4,16 @@ Notable changes in Oriel releases.
 
 ## [Unreleased]
 
+### Added
+
+- System monitor example: an **Applications** list, the default in all
+  three renderers. Each desktop app shows its combined CPU, summed resident
+  memory, threads and process count; **Show processes** opens its members
+  as a parent/child tree, and **All processes** lists everything, as
+  before. Apps are recognized from desktop entries (Linux), `.app` bundles
+  (macOS) and window owners (Windows), with process ancestry. Its CI runs
+  the model tests and builds the Oriel renderer on Windows and macOS.
+
 ### Fixed
 
 - `oriel.chat`: a Stop that comes after its reply ended no longer stops
@@ -16,6 +26,9 @@ Notable changes in Oriel releases.
 - The showcase's chat UI test (iOS CI) no longer waits 5 minutes for a
   reply its own late Stop had cancelled: it stops only while the reply
   runs, and asks again after a reply with no tokens.
+- System monitor (Oriel renderer): picking a sort key (CPU, Memory, ...)
+  no longer flips the direction; only the direction button does, as in the
+  web frontend.
 
 ## [0.16.0] — 2026-10-15
 

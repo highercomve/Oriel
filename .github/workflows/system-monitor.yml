@@ -87,6 +87,10 @@ jobs:
           if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
       - name: Sampler test (one full sample)
         run: zig test src/sampler_windows.zig -OReleaseFast
+      - name: Model tests (applications, histories, process filtering and sorting)
+        run: zig build test
+      - name: Oriel renderer build (.oriel views)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
       - name: Build
         run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Installer (setup.exe) and portable zip
@@ -115,6 +119,10 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: Sampler test (one full sample)
         run: zig test src/sampler_macos.zig -OReleaseFast
+      - name: Model tests (applications, histories, process filtering and sorting)
+        run: zig build test
+      - name: Oriel renderer build (.oriel views)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
       - name: Build
         run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
       - name: Disk image (.app in a .dmg, unsigned)

@@ -23,13 +23,14 @@
   const settings = loadSettings();
 
   function loadSettings() {
-    const defaults = { interval: 2000, netIface: null, show: {} };
+    const defaults = { interval: 2000, netIface: null, show: {}, applicationsView: true };
     for (const s of SECTIONS) defaults.show[s.key] = true;
     try {
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (saved && typeof saved === "object") {
         if ([1000, 2000, 5000].includes(saved.interval)) defaults.interval = saved.interval;
         if (typeof saved.netIface === "string") defaults.netIface = saved.netIface;
+        if (typeof saved.applicationsView === "boolean") defaults.applicationsView = saved.applicationsView;
         if (saved.show) for (const s of SECTIONS) if (typeof saved.show[s.key] === "boolean") defaults.show[s.key] = saved.show[s.key];
       }
     } catch (_) {}
@@ -54,6 +55,10 @@
   let currentSortKey = "cpu";
   let sortAscending = false;
   let filterText = "";
+  let applicationView = settings.applicationsView;
+  let applicationId = "0";
+  let applicationName = "";
+  let resamplePending = false;
   let pendingKill = null; // { pid, name }
   let lastUptime = 0;
 
@@ -316,12 +321,12 @@
     }
     // One in flight at a time: a slow sample (a drive's sensor waking up)
     // doesn't pile calls up behind it.
-    if (sampling) return;
+    if (sampling) { resamplePending = true; return; }
     sampling = true;
     try {
       // The filter goes along: matching processes are sent even when idle
       // (only the busiest rows reach the page otherwise).
-      const sample = await window.oriel.invoke("sample", { filter: filterText.trim() });
+      const sample = await window.oriel.invoke("sample", { filter: filterText.trim(), application_id: applicationId });
       if (!sample) return;
 
       lastSampleData = sample;
@@ -331,6 +336,7 @@
       elHeaderStatus.textContent = `Sample error: ${err.message || err}`;
     } finally {
       sampling = false;
+      if (resamplePending) { resamplePending = false; performSample(); }
     }
   }
 
@@ -627,13 +633,18 @@
   function renderTable() {
     if (!lastSampleData || !lastSampleData.processes) return;
 
-    let rows = [...lastSampleData.processes];
+    if (!lastSampleData.applications_supported) applicationView = false;
+    updateApplicationView();
+    let rows = applicationView
+      ? (lastSampleData.applications || []).map((r) => ({ ...r, _application: true }))
+      : lastSampleData.processes.filter((r) => applicationId === "0" || String(r.application_id) === applicationId);
+    if (!applicationView && applicationId !== "0" && String(lastSampleData.application_id) !== applicationId) rows = [];
 
     // Filter
     if (filterText.trim().length > 0) {
       const q = filterText.trim().toLowerCase();
       rows = rows.filter((r) => {
-        return String(r.pid).includes(q) ||
+        return (!r._application && String(r.pid).includes(q)) ||
           (r.name && r.name.toLowerCase().includes(q)) ||
           (r.user && r.user.toLowerCase().includes(q)) ||
           (r.command && r.command.toLowerCase().includes(q));
@@ -650,20 +661,87 @@
       } else if (currentSortKey === "threads") {
         diff = (a.threads - b.threads) || (a.cpu_percent - b.cpu_percent);
       } else if (currentSortKey === "pid") {
-        diff = a.pid - b.pid;
+        diff = applicationView ? a.process_count - b.process_count : a.pid - b.pid;
       } else if (currentSortKey === "name") {
         diff = (a.name || "").localeCompare(b.name || "");
       }
       return sortAscending ? diff : -diff;
     });
 
-    setText(elCountBadge, `${rows.length} of ${lastSampleData.total_processes}`);
-    viewRows = rows;
+    const total = applicationView ? lastSampleData.total_applications : applicationId === "0" ? lastSampleData.total_processes : lastSampleData.application_process_count;
+    setText(elCountBadge, `${rows.length} of ${total}`);
+    viewRows = !applicationView && applicationId !== "0" ? processTree(rows) : rows;
     setClass(elEmptyState, "hidden", rows.length > 0);
     // The list is as tall as all its rows; only the ones in view exist.
     const height = `${rows.length * ROW_H}px`;
     if (elProcTbody.style.height !== height) elProcTbody.style.height = height;
     syncRows(true);
+  }
+
+  function updateApplicationView() {
+    setClass($("sec-proc"), "application-view", applicationView);
+    setClass($("sec-proc"), "process-tree", !applicationView && applicationId !== "0");
+    setClass($("view-applications"), "hidden", !lastSampleData.applications_supported);
+    setClass($("view-applications"), "active", applicationView);
+    setClass($("view-processes"), "active", !applicationView && applicationId === "0");
+    setText($("process-view-title"), applicationView ? "Applications" : applicationId === "0" ? "Processes" : `Processes · ${applicationName}`);
+    setText($("pid-heading"), applicationView ? "Processes" : "PID");
+    setText(document.querySelector('[data-sort="pid"]'), applicationView ? "Count" : "PID");
+    setText($("table-hint"), applicationView ? "Summed RSS includes shared pages" : "Process actions affect one process (confirmed first)");
+    setText($("view-description"), applicationView ? "Combined CPU and summed RSS, including helpers." : applicationId === "0" ? "All individual processes, including background programs." : "App process tree · Sort applies to siblings.");
+    const placeholder = applicationView ? "Filter by application or user…" : "Filter by name, user, command or pid…";
+    if (elSearchInput.placeholder !== placeholder) elSearchInput.placeholder = placeholder;
+  }
+
+  function setApplicationView(applications, app = null) {
+    hideContextMenu();
+    applicationView = applications;
+    applicationId = app ? String(app.id) : "0";
+    applicationName = app?.name || "";
+    if (!app) { settings.applicationsView = applications; saveSettings(); }
+    filterText = "";
+    elSearchInput.value = "";
+    setClass(elSearchClear, "hidden", true);
+    elTableScroll.scrollTop = 0;
+    renderTable();
+    performSample();
+  }
+
+  $("view-applications").onclick = () => setApplicationView(true);
+  $("view-processes").onclick = () => setApplicationView(false);
+
+  function processTree(rows) {
+    const byPid = new Map(rows.map((row) => [row.pid, row]));
+    const children = new Map();
+    const parents = new Map();
+    for (const row of rows) {
+      const parent = byPid.get(row.parent_pid);
+      if (!parent || parent.pid === row.pid || String(parent.application_id) !== String(row.application_id)) continue;
+      if (BigInt(row.start_time || 0) > 0n && BigInt(parent.start_time || 0) > BigInt(row.start_time)) continue;
+      parents.set(row.pid, parent.pid);
+      if (!children.has(parent.pid)) children.set(parent.pid, []);
+      children.get(parent.pid).push(row);
+    }
+    const result = [], seen = new Set();
+    function visit(root) {
+      if (seen.has(root.pid)) return;
+      const stack = [{ row: root, prefix: "", depth: 0, last: true }];
+      seen.add(root.pid);
+      while (stack.length) {
+        const frame = stack.pop();
+        const connector = frame.depth ? (frame.last ? "└─ " : "├─ ") : "";
+        result.push({ ...frame.row, _treeName: frame.prefix + connector + frame.row.name });
+        const descendants = (children.get(frame.row.pid) || []).filter((row) => !seen.has(row.pid));
+        for (let i = descendants.length - 1; i >= 0; i--) {
+          const row = descendants[i];
+          seen.add(row.pid);
+          stack.push({ row, prefix: frame.prefix + (frame.depth ? (frame.last ? "   " : "│  ") : ""), depth: frame.depth + 1, last: i === descendants.length - 1 });
+        }
+      }
+    }
+    for (const row of rows) if (!parents.has(row.pid)) visit(row);
+    for (const row of rows) visit(row); // Cycles and missing parents never hide rows.
+    return result;
   }
 
   // The process list is virtual: rows are placed absolutely at their index,
@@ -706,8 +784,9 @@
   /** A row's cells to a process: only the text that changed is touched. */
   function fillRow(row, r) {
     row.proc = r;
-    setText(row.cells.pid, String(r.pid));
-    setText(row.cells.name, r.name || "unknown");
+    setText(row.cells.pid, String(r._application ? r.process_count : r.pid));
+    setText(row.btnKill, r._application ? "Show processes" : closeLabel);
+    setText(row.cells.name, r._treeName || r.name || "unknown");
     setText(row.cells.user, r.user || "");
     setText(row.cells.state, r.state || "?");
     setText(row.cells.threads, String(r.threads || 1));
@@ -726,6 +805,7 @@
     row.el.className = "table-row";
     // Right-click context menu with submenus
     row.el.oncontextmenu = (e) => {
+      if (row.proc?._application) { e.preventDefault(); return; }
       if (row.proc) showContextMenu(e, row.proc);
     };
     // Tooltips name the row's current process. Set on hover, not on every
@@ -734,7 +814,7 @@
       if (!row.proc) return;
       row.cells.name.title = row.proc.name || "";
       row.cells.cmd.title = row.proc.command || "";
-      row.btnKill.title = `${closeLabel === "Close…" ? "Ask to close" : "Send SIGTERM to"} ${row.proc.name} (${row.proc.pid})`;
+      row.btnKill.title = row.proc._application ? `Show processes for ${row.proc.name}` : `${closeLabel === "Close…" ? "Ask to close" : "Send SIGTERM to"} ${row.proc.name} (${row.proc.pid})`;
     };
     for (const [key, cls] of [["pid", "col-pid"], ["name", "col-name"], ["user", "col-user"], ["state", "col-state"], ["threads", "col-threads"], ["cpu", "col-cpu"], ["mem", "col-mem"], ["cmd", "col-cmd"]]) {
       const cell = document.createElement("div");
@@ -751,7 +831,8 @@
     row.btnKill.textContent = closeLabel;
     row.btnKill.onclick = (e) => {
       e.stopPropagation();
-      if (row.proc) openKillModal(row.proc.pid, row.proc.name);
+      if (row.proc?._application) setApplicationView(false, row.proc);
+      else if (row.proc) openKillModal(row.proc.pid, row.proc.name);
     };
 
     // Copy Name Button

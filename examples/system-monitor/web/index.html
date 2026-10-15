@@ -183,6 +183,11 @@
 
       <!-- Processes -->
       <div class="proc-section" id="sec-proc">
+        <div class="application-switch sort-group" role="group" aria-label="Process view">
+          <button class="btn-toggle active" id="view-applications">Applications</button>
+          <button class="btn-toggle" id="view-processes">All processes</button>
+          <span class="table-hint" id="view-description">Combined CPU and summed RSS, including helpers.</span>
+        </div>
         <!-- Toolbar -->
         <section class="toolbar">
           <div class="toolbar-left">
@@ -221,7 +226,7 @@
         <section class="table-section">
           <div class="table-header-row">
             <div class="table-title-area">
-              <span class="table-title">Processes</span>
+              <span class="table-title" id="process-view-title">Applications</span>
               <span class="badge badge-secondary" id="count-badge">0 of 0</span>
             </div>
             <span class="table-hint" id="table-hint">Right-click or click Terminate for polite SIGTERM (confirmed first)</span>
@@ -229,7 +234,7 @@
 
           <div class="table-container">
             <div class="table-header">
-              <div class="col-pid">PID</div>
+              <div class="col-pid" id="pid-heading">PID</div>
               <div class="col-name">Name</div>
               <div class="col-user">User</div>
               <div class="col-state">State</div>

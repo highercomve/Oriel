@@ -9,6 +9,7 @@ const fmt = @import("monitor_format.zig");
 const charts = @import("monitor_charts.zig");
 const Shell = ui.View(@embedFile("monitor.oriel"));
 const Row = ui.View(@embedFile("process.oriel"));
+const AppRow = ui.View(@embedFile("application.oriel"));
 const Disk = ui.View(@embedFile("disk.oriel"));
 const Settings = ui.View(@embedFile("settings.oriel"));
 const Actions = ui.View(@embedFile("actions.oriel"));
@@ -19,6 +20,7 @@ const actions_id: i64 = 2000;
 const confirm_id: i64 = 3000;
 const rows_base: i64 = 10000;
 const disk_base: i64 = 20000;
+const app_rows_base: i64 = 30000;
 const row_capacity = 96;
 const row_height = 34;
 const sample_request = 1;
@@ -40,6 +42,12 @@ const State = struct {
     order: model.Order = .{},
     selected: [tm.max_rows]tm.ProcessRow = undefined,
     selected_len: usize = 0,
+    tree_info: [tm.max_rows]model.TreeInfo = @splat(.{}),
+    applications_view: bool = true,
+    selected_apps: [tm.max_rows]tm.ApplicationRow = undefined,
+    application_id: u64 = 0,
+    application_name: [256]u8 = undefined,
+    application_name_len: usize = 0,
     action_arena: std.heap.ArenaAllocator = undefined,
     action: ?tm.ProcessRow = null,
     disk_count: usize = 0,
@@ -61,7 +69,7 @@ const State = struct {
     copy_label: []const u8 = "process name",
     samples: u64 = 0,
 };
-const SavedSettings = struct { shown: [8]bool = @splat(true), interval_ms: u32 = 2000, interface: []const u8 = "" };
+const SavedSettings = struct { shown: [8]bool = @splat(true), interval_ms: u32 = 2000, interface: []const u8 = "", applications_view: bool = true };
 var s: State = .{};
 pub fn configure(io: std.Io) void {
     s.io = io;
@@ -97,7 +105,7 @@ fn boot(e: *ui.Engine) !void {
     s.program = .init(e.gpa);
     s.action_arena = .init(e.gpa);
     s.initialized = true;
-    inline for (.{ .{ Shell, 10000 }, .{ Row, 11000 }, .{ Disk, 12000 }, .{ Settings, 13000 }, .{ Actions, 14000 }, .{ Confirm, 15000 } }) |v| try v[0].prepare(&e.tree, v[1]);
+    inline for (.{ .{ Shell, 10000 }, .{ Row, 11000 }, .{ AppRow, 16000 }, .{ Disk, 12000 }, .{ Settings, 13000 }, .{ Actions, 14000 }, .{ Confirm, 15000 } }) |v| try v[0].prepare(&e.tree, v[1]);
     _ = try Shell.mount(&e.tree, root_id, 10000, &.{});
     e.tree.root = e.tree.get(root_id);
     load_settings(e) catch |err| std.log.warn("monitor settings: {s}", .{@errorName(err)});
@@ -106,6 +114,7 @@ fn boot(e: *ui.Engine) !void {
     e.tree.get(sid("panels-row")).?.stamp_owned = false;
     try visibility(e);
     try sort_labels(e);
+    try view_labels(e);
     try ui.invoke(e, info_request, "system_info", .{});
     try request_sample(e);
 }
@@ -131,6 +140,7 @@ fn load_settings(e: *ui.Engine) !void {
     defer parsed.deinit();
     s.settings.shown = parsed.value.shown;
     s.settings.interval_ms = parsed.value.interval_ms;
+    s.applications_view = parsed.value.applications_view;
     const name = std.mem.trimEnd(u8, parsed.value.interface, "\x00");
     s.settings.interface_len = @min(name.len, s.settings.interface.len);
     @memcpy(s.settings.interface[0..s.settings.interface_len], name[0..s.settings.interface_len]);
@@ -138,7 +148,7 @@ fn load_settings(e: *ui.Engine) !void {
 }
 fn save_settings(e: *ui.Engine) !void {
     const path = s.settings_path orelse return;
-    const bytes = try std.json.Stringify.valueAlloc(e.gpa, SavedSettings{ .shown = s.settings.shown, .interval_ms = s.settings.interval_ms, .interface = s.settings.interface[0..s.settings.interface_len] }, .{});
+    const bytes = try std.json.Stringify.valueAlloc(e.gpa, SavedSettings{ .shown = s.settings.shown, .interval_ms = s.settings.interval_ms, .interface = s.settings.interface[0..s.settings.interface_len], .applications_view = s.applications_view }, .{});
     defer e.gpa.free(bytes);
     try std.Io.Dir.cwd().writeFile(s.io, .{ .sub_path = path, .data = bytes });
 }
@@ -194,7 +204,7 @@ fn request_sample(e: *ui.Engine) !void {
     }
     s.in_flight = true;
     errdefer s.in_flight = false;
-    try ui.invoke(e, sample_request, "sample", .{ .filter = s.filter[0..s.filter_len] });
+    try ui.invoke(e, sample_request, "sample", .{ .filter = s.filter[0..s.filter_len], .application_id = s.application_id });
 }
 fn timer(e: *ui.Engine, id: u32) !void {
     if (id == s.notification_timer) {
@@ -401,14 +411,26 @@ fn render_sensors(e: *ui.Engine) !void {
 }
 
 fn render_processes(e: *ui.Engine, reset_scroll: bool) !void {
-    const rows = model.select(s.sample.?.value.processes, s.filter[0..s.filter_len], s.order, &s.selected);
-    s.selected_len = rows.len;
+    const sample = s.sample.?.value;
+    if (!sample.applications_supported) s.applications_view = false;
+    try view_labels(e);
+    const filter = s.filter[0..s.filter_len];
+    if (s.applications_view) {
+        s.selected_len = model.select_applications(sample.applications, filter, s.order, &s.selected_apps).len;
+    } else {
+        s.selected_len = model.select_members(sample.processes, filter, s.order, s.application_id, &s.selected).len;
+        // A response already in flight may still contain the preceding group.
+        if (s.application_id != 0 and sample.application_id != s.application_id) s.selected_len = 0;
+        if (s.application_id != 0) _ = model.process_tree(s.selected[0..s.selected_len], &s.selected, &s.tree_info);
+    }
     if (reset_scroll) e.tree.get(sid("proc-scroll")).?.scroll_y = 0;
     var buf: [180]u8 = undefined;
-    try text(e, sid("proc-detail"), try std.fmt.bufPrint(&buf, "{d} of {d}", .{ rows.len, s.sample.?.value.total_processes }));
+    const total = if (s.applications_view) sample.total_applications else if (s.application_id != 0) sample.application_process_count else sample.total_processes;
+    try text(e, sid("proc-detail"), try std.fmt.bufPrint(&buf, "{d} of {d}", .{ s.selected_len, total }));
     try render_rows(e);
 }
 fn render_rows(e: *ui.Engine) !void {
+    if (s.applications_view) return render_application_rows(e);
     const scroll = e.tree.get(sid("proc-scroll")).?;
     const max_scroll = @max(0, @as(f32, @floatFromInt(s.selected_len * row_height)) - scroll.frame.h);
     scroll.scroll_y = std.math.clamp(scroll.scroll_y, 0, max_scroll);
@@ -434,22 +456,98 @@ fn render_rows(e: *ui.Engine) !void {
         var amount: [40]u8 = undefined;
         try writer.writeAll(try fmt.bytes(&amount, @floatFromInt(row.mem_rss_bytes)));
         bindings[3] = .{ .name = "mem", .value = buf[offset..writer.end] };
-        bindings[4] = .{ .name = "name", .value = row.name };
+        var name_buf: [1024]u8 = undefined;
+        bindings[4] = .{ .name = "name", .value = if (s.application_id != 0) try model.tree_name(&name_buf, row.name, s.tree_info[start + i]) else row.name };
         bindings[5] = .{ .name = "user", .value = row.user };
         bindings[6] = .{ .name = "state", .value = row.state };
         bindings[7] = .{ .name = "command", .value = row.command };
         offset = writer.end;
-        try writer.print("Send SIGTERM to {s} ({d})", .{ row.name, row.pid });
+        try writer.print("{s} {s} ({d})", .{ if (builtin.os.tag == .windows) "Ask to close" else "Send SIGTERM to", row.name, row.pid });
         bindings[8] = .{ .name = "kill_tip", .value = buf[offset..writer.end] };
         const id = rows_base + @as(i64, @intCast(i)) * 20;
         if (e.tree.get(id) == null) {
             _ = try Row.mount(&e.tree, id, 11000, &bindings);
         } else try Row.update(&e.tree, id, &bindings);
+        if (builtin.os.tag == .windows) try label(e, Row.id("actions", id), "Close…");
         ids[i] = id;
     }
     if (!try e.tree.stampKids(sid("rows"), ids[0..count])) return error.InvalidTemplate;
     try height(e, sid("before"), @floatFromInt(start * row_height));
     try height(e, sid("after"), @floatFromInt((s.selected_len - start - count) * row_height));
+}
+
+fn render_application_rows(e: *ui.Engine) !void {
+    const scroll = e.tree.get(sid("proc-scroll")).?;
+    const max_scroll = @max(0, @as(f32, @floatFromInt(s.selected_len * row_height)) - scroll.frame.h);
+    scroll.scroll_y = std.math.clamp(scroll.scroll_y, 0, max_scroll);
+    const start = @min(s.selected_len, @as(usize, @intFromFloat(scroll.scroll_y / row_height)));
+    const shown: usize = @intFromFloat(@ceil(scroll.frame.h / row_height) + 1);
+    const count = @min(row_capacity, shown, s.selected_len - start);
+    var ids: [row_capacity]i64 = undefined;
+    for (s.selected_apps[start..][0..count], 0..) |row, i| {
+        var count_buf: [24]u8 = undefined;
+        var thread_buf: [24]u8 = undefined;
+        var cpu_buf: [40]u8 = undefined;
+        var mem_buf: [40]u8 = undefined;
+        const bindings = [_]ui.Binding{
+            .{ .name = "name", .value = row.name },
+            .{ .name = "user", .value = row.user },
+            .{ .name = "count", .value = try std.fmt.bufPrint(&count_buf, "{d}", .{row.process_count}) },
+            .{ .name = "threads", .value = try std.fmt.bufPrint(&thread_buf, "{d}", .{row.threads}) },
+            .{ .name = "cpu", .value = try std.fmt.bufPrint(&cpu_buf, "{d:.1}%", .{row.cpu_percent}) },
+            .{ .name = "mem", .value = try fmt.bytes(&mem_buf, @floatFromInt(row.mem_rss_bytes)) },
+        };
+        const id = app_rows_base + @as(i64, @intCast(i)) * 20;
+        if (e.tree.get(id) == null) {
+            _ = try AppRow.mount(&e.tree, id, 16000, &bindings);
+        } else try AppRow.update(&e.tree, id, &bindings);
+        ids[i] = id;
+    }
+    if (!try e.tree.stampKids(sid("rows"), ids[0..count])) return error.InvalidTemplate;
+    try height(e, sid("before"), @floatFromInt(start * row_height));
+    try height(e, sid("after"), @floatFromInt((s.selected_len - start - count) * row_height));
+}
+
+fn view_labels(e: *ui.Engine) !void {
+    try display(e, sid("application-header"), s.applications_view);
+    try display(e, sid("process-header"), !s.applications_view);
+    try display(e, sid("view-applications"), if (s.sample) |v| v.value.applications_supported else true);
+    try text(e, sid("proc-title"), if (s.applications_view) "Applications" else if (s.application_id != 0) s.application_name[0..s.application_name_len] else "Processes");
+    try text(e, sid("proc-hint"), if (s.applications_view) "Summed RSS includes shared pages" else if (builtin.os.tag == .windows) "Close asks one process's windows to close (confirmed first)" else "Terminate sends SIGTERM to one process (confirmed first)");
+    try text(e, sid("view-description"), if (s.applications_view) "Combined CPU and summed RSS for each app, including helpers." else if (s.application_id != 0) "App process tree · Sort applies to siblings · Applications returns to the overview." else "All individual processes, including background programs.");
+    var search = e.tree.get(sid("search")).?.props;
+    const placeholder = if (s.applications_view) "Filter by application or user…" else "Filter by name, user, command or pid…";
+    // Updating an input's native props resets its selection. Leave it alone
+    // during samples and typing; only a view change needs a new placeholder.
+    if (!std.mem.eql(u8, search.ph orelse "", placeholder)) {
+        search.ph = placeholder;
+        search.al = if (s.applications_view) "Filter applications" else "Filter processes";
+        try e.tree.updateUiProps(sid("search"), search);
+    }
+    inline for (.{ "view-applications", "view-processes" }, 0..) |name, index| {
+        var props = e.tree.get(sid(name)).?.props;
+        props.bg = .{ .color = oriel.canvas.rgb(if (s.applications_view == (index == 0) and s.application_id == 0) 0x1f6feb else 0x21262d) };
+        try e.tree.updateUiProps(sid(name), props);
+    }
+    try label(e, sid("sort-pid"), if (s.applications_view) "Count" else "PID");
+    try width(e, sid("sort-pid"), if (s.applications_view) 48 else 36);
+}
+
+fn application_click(e: *ui.Engine, id: i64) !bool {
+    if (!s.applications_view or id < app_rows_base or id >= app_rows_base + row_capacity * 20) return false;
+    const root = app_rows_base + @divTrunc(id - app_rows_base, 20) * 20;
+    if (id != AppRow.id("details", root)) return false;
+    const start: usize = @intFromFloat(e.tree.get(sid("proc-scroll")).?.scroll_y / row_height);
+    const index = start + @as(usize, @intCast(@divTrunc(root - app_rows_base, 20)));
+    if (index >= s.selected_len) return true;
+    const app = s.selected_apps[index];
+    s.application_id = app.id;
+    s.application_name_len = @min(app.name.len, s.application_name.len);
+    @memcpy(s.application_name[0..s.application_name_len], app.name[0..s.application_name_len]);
+    s.applications_view = false;
+    try set_filter(e, "", true);
+    try request_sample(e);
+    return true;
 }
 fn redraw(e: *ui.Engine) !void {
     const sample = if (s.sample) |v| v.value else return;
@@ -690,6 +788,7 @@ fn handle_event(e: *ui.Engine, id: i64, kind: []const u8, data: []const u8) !boo
     }
     if (s.actions_open and try action_click(e, id)) return true;
     if (s.settings_open and try settings_click(e, id)) return true;
+    if (click and try application_click(e, id)) return true;
     if (process_at(e, id)) |row| {
         if (id == Row.id("copy", rows_base + @divTrunc(id - rows_base, 20) * 20)) {
             try copy(e, row.name, "process name");
@@ -796,6 +895,16 @@ fn switch_network(e: *ui.Engine, forward: bool) !void {
 }
 
 fn toolbar_click(e: *ui.Engine, id: i64) !bool {
+    if (id == sid("view-applications") or id == sid("view-processes")) {
+        s.applications_view = id == sid("view-applications");
+        s.application_id = 0;
+        s.application_name_len = 0;
+        try close_overlays(e);
+        try set_filter(e, "", true);
+        try save_settings(e);
+        try request_sample(e);
+        return true;
+    }
     if (id == sid("settings")) {
         if (s.settings_open) try close_overlays(e) else try open_settings(e);
         return true;
@@ -826,7 +935,8 @@ fn toolbar_click(e: *ui.Engine, id: i64) !bool {
     }
     inline for (.{ "cpu", "mem", "threads", "pid", "name" }) |field| if (id == sid("sort-" ++ field)) {
         const sort: model.Sort = @field(model.Sort, field);
-        s.order = .{ .field = sort, .descending = if (s.order.field == sort) !s.order.descending else sort != .name and sort != .pid };
+        // The key only: the direction is sort-dir's, as in the web frontend.
+        s.order.field = sort;
         try sort_labels(e);
         if (s.sample != null) try render_processes(e, true);
         try action_feedback(e, "Process sort updated.", true);

@@ -18,6 +18,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const tm = @import("telemetry.zig");
+const applications = @import("applications.zig");
 
 const Io = std.Io;
 
@@ -35,6 +36,7 @@ extern "c" fn sysctl(name: [*]const c_int, name_len: c_uint, old: ?*anyopaque, o
 extern "c" fn getloadavg(loads: [*]f64, n: c_int) c_int;
 extern "c" fn proc_listallpids(buf: ?*anyopaque, size: c_int) c_int;
 extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buf: ?*anyopaque, size: c_int) c_int;
+extern "c" fn proc_pidpath(pid: c_int, buf: [*]u8, size: u32) c_int;
 extern "c" fn if_indextoname(index: c_uint, name: [*]u8) ?[*:0]u8;
 extern "c" fn getpwuid(uid: u32) ?*const Passwd;
 extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
@@ -208,6 +210,7 @@ const ProcMeta = struct {
     command: []u8,
     user: []u8,
     seen: u64,
+    executable: []u8,
 };
 
 const NetPrev = struct { name: []u8, rx: u64, tx: u64 };
@@ -216,6 +219,7 @@ pub const Sampler = struct {
     gpa: std.mem.Allocator,
     /// The page's process filter for the next sample (borrowed; main.zig).
     filter: []const u8 = "",
+    application_id: u64 = 0,
     cores: u32 = 1,
     cpu_model_buf: [128]u8 = undefined,
     cpu_model_len: usize = 0,
@@ -280,6 +284,7 @@ pub const Sampler = struct {
         gpa.free(m.name);
         gpa.free(m.command);
         gpa.free(m.user);
+        gpa.free(m.executable);
     }
 
     pub fn cpuModel(s: *const Sampler) []const u8 {
@@ -430,6 +435,8 @@ pub const Sampler = struct {
                     const name = std.mem.sliceTo(&all.bsd.name, 0);
                     try procs.append(arena, .{
                         .pid = pid,
+                        .parent_pid = all.bsd.ppid,
+                        .start_time = start,
                         .name = try arena.dupe(u8, if (name.len > 0) name else std.mem.sliceTo(&all.bsd.comm, 0)),
                         .command = "",
                         .user = "",
@@ -445,6 +452,7 @@ pub const Sampler = struct {
                 if (proc_pidinfo(pid_c, PROC_PIDT_SHORTBSDINFO, 0, &short, @sizeOf(ProcBsdShortInfo)) != @sizeOf(ProcBsdShortInfo)) continue;
                 try procs.append(arena, .{
                     .pid = pid,
+                    .parent_pid = short.ppid,
                     .name = try arena.dupe(u8, std.mem.sliceTo(&short.comm, 0)),
                     .command = "",
                     .user = try arena.dupe(u8, s.userName(short.uid)),
@@ -457,9 +465,7 @@ pub const Sampler = struct {
         }
         std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
         const total_procs: u32 = @intCast(procs.items.len);
-        tm.orderRows(procs.items, s.filter);
-        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
-        for (top) |*p| {
+        for (procs.items) |*p| {
             const start = starts.get(p.pid) orelse continue; // not readable
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
@@ -476,7 +482,16 @@ pub const Sampler = struct {
             p.name = try arena.dupe(u8, m.name);
             p.command = try arena.dupe(u8, m.command[0..@min(m.command.len, tm.max_command)]);
             p.user = try arena.dupe(u8, m.user);
+            p.executable = try arena.dupe(u8, m.executable);
+            if (applications.macos_bundle(p.executable)) |bundle| {
+                p.app_key = bundle.key;
+                p.app_name = bundle.name;
+            }
         }
+        const apps = applications.visible(try applications.collect(arena, procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
+        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
         if (s.samples % 16 == 0) {
             var stale: std.ArrayList(u32) = .empty;
             var mit = s.meta.iterator();
@@ -578,6 +593,11 @@ pub const Sampler = struct {
             .mem = mem,
             .uptime_seconds = uptime,
             .processes = top,
+            .applications = apps[0..@min(apps.len, tm.max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
             .total_processes = total_procs,
             .threads_total = threads_total,
             .running = running,
@@ -620,7 +640,15 @@ pub const Sampler = struct {
             s.gpa.free(owned_name);
             return null;
         };
-        return .{ .start = start, .name = owned_name, .command = command, .user = user, .seen = s.samples };
+        var path: [4096]u8 = undefined;
+        const size = proc_pidpath(@intCast(pid), &path, path.len);
+        const executable = s.gpa.dupe(u8, if (size > 0) std.mem.sliceTo(path[0..@min(@as(usize, @intCast(size)), path.len)], 0) else "") catch {
+            s.gpa.free(command);
+            s.gpa.free(owned_name);
+            s.gpa.free(user);
+            return null;
+        };
+        return .{ .start = start, .name = owned_name, .command = command, .user = user, .seen = s.samples, .executable = executable };
     }
 
     /// KERN_PROCARGS2: argc, the executable's path, then argc arguments,

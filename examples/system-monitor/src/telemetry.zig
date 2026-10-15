@@ -40,6 +40,13 @@ pub const MemInfo = struct {
 
 pub const ProcessRow = struct {
     pid: u32,
+    parent_pid: u32 = 0,
+    start_time: u64 = 0,
+    /// Installed desktop identity when known; otherwise grouped by executable.
+    app_key: []const u8 = "",
+    app_name: []const u8 = "",
+    executable: []const u8 = "",
+    application_id: u64 = 0,
     name: []const u8,
     /// The full command line (arguments space-separated); empty for kernel threads.
     command: []const u8,
@@ -48,6 +55,26 @@ pub const ProcessRow = struct {
     threads: u32,
     cpu_percent: f64,
     mem_rss_bytes: u64,
+
+    pub fn jsonStringify(row: @This(), writer: anytype) !void {
+        try stringifyWithId(row, writer, "application_id");
+    }
+};
+
+pub const ApplicationRow = struct {
+    id: u64,
+    name: []const u8,
+    user: []const u8,
+    process_count: u32 = 0,
+    threads: u32 = 0,
+    cpu_percent: f64 = 0,
+    /// Sum of RSS, not unique/private memory: shared pages may be counted twice.
+    mem_rss_bytes: u64 = 0,
+    is_application: bool = false,
+
+    pub fn jsonStringify(row: @This(), writer: anytype) !void {
+        try stringifyWithId(row, writer, "id");
+    }
 };
 
 pub const DiskSample = struct {
@@ -81,6 +108,12 @@ pub const SystemSample = struct {
     mem: MemInfo,
     uptime_seconds: u64,
     processes: []ProcessRow,
+    applications: []ApplicationRow = &.{},
+    applications_supported: bool = false,
+    total_applications: u32 = 0,
+    /// The group whose members were prioritized before the process-row limit.
+    application_id: u64 = 0,
+    application_process_count: u32 = 0,
     total_processes: u32,
     threads_total: u32,
     running: u32,
@@ -89,7 +122,25 @@ pub const SystemSample = struct {
     sensors: []SensorSample,
     sample_time_ms: f64,
     engine: []const u8,
+
+    pub fn jsonStringify(sample: @This(), writer: anytype) !void {
+        try stringifyWithId(sample, writer, "application_id");
+    }
 };
+
+/// IDs travel as decimal strings so JavaScript/WebView renderers cannot round
+/// the u64 hash. Zig's JSON parser accepts these strings as integer fields.
+fn stringifyWithId(value: anytype, writer: anytype, comptime id_field: []const u8) !void {
+    try writer.beginObject();
+    inline for (std.meta.fields(@TypeOf(value))) |field| {
+        try writer.objectField(field.name);
+        if (comptime std.mem.eql(u8, field.name, id_field) or std.mem.eql(u8, field.name, "start_time")) {
+            var buf: [20]u8 = undefined;
+            try writer.write(std.fmt.bufPrint(&buf, "{d}", .{@field(value, field.name)}) catch unreachable);
+        } else try writer.write(@field(value, field.name));
+    }
+    try writer.endObject();
+}
 
 /// What doesn't change while the app runs (system_info).
 pub const SystemInfo = struct {
@@ -107,7 +158,6 @@ pub const SystemInfo = struct {
 pub const max_rows = 256;
 /// The command line a sample sends, at most.
 pub const max_command = 200;
-
 
 /// One-decimal rounding for the page: short in JSON (0.43, not 0.4300000071).
 pub fn round1(v: f64) f64 {
@@ -164,4 +214,17 @@ test orderRows {
     try std.testing.expectEqualStrings("busy", rows[0].name);
     try std.testing.expect(matches(rows[2], "4")); // pid 42
     try std.testing.expect(!matches(rows[2], "2"));
+}
+
+test "application IDs round trip exactly through JSON strings for all renderers" {
+    const app = ApplicationRow{ .id = std.math.maxInt(u64) - 1, .name = "Editor", .user = "test" };
+    const json = try std.json.Stringify.valueAlloc(std.testing.allocator, app, .{});
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"18446744073709551614\"") != null);
+    const parsed = try std.json.parseFromSlice(ApplicationRow, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(app.id, parsed.value.id);
+    const request = try std.json.parseFromSlice(struct { application_id: u64 }, std.testing.allocator, "{\"application_id\":\"18446744073709551614\"}", .{});
+    defer request.deinit();
+    try std.testing.expectEqual(app.id, request.value.application_id);
 }

@@ -17,6 +17,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const tm = @import("telemetry.zig");
+const applications = @import("applications.zig");
 
 const Io = std.Io;
 
@@ -37,6 +38,7 @@ extern "kernel32" fn K32GetPerformanceInfo(p: *PERFORMANCE_INFORMATION, cb: u32)
 extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 extern "kernel32" fn OpenProcess(access: u32, inherit: BOOL, pid: u32) callconv(.winapi) HANDLE;
 extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) BOOL;
+extern "kernel32" fn QueryFullProcessImageNameW(process: HANDLE, flags: u32, path: [*]u16, size: *u32) callconv(.winapi) BOOL;
 extern "kernel32" fn GetLogicalDriveStringsW(len: u32, buf: [*]u16) callconv(.winapi) u32;
 extern "kernel32" fn GetDriveTypeW(root: [*:0]const u16) callconv(.winapi) u32;
 extern "kernel32" fn GetDiskFreeSpaceExW(dir: [*:0]const u16, avail: ?*u64, total: ?*u64, free: ?*u64) callconv(.winapi) BOOL;
@@ -268,6 +270,33 @@ const ProcMeta = struct {
     user: []u8,
     command: []u8,
     seen: u64,
+    executable: []u8 = &.{},
+};
+
+const WindowPids = struct {
+    values: [4096]u32 = undefined,
+    len: usize = 0,
+
+    fn each(window: HWND, lparam: isize) callconv(.winapi) BOOL {
+        const ctx: *@This() = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        std.debug.assert(ctx.len <= ctx.values.len);
+        if (window == null or ctx.len == ctx.values.len) return 0;
+        if (IsWindowVisible(window) == 0 or GetWindow(window, GW_OWNER) != null) return 1;
+        var pid: u32 = 0;
+        _ = GetWindowThreadProcessId(window, &pid);
+        if (pid != 0 and std.mem.indexOfScalar(u32, ctx.values[0..ctx.len], pid) == null) {
+            ctx.values[ctx.len] = pid;
+            ctx.len += 1;
+        }
+        std.debug.assert(ctx.len <= ctx.values.len);
+        return 1;
+    }
+
+    fn collect() WindowPids {
+        var result: WindowPids = .{};
+        _ = EnumWindows(each, @bitCast(@intFromPtr(&result)));
+        return result;
+    }
 };
 
 const Drive = struct {
@@ -287,6 +316,7 @@ pub const Sampler = struct {
     gpa: std.mem.Allocator,
     /// The page's process filter for the next sample (borrowed; main.zig).
     filter: []const u8 = "",
+    application_id: u64 = 0,
     cores: u32 = 1,
     cpu_model_buf: [128]u8 = undefined,
     cpu_model_len: usize = 0,
@@ -331,6 +361,7 @@ pub const Sampler = struct {
         while (mit.next()) |m| {
             s.gpa.free(m.user);
             s.gpa.free(m.command);
+            s.gpa.free(m.executable);
         }
         s.meta.deinit();
         var uit = s.users.iterator();
@@ -547,6 +578,8 @@ pub const Sampler = struct {
                 creates.put(arena, pid, p.create_time) catch {};
                 procs.append(arena, .{
                     .pid = pid,
+                    .parent_pid = @truncate(p.parent_pid),
+                    .start_time = @intCast(@max(0, p.create_time)),
                     .name = name,
                     .command = "",
                     .user = "",
@@ -559,15 +592,15 @@ pub const Sampler = struct {
         }
         std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
         const total_procs: u32 = @intCast(procs.items.len);
-        tm.orderRows(procs.items, s.filter);
-        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
-        for (top) |*p| {
+        const window_pids = WindowPids.collect();
+        for (procs.items) |*p| {
             const create = creates.get(p.pid) orelse 0;
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
             if (have and gop.value_ptr.create != create) {
                 s.gpa.free(gop.value_ptr.user);
                 s.gpa.free(gop.value_ptr.command);
+                s.gpa.free(gop.value_ptr.executable);
                 have = false;
             }
             if (!have) gop.value_ptr.* = s.readMeta(p.pid, create);
@@ -575,7 +608,16 @@ pub const Sampler = struct {
             p.user = try arena.dupe(u8, gop.value_ptr.user);
             const cmd = gop.value_ptr.command;
             p.command = try arena.dupe(u8, cmd[0..@min(cmd.len, tm.max_command)]);
+            p.executable = try arena.dupe(u8, gop.value_ptr.executable);
+            if (p.executable.len > 0 and std.mem.indexOfScalar(u32, window_pids.values[0..window_pids.len], p.pid) != null) {
+                p.app_key = p.executable;
+                p.app_name = if (std.ascii.endsWithIgnoreCase(p.name, ".exe")) p.name[0 .. p.name.len - 4] else p.name;
+            }
         }
+        const apps = applications.visible(try applications.collect(arena, procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
+        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
         if (s.samples % 16 == 0) {
             var stale: std.ArrayList(u32) = .empty;
             var mit = s.meta.iterator();
@@ -583,6 +625,7 @@ pub const Sampler = struct {
             for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| {
                 s.gpa.free(kv.value.user);
                 s.gpa.free(kv.value.command);
+                s.gpa.free(kv.value.executable);
             };
         }
 
@@ -661,6 +704,11 @@ pub const Sampler = struct {
             .mem = mem,
             .uptime_seconds = GetTickCount64() / 1000,
             .processes = top,
+            .applications = apps[0..@min(apps.len, tm.max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
             .total_processes = total_procs,
             .threads_total = threads_total,
             .running = 0,
@@ -683,6 +731,12 @@ pub const Sampler = struct {
         defer _ = CloseHandle(h);
         m.command = commandLineOf(s.gpa, h) orelse &.{};
         m.user = s.userOf(h) orelse (s.gpa.dupe(u8, "") catch &.{});
+        var path: [32768]u16 = undefined;
+        var path_len: u32 = path.len;
+        if (QueryFullProcessImageNameW(h, 0, &path, &path_len) != 0 and path_len <= path.len) {
+            m.executable = utf8(s.gpa, path[0..path_len]) orelse &.{};
+            for (m.executable) |*c| c.* = std.ascii.toLower(c.*);
+        }
         return m;
     }
 
