@@ -108,9 +108,17 @@ the air yet. The answer comes as the advertisement's state: `started`,
 adapter turned off). Zig sets `oriel.bluetooth.onAdvertiseState(handler)`;
 the page listens to `bluetooth:advertise`, `{ id, state, error }`.
 
-`capabilities()` also tells `powered` (the adapter is on), `extended` and
-`max_bytes`; the permission is separate, `oriel.permissions.status(.bluetooth)`.
-`oriel check` prints them.
+`capabilities()` also tells `powered` (the adapter is on), `extended` (the
+adapter could send more than 31 bytes) and `max_bytes` (what `advertise`
+sends: 31). The permission is separate, `oriel.permissions.status(.bluetooth)`:
+on macOS and iOS, while it's undecided, `powered` is false (asking the
+adapter would show the prompt). `oriel check` prints them.
+
+**Ask first.** Call `oriel.permissions.request(.bluetooth)` (the page:
+`oriel.permissions.request("bluetooth")`) before advertising. On macOS and
+iOS an `advertise` while the permission is undecided shows the prompt and
+waits for the answer: its state comes once the user decides (`started`, or
+`failed` with `PermissionDenied`), however long that takes.
 
 # [Related]($heading.id('related'))
 
