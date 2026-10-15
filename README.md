@@ -20,7 +20,7 @@ without a WebView.
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
 - **Secure by default:** navigation limits, per-origin command capabilities, a strict CSP.
-- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp, offline text to speech (Kokoro), the phone's own model (system AI: Gemini Nano, Apple Foundation Models), camera and photo library, lifecycle events, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
+- **Batteries included, opt-in:** tray, updater, SQLite & sqlite-vec, llama.cpp, whisper.cpp, offline text to speech (Kokoro), speaker diarization (voice-detect.cpp), the phone's own model (system AI: Gemini Nano, Apple Foundation Models), camera and photo library, lifecycle events, file watching, dialogs, notifications, global shortcuts, clipboard, packaging (deb, rpm, AppImage), and web wrapping (`oriel wrap`).
 - **Native code when you need it:** [app extensions](docs/extensions.md) in Kotlin, Objective-C, Swift or Zig, called by name from Zig and, where you expose them, from the page.
 
 ```sh
@@ -81,7 +81,7 @@ with the [documentation index](docs/README.md) (the same pages as the
 | [Concepts](docs/concepts.md) | How an Oriel app is put together: windows, the bridge, commands, modules, the build |
 | [Commands and events](docs/commands.md) | Typed calls between the page and Zig, and the generated TypeScript |
 | [Modules](docs/modules.md) | Every module, its build flag and where it works, with a page each |
-| [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends; [chat](docs/chat.md), [dictation](docs/dictation.md), [text to speech](docs/tts.md) |
+| [Local AI](docs/local-ai.md) | llama.cpp, whisper.cpp, GPU backends; [chat](docs/chat.md), [dictation](docs/dictation.md), [text to speech](docs/tts.md), [speakers](docs/speakers.md) |
 | [Platform hooks](docs/platform-hooks.md) · [App extensions](docs/extensions.md) | Your Kotlin, Objective-C, Swift or Zig code inside the platform's events, or called from Zig |
 | [Desktop](docs/desktop.md) · [Android](docs/android.md) · [iOS](docs/ios.md) | Platform setup, builds, and behavior |
 | [Building](docs/building.md) · [Packaging](docs/packaging.md) · [Signing](docs/signing.md) · [Updates](docs/updater.md) | Every `build.zig` option, packages, signatures, signed updates |

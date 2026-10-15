@@ -489,6 +489,7 @@ flag says ([Modules](modules.md) has the platform table).
 | `llama_mtmd` | off | llama.cpp's multimodal library (images, audio); needs `llama` |
 | `whisper` | off | whisper.cpp ([Dictation](dictation.md)) |
 | `kokoro` | off | Kokoro text to speech; needs `llama` or `whisper`; GPL-3 through espeak-ng ([TTS](tts.md)) |
+| `speakers` | off | Speaker embeddings and diarization (voice-detect.cpp); needs `llama` or `whisper`; desktop only ([Speakers](speakers.md)) |
 | `system_ai` | off | The phone's own model, Android and iOS ([System AI](system-ai.md)) |
 | `layer_shell` | off | Linux/Wayland overlay windows as layer surfaces (gtk4-layer-shell) |
 | `native_ui` | off | Draw pages with native views instead of a web view ([Native renderer](native-renderer.md)) |

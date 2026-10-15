@@ -73,6 +73,10 @@ const Features = struct {
     /// links it carries espeak-ng's license, see NOTICE) and Highway SIMD.
     /// Needs `llama` or `whisper` (it shares their ggml tree).
     kokoro: bool,
+    /// voice-detect.cpp (speaker embeddings, MIT): who spoke when, offline
+    /// (`oriel.speakers`). Compiled into the shared ggml build. Needs
+    /// `llama` or `whisper` (it shares their ggml tree). Desktop only.
+    speakers: bool,
     audio_capture: bool,
     /// Linux/Wayland: overlay windows as layer surfaces (gtk4-layer-shell).
     layer_shell: bool,
@@ -106,6 +110,7 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "llama_mtmd") or
                 std.mem.eql(u8, field.name, "whisper") or
                 std.mem.eql(u8, field.name, "kokoro") or
+                std.mem.eql(u8, field.name, "speakers") or
                 std.mem.eql(u8, field.name, "audio_capture") or
                 std.mem.eql(u8, field.name, "layer_shell") or
                 std.mem.eql(u8, field.name, "native_ui") or
@@ -137,6 +142,9 @@ const Features = struct {
         }
         if (f.kokoro and !(f.llama or f.whisper)) {
             fatal("kokoro needs llama or whisper (it shares their ggml tree): -Dkokoro with -Dllama or -Dwhisper", .{});
+        }
+        if (f.speakers and !(f.llama or f.whisper)) {
+            fatal("speakers needs llama or whisper (it shares their ggml tree): -Dspeakers with -Dllama or -Dwhisper", .{});
         }
         if (f.sqlite_vec and !f.sql) {
             fatal("sqlite_vec requires sql to be enabled (cannot use -Dsqlite_vec with -Dsql=false)", .{});

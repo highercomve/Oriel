@@ -502,6 +502,60 @@ pub fn addGgml(
         const espeak_extra = std.mem.concat(b.allocator, []const u8, &.{ opt, darwin }) catch @panic("OOM");
         @import("espeak_data.zig").addLibrary(b, oriel, espeak_dep, espeak_extra, false);
     }
+
+    // voice-detect.cpp (speaker embeddings): the library's sources from its
+    // CMakeLists.txt (not the CLI, tests or its ggml submodule). Its AVX2 and
+    // AVX-512 kernels follow the target's CPU features: CMake's -mavx2 for
+    // two files would crash a baseline x86_64 build on an older CPU.
+    if (features.speakers) {
+        const vd = b.lazyDependency("voice_detect", .{}) orelse return;
+        const vd_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{
+            "-std=c++17",
+            "-D_GNU_SOURCE",
+            "-D_XOPEN_SOURCE=600",
+            // M_PI with MinGW's strict -std=c++17.
+            "-D_USE_MATH_DEFINES",
+            "-fno-sanitize=undefined",
+            // Its backend calls ggml_backend_load_all, which loads every
+            // libggml-*.so in the executable's and the current directory:
+            // GPU backends are ggml_gpu.load's job (src/modules/speakers/backends.c).
+            "-Dggml_backend_load_all=oriel_speakers_load_backends",
+            // Its AVX-512 kernels (only with an AVX-512 target, which
+            // can't start without it) check the CPU with this builtin, whose
+            // __cpu_model Zig's compiler-rt doesn't have.
+            "-D__builtin_cpu_supports(x)=1",
+        }, darwin }) catch @panic("OOM");
+        // Its private headers are found next to the sources; dr_wav.h is in
+        // third_party/.
+        oriel.addIncludePath(vd.path("include"));
+        oriel.addIncludePath(vd.path("third_party"));
+        oriel.addCSourceFiles(.{
+            .root = vd.path("src"),
+            .files = &.{
+                "voicedetect.cpp",
+                "voicedetect_capi.cpp",
+                "gguf_check.cpp",
+                "model.cpp",
+                "model_loader.cpp",
+                "backend.cpp",
+                "winograd.cpp",
+                "directconv.cpp",
+                "encoder.cpp",
+                "encoder_resnet.cpp",
+                "encoder_eres2net.cpp",
+                "encoder_campplus.cpp",
+                "analyze_w2v2.cpp",
+                "fbank.cpp",
+                "audio_io.cpp",
+                "common.cpp",
+            },
+            .flags = vd_flags,
+        });
+        oriel.addCSourceFile(.{
+            .file = b.path("src/modules/speakers/backends.c"),
+            .flags = std.mem.concat(b.allocator, []const u8, &.{ opt, &.{ "-std=c11", "-fno-sanitize=undefined" } }) catch @panic("OOM"),
+        });
+    }
 }
 
 /// Compile ggml-cuda with nvcc (one cached step per source) and link it into

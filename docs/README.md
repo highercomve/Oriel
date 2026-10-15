@@ -51,6 +51,7 @@ The same pages as the website, https://highercomve.github.io/Oriel/docs/.
 - [Chat](chat.md): Chat and completion with a local LLM through oriel.chat: a model catalog with downloads, the model's own chat template, streaming tokens, JSON-schema output and KV-cache reuse, on the CPU or the GPU.
 - [Dictation](dictation.md): Voice to text with oriel.dictation: live dictation from the microphone or system audio and transcription of recordings, on whisper.cpp or the platform's own recognizer.
 - [Text to speech](tts.md): Read text aloud offline with oriel.tts: Kokoro-82M voices for eight languages, verified downloads, Markdown read as prose, and streaming playback on the CPU or the GPU.
+- [Speakers](speakers.md): Who spoke when, offline, with oriel.speakers: speaker embeddings from voice-detect.cpp, clustering into speaker turns, and matching voices the app knows, on the CPU or the GPU.
 - [System AI](system-ai.md): The phone's own language model through oriel.system_ai: Gemini Nano on Android, Apple Foundation Models on iOS 26+, with nothing for the app to download or ship.
 
 ## Native code

@@ -100,6 +100,8 @@ pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else unavai
 pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else unavailable("audio_play");
 /// Text to speech out of the box: voices, downloads, streaming playback (Kokoro): `-Dkokoro`.
 pub const tts = if (options.kokoro) @import("modules/tts.zig") else unavailable("tts");
+/// Speaker embeddings and offline diarization, who spoke when (voice-detect.cpp): `-Dspeakers`.
+pub const speakers = if (options.speakers) @import("modules/speakers.zig") else unavailable("speakers");
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else unavailable("audio_capture");
 /// GPU backends (libggml-cuda.so, libggml-vulkan.so) for llama and whisper: `ggml_gpu.load(io)` before loading a model.
 pub const ggml_gpu = if (options.llama or options.whisper) @import("modules/ggml_gpu.zig") else unavailable("ggml_gpu");
@@ -348,6 +350,7 @@ test {
     if (options.llama) std.testing.refAllDecls(llama);
     if (options.whisper) std.testing.refAllDecls(whisper);
     if (options.llama or options.whisper) std.testing.refAllDecls(ggml_gpu);
+    if (options.speakers) std.testing.refAllDecls(speakers);
     if (options.audio_capture) std.testing.refAllDecls(audio_capture);
     if (options.whisper and options.audio_capture) std.testing.refAllDecls(dictation);
     if (options.llama) std.testing.refAllDecls(chat);
@@ -361,6 +364,8 @@ test {
     // target (whisper's C sources need the SDK even to type-check).
     if (target.is_ios or target.os == .macos) std.testing.refAllDecls(@import("modules/dictation/apple.zig"));
     std.testing.refAllDecls(@import("modules/model_download.zig"));
+    // speakers' clustering is pure Zig: tested with or without the engine.
+    std.testing.refAllDecls(@import("modules/speakers/cluster.zig"));
     // system_ai's platform-independent half runs everywhere (a fake backend).
     std.testing.refAllDecls(@import("modules/system_ai/core.zig"));
     std.testing.refAllDecls(@import("modules/system_ai/bridge.zig"));

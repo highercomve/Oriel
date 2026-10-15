@@ -19,3 +19,17 @@ Enabling kokoro links these upstream components:
 Model files and voice packs are supplied by the app; this repository does
 not distribute them. Their upstream licenses are separate.
 The optional espeak-ng component's GPL license is not Oriel's MIT license.
+
+Optional speaker-recognition dependency
+=======================================
+
+Enabling speakers links:
+
+* voice-detect.cpp, pinned at cf9e1d5641c710bf7d6fc9642f9b4cf7d2bde9b6:
+  MIT, copyright the voice-detect.cpp authors; see
+  licenses/speakers/voice-detect-MIT.txt. It includes dr_wav (public
+  domain or MIT-0 choice; the notice is at the end of its
+  third_party/dr_wav.h).
+
+Speaker models are downloaded by the app; this repository does not
+distribute them. Their upstream licenses are separate.

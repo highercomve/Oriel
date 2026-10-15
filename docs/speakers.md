@@ -1,0 +1,142 @@
+<!-- Generated from site/content/docs/speakers.smd by tools/docs/gen-md.mjs: edit that file. -->
+
+# Speakers
+
+Who spoke when, offline, with oriel.speakers: speaker embeddings from voice-detect.cpp, clustering into speaker turns, and matching voices the app knows, on the CPU or the GPU.
+
+`oriel.speakers` tells voices apart, offline. A speaker encoder
+(ECAPA-TDNN or WeSpeaker ResNet34, run by voice-detect.cpp on the shared
+ggml build) turns a stretch of speech into a short vector, its
+**embedding**; two stretches of the same voice give similar vectors.
+`diarize` embeds overlapping windows over a recording, clusters them and
+returns the **speaker turns** ("speaker 0 from 0.0 to 12.4 s") with one
+centroid per speaker, which `match` compares with voices the app stored
+before ("that's Ana"). Pair it with [Dictation](dictation.md)
+to label a transcript.
+
+## Availability
+
+| Platform | Engine | GPU |
+|---|---|---|
+| Linux | voice-detect.cpp on the CPU (up to 8 threads) | CUDA, Vulkan (`ggml_gpu.load`) |
+| Windows | same | Vulkan |
+| macOS | same | Metal |
+| Android, iOS | not yet: `oriel.speakers.available` is false | |
+
+Turned on by `.speakers = true`, which needs `.llama = true` or
+`.whisper = true` (they supply the shared ggml build; otherwise:
+`speakers needs llama or whisper`). voice-detect.cpp is fetched lazily and
+compiled into the app. No permission; downloading a model needs network
+access. The GPU flags are the
+[Local AI](local-ai.md#build-options) ones.
+
+## Quick start
+
+`build.zig`:
+
+```zig
+const dep = b.dependency("oriel", .{
+    .target = target,
+    .optimize = optimize,
+    .speakers = true,
+    .whisper = true, // or .llama = true
+});
+```
+
+Zig, on a worker (a long recording takes a while):
+
+```zig
+const speakers = oriel.speakers;
+
+// A model from speakers.catalog, downloaded with model_download.fetchVerified.
+const enc = try speakers.Encoder.load(model_path);
+defer enc.deinit();
+
+// 16 kHz mono samples, and where there is speech (whisper's VAD, or the
+// whole recording as one region).
+var progress: speakers.Progress = .{};
+var d = try speakers.diarize(gpa, enc, samples, regions, .{ .progress = &progress });
+defer d.deinit(gpa);
+for (d.turns) |t| std.log.info("{d:.1}-{d:.1} s: speaker {d}", .{ t.start, t.end, t.speaker });
+
+// Known voices: centroids saved earlier, with enc.family().
+for (d.centroids, 0..) |c, i| {
+    if (speakers.match(c, known_voices, 0.6)) |who| std.log.info("speaker {d} is {s}", .{ i, names[who] });
+}
+```
+
+## How it works
+
+1. **Windows.** Each speech region is cut into `window`-long windows
+   (1.5 s) every `step` (0.75 s), plus one ending at the region's end. A
+   region shorter than a window gets one window over all of it if it is
+   at least 0.5 s; shorter ones are skipped.
+2. **Embeddings.** Each window becomes an L2-normalized vector (192 values
+   for ECAPA-TDNN, 256 for WeSpeaker). `progress.done` counts them up to
+   `progress.total`; `progress.cancel` stops with `error.Canceled`.
+3. **Clustering.** Average-linkage agglomerative clustering on cosine
+   similarity: the two most similar clusters merge until the best pair is
+   below `threshold` (or, with `speakers` set, until that many are left).
+   Then clusters smaller than `min_size` windows fold into their nearest,
+   and clusters whose centroids are above `merge_above` merge. Past 2048
+   windows (about 25 minutes of speech) the clustering runs on 2048 evenly
+   spaced ones and every window goes to the nearest resulting centroid,
+   so memory stays at 16 MB.
+4. **Turns.** Overlapping or touching windows of one speaker become one
+   turn; where two speakers' windows overlap, the boundary is the middle.
+   Speakers are numbered by first appearance.
+
+Short clips favor `speakers` when the app knows the count: with only a few
+windows per voice, `min_size` can fold a real speaker away.
+
+## Reference
+
+### Build options
+
+| Option | Default | Effect |
+|---|---|---|
+| `.speakers` / `-Dspeakers` | `false` | voice-detect.cpp; `oriel.speakers`. Needs `.llama` or `.whisper`. Desktop only. |
+
+### Functions
+
+| Function | What it does |
+|---|---|
+| `Encoder.load(path)` | Load a GGUF encoder; `error.LoadFailed` with `lastLoadError()` explaining. |
+| `enc.embed(gpa, samples)` | The L2-normalized embedding of 16 kHz mono samples; the caller frees it. |
+| `enc.dim()`, `enc.family()` | Values per embedding; the embedding space (`voicedetect:<arch>:<checkpoint>:<dim>`), to store with saved voices. |
+| `diarize(gpa, enc, samples, regions, opts)` | Speaker turns and centroids; `Diarization.deinit(gpa)` frees them. |
+| `cluster(gpa, embeddings, opts)` | Labels 0..k-1 for any embeddings, numbered by first appearance. |
+| `match(centroid, known, threshold)` | The most similar known voice at or above `threshold`, or null. |
+| `cosine(a, b)` | Cosine similarity. |
+
+An encoder is **not thread-safe**: voice-detect.cpp keeps one backend for
+the process, so run one `embed` or `diarize` at a time. Its environment
+variables apply: `VOICEDETECT_DEVICE=cpu` keeps it on the CPU,
+`VOICEDETECT_THREADS` sets its threads.
+
+### Models
+
+`speakers.catalog`, from Hugging Face `mudler/voice-detect-gguf`, the
+default first:
+
+| Id | Size | Embedding | Weights' license |
+|---|---|---|---|
+| `ecapa-tdnn-voxceleb` | 61 MB | 192 | Apache-2.0 |
+| `wespeaker-resnet34-voxceleb` | 25 MB | 256 | CC-BY-4.0 |
+
+Embeddings from different models are not comparable: store `enc.family()`
+with a saved voice and compare it before matching.
+
+Similarities measured with Oriel's tests (one speaker, 3 s halves of a
+6 s clip; the second half sped up 1.3x as a stand-in for another voice):
+
+| Model | Same voice | Sped-up copy |
+|---|---|---|
+| ECAPA-TDNN | 0.90 | 0.46 |
+| WeSpeaker ResNet34 | 0.87 | 0.34 |
+
+### Licenses
+
+voice-detect.cpp is MIT (`NOTICE`, `licenses/speakers`). The models are
+downloaded by the app at run time, not distributed with Oriel; their
+licenses are upstream's (Apache-2.0, CC-BY-4.0: attribution).

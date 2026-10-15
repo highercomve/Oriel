@@ -38,7 +38,7 @@ const dep = b.dependency("oriel", .{
 
 - **Defaults.** Every module and plugin is on unless the app says
   otherwise, except the native dependencies and a few opt-ins: `deep_link`,
-  `sqlite_vec`, `llama`, `llama_mtmd`, `whisper`, `kokoro`,
+  `sqlite_vec`, `llama`, `llama_mtmd`, `whisper`, `kokoro`, `speakers`,
   `audio_capture`, `camera`, `bluetooth`, `system_ai`, `layer_shell` and `native_ui`
   are off. `updater` is also off on Android (the store updates apps
   there).
@@ -54,8 +54,8 @@ const dep = b.dependency("oriel", .{
   needs a permission declares it: `audio_capture` declares `microphone` and
   `system_audio`.
 - **Dependencies between flags** are checked when the build starts:
-  `sqlite_vec` needs `sql`, `llama_mtmd` needs `llama`, and `kokoro` needs
-  `llama` or `whisper` (it shares their ggml build). Some namespaces follow
+  `sqlite_vec` needs `sql`, `llama_mtmd` needs `llama`, and `kokoro` and
+  `speakers` need `llama` or `whisper` (they share their ggml build). Some namespaces follow
   another flag instead of having one: `oriel.chat` is on with `llama`,
   `oriel.tts` and `oriel.audio_play` with `kokoro`, `oriel.dictation` with
   `whisper` and `audio_capture` together, `oriel.ggml_gpu` with `llama` or
@@ -189,6 +189,7 @@ it.
 | `oriel.audio_capture` | Microphone and system audio as samples | `audio_capture` (off) | ✓ | ✓ | ✓ | microphones | microphones | [Local AI]($link.page('docs/local-ai')) |
 | `oriel.tts` | Offline text to speech (Kokoro-82M) | `kokoro` (off; needs `llama` or `whisper`) | ✓ | ✓ | ✓ | ✓ | ✓ | [Text to speech]($link.page('docs/tts')) |
 | `oriel.kokoro`, `oriel.audio_play` | Synthesis and playback under `oriel.tts` | `kokoro` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Text to speech]($link.page('docs/tts')) |
+| `oriel.speakers` | Speaker embeddings, who spoke when (voice-detect.cpp) | `speakers` (off; needs `llama` or `whisper`) | ✓ | ✓ | ✓ | — | — | [Speakers]($link.page('docs/speakers')) |
 | `oriel.ggml_gpu` | GPU backends for llama and whisper: CUDA, Vulkan; OpenCL and Hexagon on Android | `llama` or `whisper` | ✓ | ✓ | ✓ | ✓ | ✓ | [Local AI]($link.page('docs/local-ai')) |
 | `oriel.system_ai` | The phone's own model (Gemini Nano, Foundation Models) | `system_ai` (off) | — | — | — | ✓ | ✓ iOS 26 | [System AI]($link.page('docs/system-ai')) |
 | `oriel.canvas` | Drawing a page's `<canvas>` from Zig | `native_ui` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Native renderer]($link.page('docs/native-renderer')) |
