@@ -37,14 +37,15 @@ const dep = b.dependency("oriel", .{
 - **Defaults.** Every module and plugin is on unless the app says
   otherwise, except the native dependencies and a few opt-ins: `deep_link`,
   `sqlite_vec`, `llama`, `llama_mtmd`, `whisper`, `kokoro`,
-  `audio_capture`, `camera`, `system_ai`, `layer_shell` and `native_ui`
+  `audio_capture`, `camera`, `bluetooth`, `system_ai`, `layer_shell` and `native_ui`
   are off. `updater` is also off on Android (the store updates apps
   there).
 - **`oriel init` writes the list out.** The generated `build.zig` sets the
   desktop modules to `false`, so a new app starts small; change a line to
   `true` to use that module.
 - **Declaring a capability turns its module on.** `.permissions.camera`
-  turns on `camera`, `.permissions.local_network` turns on `network`, and
+  turns on `camera`, `.permissions.bluetooth` turns on `bluetooth`,
+  `.permissions.local_network` turns on `network`, and
   `.share_target` turns on `share`, so there is no flag to keep in sync
   (unless the app set that flag to `false` itself: then the module stays
   off and the build prints a warning). The other way round, a module that
@@ -170,6 +171,7 @@ it.
 | `oriel.fs_watch` | Watching directories for changes | `fs_watch` (on) | ✓ | ✓ | ✓ | ✓ | — | [File watching](fs-watch.md) |
 | `oriel.deep_link` | Opening the app from its own URL schemes | `deep_link` (off) | ✓ | ✓ | ✓ | ✓ | ✓ | [Deep links](deep-links.md) |
 | `oriel.network` | Multicast lock and mDNS/DNS-SD | `network` (on; also on with `.permissions.local_network`) | multicast; no mDNS yet | ✓ (mDNS: Windows 10 1809+) | multicast; no mDNS yet | ✓ | multicast; no mDNS yet | [Network](network.md) |
+| `oriel.bluetooth` | Bluetooth LE advertising | `bluetooth` (off; on with `.permissions.bluetooth`) | ✓ BlueZ | no device name | no service data | ✓ | no service data | [Bluetooth](bluetooth.md) |
 | `oriel.share` | The share sheet, and receiving shares | `share` (on; also on with `.share_target`) | not yet (`error.Unsupported`) | ✓ | ✓ | ✓ | ✓ | [Share](share.md) |
 | `oriel.camera` | Photos from the camera or library | `camera` (off; on with `.permissions.camera`) | library only | library only | library only | ✓ | ✓ | [Camera](camera.md) |
 | `oriel.media_server` | Streaming large local media with range requests | `media_server` (on) | ✓ | ✓ | ✓ | — | — | [Media server](media-server.md) |

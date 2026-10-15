@@ -40,6 +40,7 @@ The same pages as the website, https://highercomve.github.io/Oriel/docs/.
 - [Global shortcuts](global-shortcuts.md): System-wide hotkeys on Linux, Windows and macOS, and in-app keyboard shortcuts on Android, registered from Zig.
 - [Input](input.md): Send keystrokes to the focused app from Zig: key combinations, typed text, copy and paste, on Linux, Windows and macOS.
 - [Network](network.md): Local network discovery: announce and find services with mDNS/DNS-SD through the platform's own responder, and hold the multicast lock.
+- [Bluetooth](bluetooth.md): Bluetooth LE advertising: a beacon nearby devices can see, from Zig or the page, with what each platform's stack can send.
 - [Share](share.md): Send text, links and files to other apps through the system share sheet, and receive what other apps share with yours.
 - [Media server](media-server.md): Stream large local video and audio to the page with HTTP range requests, from a loopback server or the app's own scheme, without loading the files into memory.
 - [Camera](camera.md): Photos from the camera or the photo library, scaled and encoded, from Zig or the page; and image inputs that open the camera on Android.

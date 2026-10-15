@@ -38,6 +38,7 @@
 				<a href="$site.page('docs/global-shortcuts').link()">Global shortcuts</a>
 				<a href="$site.page('docs/input').link()">Input</a>
 				<a href="$site.page('docs/network').link()">Network</a>
+				<a href="$site.page('docs/bluetooth').link()">Bluetooth</a>
 				<a href="$site.page('docs/share').link()">Share</a>
 				<a href="$site.page('docs/media-server').link()">Media server</a>
 				<a href="$site.page('docs/camera').link()">Camera</a>

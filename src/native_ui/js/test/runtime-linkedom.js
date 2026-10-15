@@ -19550,6 +19550,29 @@ input[type="range"] { height: 20px; margin: 2px; }
           return invoke2("camera:capture", options || {});
         }
       }),
+      // oriel.bluetooth (features.bluetooth): advertise({ serviceUuids16,
+      // serviceData: { uuid16, data: Uint8Array }, localName, connectable,
+      // mode, txPower }) resolves to { id }; a later start, failure or stop
+      // is the "bluetooth:advertise" event ({ id, state, error }).
+      bluetooth: Object.freeze({
+        capabilities() {
+          return invoke2("bluetooth:capabilities", {});
+        },
+        advertise(ad = {}) {
+          const sd = ad.serviceData;
+          return invoke2("bluetooth:advertise", {
+            serviceUuids16: ad.serviceUuids16 || [],
+            serviceData: sd ? { uuid16: sd.uuid16, data: toBase64(sd.data instanceof Uint8Array ? sd.data : new Uint8Array(sd.data || [])) } : null,
+            localName: !!ad.localName,
+            connectable: !!ad.connectable,
+            mode: ad.mode || "balanced",
+            txPower: ad.txPower || "medium"
+          });
+        },
+        stop(id) {
+          return invoke2("bluetooth:stop", { id: typeof id === "object" && id ? id.id : id });
+        }
+      }),
       deepLink: Object.freeze({
         current() {
           return invoke2("deep_link:current", {});
