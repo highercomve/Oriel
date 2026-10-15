@@ -2,19 +2,28 @@
 
 Notable changes in Oriel releases.
 
-## Unreleased
+## [0.17.0] — 2026-10-15
+
+Oriel tells voices apart: `oriel.speakers`, speaker embeddings and
+offline diarization, the module behind GhostPen's meetings (who said
+what, and named voices remembered across meetings).
 
 ### Added
 
 - `oriel.speakers` (`.speakers = true`, needs `.llama` or `.whisper`;
   Linux, Windows, macOS): speaker embeddings and offline diarization on
-  voice-detect.cpp, compiled against the shared ggml build. `Encoder`
-  loads a GGUF encoder (`catalog`: ECAPA-TDNN, WeSpeaker ResNet34) and
-  embeds 16 kHz speech; `diarize` embeds sliding windows over the speech
-  regions, clusters them (average-linkage, cosine; or a known speaker
-  count) and returns speaker turns with one centroid per speaker; `match`
-  finds a known voice for a centroid. Progress and cancellation for long
-  recordings. See docs/speakers.md.
+  voice-detect.cpp (MIT), compiled against the shared ggml build.
+  `Encoder` loads a GGUF encoder from `catalog` (WeSpeaker ResNet34 by
+  default, ECAPA-TDNN) and embeds 16 kHz speech; `diarize` embeds 3 s
+  windows every 1.5 s over the speech regions, clusters them
+  (average-linkage, cosine; or a known speaker count) and returns speaker
+  turns with one centroid per speaker; `cluster` does the clustering on
+  embeddings an app made itself; `match` finds a known voice for a
+  centroid. Progress and cancellation for long recordings. On LibriSpeech
+  voices WeSpeaker put one man's halves at cosine 0.73, two women at 0.22,
+  a man and a woman at 0.08 (the ECAPA GGUF: 0.80, 0.70, 0.45, hence the
+  default); on three one-minute conversations it found 3, 4 and 1 speakers
+  for 3, 3 and 1. See docs/speakers.md.
 
 ## [0.16.1] — 2026-10-15
 
