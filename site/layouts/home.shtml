@@ -85,6 +85,11 @@
 					<p><code>oriel.tts</code>: Kokoro-82M text to speech out of the box. Verified voice downloads, bundled phoneme data, and streaming playback on the CPU or GPU.</p>
 				</article>
 				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M2 20a6 6 0 0 1 12 0M13 20a4.5 4.5 0 0 1 9 0"/></svg></div>
+					<h3>Who said what</h3>
+					<p><code>oriel.speakers</code>: speaker embeddings and diarization, offline. Voices clustered into speakers over a recording, and matched against the voices an app remembers.</p>
+				</article>
+				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg></div>
 					<h3>Phones and tablets too</h3>
 					<p>The same app on Android (phones, desktop mode, ChromeOS) and iOS. Tiles, a keyboard, notification actions and deep links stand in for the tray and hotkeys.</p>
@@ -168,7 +173,7 @@
 		<section class="section">
 			<div class="section-head">
 				<h2>Built with Oriel</h2>
-				<p><a href="https://highercomve.github.io/GhostPen/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp) on the GPU (Vulkan, CUDA, Metal), on Linux, Windows and macOS.</p>
+				<p><a href="https://highercomve.github.io/GhostPen/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp) on the GPU (Vulkan, CUDA, Metal), and meetings with speakers by voice (<code>oriel.speakers</code>), on Linux, Windows and macOS.</p>
 			</div>
 			<a class="showcase-shot" href="https://highercomve.github.io/GhostPen/"><img src="$site.asset('screenshots/ghostpen.png').link()" alt="GhostPen: the Playground and the menu, running a built-in model" loading="lazy"></a>
 			<div class="hero-actions" style="justify-content:flex-start;margin-top:20px">

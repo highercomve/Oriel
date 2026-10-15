@@ -7,7 +7,7 @@
 ---
 
 `oriel.speakers` tells voices apart, offline. A speaker encoder
-(ECAPA-TDNN or WeSpeaker ResNet34, run by voice-detect.cpp on the shared
+(WeSpeaker ResNet34 by default, or ECAPA-TDNN, run by voice-detect.cpp on the shared
 ggml build) turns a stretch of speech into a short vector, its
 **embedding**; two stretches of the same voice give similar vectors.
 `diarize` embeds overlapping windows over a recording, clusters them and
@@ -79,8 +79,11 @@ for (d.centroids, 0..) |c, i| {
 3. **Clustering.** Average-linkage agglomerative clustering on cosine
    similarity: the two most similar clusters merge until the best pair is
    below `threshold` (or, with `speakers` set, until that many are left).
-   Then clusters smaller than `min_size` windows fold into their nearest,
-   and clusters whose centroids are above `merge_above` merge. Past 2048
+   Then clusters smaller than `min_size` windows fold into their nearest
+   big one: a single window always, a larger one only when its centroid is
+   at least `fold_above` (0.3) similar, so a voice heard for two windows
+   in a short meeting stays a speaker of its own. Clusters whose centroids
+   are above `merge_above` merge. Past 2048
    windows (about 25 minutes of speech) the clustering runs on 2048 evenly
    spaced ones and every window goes to the nearest resulting centroid,
    so memory stays at 16 MB.
@@ -88,8 +91,8 @@ for (d.centroids, 0..) |c, i| {
    turn; where two speakers' windows overlap, the boundary is the middle.
    Speakers are numbered by first appearance.
 
-Short clips favor `speakers` when the app knows the count: with only a few
-windows per voice, `min_size` can fold a real speaker away.
+Short clips favor `speakers` when the app knows the count: with only a
+window or two per voice, clustering has little to go on.
 
 # [Reference]($heading.id('reference'))
 
