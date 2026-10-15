@@ -140,6 +140,30 @@ pub fn query(comptime T: type, p: anytype) Error!*T {
     return @ptrCast(@alignCast(out orelse return error.WinRT));
 }
 
+/// `p` as interface `T` (T.iid), a new reference, or null when it doesn't
+/// implement it: for interfaces newer Windows versions add (IFoo2,
+/// IFoo3), where a missing one is expected and not worth a warning.
+pub fn queryOptional(comptime T: type, p: anytype) ?*T {
+    var out: ?*anyopaque = null;
+    if (base(p).QueryInterface(@ptrCast(p), &T.iid, &out) < 0) return null;
+    return @ptrCast(@alignCast(out orelse return null));
+}
+
+extern "ole32" fn CoIncrementMTAUsage(cookie: *?*anyopaque) callconv(.winapi) HRESULT;
+
+var mta_kept: std.atomic.Value(bool) = .init(false);
+
+/// Keep the process's multithreaded apartment alive for good, so a thread
+/// that never initialized COM (a worker, a caller's own thread) runs WinRT
+/// calls in the implicit MTA instead of failing with CO_E_NOTINITIALIZED.
+/// The UI thread stays the STA it is. Cheap after the first call.
+pub fn keepMta() void {
+    if (mta_kept.load(.acquire)) return;
+    if (mta_kept.swap(true, .acq_rel)) return;
+    var cookie: ?*anyopaque = null;
+    check(CoIncrementMTAUsage(&cookie), "CoIncrementMTAUsage") catch mta_kept.store(false, .release);
+}
+
 /// The activation factory of runtime class `class` as interface `T`.
 pub fn factory(comptime T: type, comptime class: []const u8) Error!*T {
     var name = try String.fromUtf16(L(class));
@@ -557,6 +581,16 @@ test "piid: the IIDs Windows' own headers give parameterized types" {
     try t.expectEqual(GUID.parse("{E2FCC7C1-3BFC-5A0B-B2B0-72E769D1CB7E}"), piid(sig.pinterface(generic.iterable, &.{sig.string})));
     try t.expectEqual(GUID.parse("{98B9ACC1-4B56-532E-AC73-03D5291CCA90}"), piid(sig.pinterface(GUID.parse("{913337E9-11A1-4345-A3A2-4E7F956E222D}"), &.{sig.string})));
     try t.expectEqual(GUID.parse("{CDB5EFB3-5788-509D-9BE1-71CCB8A3362A}"), piid(sig.pinterface(generic.async_operation, &.{sig.boolean})));
+}
+
+test "piid: TypedEventHandler and IAsyncOperation over runtime classes (Windows' headers)" {
+    const t = std.testing;
+    const radio = comptime sig.class("Windows.Devices.Radios.Radio", GUID.parse("{252118DF-B33E-416A-875F-1CF38AE2D83E}"));
+    // TypedEventHandler<Radio, Object>, IAsyncOperation<Radio> and its
+    // completion handler (windows.devices.radios.h).
+    try t.expectEqual(GUID.parse("{FC6AA329-B586-5EBB-9E85-3F6B84EBDF18}"), piid(sig.pinterface(generic.typed_event_handler, &.{ radio, sig.object })));
+    try t.expectEqual(GUID.parse("{EAC62C40-8DBC-5854-8BA0-B7B9940E7389}"), piid(sig.pinterface(generic.async_operation, &.{radio})));
+    try t.expectEqual(GUID.parse("{8A5C7E3A-80E2-585B-8630-7A8E777F0354}"), piid(sig.pinterface(generic.async_operation_completed, &.{radio})));
 }
 
 test "signatures" {
