@@ -2,7 +2,10 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.16.0] — 2026-10-15
+
+Oriel apps can advertise over Bluetooth LE: `oriel.bluetooth` sends a
+beacon nearby devices see, from Zig or the page, on every platform.
 
 ### Added
 
