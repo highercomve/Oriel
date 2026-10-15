@@ -1,0 +1,119 @@
+---
+.title = "Bluetooth",
+.description = "Bluetooth LE advertising: a beacon nearby devices can see, from Zig or the page, with what each platform's stack can send.",
+.date = .date("2026-10-14T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+`oriel.bluetooth` makes the device **advertise**: it sends a small Bluetooth
+LE beacon (service UUIDs, service data, the device's name) that phones and
+computers nearby see when they scan. Apps use it to say "I'm here" before
+anything connects, as Quick Share's wake-up beacon (service data under
+`0xFE2C`) does.
+
+The same API builds on every platform. What each platform's Bluetooth stack
+can put in an advertisement differs, and `capabilities()` says so: a field
+the device can't send is `error.Unsupported`, never silently dropped.
+
+# [Availability]($heading.id('availability'))
+
+| Platform | Backend | Service UUIDs | Service data | Device name | Connectable | Non-connectable |
+|---|---|---|---|---|---|---|
+| Android, ChromeOS | `BluetoothLeAdvertiser` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Linux | BlueZ (`org.bluez.LEAdvertisement1`, system bus) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| macOS, iOS | `CBPeripheralManager` | ✓ | — | ✓ | ✓ | best-effort |
+| Windows | `BluetoothLEAdvertisementPublisher` | ✓ | ✓ | — | — | ✓ |
+
+- **Apple** can't advertise service data, and its advertisements are always
+  connectable: `connectable = false` is accepted, nothing is published to
+  connect to, and `capabilities().non_connectable` is false. So Quick
+  Share's `0xFE2C` beacon can't be sent from macOS or iOS; check
+  `capabilities().service_data` and hide that feature there.
+- **Windows** rejects the device name in advertisements, and its legacy
+  advertisements can't be connected to.
+- **One at a time** on Apple, and on Android adapters without
+  multiple-advertisement support (ChromeOS's ARC): a second `advertise`
+  while one runs is `error.Failed`.
+- Advertisements are **legacy** (31 bytes of payload). A connectable one
+  spends 3 of them on the Flags structure, and the name counts too.
+
+The module is the `bluetooth` flag, **off by default**. Declaring
+`.permissions.bluetooth` in `addApp` turns it on and writes each platform's
+declarations: Android's `BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN` and
+`BLUETOOTH_CONNECT` (and the pre-12 `BLUETOOTH`/`BLUETOOTH_ADMIN`), iOS's
+and macOS's `NSBluetoothAlwaysUsageDescription` with your text. With the
+module on, the page sees `window.oriel.features.bluetooth == true`.
+
+# [Quick start]($heading.id('quick-start'))
+
+```zig
+// build.zig
+_ = oriel.addApp(b, dep, .{
+    .name = "beacon",
+    .root_source_file = b.path("src/main.zig"),
+    .frontend = .{ .static_dir = b.path("web") },
+    .permissions = .{ .bluetooth = "Let nearby phones find this device" },
+});
+```
+
+```zig
+// Zig: ask first (Android 12+, iOS, macOS prompt), then advertise.
+const bt = oriel.bluetooth;
+if (bt.capabilities().service_data) {
+    const h = try bt.advertise(.{ .service_data = .{ .uuid16 = 0xFE2C, .data = payload } });
+    defer bt.stop(h);
+    // ...
+}
+```
+
+```js
+// The page
+const caps = await oriel.bluetooth.capabilities();
+oriel.listen("bluetooth:advertise", (e) => console.log(e.id, e.state, e.error));
+const ad = await oriel.bluetooth.advertise({ serviceUuids16: [0x180F], localName: true });
+// ...
+await oriel.bluetooth.stop(ad);
+```
+
+# [Advertisements]($heading.id('advertisements'))
+
+| Zig (`Advertisement`) | Page | Meaning |
+|---|---|---|
+| `service_uuids16` | `serviceUuids16` | 16-bit service UUIDs to list |
+| `service_data` | `serviceData: { uuid16, data }` | Bytes under a 16-bit service UUID (`data`: a `Uint8Array` in the page) |
+| `local_name` | `localName` | Include the system's device name |
+| `connectable` | `connectable` | Accept connections (default false) |
+| `mode` | `mode` | `low_latency`, `balanced` (default) or `low_power` |
+| `tx_power` | `txPower` | `high`, `medium` (default), `low` or `ultra_low` |
+
+`advertise` returns a handle (the page gets `{ id }`), and `stop` ends it.
+An advertisement with nothing in it is `error.Unsupported`.
+
+# [Errors and state]($heading.id('errors-and-state'))
+
+`advertise` fails right away with:
+
+| Error | When |
+|---|---|
+| `Unsupported` | No BLE peripheral role here, or a field this device can't send |
+| `PermissionDenied` | The bluetooth permission isn't granted (`oriel.permissions.request(.bluetooth)`) |
+| `AdapterOff` | Bluetooth is off |
+| `TooLarge` | It doesn't fit the 31-byte payload |
+| `Failed` | The platform refused it (or one is already running where only one can) |
+
+Most stacks answer the start later, so a returned handle isn't a beacon in
+the air yet. The answer comes as the advertisement's state: `started`,
+`failed` (with the error) or `stopped` (the platform ended it, e.g. the
+adapter turned off). Zig sets `oriel.bluetooth.onAdvertiseState(handler)`;
+the page listens to `bluetooth:advertise`, `{ id, state, error }`.
+
+`capabilities()` also tells `powered` (the adapter is on), `extended` and
+`max_bytes`; the permission is separate, `oriel.permissions.status(.bluetooth)`.
+`oriel check` prints them.
+
+# [Related]($heading.id('related'))
+
+- [Permissions]($link.page('docs/permissions')): asking for `bluetooth`.
+- [Network]($link.page('docs/network')): mDNS/DNS-SD, for finding devices on the same network.
+- [Modules]($link.page('docs/modules')): turning modules on.
