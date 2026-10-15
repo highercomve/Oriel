@@ -3,10 +3,11 @@ const oriel = @import("oriel");
 
 /// Live telemetry with WebView, JavaScript/native, or compiled .oriel views.
 pub fn build(b: *std.Build) void {
+    const version: []const u8 = @import("build.zig.zon").version;
     const target = oriel.resolveTarget(b, b.standardTargetOptions(.{}));
     const optimize = b.standardOptimizeOption(.{});
     const Renderer = enum { webview, native, oriel };
-    const renderer = b.option(Renderer, "renderer", "Renderer: webview, native (default), or oriel (.oriel views)") orelse .native;
+    const renderer = b.option(Renderer, "renderer", "Renderer: oriel (.oriel views, the default), native, or webview") orelse .oriel;
     const dep = b.dependency("oriel", .{
         .target = target,
         .optimize = optimize,
@@ -24,15 +25,22 @@ pub fn build(b: *std.Build) void {
     // The .oriel views, embedded by name (@embedFile("monitor.oriel")):
     // views/ is outside src/, the app module's root.
     const view_names = [_][]const u8{ "monitor", "process", "application", "disk", "settings", "actions", "confirm" };
-    var views: [view_names.len]std.Build.Module.Import = undefined;
-    for (view_names, &views) |name, *view| view.* = .{
+    var imports: [view_names.len + 1]std.Build.Module.Import = undefined;
+    for (view_names, imports[0..view_names.len]) |name, *view| view.* = .{
         .name = b.fmt("{s}.oriel", .{name}),
         .module = b.createModule(.{ .root_source_file = b.path(b.fmt("views/{s}.oriel", .{name})) }),
     };
+    // The version (build.zig.zon's: it ships with each Oriel release, so it
+    // follows Oriel's) and the renderer, for "Check for updates": a copy
+    // updates from its own renderer's entry in system-monitor-latest.json.
+    const build_info = b.addOptions();
+    build_info.addOption([]const u8, "version", version);
+    build_info.addOption([]const u8, "renderer", @tagName(renderer));
+    imports[view_names.len] = .{ .name = "monitor_build", .module = build_info.createModule() };
     _ = oriel.addApp(b, dep, .{
         .name = "oriel-system-monitor",
         .root_source_file = b.path("src/main.zig"),
-        .imports = &views,
+        .imports = &imports,
         .frontend = .{
             .dir = if (renderer == .oriel) "views" else "web",
             .dist = ".",
@@ -47,7 +55,10 @@ pub fn build(b: *std.Build) void {
             .summary = "Live CPU, memory and process monitor with Oriel and native_ui",
             .description = "A fast, lightweight desktop system monitor featuring direct kernel telemetry and native rendering.",
             .categories = "System;Monitor;",
-            .version = "0.1.0",
+            .version = version,
         },
+        // Oriel's release key (variable ORIEL_UPDATE_PUBLIC_KEY): the
+        // system monitor's update manifests are signed with ORIEL_UPDATE_KEY.
+        .update_public_key = "BLCr3rtmVSQhkO1YFKomcAEhlvWs8P3OeFQvc7teY4o=",
     });
 }

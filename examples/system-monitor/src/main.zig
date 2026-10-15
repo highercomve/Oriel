@@ -4,6 +4,7 @@ const oriel = @import("oriel");
 const app = @import("oriel_app");
 const sampler_mod = @import("sampler.zig");
 const tm = @import("telemetry.zig");
+const updates = @import("updates.zig");
 
 pub const std_options: std.Options = .{
     .logFn = oriel.log.logFn,
@@ -17,7 +18,13 @@ var sampler_initialized: bool = false;
 var sampler_lock: std.Io.Mutex = .init;
 
 pub const Commands = struct {
-    pub const async_commands = .{ "sample", "system_info", "command_line" };
+    pub const async_commands = .{ "sample", "system_info", "command_line" } ++ updates.Commands.async_commands;
+
+    // The version, and "Check for updates" (updates.zig).
+    pub const app_version = updates.Commands.app_version;
+    pub const update_check = updates.Commands.update_check;
+    pub const update_install = updates.Commands.update_install;
+    pub const update_restart = updates.Commands.update_restart;
 
     /// Samples live CPU (per core), memory, disks, network, sensors and the
     /// busiest processes; those matching the page's `filter` first, so an
@@ -88,12 +95,13 @@ pub const Commands = struct {
     }
 };
 
-pub const Events = struct {};
+pub const Events = updates.Events;
 
 pub fn main(init: std.process.Init) !u8 {
     io = init.io;
     sampler = sampler_mod.Sampler.init(std.heap.smp_allocator, io);
     sampler_initialized = true;
+    updates.init(io, init.environ_map);
 
     if (oriel.options.zig_ui) @import("oriel_monitor.zig").configure(io);
 

@@ -1,8 +1,9 @@
 # The system-monitor example (examples/system-monitor) on each OS it
 # supports: its sampler's test run natively (one full sample printed, so a
 # run's log shows what Linux, Windows and macOS report), the app built
-# with the native renderer, and its packages, attached to the run as
-# artifacts for testing distribution:
+# with the Oriel renderer (the default: the packages and the update files)
+# and the native one (its update files), and its packages, attached to the
+# run as artifacts for testing distribution:
 #
 #   Linux    .deb, .rpm, .AppImage (x86_64)
 #   Windows  NSIS setup.exe, and the bare .exe in a zip (x86_64)
@@ -55,13 +56,22 @@ jobs:
         run: zig test src/sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
       - name: Model tests (histories, process filtering and sorting)
         run: zig build test
-      - name: Oriel renderer build (.oriel views)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
-      - name: Build
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
+      - name: Native renderer build (for its update files)
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+      - name: Build (the Oriel renderer, the default)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
       - name: Packages (.deb, .rpm, .AppImage)
-        run: zig build package-deb package-rpm package-appimage -Drenderer=native -Doptimize=ReleaseFast
+        run: zig build package-deb package-rpm package-appimage -Drenderer=oriel -Doptimize=ReleaseFast
       - run: ls -la zig-out/package
+      # What "Check for updates" installs, named by its manifest target
+      # (src/updates.zig): each renderer's executable, and the AppImage.
+      - name: Update files
+        run: |
+          mkdir -p zig-out/update
+          gzip -9c zig-out/bin/oriel-system-monitor > zig-out/update/x86_64-linux-oriel.gz
+          gzip -9c zig-out-native/bin/oriel-system-monitor > zig-out/update/x86_64-linux-native.gz
+          cp zig-out/package/*.AppImage zig-out/update/x86_64-linux-appimage-oriel.AppImage
+          ls -la zig-out/update
       - uses: actions/upload-artifact@v4
         with:
           name: system-monitor-linux-x86_64
@@ -69,6 +79,11 @@ jobs:
             examples/system-monitor/zig-out/package/*.deb
             examples/system-monitor/zig-out/package/*.rpm
             examples/system-monitor/zig-out/package/*.AppImage
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-update-linux
+          path: examples/system-monitor/zig-out/update/*
           if-no-files-found: error
 
   windows:
@@ -89,22 +104,34 @@ jobs:
         run: zig test src/sampler_windows.zig -OReleaseFast
       - name: Model tests (applications, histories, process filtering and sorting)
         run: zig build test
-      - name: Oriel renderer build (.oriel views)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
-      - name: Build
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
+      - name: Native renderer build (for its update files)
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+      - name: Build (the Oriel renderer, the default)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
       - name: Installer (setup.exe) and portable zip
         shell: pwsh
         run: |
-          zig build package-nsis -Drenderer=native -Doptimize=ReleaseFast
+          zig build package-nsis -Drenderer=oriel -Doptimize=ReleaseFast
           Compress-Archive -Path zig-out/bin/* -DestinationPath zig-out/package/oriel-system-monitor-windows-x86_64.zip -Force
           Get-ChildItem zig-out/package
+      - name: Update files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force zig-out/update | Out-Null
+          Copy-Item zig-out/bin/oriel-system-monitor.exe zig-out/update/x86_64-windows-oriel.exe
+          Copy-Item zig-out-native/bin/oriel-system-monitor.exe zig-out/update/x86_64-windows-native.exe
+          Get-ChildItem zig-out/update
       - uses: actions/upload-artifact@v4
         with:
           name: system-monitor-windows-x86_64
           path: |
             examples/system-monitor/zig-out/package/*.exe
             examples/system-monitor/zig-out/package/*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-update-windows
+          path: examples/system-monitor/zig-out/update/*
           if-no-files-found: error
 
   macos:
@@ -121,18 +148,40 @@ jobs:
         run: zig test src/sampler_macos.zig -OReleaseFast
       - name: Model tests (applications, histories, process filtering and sorting)
         run: zig build test
-      - name: Oriel renderer build (.oriel views)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast -p zig-out-oriel --summary all
-      - name: Build
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast --summary all
+      - name: Native renderer build (for its update files)
+        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+      - name: Build (the Oriel renderer, the default)
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
       - name: Disk image (.app in a .dmg, unsigned)
         run: |
-          zig build package-dmg -Drenderer=native -Doptimize=ReleaseFast
+          zig build package-dmg -Drenderer=oriel -Doptimize=ReleaseFast
           ls -la zig-out/package
+      # The .app as a tar (the updater swaps the whole bundle), and each
+      # renderer's executable for copies run outside a bundle.
+      - name: Update files
+        run: |
+          mkdir -p zig-out/update
+          app=$(find zig-out -maxdepth 4 -type d -name '*.app' | head -1)
+          if [ -z "$app" ]; then
+            mnt=$(mktemp -d)
+            hdiutil attach -nobrowse -readonly -mountpoint "$mnt" zig-out/package/*.dmg
+            mkdir -p zig-out/app && cp -R "$mnt"/*.app zig-out/app/
+            hdiutil detach "$mnt"
+            app=$(find zig-out/app -maxdepth 1 -type d -name '*.app' | head -1)
+          fi
+          COPYFILE_DISABLE=1 tar -czf zig-out/update/aarch64-macos-oriel.app.tar.gz -C "$(dirname "$app")" "$(basename "$app")"
+          gzip -9c zig-out/bin/oriel-system-monitor > zig-out/update/aarch64-macos-oriel-exe.gz
+          gzip -9c zig-out-native/bin/oriel-system-monitor > zig-out/update/aarch64-macos-native-exe.gz
+          ls -la zig-out/update
       - uses: actions/upload-artifact@v4
         with:
           name: system-monitor-macos-arm64
           path: examples/system-monitor/zig-out/package/*.dmg
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: system-monitor-update-macos
+          path: examples/system-monitor/zig-out/update/*
           if-no-files-found: error
 
   # On a release tag: the packages, named by OS and arch, and their
@@ -142,9 +191,24 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux, windows, macos]
     runs-on: ubuntu-latest
+    # Signing runs `zig build sign-update` in Oriel's build, whose
+    # configuration needs the Linux job's packages (as release.yml).
+    container: ghcr.io/archlinux/archlinux:latest
     permissions:
       contents: write
     steps:
+      - name: System packages
+        run: pacman -Syu --noconfirm --needed $ARCH_PACKAGES github-cli python
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # The monitor's version is Oriel's (examples/system-monitor/build.zig.zon,
+      # bumped with each release): "Check for updates" compares it.
+      - name: The tag is the monitor's version
+        run: |
+          v=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' examples/system-monitor/build.zig.zon)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::examples/system-monitor/build.zig.zon is $v, the tag $GITHUB_REF_NAME: bump it with the release" >&2; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -162,6 +226,46 @@ jobs:
           version=$(basename up/*-windows-x86_64-setup.exe -windows-x86_64-setup.exe)
           cp artifacts/system-monitor-windows-x86_64/*.zip "up/$version-windows-x86_64.zip"
           cd up && sha256sum oriel-system-monitor* > SYSTEM-MONITOR-SHA256SUMS && cat SYSTEM-MONITOR-SHA256SUMS
+      # system-monitor-latest.json: one signed entry per update file, the
+      # target taken from its name (src/updates.zig picks this copy's).
+      - name: Sign the update manifest
+        env:
+          UPDATE_KEY: ${{ secrets.ORIEL_UPDATE_KEY }}
+        run: |
+          if [ -z "$UPDATE_KEY" ]; then
+            echo "::notice::ORIEL_UPDATE_KEY secret not set; no system monitor update manifest."
+            exit 0
+          fi
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s' "$UPDATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          V="${GITHUB_REF_NAME#v}"
+          mkdir -p manifests
+          for f in artifacts/system-monitor-update-*/*; do
+            name=$(basename "$f")
+            case "$name" in
+              *.app.tar.gz) target="${name%.app.tar.gz}"; format=app.tar.gz ;;
+              *.AppImage)   target="${name%.AppImage}";   format=appimage ;;
+              *.exe)        target="${name%.exe}";        format=raw ;;
+              *.gz)         target="${name%.gz}";         format=raw.gz ;;
+              *) echo "::error::unexpected update file $name" >&2; exit 1 ;;
+            esac
+            asset="oriel-system-monitor-$V-$name"
+            cp "$f" "up/$asset"
+            zig build sign-update -- "up/$asset" \
+              --app-id dev.oriel.SystemMonitor \
+              --version "$V" \
+              --target "$target" \
+              --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset" \
+              --key "$KEY_FILE" \
+              --format "$format" \
+              --out "manifests/$target.json"
+          done
+          zig build combine-manifests -- manifests/*.json \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --out up/system-monitor-latest.json
+          python3 -c "import json,sys; print(sorted(json.load(open(sys.argv[1]))['platforms']))" up/system-monitor-latest.json
       - name: Wait for the release
         env:
           GH_TOKEN: ${{ github.token }}
