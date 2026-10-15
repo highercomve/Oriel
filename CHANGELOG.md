@@ -2,6 +2,28 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- `oriel.bluetooth`: Bluetooth LE advertising, a beacon nearby devices
+  see (docs/bluetooth.md). The same API on every platform, with
+  `capabilities()` saying what each stack can send; a field the device
+  can't send is `error.Unsupported`, never dropped. Starts, failures and
+  platform stops come later as the advertisement's state
+  (`onAdvertiseState`, the page's `bluetooth:advertise` event). On when
+  the app declares `.permissions.bluetooth` (or `-Dbluetooth`); the page
+  gets `oriel.bluetooth.capabilities()`, `advertise(ad)` and `stop(id)`.
+  - Android and ChromeOS: BluetoothLeAdvertiser, every field (tested on a
+    Chromebook's ARC, one advertisement at a time there).
+  - Linux: BlueZ over the system bus, every field (tested on a BlueZ
+    adapter).
+  - macOS and iOS: CBPeripheralManager, service UUIDs and the device name
+    (Apple can't advertise service data); `advertise` while the
+    permission is undecided shows the prompt (tested on macOS 15).
+  - Windows: BluetoothLEAdvertisementPublisher, service UUIDs and service
+    data, no device name (not yet tested on a Windows machine).
+
 ## [0.15.1] — 2026-10-14
 
 ### Fixed
