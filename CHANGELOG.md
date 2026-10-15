@@ -2,7 +2,7 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.17.1] — 2026-10-15
 
 ### Added
 
@@ -11,7 +11,7 @@ Notable changes in Oriel releases.
   signed `system-monitor-latest.json`; a copy updates from its own entry
   (its renderer, an executable, the AppImage or the macOS `.app`), and a
   deb/rpm copy says a new version is out. The monitor now has Oriel's
-  version (0.17.0) instead of 0.1.0.
+  version instead of 0.1.0.
 
 ### Changed
 
