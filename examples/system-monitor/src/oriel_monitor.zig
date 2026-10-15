@@ -28,6 +28,13 @@ const info_request = 2;
 const clipboard_request = 3;
 const command_request = 4;
 const end_request = 5;
+const version_request = 6;
+const update_check_request = 7;
+const update_install_request = 8;
+const update_restart_request = 9;
+/// "Check for updates" (updates.zig): check → "Update to vX" → install →
+/// "Restart to update"; `busy` while a command runs.
+const UpdateStep = enum { check, install, restart, busy };
 const State = struct {
     io: std.Io = undefined,
     initialized: bool = false,
@@ -68,6 +75,7 @@ const State = struct {
     copy_details: bool = false,
     copy_label: []const u8 = "process name",
     samples: u64 = 0,
+    update_step: UpdateStep = .check,
 };
 const SavedSettings = struct { shown: [8]bool = @splat(true), interval_ms: u32 = 2000, interface: []const u8 = "", applications_view: bool = true };
 var s: State = .{};
@@ -116,6 +124,7 @@ fn boot(e: *ui.Engine) !void {
     try sort_labels(e);
     try view_labels(e);
     try ui.invoke(e, info_request, "system_info", .{});
+    try ui.invoke(e, version_request, "app_version", .{});
     try request_sample(e);
 }
 fn shutdown(e: *ui.Engine) void {
@@ -270,6 +279,37 @@ fn resolved(e: *ui.Engine, id: u32, ok: bool, json: []const u8) !void {
             const message = if (success) try std.fmt.bufPrint(&buf, "Copied {s} to clipboard.", .{s.copy_label}) else "Clipboard copy failed. Try again.";
             try action_feedback(e, message, success);
         },
+        version_request => {
+            if (!ok) return;
+            const info = try std.json.parseFromSlice(struct { version: []const u8, installed_version: ?[]const u8 = null }, e.gpa, json, .{ .ignore_unknown_fields = true });
+            defer info.deinit();
+            var buf: [48]u8 = undefined;
+            try text(e, sid("app-version"), std.fmt.bufPrint(&buf, "v{s}", .{info.value.version}) catch "");
+            if (info.value.installed_version != null) try update_label(e, .restart, "Restart to update");
+        },
+        update_check_request => {
+            if (!ok) return update_failed(e, json);
+            const r = try std.json.parseFromSlice(struct { available: bool, version: ?[]const u8 = null, can_install: bool, installed: bool = false }, e.gpa, json, .{ .ignore_unknown_fields = true });
+            defer r.deinit();
+            var buf: [96]u8 = undefined;
+            if (!r.value.available) {
+                try update_label(e, .check, "Check for updates");
+                return action_feedback(e, "Oriel System Monitor is up to date.", true);
+            }
+            const v = r.value.version orelse "";
+            if (r.value.installed) return update_label(e, .restart, "Restart to update");
+            if (!r.value.can_install) {
+                try update_label(e, .check, "Check for updates");
+                return action_feedback(e, std.fmt.bufPrint(&buf, "Version {s} is out: update it with your package manager.", .{v}) catch "A new version is out.", true);
+            }
+            try update_label(e, .install, std.fmt.bufPrint(&buf, "Update to v{s}", .{v}) catch "Update");
+        },
+        update_install_request => {
+            if (!ok) return update_failed(e, json);
+            try update_label(e, .restart, "Restart to update");
+            try action_feedback(e, "The update is installed. Restart to run it.", true);
+        },
+        update_restart_request => if (!ok) try update_failed(e, json),
         end_request => {
             const success = ok and std.mem.eql(u8, json, "true");
             try action_feedback(e, if (success) "Process shutdown requested." else "Could not request shutdown. The process may have exited or require permission.", success);
@@ -699,6 +739,22 @@ fn copy(e: *ui.Engine, value: []const u8, label_text: []const u8) !void {
     try text(e, sid("footer-status"), "Copying to clipboard…");
     try ui.invoke(e, clipboard_request, "copy_to_clipboard", .{ .text = value });
 }
+fn update_label(e: *ui.Engine, step: UpdateStep, value: []const u8) !void {
+    s.update_step = step;
+    try label(e, sid("update"), value);
+}
+
+/// A failed update command: its message (plain text, or a JSON string) as
+/// feedback.
+fn update_failed(e: *ui.Engine, message: []const u8) !void {
+    try update_label(e, .check, "Check for updates");
+    if (std.json.parseFromSlice([]const u8, e.gpa, message, .{})) |msg| {
+        defer msg.deinit();
+        return action_feedback(e, msg.value, false);
+    } else |_| {}
+    try action_feedback(e, if (message.len > 0) message else "The update check failed.", false);
+}
+
 fn manual_refresh(e: *ui.Engine) !void {
     s.manual_refresh = true;
     errdefer s.manual_refresh = false;
@@ -903,6 +959,24 @@ fn toolbar_click(e: *ui.Engine, id: i64) !bool {
         try set_filter(e, "", true);
         try save_settings(e);
         try request_sample(e);
+        return true;
+    }
+    if (id == sid("update")) {
+        switch (s.update_step) {
+            .busy => {},
+            .check => {
+                try update_label(e, .busy, "Checking…");
+                try ui.invoke(e, update_check_request, "update_check", .{});
+            },
+            .install => {
+                try update_label(e, .busy, "Downloading…");
+                try ui.invoke(e, update_install_request, "update_install", .{});
+            },
+            .restart => {
+                try update_label(e, .busy, "Restarting…");
+                try ui.invoke(e, update_restart_request, "update_restart", .{});
+            },
+        }
         return true;
     }
     if (id == sid("settings")) {

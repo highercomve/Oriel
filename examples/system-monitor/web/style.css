@@ -119,6 +119,17 @@ body {
   color: var(--text-muted);
 }
 
+.app-version {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-update-ready {
+  color: #3fb950;
+  border-color: #238636;
+}
+
 /* Main Content */
 /* The page scrolls when every part is shown; each part keeps its height. */
 .content {

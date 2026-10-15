@@ -1050,6 +1050,57 @@
     cycleIface(1);
   };
 
+  // Check for updates: the button walks through check → "Update to vX" →
+  // download → "Restart to update" (updates.zig). A deb/rpm copy only says
+  // a new version exists: its package manager installs it.
+  const elUpdate = $("btn-update");
+  let updateStep = "check"; // check | install | restart | busy
+  let updateResetTimer = null;
+  function setUpdate(step, label, title, ready) {
+    updateStep = step;
+    setText(elUpdate, label);
+    elUpdate.title = title;
+    elUpdate.classList.toggle("btn-update-ready", !!ready);
+  }
+  function updateLater(label, title) {
+    setUpdate("busy", label, title, false);
+    setText(elFooterStatus, title); // the reason, where it can be read
+    clearTimeout(updateResetTimer);
+    updateResetTimer = setTimeout(() => setUpdate("check", "Check for updates", "Check GitHub for a newer release", false), 5000);
+  }
+  async function updateClick() {
+    if (!window.oriel || !window.oriel.invoke || updateStep === "busy") return;
+    const invoke = window.oriel.invoke;
+    try {
+      if (updateStep === "check") {
+        setUpdate("busy", "Checking…", "Checking GitHub", false);
+        const r = await invoke("update_check");
+        if (!r.available) return updateLater("Up to date", "This is the newest release");
+        if (r.installed) return setUpdate("restart", "Restart to update", `Version ${r.version} is installed`, true);
+        if (!r.can_install) return updateLater(`v${r.version} available`, "Installed by a package manager: update it there");
+        return setUpdate("install", `Update to v${r.version}`, "Download and install it", true);
+      }
+      if (updateStep === "install") {
+        setUpdate("busy", "Downloading…", "Downloading the update", false);
+        const off = window.oriel.listen && window.oriel.listen("monitor://update-progress", (p) => {
+          if (p.total) setText(elUpdate, `Downloading ${Math.floor((p.downloaded * 100) / p.total)}%`);
+        });
+        try { await invoke("update_install"); } finally { if (typeof off === "function") off(); }
+        return setUpdate("restart", "Restart to update", "The update is installed", true);
+      }
+      if (updateStep === "restart") {
+        setUpdate("busy", "Restarting…", "Starting the new version", false);
+        await invoke("update_restart");
+      }
+    } catch (err) {
+      updateLater("Update failed", String((err && err.message) || err));
+    }
+  }
+  elUpdate.onclick = (e) => {
+    e.stopPropagation();
+    updateClick();
+  };
+
   $("btn-settings").onclick = (e) => {
     e.stopPropagation();
     elSettings.classList.toggle("hidden");
@@ -1200,6 +1251,12 @@
             elEngineBadge.className = "badge badge-secondary";
           }
         }
+      } catch (_) {}
+      try {
+        const v = await window.oriel.invoke("app_version");
+        setText($("app-version"), `v${v.version}`);
+        $("app-version").title = `Oriel System Monitor ${v.version} · ${v.renderer} renderer`;
+        if (v.installed_version) setUpdate("restart", "Restart to update", `Version ${v.installed_version} is installed`, true);
       } catch (_) {}
       try {
         const sys = await window.oriel.invoke("system_info");

@@ -2,6 +2,23 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- System monitor example: the version in the header and **Check for
+  updates** next to Settings, with `oriel.updater`. Each release attaches a
+  signed `system-monitor-latest.json`; a copy updates from its own entry
+  (its renderer, an executable, the AppImage or the macOS `.app`), and a
+  deb/rpm copy says a new version is out. The monitor now has Oriel's
+  version (0.17.0) instead of 0.1.0.
+
+### Changed
+
+- System monitor example: the Oriel renderer is the default
+  (`-Drenderer=oriel`), and the release packages (AppImage, deb, rpm,
+  Windows installer and zip, macOS `.app`) use it.
+
 ## [0.17.0] — 2026-10-15
 
 Oriel tells voices apart: `oriel.speakers`, speaker embeddings and

@@ -155,6 +155,7 @@ Maintainer key setup:
    - Add the private key seed (`oriel-release.key`) as secret `ORIEL_UPDATE_KEY`.
    - Add the public key (`oriel-release.pub`) as variable `ORIEL_UPDATE_PUBLIC_KEY`.
 3. The release workflow passes `-Dupdate-public-key` to `zig build cli` and runs `zig build sign-update` for each platform and `zig build combine-manifests` to attach `latest.json` (which `oriel update` fetches) plus the per-platform `oriel-update-<arch>-<os>.json` files older CLIs use.
+4. The system monitor example updates itself with the same key: the System monitor workflow signs `system-monitor-latest.json` for each release. Bump `examples/system-monitor/build.zig.zon`'s version to the release's with the other version bumps; that job fails on a tag that doesn't match it.
 
 ## Notes
 

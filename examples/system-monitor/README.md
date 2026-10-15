@@ -7,12 +7,12 @@ Live CPU, memory, and process monitor with three renderer modes: **WebView**, **
 
 ```sh
 cd examples/system-monitor
-zig build -Drenderer=oriel -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseFast
 ./zig-out/bin/oriel-system-monitor
 ```
 
-`-Drenderer=native` (the default) and `-Drenderer=webview` select the other
-modes. All three use the same platform sampler and process commands.
+The Oriel renderer is the default (and what the release packages use);
+`-Drenderer=native` and `-Drenderer=webview` select the other modes. All three use the same platform sampler and process commands.
 
 The Oriel frontend lives in [views/](views/) and
 [oriel_monitor.zig](src/oriel_monitor.zig). It includes the summary tiles, system
@@ -118,6 +118,33 @@ aren't updated or drawn.
   line or row.
 - **Responsive**: a fullscreen window gives the cores four columns and the
   table the rest of the height; a narrow one stacks the panels.
+- **Updates**: the header shows the version, and **Check for updates** (next
+  to Settings) looks for a newer release with `oriel.updater`: then
+  **Update to vX** downloads and installs it, and **Restart to update**
+  runs it. See [Updates](#updates).
+
+### Updates
+
+The monitor ships with every Oriel release and has Oriel's version
+(`build.zig.zon`, bumped with each release; the release job refuses a tag
+that doesn't match). Each release attaches a signed
+`system-monitor-latest.json` (Ed25519, Oriel's release key; the public key
+is in `build.zig`), and a copy updates from its own entry, so it stays the
+same kind of build (`src/updates.zig`):
+
+| Installed as | Manifest entry | Update |
+|---|---|---|
+| An executable (e.g. in `~/.local/bin`) | `<arch>-<os>-<renderer>` (`-exe` on macOS) | Replaced, then restarted |
+| The AppImage | `x86_64-linux-appimage-oriel` | The AppImage is replaced |
+| The macOS `.app` | `aarch64-macos-oriel` | The bundle is swapped |
+| A `.deb` or `.rpm` (`/usr`, `/opt`) | | Says a new version is out: update with the package manager |
+
+The packages (AppImage, deb, rpm, Windows installer and zip, macOS `.app`)
+use the Oriel renderer, the default; the native renderer's executables are
+published too, so a native build updates to a native build. The webview
+renderer isn't published, so its check says no update exists for it. `ORIEL_MONITOR_UPDATE_MANIFEST=<https url>` checks another
+manifest (a release's own `system-monitor-latest.json` before it's the
+latest); signatures are still checked against the built-in key.
 
 ### Platforms
 
@@ -179,6 +206,8 @@ The frontend communicates with the backend strictly through typed Oriel commands
 - **`terminate_process`**: `window.oriel.invoke("terminate_process", { pid })` sends `SIGTERM` politely without running external shell commands.
 - **`copy_to_clipboard`**: `window.oriel.invoke("copy_to_clipboard", { text })` uses Oriel's native clipboard module (`oriel.clipboard.writeText`).
 - **`get_meta`**: `window.oriel.invoke("get_meta")` reports runtime flags, OS, arch, and active renderer state.
+- **`app_version`**: the version, renderer, how this copy was installed and whether it can update itself.
+- **`update_check`**, **`update_install`**, **`update_restart`**: Check for updates (`src/updates.zig`); `update_install` reports progress as `monitor://update-progress`.
 
 ---
 
@@ -186,11 +215,18 @@ The frontend communicates with the backend strictly through typed Oriel commands
 
 Use the `oriel` CLI commands from inside `examples/system-monitor`:
 
-### Run with the Native UI Renderer (zero WebView)
+### Run with the Oriel Renderer (the default, zero WebView)
 
 ```bash
 cd examples/system-monitor
 oriel run
+```
+
+### Run with the Native UI Renderer (the page's JavaScript, zero WebView)
+
+```bash
+cd examples/system-monitor
+oriel run -Drenderer=native
 ```
 
 ### Run with the System WebView
