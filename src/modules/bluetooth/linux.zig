@@ -223,7 +223,9 @@ pub fn capabilitiesOf(adapter: ?Adapter) Capabilities {
         .connectable = can and f.connectable,
         .non_connectable = can and f.non_connectable,
         .extended = can and (a.secondary_channels or max > common.legacy_max),
-        .max_bytes = if (can) max else 0,
+        // advertise sends legacy advertisements only: 31, whatever the
+        // adapter's MaxAdvLen (that's `extended`).
+        .max_bytes = if (can) common.legacy_max else 0,
         .scan = false, // no scanning API yet
         .scan_service_data = false,
         .powered = a.powered,
@@ -679,7 +681,7 @@ test "pickAdapter: prefers a powered adapter" {
 
     const c = capabilitiesOf(a);
     try testing.expect(c.advertise and c.service_data and c.local_name and c.connectable and c.non_connectable and c.extended and c.powered);
-    try testing.expectEqual(@as(u16, 251), c.max_bytes);
+    try testing.expectEqual(@as(u16, 31), c.max_bytes);
 }
 
 test "pickAdapter: an adapter that is off, a legacy one, none" {
