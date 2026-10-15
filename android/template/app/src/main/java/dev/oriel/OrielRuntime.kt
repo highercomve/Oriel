@@ -992,6 +992,19 @@ object OrielRuntime {
     @JvmStatic
     fun mdnsStopBrowse(id: Int) = OrielMdns.stopBrowse(id)
 
+    // Bluetooth LE advertising (src/modules/bluetooth/android.zig, OrielBluetooth)
+    // ---------------------------------------------------------------------
+
+    @JvmStatic
+    fun bleCapabilities(): Int = OrielBluetooth.capabilities()
+
+    @JvmStatic
+    fun bleAdvertise(uuids: ByteArray, sdUuid: Int, sdData: ByteArray?, flags: Int): Int =
+        OrielBluetooth.advertise(uuids, sdUuid, sdData, flags)
+
+    @JvmStatic
+    fun bleStop(handle: Int) = OrielBluetooth.stop(handle)
+
     // App extensions (src/platform/android/extensions.zig). Unlike the rest
     // of this object, extensionLoad and extensionCall run on the
     // extension's worker thread.

@@ -54,6 +54,9 @@ const Features = struct {
     /// `<input type=file accept=image/*>`); on when the app declares
     /// `.permissions.camera`.
     camera: bool,
+    /// Bluetooth LE advertising (oriel.bluetooth); on when the app declares
+    /// `.permissions.bluetooth`.
+    bluetooth: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -109,6 +112,7 @@ const Features = struct {
                 std.mem.eql(u8, field.name, "zig_ui") or
                 std.mem.eql(u8, field.name, "system_ai") or
                 std.mem.eql(u8, field.name, "camera") or
+                std.mem.eql(u8, field.name, "bluetooth") or
                 std.mem.eql(u8, field.name, "deep_link"));
             // The updater is opt-in on Android: the store updates apps there.
             const android_opt_in = comptime std.mem.eql(u8, field.name, "updater");

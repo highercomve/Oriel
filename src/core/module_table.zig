@@ -70,6 +70,7 @@ pub const namespaces = [_]Namespace{
     ns("network", "src/modules/network.zig"),
     ns("share", "src/modules/share.zig"),
     ns("camera", "src/modules/camera.zig"),
+    ns("bluetooth", "src/modules/bluetooth.zig"),
     ns("sqlite_vec", "src/modules/sqlite_vec.zig"),
     ns("llama", "src/modules/llama.zig"),
     ns("whisper", "src/modules/whisper.zig"),
