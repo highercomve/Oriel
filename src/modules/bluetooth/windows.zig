@@ -422,13 +422,10 @@ fn queryAdapter() Capabilities {
     var peripheral: u8 = 0;
     if (adapter.vtbl.get_IsPeripheralRoleSupported(adapter, &peripheral) < 0) return .{};
     var extended = false;
-    var max: u32 = common.legacy_max;
     if (winrt.queryOptional(Adapter3, adapter)) |a3| {
         defer winrt.release(a3);
         var b: u8 = 0;
         if (a3.vtbl.get_IsExtendedAdvertisingSupported(a3, &b) >= 0) extended = b != 0;
-        var m: u32 = 0;
-        if (a3.vtbl.get_MaxAdvertisementDataLength(a3, &m) >= 0 and m > 0) max = m;
     }
     const can = peripheral != 0;
     const f = common.fieldsOf(.windows);
@@ -439,7 +436,9 @@ fn queryAdapter() Capabilities {
         .connectable = can and f.connectable,
         .non_connectable = can and f.non_connectable,
         .extended = can and extended,
-        .max_bytes = if (can) @intCast(@min(max, std.math.maxInt(u16))) else 0,
+        // advertise sends legacy advertisements only: 31, whatever the
+        // adapter's MaxAdvertisementDataLength (that's `extended`).
+        .max_bytes = if (can) common.legacy_max else 0,
         .scan = false, // no scanning API yet
         .scan_service_data = false,
         .powered = radioOn(adapter),

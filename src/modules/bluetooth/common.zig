@@ -40,9 +40,10 @@ pub const Capabilities = struct {
     /// where `connectable = false` is best-effort: nothing is published to
     /// connect to.
     non_connectable: bool = false,
-    /// Extended advertising (more than 31 bytes).
+    /// The adapter can do extended advertising (more than 31 bytes);
+    /// `advertise` still sends legacy advertisements.
     extended: bool = false,
-    /// The most advertising data bytes (31 for legacy advertising).
+    /// The most data bytes `advertise` sends: 31 (legacy advertising).
     max_bytes: u16 = 0,
     scan: bool = false,
     scan_service_data: bool = false,
