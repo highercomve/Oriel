@@ -70,7 +70,7 @@ for (d.centroids, 0..) |c, i| {
 # [How it works]($heading.id('how-it-works'))
 
 1. **Windows.** Each speech region is cut into `window`-long windows
-   (1.5 s) every `step` (0.75 s), plus one ending at the region's end. A
+   (3 s) every `step` (1.5 s), plus one ending at the region's end. A
    region shorter than a window gets one window over all of it if it is
    at least 0.5 s; shorter ones are skipped.
 2. **Embeddings.** Each window becomes an L2-normalized vector (192 values
@@ -123,8 +123,8 @@ default first:
 
 | Id | Size | Embedding | Weights' license |
 |---|---|---|---|
-| `ecapa-tdnn-voxceleb` | 61 MB | 192 | Apache-2.0 |
 | `wespeaker-resnet34-voxceleb` | 25 MB | 256 | CC-BY-4.0 |
+| `ecapa-tdnn-voxceleb` | 61 MB | 192 | Apache-2.0 |
 
 Embeddings from different models are not comparable: store `enc.family()`
 with a saved voice and compare it before matching.
@@ -136,6 +136,20 @@ Similarities measured with Oriel's tests (one speaker, 3 s halves of a
 |---|---|---|
 | ECAPA-TDNN | 0.90 | 0.46 |
 | WeSpeaker ResNet34 | 0.87 | 0.34 |
+
+Real voices tell them apart better (LibriSpeech, 3 s halves):
+
+| Model | One man | Two women | A man and a woman |
+|---|---|---|---|
+| WeSpeaker ResNet34 | 0.73 | 0.22 | 0.08 |
+| ECAPA-TDNN | 0.80 | 0.70 | 0.45 |
+
+ECAPA's different people stay too alike to cluster: SpeechBrain trained it
+on its own features, not the Kaldi fbank voice-detect.cpp feeds every
+model. WeSpeaker is the default. On three one-minute LibriSpeech
+conversations (GhostPen's meetings: windows inside whisper's segments,
+clustered, a segment taking its windows' majority) it found 3, 4 and 1
+speakers for 3, 3 and 1, with 10/12, 12/14 and 9/9 segments right.
 
 ## [Licenses]($heading.id('licenses'))
 

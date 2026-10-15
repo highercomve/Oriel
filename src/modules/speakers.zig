@@ -109,10 +109,11 @@ pub const Progress = struct {
 
 pub const DiarizeOptions = struct {
     /// Seconds of audio per embedding. Shorter windows follow quick turns
-    /// but recognize voices less reliably.
-    window: f64 = 1.5,
+    /// but recognize voices less reliably (one voice's 1.5 s windows were
+    /// only 0.54 alike with ECAPA, 0.80 at 3 s).
+    window: f64 = 3.0,
     /// Seconds between window starts.
-    step: f64 = 0.75,
+    step: f64 = 1.5,
     cluster: ClusterOptions = .{},
     progress: ?*Progress = null,
 };
@@ -189,18 +190,12 @@ pub const Model = struct {
 
 const repo_url = "https://huggingface.co/mudler/voice-detect-gguf/resolve/main/";
 
-/// mudler/voice-detect-gguf; the default first.
+/// mudler/voice-detect-gguf; the default first. WeSpeaker tells people
+/// apart far better here: on LibriSpeech voices (3 s halves) it put one
+/// man at cosine 0.73, two women at 0.22, a man and a woman at 0.08; the
+/// ECAPA GGUF gave 0.80, 0.70 and 0.45 (its SpeechBrain features aren't the
+/// Kaldi fbank the engine feeds every model).
 pub const catalog = [_]Model{
-    .{
-        .id = "ecapa-tdnn-voxceleb",
-        .name = "ECAPA-TDNN (VoxCeleb)",
-        .file = "ecapa-tdnn-voxceleb.gguf",
-        .url = repo_url ++ "ecapa-tdnn-voxceleb.gguf",
-        .sha256 = "68046a1fdfb7843f460962db4739fbd381cc5c3ab93d1505e75e2f4c0dc19b8f",
-        .size = 64_369_440,
-        .license = "Apache-2.0",
-        .dim = 192,
-    },
     .{
         .id = "wespeaker-resnet34-voxceleb",
         .name = "WeSpeaker ResNet34 (VoxCeleb)",
@@ -211,6 +206,16 @@ pub const catalog = [_]Model{
         .license = "CC-BY-4.0",
         .dim = 256,
     },
+    .{
+        .id = "ecapa-tdnn-voxceleb",
+        .name = "ECAPA-TDNN (VoxCeleb)",
+        .file = "ecapa-tdnn-voxceleb.gguf",
+        .url = repo_url ++ "ecapa-tdnn-voxceleb.gguf",
+        .sha256 = "68046a1fdfb7843f460962db4739fbd381cc5c3ab93d1505e75e2f4c0dc19b8f",
+        .size = 64_369_440,
+        .license = "Apache-2.0",
+        .dim = 192,
+    },
 };
 
 test "the catalog: unique ids, well-formed checksums" {
@@ -219,7 +224,7 @@ test "the catalog: unique ids, well-formed checksums" {
         try std.testing.expect(std.mem.endsWith(u8, m.url, m.file));
         for (catalog[i + 1 ..]) |o| try std.testing.expect(!std.mem.eql(u8, m.id, o.id));
     }
-    try std.testing.expectEqual(@as(u32, 61), catalog[0].mb());
+    try std.testing.expectEqual(@as(u32, 25), catalog[0].mb());
 }
 
 /// 16-bit PCM mono WAV samples as floats (test input). Caller frees.
