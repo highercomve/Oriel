@@ -339,3 +339,23 @@ test "one voice is closer to itself than to a shifted copy" {
     try std.testing.expectApproxEqAbs(switch_at, d.turns[0].end, 0.75);
     try std.testing.expectEqual(@as(?usize, 0), match(first, @ptrCast(d.centroids), 0.5));
 }
+
+test "an embedding doesn't depend on what was embedded before" {
+    // ORIEL_SPEAKER_WAV: 16 kHz mono 16-bit speech, 8 s or more.
+    const gpa = std.testing.allocator;
+    const wav = std.testing.environ.getAlloc(gpa, "ORIEL_SPEAKER_WAV") catch return error.SkipZigTest;
+    defer gpa.free(wav);
+    const enc = try loadTestEncoder(gpa);
+    defer enc.deinit();
+    const speech = try readWav(gpa, wav);
+    defer gpa.free(speech);
+    const short = speech[0 .. 3 * sample_rate];
+    const first = try enc.embed(gpa, short);
+    defer gpa.free(first);
+    const long = try enc.embed(gpa, speech[sample_rate .. 6 * sample_rate]);
+    defer gpa.free(long);
+    const again = try enc.embed(gpa, short);
+    defer gpa.free(again);
+    std.debug.print("speakers: same clip before/after a 5 s one: cosine {d:.4}\n", .{cosine(first, again)});
+    try std.testing.expect(cosine(first, again) > 0.999);
+}
