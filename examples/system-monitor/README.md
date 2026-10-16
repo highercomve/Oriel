@@ -7,7 +7,7 @@ Live CPU, memory, and process monitor with three renderer modes: **WebView**, **
 
 ```sh
 cd examples/system-monitor
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=ReleaseSafe
 ./zig-out/bin/oriel-system-monitor
 ```
 
