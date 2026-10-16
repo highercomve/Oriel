@@ -1,10 +1,31 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.17.1, 0.17.0 and earlier.",
-.date = .date("2026-10-15T00:00:00"),
+.description = "Release notes for Oriel 0.17.2, 0.17.1 and earlier.",
+.date = .date("2026-10-16T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.17.2 · October 16, 2026]($heading.id('oriel-0-17-2-october-16-2026'))
+
+## [Fixed]($heading.id('fixed-0-17-2'))
+
+- Windows: a failed allocation while reading the launch arguments freed
+  them twice.
+- Linux: the custom media scheme's empty responses (errors, 416) no
+  longer read from a stack buffer after the handler returned.
+- Linux tray: a menu child is no longer leaked when its parent's list
+  runs out of memory.
+- Windows: the custom media scheme answers 500 when it runs out of memory
+  building its headers, instead of leaving the page waiting.
+- System monitor (macOS): the process list no longer reads past its
+  buffer when the buffer couldn't be allocated.
+
+## [Changed]($heading.id('changed-0-17-2'))
+
+- Assertions (Power of 10, rule 5) where outside data enters: IPC, the
+  updater, the native DOM and the system monitor's samplers. The system
+  monitor's release builds are ReleaseSafe.
 
 # [Oriel 0.17.1 · October 15, 2026]($heading.id('oriel-0-17-1-october-15-2026'))
 
