@@ -307,6 +307,43 @@ pub const Sampler = struct {
         const dt_s: f64 = @as(f64, @floatFromInt(dt_ns)) / 1e9;
         s.prev_time = t0;
 
+        const cpu = try s.sampleCpu(arena);
+        const mem = sampleMemory();
+        const uptime = uptimeSeconds();
+        var scan = try s.scanProcesses(arena, dt_ns);
+        const total_procs: u32 = @intCast(scan.procs.items.len);
+        try s.attachMeta(arena, scan.procs.items, &scan.starts);
+        const apps = applications.visible(try applications.collect(arena, scan.procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(scan.procs.items, s.filter, s.application_id);
+        const top = scan.procs.items[0..@min(scan.procs.items.len, tm.max_rows)];
+        if (s.samples % 16 == 0) s.pruneMeta(arena);
+        const disks = try sampleDisks(arena);
+        const nets = try s.sampleNetworks(arena, dt_s);
+
+        const t1 = Io.Clock.Timestamp.now(io, .awake);
+        return .{
+            .cpu = cpu,
+            .mem = mem,
+            .uptime_seconds = uptime,
+            .processes = top,
+            .applications = apps[0..@min(apps.len, tm.max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
+            .total_processes = total_procs,
+            .threads_total = scan.threads_total,
+            .running = scan.running,
+            .disks = disks,
+            .net = nets,
+            .sensors = &.{},
+            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
+            .engine = "Mach + libproc + sysctl (0 spawns)",
+        };
+    }
+
+    fn sampleCpu(s: *Sampler, arena: std.mem.Allocator) !tm.CpuInfo {
         var cpu: tm.CpuInfo = .{
             .percent = 0,
             .user_percent = 0,
@@ -319,153 +356,176 @@ pub const Sampler = struct {
             .load_avg = null,
             .per_core = &.{},
         };
-
-        // CPU: each core's user, system, idle and nice ticks.
-        {
-            var count: u32 = 0;
-            var info: ?[*]i32 = null;
-            var info_count: u32 = 0;
-            if (host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &count, &info, &info_count) == 0) if (info) |ticks| {
-                defer _ = vm_deallocate(mach_task_self_, @intFromPtr(ticks), info_count * @sizeOf(i32));
-                const cores = try arena.alloc(tm.CoreSample, count);
-                var sum: CoreTicks = .{};
-                for (cores, 0..) |*c, i| {
-                    const v = ticks[i * 4 ..][0..4];
-                    const now: CoreTicks = .{ .user = @as(u32, @bitCast(v[0])), .system = @as(u32, @bitCast(v[1])), .idle = @as(u32, @bitCast(v[2])), .nice = @as(u32, @bitCast(v[3])) };
-                    if (i >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
-                    const p = &s.prev_cores.items[i];
-                    const busy = (now.user + now.system + now.nice) -| (p.user + p.system + p.nice);
-                    const total = busy + (now.idle -| p.idle);
-                    c.* = .{ .percent = if (p.idle + p.user > 0) tm.pct(busy, total) else 0, .freq_mhz = 0 };
-                    p.* = now;
-                    sum.user += now.user;
-                    sum.system += now.system;
-                    sum.idle += now.idle;
-                    sum.nice += now.nice;
-                }
-                const p = s.prev;
-                if (p.idle + p.user > 0) {
-                    const user = (sum.user + sum.nice) -| (p.user + p.nice);
-                    const system = sum.system -| p.system;
-                    const total = user + system + (sum.idle -| p.idle);
-                    cpu.percent = tm.pct(user + system, total);
-                    cpu.user_percent = tm.pct(user, total);
-                    cpu.system_percent = tm.pct(system, total);
-                }
-                s.prev = sum;
-                cpu.per_core = cores;
-            };
-            // Intel Macs tell their frequency; Apple Silicon doesn't.
-            var hz: u64 = 0;
-            var hz_len: usize = @sizeOf(u64);
-            if (sysctlbyname("hw.cpufrequency", &hz, &hz_len, null, 0) == 0 and hz > 0) {
-                cpu.freq_mhz = @round(@as(f64, @floatFromInt(hz)) / 1e6);
-                for (cpu.per_core) |*c| c.freq_mhz = cpu.freq_mhz;
-            }
-            var la: [3]f64 = undefined;
-            if (getloadavg(&la, 3) == 3) cpu.load_avg = .{ @round(la[0] * 100) / 100, @round(la[1] * 100) / 100, @round(la[2] * 100) / 100 };
+        try s.sampleCoreTicks(arena, &cpu);
+        // Intel Macs tell their frequency; Apple Silicon doesn't.
+        var hz: u64 = 0;
+        var hz_len: usize = @sizeOf(u64);
+        if (sysctlbyname("hw.cpufrequency", &hz, &hz_len, null, 0) == 0 and hz > 0) {
+            cpu.freq_mhz = @round(@as(f64, @floatFromInt(hz)) / 1e6);
+            for (cpu.per_core) |*c| c.freq_mhz = cpu.freq_mhz;
         }
+        var la: [3]f64 = undefined;
+        if (getloadavg(&la, 3) == 3) cpu.load_avg = .{ @round(la[0] * 100) / 100, @round(la[1] * 100) / 100, @round(la[2] * 100) / 100 };
+        return cpu;
+    }
 
-        // Memory, as Activity Monitor counts it.
+    /// CPU: each core's user, system, idle and nice ticks.
+    fn sampleCoreTicks(s: *Sampler, arena: std.mem.Allocator, cpu: *tm.CpuInfo) !void {
+        var count: u32 = 0;
+        var info: ?[*]i32 = null;
+        var info_count: u32 = 0;
+        if (host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &count, &info, &info_count) != 0) return;
+        const ticks = info orelse return;
+        defer _ = vm_deallocate(mach_task_self_, @intFromPtr(ticks), info_count * @sizeOf(i32));
+        // CPU_STATE_MAX (4) counters per core: the reads below aren't bounds-checked.
+        std.debug.assert(@as(u64, count) * 4 <= info_count);
+        const cores = try arena.alloc(tm.CoreSample, count);
+        var sum: CoreTicks = .{};
+        for (cores, 0..) |*c, i| {
+            const v = ticks[i * 4 ..][0..4];
+            const now: CoreTicks = .{ .user = @as(u32, @bitCast(v[0])), .system = @as(u32, @bitCast(v[1])), .idle = @as(u32, @bitCast(v[2])), .nice = @as(u32, @bitCast(v[3])) };
+            if (i >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
+            const p = &s.prev_cores.items[i];
+            const busy = (now.user + now.system + now.nice) -| (p.user + p.system + p.nice);
+            const total = busy + (now.idle -| p.idle);
+            c.* = .{ .percent = if (p.idle + p.user > 0) tm.pct(busy, total) else 0, .freq_mhz = 0 };
+            std.debug.assert(c.percent >= 0 and c.percent <= 100);
+            p.* = now;
+            sum.user += now.user;
+            sum.system += now.system;
+            sum.idle += now.idle;
+            sum.nice += now.nice;
+        }
+        const p = s.prev;
+        if (p.idle + p.user > 0) {
+            const user = (sum.user + sum.nice) -| (p.user + p.nice);
+            const system = sum.system -| p.system;
+            const total = user + system + (sum.idle -| p.idle);
+            cpu.percent = tm.pct(user + system, total);
+            cpu.user_percent = tm.pct(user, total);
+            cpu.system_percent = tm.pct(system, total);
+            std.debug.assert(cpu.percent >= 0 and cpu.percent <= 100);
+        }
+        s.prev = sum;
+        cpu.per_core = cores;
+    }
+
+    /// Memory, as Activity Monitor counts it.
+    fn sampleMemory() tm.MemInfo {
         var mem = std.mem.zeroes(tm.MemInfo);
-        {
-            var total: u64 = 0;
-            var len: usize = @sizeOf(u64);
-            _ = sysctlbyname("hw.memsize", &total, &len, null, 0);
-            var page: u64 = 0;
-            len = @sizeOf(u64);
-            if (sysctlbyname("hw.pagesize", &page, &len, null, 0) != 0 or page == 0) page = 16384;
-            var vm: VmStatistics64 = undefined;
-            var count: u32 = @sizeOf(VmStatistics64) / @sizeOf(u32);
-            if (host_statistics64(mach_host_self(), HOST_VM_INFO64, &vm, &count) == 0) {
-                const app = @as(u64, vm.internal_page_count) -| vm.purgeable_count;
-                mem.used_bytes = (app + vm.wire_count + vm.compressor_page_count) * page;
-                mem.cached_bytes = (@as(u64, vm.external_page_count) + vm.purgeable_count) * page;
-                mem.free_bytes = (@as(u64, vm.free_count) + vm.speculative_count) * page;
-            }
-            mem.total_bytes = total;
-            mem.available_bytes = total -| mem.used_bytes;
-            mem.percent = tm.pct(mem.used_bytes, total);
-            var swap: XswUsage = undefined;
-            len = @sizeOf(XswUsage);
-            if (sysctlbyname("vm.swapusage", &swap, &len, null, 0) == 0) {
-                mem.swap_total_bytes = swap.total;
-                mem.swap_used_bytes = swap.used;
-            }
+        var total: u64 = 0;
+        var len: usize = @sizeOf(u64);
+        _ = sysctlbyname("hw.memsize", &total, &len, null, 0);
+        var page: u64 = 0;
+        len = @sizeOf(u64);
+        if (sysctlbyname("hw.pagesize", &page, &len, null, 0) != 0 or page == 0) page = 16384;
+        var vm: VmStatistics64 = undefined;
+        var count: u32 = @sizeOf(VmStatistics64) / @sizeOf(u32);
+        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, &vm, &count) == 0) {
+            const app = @as(u64, vm.internal_page_count) -| vm.purgeable_count;
+            mem.used_bytes = (app + vm.wire_count + vm.compressor_page_count) * page;
+            mem.cached_bytes = (@as(u64, vm.external_page_count) + vm.purgeable_count) * page;
+            mem.free_bytes = (@as(u64, vm.free_count) + vm.speculative_count) * page;
         }
-
-        // Uptime: since kern.boottime.
-        var uptime: u64 = 0;
-        {
-            var boot: extern struct { sec: i64, usec: i32, pad: i32 } = undefined;
-            var len: usize = @sizeOf(@TypeOf(boot));
-            if (sysctlbyname("kern.boottime", &boot, &len, null, 0) == 0) uptime = @intCast(@max(0, time(null) - boot.sec));
+        mem.total_bytes = total;
+        mem.available_bytes = total -| mem.used_bytes;
+        mem.percent = tm.pct(mem.used_bytes, total);
+        var swap: XswUsage = undefined;
+        len = @sizeOf(XswUsage);
+        if (sysctlbyname("vm.swapusage", &swap, &len, null, 0) == 0) {
+            mem.swap_total_bytes = swap.total;
+            mem.swap_used_bytes = swap.used;
         }
+        return mem;
+    }
 
-        // Processes: every pid, its task info when this user may read it.
-        var procs: std.ArrayList(tm.ProcessRow) = .empty;
-        try procs.ensureTotalCapacity(arena, 1024);
-        var starts: std.AutoHashMapUnmanaged(u32, u64) = .empty;
-        var threads_total: u32 = 0;
-        var running: u32 = 0;
+    /// Uptime: since kern.boottime.
+    fn uptimeSeconds() u64 {
+        var boot: extern struct { sec: i64, usec: i32, pad: i32 } = undefined;
+        var len: usize = @sizeOf(@TypeOf(boot));
+        if (sysctlbyname("kern.boottime", &boot, &len, null, 0) == 0) return @intCast(@max(0, time(null) - boot.sec));
+        return 0;
+    }
+
+    const ProcScan = struct {
+        procs: std.ArrayList(tm.ProcessRow) = .empty,
+        /// The readable processes' start times; the others have no meta.
+        starts: std.AutoHashMapUnmanaged(u32, u64) = .empty,
+        threads_total: u32 = 0,
+        running: u32 = 0,
+    };
+
+    /// Processes: every pid, its task info when this user may read it.
+    fn scanProcesses(s: *Sampler, arena: std.mem.Allocator, dt_ns: u64) !ProcScan {
+        var scan: ProcScan = .{};
+        try scan.procs.ensureTotalCapacity(arena, 1024);
         s.curr_procs.clearRetainingCapacity();
-        {
-            const n_hint = proc_listallpids(null, 0);
-            const want: usize = @intCast(@max(n_hint, 0) + 64);
-            if (s.pids.len < want) {
-                s.gpa.free(s.pids);
-                s.pids = s.gpa.alloc(c_int, want * 2) catch &.{};
-            }
-            const n = proc_listallpids(s.pids.ptr, @intCast(s.pids.len * @sizeOf(c_int)));
-            for (s.pids[0..@intCast(@max(n, 0))]) |pid_c| {
-                if (pid_c <= 0) continue;
-                const pid: u32 = @intCast(pid_c);
-                var all: ProcTaskAllInfo = undefined;
-                if (proc_pidinfo(pid_c, PROC_PIDTASKALLINFO, 0, &all, @sizeOf(ProcTaskAllInfo)) == @sizeOf(ProcTaskAllInfo)) {
-                    const ns = s.toNs(all.task.total_user + all.task.total_system);
-                    const start = all.bsd.start_tvsec;
-                    s.curr_procs.put(pid, .{ .start = start, .ns = ns }) catch {};
-                    var p_cpu: f64 = 0;
-                    if (s.prev_procs.get(pid)) |prev| if (prev.start == start and ns >= prev.ns and dt_ns > 0) {
-                        p_cpu = tm.pct(ns - prev.ns, dt_ns);
-                    };
-                    starts.put(arena, pid, start) catch {};
-                    threads_total += @intCast(@max(0, all.task.threadnum));
-                    running += @intCast(@max(0, all.task.numrunning));
-                    const name = std.mem.sliceTo(&all.bsd.name, 0);
-                    try procs.append(arena, .{
-                        .pid = pid,
-                        .parent_pid = all.bsd.ppid,
-                        .start_time = start,
-                        .name = try arena.dupe(u8, if (name.len > 0) name else std.mem.sliceTo(&all.bsd.comm, 0)),
-                        .command = "",
-                        .user = "",
-                        .state = stateOf(all.bsd.status),
-                        .threads = @intCast(@max(0, all.task.threadnum)),
-                        .cpu_percent = p_cpu,
-                        .mem_rss_bytes = all.task.resident_size,
-                    });
-                    continue;
-                }
-                // Another user's (root's): its name and owner only.
-                var short: ProcBsdShortInfo = undefined;
-                if (proc_pidinfo(pid_c, PROC_PIDT_SHORTBSDINFO, 0, &short, @sizeOf(ProcBsdShortInfo)) != @sizeOf(ProcBsdShortInfo)) continue;
-                try procs.append(arena, .{
-                    .pid = pid,
-                    .parent_pid = short.ppid,
-                    .name = try arena.dupe(u8, std.mem.sliceTo(&short.comm, 0)),
-                    .command = "",
-                    .user = try arena.dupe(u8, s.userName(short.uid)),
-                    .state = stateOf(short.status),
-                    .threads = 0,
-                    .cpu_percent = 0,
-                    .mem_rss_bytes = 0,
-                });
-            }
+        const n_hint = proc_listallpids(null, 0);
+        const want: usize = @intCast(@max(n_hint, 0) + 64);
+        if (s.pids.len < want) {
+            s.gpa.free(s.pids);
+            s.pids = s.gpa.alloc(c_int, want * 2) catch &.{};
+        }
+        const n = proc_listallpids(s.pids.ptr, @intCast(s.pids.len * @sizeOf(c_int)));
+        // Given a buffer, it counts the pids it wrote into it.
+        std.debug.assert(n <= s.pids.len);
+        for (s.pids[0..@intCast(@max(n, 0))]) |pid_c| {
+            if (pid_c <= 0) continue;
+            try s.appendProcess(arena, &scan, pid_c, dt_ns);
         }
         std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
-        const total_procs: u32 = @intCast(procs.items.len);
-        for (procs.items) |*p| {
+        return scan;
+    }
+
+    fn appendProcess(s: *Sampler, arena: std.mem.Allocator, scan: *ProcScan, pid_c: c_int, dt_ns: u64) !void {
+        const pid: u32 = @intCast(pid_c);
+        var all: ProcTaskAllInfo = undefined;
+        if (proc_pidinfo(pid_c, PROC_PIDTASKALLINFO, 0, &all, @sizeOf(ProcTaskAllInfo)) == @sizeOf(ProcTaskAllInfo)) {
+            const ns = s.toNs(all.task.total_user + all.task.total_system);
+            const start = all.bsd.start_tvsec;
+            s.curr_procs.put(pid, .{ .start = start, .ns = ns }) catch {};
+            var p_cpu: f64 = 0;
+            if (s.prev_procs.get(pid)) |prev| if (prev.start == start and ns >= prev.ns and dt_ns > 0) {
+                p_cpu = tm.pct(ns - prev.ns, dt_ns);
+            };
+            scan.starts.put(arena, pid, start) catch {};
+            scan.threads_total += @intCast(@max(0, all.task.threadnum));
+            scan.running += @intCast(@max(0, all.task.numrunning));
+            const name = std.mem.sliceTo(&all.bsd.name, 0);
+            try scan.procs.append(arena, .{
+                .pid = pid,
+                .parent_pid = all.bsd.ppid,
+                .start_time = start,
+                .name = try arena.dupe(u8, if (name.len > 0) name else std.mem.sliceTo(&all.bsd.comm, 0)),
+                .command = "",
+                .user = "",
+                .state = stateOf(all.bsd.status),
+                .threads = @intCast(@max(0, all.task.threadnum)),
+                .cpu_percent = p_cpu,
+                .mem_rss_bytes = all.task.resident_size,
+            });
+            return;
+        }
+        // Another user's (root's): its name and owner only.
+        var short: ProcBsdShortInfo = undefined;
+        if (proc_pidinfo(pid_c, PROC_PIDT_SHORTBSDINFO, 0, &short, @sizeOf(ProcBsdShortInfo)) != @sizeOf(ProcBsdShortInfo)) return;
+        try scan.procs.append(arena, .{
+            .pid = pid,
+            .parent_pid = short.ppid,
+            .name = try arena.dupe(u8, std.mem.sliceTo(&short.comm, 0)),
+            .command = "",
+            .user = try arena.dupe(u8, s.userName(short.uid)),
+            .state = stateOf(short.status),
+            .threads = 0,
+            .cpu_percent = 0,
+            .mem_rss_bytes = 0,
+        });
+    }
+
+    /// Each readable process's name, command line, user and executable,
+    /// from the meta cache (read on first sight, again when its pid is reused).
+    fn attachMeta(s: *Sampler, arena: std.mem.Allocator, procs: []tm.ProcessRow, starts: *const std.AutoHashMapUnmanaged(u32, u64)) !void {
+        for (procs) |*p| {
             const start = starts.get(p.pid) orelse continue; // not readable
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
@@ -488,125 +548,109 @@ pub const Sampler = struct {
                 p.app_name = bundle.name;
             }
         }
-        const apps = applications.visible(try applications.collect(arena, procs.items));
-        applications.order(apps, s.filter);
-        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
-        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
-        if (s.samples % 16 == 0) {
-            var stale: std.ArrayList(u32) = .empty;
-            var mit = s.meta.iterator();
-            while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
-            for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| freeMeta(s.gpa, kv.value);
-        }
+    }
 
-        // Disks: / (the APFS container's use, the Data volume's too) and
-        // what's under /Volumes.
+    /// Forgets the processes not seen in the last 16 samples.
+    fn pruneMeta(s: *Sampler, arena: std.mem.Allocator) void {
+        var stale: std.ArrayList(u32) = .empty;
+        var mit = s.meta.iterator();
+        while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
+        for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| freeMeta(s.gpa, kv.value);
+    }
+
+    /// Disks: / (the APFS container's use, the Data volume's too) and
+    /// what's under /Volumes.
+    fn sampleDisks(arena: std.mem.Allocator) ![]tm.DiskSample {
         var disks: std.ArrayList(tm.DiskSample) = .empty;
-        {
-            var mounts: ?[*]Statfs = null;
-            const n = getmntinfo(&mounts, MNT_NOWAIT);
-            if (mounts) |m| for (m[0..@intCast(@max(n, 0))]) |*f| {
-                if (f.flags & MNT_LOCAL == 0) continue;
-                const on = std.mem.sliceTo(&f.mntonname, 0);
-                const fs = std.mem.sliceTo(&f.fstypename, 0);
-                if (std.mem.eql(u8, fs, "devfs") or std.mem.eql(u8, fs, "autofs")) continue;
-                const name = if (std.mem.eql(u8, on, "/"))
-                    "root"
-                else if (std.mem.startsWith(u8, on, "/Volumes/"))
-                    std.fs.path.basename(on)
-                else
-                    continue;
-                const total = f.blocks * f.bsize;
-                try disks.append(arena, .{
-                    .name = try arena.dupe(u8, name),
-                    .mount = try arena.dupe(u8, on),
-                    .device = try arena.dupe(u8, std.mem.sliceTo(&f.mntfromname, 0)),
-                    .fs = try arena.dupe(u8, fs),
-                    .total_bytes = total,
-                    .used_bytes = total -| f.bfree * f.bsize,
-                    .read_bps = 0,
-                    .write_bps = 0,
-                });
-            };
-        }
-
-        // Network: NET_RT_IFLIST2's interface messages, up and not virtual.
-        var nets: std.ArrayList(tm.NetSample) = .empty;
-        {
-            const mib = [_]c_int{ CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0 };
-            var len: usize = 0;
-            if (sysctl(&mib, mib.len, null, &len, null, 0) == 0 and len > 0) {
-                const buf = try arena.alloc(u8, len + 4096);
-                len = buf.len;
-                if (sysctl(&mib, mib.len, buf.ptr, &len, null, 0) == 0) {
-                    var off: usize = 0;
-                    while (off + 4 <= len) {
-                        const msg_len = std.mem.readInt(u16, buf[off..][0..2], .little);
-                        if (msg_len == 0) break;
-                        defer off += msg_len;
-                        if (buf[off + ifm_type] != RTM_IFINFO2 or off + ifi_obytes + 8 > len) continue;
-                        const flags = std.mem.readInt(i32, buf[off + ifm_flags ..][0..4], .little);
-                        if (flags & IFF_LOOPBACK != 0) continue;
-                        const index = std.mem.readInt(u16, buf[off + ifm_index ..][0..2], .little);
-                        var name_buf: [32]u8 = undefined;
-                        const name_z = if_indextoname(index, &name_buf) orelse continue;
-                        const name = std.mem.span(name_z);
-                        if (virtualInterface(name)) continue;
-                        const rx = std.mem.readInt(u64, buf[off + ifi_ibytes ..][0..8], .little);
-                        const tx = std.mem.readInt(u64, buf[off + ifi_obytes ..][0..8], .little);
-                        var rx_bps: f64 = 0;
-                        var tx_bps: f64 = 0;
-                        var found = false;
-                        for (s.nets.items) |*p| if (std.mem.eql(u8, p.name, name)) {
-                            if (dt_s > 0) {
-                                rx_bps = @as(f64, @floatFromInt(rx -| p.rx)) / dt_s;
-                                tx_bps = @as(f64, @floatFromInt(tx -| p.tx)) / dt_s;
-                            }
-                            p.rx = rx;
-                            p.tx = tx;
-                            found = true;
-                            break;
-                        };
-                        if (!found) if (s.gpa.dupe(u8, name)) |owned| {
-                            s.nets.append(s.gpa, .{ .name = owned, .rx = rx, .tx = tx }) catch s.gpa.free(owned);
-                        } else |_| {};
-                        // Never carried a byte (a Mac's idle Thunderbolt and
-                        // bridge ports, en1..en5): left out. Still tracked
-                        // above, so its first traffic brings it in.
-                        if (rx == 0 and tx == 0) continue;
-                        try nets.append(arena, .{
-                            .name = try arena.dupe(u8, name),
-                            .up = flags & IFF_UP != 0 and flags & IFF_RUNNING != 0,
-                            .rx_bps = rx_bps,
-                            .tx_bps = tx_bps,
-                            .rx_total = rx,
-                            .tx_total = tx,
-                        });
-                    }
-                }
-            }
-        }
-
-        const t1 = Io.Clock.Timestamp.now(io, .awake);
-        return .{
-            .cpu = cpu,
-            .mem = mem,
-            .uptime_seconds = uptime,
-            .processes = top,
-            .applications = apps[0..@min(apps.len, tm.max_rows)],
-            .applications_supported = true,
-            .total_applications = @intCast(apps.len),
-            .application_id = s.application_id,
-            .application_process_count = application_process_count,
-            .total_processes = total_procs,
-            .threads_total = threads_total,
-            .running = running,
-            .disks = disks.items,
-            .net = nets.items,
-            .sensors = &.{},
-            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
-            .engine = "Mach + libproc + sysctl (0 spawns)",
+        var mounts: ?[*]Statfs = null;
+        const n = getmntinfo(&mounts, MNT_NOWAIT);
+        if (mounts) |m| for (m[0..@intCast(@max(n, 0))]) |*f| {
+            if (f.flags & MNT_LOCAL == 0) continue;
+            const on = std.mem.sliceTo(&f.mntonname, 0);
+            const fs = std.mem.sliceTo(&f.fstypename, 0);
+            if (std.mem.eql(u8, fs, "devfs") or std.mem.eql(u8, fs, "autofs")) continue;
+            const name = if (std.mem.eql(u8, on, "/"))
+                "root"
+            else if (std.mem.startsWith(u8, on, "/Volumes/"))
+                std.fs.path.basename(on)
+            else
+                continue;
+            const total = f.blocks * f.bsize;
+            try disks.append(arena, .{
+                .name = try arena.dupe(u8, name),
+                .mount = try arena.dupe(u8, on),
+                .device = try arena.dupe(u8, std.mem.sliceTo(&f.mntfromname, 0)),
+                .fs = try arena.dupe(u8, fs),
+                .total_bytes = total,
+                .used_bytes = total -| f.bfree * f.bsize,
+                .read_bps = 0,
+                .write_bps = 0,
+            });
         };
+        return disks.items;
+    }
+
+    /// Network: NET_RT_IFLIST2's interface messages, up and not virtual.
+    fn sampleNetworks(s: *Sampler, arena: std.mem.Allocator, dt_s: f64) ![]tm.NetSample {
+        var nets: std.ArrayList(tm.NetSample) = .empty;
+        const mib = [_]c_int{ CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0 };
+        var len: usize = 0;
+        if (sysctl(&mib, mib.len, null, &len, null, 0) != 0 or len == 0) return nets.items;
+        const buf = try arena.alloc(u8, len + 4096);
+        len = buf.len;
+        if (sysctl(&mib, mib.len, buf.ptr, &len, null, 0) != 0) return nets.items;
+        // The kernel writes no more than it was given.
+        std.debug.assert(len <= buf.len);
+        var off: usize = 0;
+        while (off + 4 <= len) {
+            const msg_len = std.mem.readInt(u16, buf[off..][0..2], .little);
+            if (msg_len == 0) break;
+            defer off += msg_len;
+            if (buf[off + ifm_type] != RTM_IFINFO2 or off + ifi_obytes + 8 > len) continue;
+            try s.appendInterface(arena, &nets, buf[off..len], dt_s);
+        }
+        return nets.items;
+    }
+
+    /// One RTM_IFINFO2 message (`msg`, at least to its byte counters).
+    fn appendInterface(s: *Sampler, arena: std.mem.Allocator, nets: *std.ArrayList(tm.NetSample), msg: []const u8, dt_s: f64) !void {
+        const flags = std.mem.readInt(i32, msg[ifm_flags..][0..4], .little);
+        if (flags & IFF_LOOPBACK != 0) return;
+        const index = std.mem.readInt(u16, msg[ifm_index..][0..2], .little);
+        var name_buf: [32]u8 = undefined;
+        const name_z = if_indextoname(index, &name_buf) orelse return;
+        const name = std.mem.span(name_z);
+        if (virtualInterface(name)) return;
+        const rx = std.mem.readInt(u64, msg[ifi_ibytes..][0..8], .little);
+        const tx = std.mem.readInt(u64, msg[ifi_obytes..][0..8], .little);
+        var rx_bps: f64 = 0;
+        var tx_bps: f64 = 0;
+        var found = false;
+        for (s.nets.items) |*p| if (std.mem.eql(u8, p.name, name)) {
+            if (dt_s > 0) {
+                rx_bps = @as(f64, @floatFromInt(rx -| p.rx)) / dt_s;
+                tx_bps = @as(f64, @floatFromInt(tx -| p.tx)) / dt_s;
+            }
+            p.rx = rx;
+            p.tx = tx;
+            found = true;
+            break;
+        };
+        if (!found) if (s.gpa.dupe(u8, name)) |owned| {
+            s.nets.append(s.gpa, .{ .name = owned, .rx = rx, .tx = tx }) catch s.gpa.free(owned);
+        } else |_| {};
+        // Never carried a byte (a Mac's idle Thunderbolt and
+        // bridge ports, en1..en5): left out. Still tracked
+        // above, so its first traffic brings it in.
+        if (rx == 0 and tx == 0) return;
+        try nets.append(arena, .{
+            .name = try arena.dupe(u8, name),
+            .up = flags & IFF_UP != 0 and flags & IFF_RUNNING != 0,
+            .rx_bps = rx_bps,
+            .tx_bps = tx_bps,
+            .rx_total = rx,
+            .tx_total = tx,
+        });
     }
 
     fn userName(s: *Sampler, uid: u32) []const u8 {

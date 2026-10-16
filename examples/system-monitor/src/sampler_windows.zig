@@ -478,6 +478,7 @@ pub const Sampler = struct {
         s.samples += 1;
         const dt_s: f64 = if (s.prev_time) |p| @as(f64, @floatFromInt(p.durationTo(t0).raw.toNanoseconds())) / 1e9 else 0;
         s.prev_time = t0;
+        std.debug.assert(dt_s >= 0); // the awake clock is monotonic
 
         var cpu: tm.CpuInfo = .{
             .percent = 0,
@@ -491,109 +492,149 @@ pub const Sampler = struct {
             .load_avg = null,
             .per_core = &.{},
         };
-
-        // CPU: per core, and their sum. Kernel time includes idle.
-        var delta_total: u64 = 0;
-        {
-            const infos = try arena.alloc(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, s.cores);
-            var got: u32 = 0;
-            const st = NtQuerySystemInformation(SystemProcessorPerformanceInformation, infos.ptr, @intCast(infos.len * @sizeOf(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION)), &got);
-            const n = if (st == 0) got / @sizeOf(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) else 0;
-            const cores = try arena.alloc(tm.CoreSample, n);
-            var sum: CoreTimes = .{};
-            for (infos[0..n], cores, 0..) |info, *c, i| {
-                const idle: u64 = @intCast(@max(0, info.idle));
-                const kernel: u64 = @intCast(@max(0, info.kernel));
-                const user: u64 = @intCast(@max(0, info.user));
-                const now: CoreTimes = .{ .busy = (kernel + user) -| idle, .total = kernel + user, .user = user, .system = kernel -| idle };
-                if (i >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
-                const p = &s.prev_cores.items[i];
-                c.* = .{ .percent = if (p.total > 0) tm.pct(now.busy -| p.busy, now.total -| p.total) else 0, .freq_mhz = 0 };
-                p.* = now;
-                sum.busy += now.busy;
-                sum.total += now.total;
-                sum.user += now.user;
-                sum.system += now.system;
-            }
-            if (s.prev.total > 0 and sum.total > s.prev.total) {
-                delta_total = sum.total - s.prev.total;
-                cpu.percent = tm.pct(sum.busy -| s.prev.busy, delta_total);
-                cpu.user_percent = tm.pct(sum.user -| s.prev.user, delta_total);
-                cpu.system_percent = tm.pct(sum.system -| s.prev.system, delta_total);
-            }
-            s.prev = sum;
-            // Frequencies: the cores' current MHz.
-            const power = try arena.alloc(PROCESSOR_POWER_INFORMATION, @max(n, 1));
-            if (n > 0 and CallNtPowerInformation(ProcessorInformation, null, 0, power.ptr, @intCast(power.len * @sizeOf(PROCESSOR_POWER_INFORMATION))) == 0) {
-                var mhz: f64 = 0;
-                for (cores, power[0..n]) |*c, p| {
-                    c.freq_mhz = @floatFromInt(p.current_mhz);
-                    mhz += c.freq_mhz;
-                }
-                cpu.freq_mhz = @round(mhz / @as(f64, @floatFromInt(n)));
-            }
-            cpu.per_core = cores;
-        }
-
-        // Memory: physical, the file cache, and the page file beyond RAM.
+        const delta_total = try s.sampleCpu(arena, &cpu);
         var mem = std.mem.zeroes(tm.MemInfo);
-        var threads_total: u32 = 0;
-        {
-            var ms: MEMORYSTATUSEX = .{};
-            if (GlobalMemoryStatusEx(&ms) != 0) {
-                mem.total_bytes = ms.total_phys;
-                mem.available_bytes = ms.avail_phys;
-                mem.used_bytes = ms.total_phys -| ms.avail_phys;
-                mem.swap_total_bytes = ms.total_page_file -| ms.total_phys;
-                mem.swap_used_bytes = @min(mem.swap_total_bytes, (ms.total_page_file -| ms.avail_page_file) -| mem.used_bytes);
-                mem.percent = tm.pct(mem.used_bytes, mem.total_bytes);
-            }
-            var pi: PERFORMANCE_INFORMATION = std.mem.zeroes(PERFORMANCE_INFORMATION);
-            if (K32GetPerformanceInfo(&pi, @sizeOf(PERFORMANCE_INFORMATION)) != 0) {
-                mem.cached_bytes = @as(u64, pi.system_cache) * pi.page_size;
-                mem.free_bytes = mem.available_bytes -| mem.cached_bytes;
-                threads_total = pi.thread_count;
-            }
-        }
+        const threads_total = sampleMemory(&mem);
 
         // Processes: one call for all of them.
         var procs: std.ArrayList(tm.ProcessRow) = .empty;
         try procs.ensureTotalCapacity(arena, 512);
         var creates: std.AutoHashMapUnmanaged(u32, i64) = .empty;
-        s.curr_procs.clearRetainingCapacity();
-        if (s.readProcesses()) |buf| {
-            var off: usize = 0;
-            while (off + @sizeOf(SYSTEM_PROCESS_INFORMATION) <= buf.len) {
-                const p: *const SYSTEM_PROCESS_INFORMATION = @ptrCast(@alignCast(buf.ptr + off));
-                defer off = if (p.next == 0) buf.len else off + p.next;
-                const pid: u32 = @truncate(p.pid);
-                if (pid == 0) continue; // the idle "process": the cores' idle time
-                const ticks: u64 = @intCast(@max(0, p.user_time) + @max(0, p.kernel_time));
-                s.curr_procs.put(pid, .{ .create = p.create_time, .ticks = ticks }) catch {};
-                var p_cpu: f64 = 0;
-                if (s.prev_procs.get(pid)) |prev| if (prev.create == p.create_time and ticks >= prev.ticks and delta_total > 0) {
-                    p_cpu = tm.round1(tm.pct(ticks - prev.ticks, delta_total) * @as(f64, @floatFromInt(s.cores)));
-                };
-                const name = if (p.image_name.buf) |b| (utf8(arena, b[0 .. p.image_name.len / 2]) orelse "?") else if (pid == 4) "System" else "?";
-                creates.put(arena, pid, p.create_time) catch {};
-                procs.append(arena, .{
-                    .pid = pid,
-                    .parent_pid = @truncate(p.parent_pid),
-                    .start_time = @intCast(@max(0, p.create_time)),
-                    .name = name,
-                    .command = "",
-                    .user = "",
-                    .state = "",
-                    .threads = p.threads,
-                    .cpu_percent = p_cpu,
-                    .mem_rss_bytes = p.working_set,
-                }) catch {};
-            }
-        }
-        std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
+        s.readProcessRows(arena, &procs, &creates, delta_total);
         const total_procs: u32 = @intCast(procs.items.len);
+        try s.attachMeta(arena, procs.items, &creates);
+        const apps = applications.visible(try applications.collect(arena, procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
+        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
+        if (s.samples % 16 == 0) s.pruneMeta(arena);
+
+        const disks = try s.sampleDisks(arena, dt_s);
+        const nets = try s.sampleNets(arena, dt_s);
+
+        const t1 = Io.Clock.Timestamp.now(io, .awake);
+        return .{
+            .cpu = cpu,
+            .mem = mem,
+            .uptime_seconds = GetTickCount64() / 1000,
+            .processes = top,
+            .applications = apps[0..@min(apps.len, tm.max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
+            .total_processes = total_procs,
+            .threads_total = threads_total,
+            .running = 0,
+            .disks = disks,
+            .net = nets,
+            .sensors = &.{},
+            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
+            .engine = "Win32 + NT native calls (0 spawns, no WMI)",
+        };
+    }
+
+    /// CPU: per core, and their sum, into `cpu`; the sum's total ticks since
+    /// the last sample (0 on the first). Kernel time includes idle.
+    fn sampleCpu(s: *Sampler, arena: std.mem.Allocator, cpu: *tm.CpuInfo) !u64 {
+        var delta_total: u64 = 0;
+        const infos = try arena.alloc(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, s.cores);
+        var got: u32 = 0;
+        const st = NtQuerySystemInformation(SystemProcessorPerformanceInformation, infos.ptr, @intCast(infos.len * @sizeOf(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION)), &got);
+        const n = if (st == 0) got / @sizeOf(SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION) else 0;
+        std.debug.assert(n <= infos.len); // the kernel writes no more than the buffer holds
+        const cores = try arena.alloc(tm.CoreSample, n);
+        var sum: CoreTimes = .{};
+        for (infos[0..n], cores, 0..) |info, *c, i| {
+            const idle: u64 = @intCast(@max(0, info.idle));
+            const kernel: u64 = @intCast(@max(0, info.kernel));
+            const user: u64 = @intCast(@max(0, info.user));
+            const now: CoreTimes = .{ .busy = (kernel + user) -| idle, .total = kernel + user, .user = user, .system = kernel -| idle };
+            if (i >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
+            const p = &s.prev_cores.items[i];
+            c.* = .{ .percent = if (p.total > 0) tm.pct(now.busy -| p.busy, now.total -| p.total) else 0, .freq_mhz = 0 };
+            p.* = now;
+            sum.busy += now.busy;
+            sum.total += now.total;
+            sum.user += now.user;
+            sum.system += now.system;
+        }
+        if (s.prev.total > 0 and sum.total > s.prev.total) {
+            delta_total = sum.total - s.prev.total;
+            cpu.percent = tm.pct(sum.busy -| s.prev.busy, delta_total);
+            cpu.user_percent = tm.pct(sum.user -| s.prev.user, delta_total);
+            cpu.system_percent = tm.pct(sum.system -| s.prev.system, delta_total);
+        }
+        s.prev = sum;
+        try readFrequencies(arena, cores, cpu);
+        cpu.per_core = cores;
+        std.debug.assert(std.math.isFinite(cpu.percent));
+        return delta_total;
+    }
+
+    /// Frequencies: the cores' current MHz, and their mean into `cpu`.
+    fn readFrequencies(arena: std.mem.Allocator, cores: []tm.CoreSample, cpu: *tm.CpuInfo) !void {
+        const n = cores.len;
+        const power = try arena.alloc(PROCESSOR_POWER_INFORMATION, @max(n, 1));
+        if (n > 0 and CallNtPowerInformation(ProcessorInformation, null, 0, power.ptr, @intCast(power.len * @sizeOf(PROCESSOR_POWER_INFORMATION))) == 0) {
+            var mhz: f64 = 0;
+            for (cores, power[0..n]) |*c, p| {
+                c.freq_mhz = @floatFromInt(p.current_mhz);
+                mhz += c.freq_mhz;
+            }
+            cpu.freq_mhz = @round(mhz / @as(f64, @floatFromInt(n)));
+        }
+    }
+
+    /// One row per process record (and its creation time in `creates`),
+    /// with its CPU share since the last sample.
+    fn readProcessRows(
+        s: *Sampler,
+        arena: std.mem.Allocator,
+        procs: *std.ArrayList(tm.ProcessRow),
+        creates: *std.AutoHashMapUnmanaged(u32, i64),
+        delta_total: u64,
+    ) void {
+        s.curr_procs.clearRetainingCapacity();
+        defer std.mem.swap(std.AutoHashMap(u32, ProcPrev), &s.prev_procs, &s.curr_procs);
+        const buf = s.readProcesses() orelse return;
+        var off: usize = 0;
+        while (off + @sizeOf(SYSTEM_PROCESS_INFORMATION) <= buf.len) {
+            const p: *const SYSTEM_PROCESS_INFORMATION = @ptrCast(@alignCast(buf.ptr + off));
+            // Each record is a header and its threads: the next one can't overlap it.
+            std.debug.assert(p.next == 0 or p.next >= @sizeOf(SYSTEM_PROCESS_INFORMATION));
+            defer off = if (p.next == 0) buf.len else off + p.next;
+            const pid: u32 = @truncate(p.pid);
+            if (pid == 0) continue; // the idle "process": the cores' idle time
+            const ticks: u64 = @intCast(@max(0, p.user_time) + @max(0, p.kernel_time));
+            s.curr_procs.put(pid, .{ .create = p.create_time, .ticks = ticks }) catch {};
+            var p_cpu: f64 = 0;
+            if (s.prev_procs.get(pid)) |prev| if (prev.create == p.create_time and ticks >= prev.ticks and delta_total > 0) {
+                p_cpu = tm.round1(tm.pct(ticks - prev.ticks, delta_total) * @as(f64, @floatFromInt(s.cores)));
+            };
+            std.debug.assert(std.math.isFinite(p_cpu));
+            const name = if (p.image_name.buf) |b| (utf8(arena, b[0 .. p.image_name.len / 2]) orelse "?") else if (pid == 4) "System" else "?";
+            creates.put(arena, pid, p.create_time) catch {};
+            procs.append(arena, .{
+                .pid = pid,
+                .parent_pid = @truncate(p.parent_pid),
+                .start_time = @intCast(@max(0, p.create_time)),
+                .name = name,
+                .command = "",
+                .user = "",
+                .state = "",
+                .threads = p.threads,
+                .cpu_percent = p_cpu,
+                .mem_rss_bytes = p.working_set,
+            }) catch {};
+        }
+    }
+
+    /// Each row's user, command line and executable (read once per process),
+    /// and its application when it has a visible window.
+    fn attachMeta(s: *Sampler, arena: std.mem.Allocator, procs: []tm.ProcessRow, creates: *const std.AutoHashMapUnmanaged(u32, i64)) !void {
         const window_pids = WindowPids.collect();
-        for (procs.items) |*p| {
+        for (procs) |*p| {
             const create = creates.get(p.pid) orelse 0;
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
@@ -614,22 +655,22 @@ pub const Sampler = struct {
                 p.app_name = if (std.ascii.endsWithIgnoreCase(p.name, ".exe")) p.name[0 .. p.name.len - 4] else p.name;
             }
         }
-        const apps = applications.visible(try applications.collect(arena, procs.items));
-        applications.order(apps, s.filter);
-        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
-        const top = procs.items[0..@min(procs.items.len, tm.max_rows)];
-        if (s.samples % 16 == 0) {
-            var stale: std.ArrayList(u32) = .empty;
-            var mit = s.meta.iterator();
-            while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
-            for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| {
-                s.gpa.free(kv.value.user);
-                s.gpa.free(kv.value.command);
-                s.gpa.free(kv.value.executable);
-            };
-        }
+    }
 
-        // Disks: the drive list again now and then, sizes, and I/O rates.
+    /// Forgets the processes not seen for a while.
+    fn pruneMeta(s: *Sampler, arena: std.mem.Allocator) void {
+        var stale: std.ArrayList(u32) = .empty;
+        var mit = s.meta.iterator();
+        while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
+        for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| {
+            s.gpa.free(kv.value.user);
+            s.gpa.free(kv.value.command);
+            s.gpa.free(kv.value.executable);
+        };
+    }
+
+    /// Disks: the drive list again now and then, sizes, and I/O rates.
+    fn sampleDisks(s: *Sampler, arena: std.mem.Allocator, dt_s: f64) ![]tm.DiskSample {
         if (s.samples % 15 == 0) s.loadDrives();
         const disks = try arena.alloc(tm.DiskSample, s.drives.items.len);
         for (s.drives.items, disks) |*d, *out| {
@@ -661,63 +702,44 @@ pub const Sampler = struct {
                 }
             }
         }
+        return disks;
+    }
 
-        // Network: the hardware interfaces (Ethernet, Wi-Fi), not the
-        // loopback, filters and virtual adapters.
+    /// Network: the hardware interfaces (Ethernet, Wi-Fi), not the
+    /// loopback, filters and virtual adapters.
+    fn sampleNets(s: *Sampler, arena: std.mem.Allocator, dt_s: f64) ![]tm.NetSample {
         var nets: std.ArrayList(tm.NetSample) = .empty;
-        {
-            var table: ?*MIB_IF_TABLE2 = null;
-            if (GetIfTable2(&table) == 0) if (table) |tbl| {
-                defer FreeMibTable(tbl);
-                const rows: [*]const MIB_IF_ROW2 = &tbl.table;
-                for (rows[0..tbl.count]) |*r| {
-                    if (r.flags & 1 == 0 or r.if_type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-                    var rx_bps: f64 = 0;
-                    var tx_bps: f64 = 0;
-                    var found = false;
-                    for (s.nets.items) |*p| if (p.luid == r.luid) {
-                        if (dt_s > 0) {
-                            rx_bps = @as(f64, @floatFromInt(r.in_octets -| p.rx)) / dt_s;
-                            tx_bps = @as(f64, @floatFromInt(r.out_octets -| p.tx)) / dt_s;
-                        }
-                        p.rx = r.in_octets;
-                        p.tx = r.out_octets;
-                        found = true;
-                        break;
-                    };
-                    if (!found) s.nets.append(s.gpa, .{ .luid = r.luid, .rx = r.in_octets, .tx = r.out_octets }) catch {};
-                    try nets.append(arena, .{
-                        .name = utf8(arena, std.mem.sliceTo(&r.alias, 0)) orelse "?",
-                        .up = r.oper_status == IF_OPER_STATUS_UP,
-                        .rx_bps = rx_bps,
-                        .tx_bps = tx_bps,
-                        .rx_total = r.in_octets,
-                        .tx_total = r.out_octets,
-                    });
-                }
-            };
-        }
-
-        const t1 = Io.Clock.Timestamp.now(io, .awake);
-        return .{
-            .cpu = cpu,
-            .mem = mem,
-            .uptime_seconds = GetTickCount64() / 1000,
-            .processes = top,
-            .applications = apps[0..@min(apps.len, tm.max_rows)],
-            .applications_supported = true,
-            .total_applications = @intCast(apps.len),
-            .application_id = s.application_id,
-            .application_process_count = application_process_count,
-            .total_processes = total_procs,
-            .threads_total = threads_total,
-            .running = 0,
-            .disks = disks,
-            .net = nets.items,
-            .sensors = &.{},
-            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
-            .engine = "Win32 + NT native calls (0 spawns, no WMI)",
+        var table: ?*MIB_IF_TABLE2 = null;
+        if (GetIfTable2(&table) == 0) if (table) |tbl| {
+            defer FreeMibTable(tbl);
+            const rows: [*]const MIB_IF_ROW2 = &tbl.table;
+            for (rows[0..tbl.count]) |*r| {
+                if (r.flags & 1 == 0 or r.if_type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+                var rx_bps: f64 = 0;
+                var tx_bps: f64 = 0;
+                var found = false;
+                for (s.nets.items) |*p| if (p.luid == r.luid) {
+                    if (dt_s > 0) {
+                        rx_bps = @as(f64, @floatFromInt(r.in_octets -| p.rx)) / dt_s;
+                        tx_bps = @as(f64, @floatFromInt(r.out_octets -| p.tx)) / dt_s;
+                    }
+                    p.rx = r.in_octets;
+                    p.tx = r.out_octets;
+                    found = true;
+                    break;
+                };
+                if (!found) s.nets.append(s.gpa, .{ .luid = r.luid, .rx = r.in_octets, .tx = r.out_octets }) catch {};
+                try nets.append(arena, .{
+                    .name = utf8(arena, std.mem.sliceTo(&r.alias, 0)) orelse "?",
+                    .up = r.oper_status == IF_OPER_STATUS_UP,
+                    .rx_bps = rx_bps,
+                    .tx_bps = tx_bps,
+                    .rx_total = r.in_octets,
+                    .tx_total = r.out_octets,
+                });
+            }
         };
+        return nets.items;
     }
 
     /// A process's user and command line (empty for those this user can't
@@ -780,6 +802,28 @@ pub const Sampler = struct {
         return commandLineOf(arena, h) orelse "";
     }
 };
+
+/// Memory: physical, the file cache, and the page file beyond RAM, into
+/// `mem`; the system's thread count.
+fn sampleMemory(mem: *tm.MemInfo) u32 {
+    var threads_total: u32 = 0;
+    var ms: MEMORYSTATUSEX = .{};
+    if (GlobalMemoryStatusEx(&ms) != 0) {
+        mem.total_bytes = ms.total_phys;
+        mem.available_bytes = ms.avail_phys;
+        mem.used_bytes = ms.total_phys -| ms.avail_phys;
+        mem.swap_total_bytes = ms.total_page_file -| ms.total_phys;
+        mem.swap_used_bytes = @min(mem.swap_total_bytes, (ms.total_page_file -| ms.avail_page_file) -| mem.used_bytes);
+        mem.percent = tm.pct(mem.used_bytes, mem.total_bytes);
+    }
+    var pi: PERFORMANCE_INFORMATION = std.mem.zeroes(PERFORMANCE_INFORMATION);
+    if (K32GetPerformanceInfo(&pi, @sizeOf(PERFORMANCE_INFORMATION)) != 0) {
+        mem.cached_bytes = @as(u64, pi.system_cache) * pi.page_size;
+        mem.free_bytes = mem.available_bytes -| mem.cached_bytes;
+        threads_total = pi.thread_count;
+    }
+    return threads_total;
+}
 
 /// ProcessCommandLineInformation: a UNICODE_STRING followed by its text.
 fn commandLineOf(a: std.mem.Allocator, process: HANDLE) ?[]u8 {

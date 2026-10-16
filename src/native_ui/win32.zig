@@ -2999,95 +2999,71 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             return 0;
         },
         c.WM_TIMER => {
-            _ = c.KillTimer(hwnd, wparam);
-            if (wparam == sb_timer) {
-                onScrollbarTimer(s);
-                return 0;
-            }
-            if (wparam == sb_fade_timer) {
-                onOverlayFade(s);
-                return 0;
-            }
-            if (wparam == doomed_timer) {
-                s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
-                return 0;
-            }
-            if (wparam == warm_timer) {
-                onWarmTimer(s, hwnd);
-                return 0;
-            }
-            if (wparam == trim_timer) {
-                s.trim_armed = false;
-                const freed = s.engine.tree.trimPools();
-                prof.report("trim pools {d}", .{freed});
-                return 0;
-            }
-            // Ours are the page's ids + 1 (addTimer): nothing else is.
-            if (wparam == 0 or wparam > std.math.maxInt(u32) + 1) return 0;
-            if (comptime prof.enabled) {
-                const id: u32 = @intCast(wparam - 1);
-                const d = timer_due[id % timer_due.len];
-                if (d.id == id) prof.report("timer late {d:.2}", .{prof.now() - d.due});
-            }
-            s.engine.timerFired(@intCast(wparam - 1));
+            onCanvasTimer(s, hwnd, wparam);
             return 0;
         },
-        c.WM_LBUTTONDOWN, c.WM_LBUTTONDBLCLK => {
-            if (fromTouch()) return 0;
-            // A scrollbar's: not the page's.
-            if (onScrollbarDown(s, pointOf(s, lparam))) return 0;
-            _ = c.SetFocus(hwnd);
-            const pt = pointOf(s, lparam);
-            // :active while the button is down.
-            const pressed = targetAt(s, pt);
-            if (pressed != 0) _ = s.engine.event(pressed, "press", "null");
-            if (liveSurface(hwnd)) |ls| onButtonDown(ls, lparam, 1);
+        // Removed fields' controls: now that no control's code is running.
+        WM_FREE_FIELDS => {
+            s.doomed_posted = false;
+            if (s.in_control > 0 or control_depth > 0) {
+                // A nested message loop inside a control's notification or
+                // its own code (a context menu's): again in a moment.
+                s.doomed_posted = c.SetTimer(hwnd, doomed_timer, 50, null) != 0;
+                return 0;
+            }
+            flushDoomed(s);
             return 0;
         },
+        else => {},
+    }
+    // Each group's handler answers null for what is DefWindowProc's.
+    if (canvasButtonProc(s, hwnd, msg, wparam, lparam)) |r| return r;
+    if (canvasPointerProc(s, hwnd, msg, wparam, lparam)) |r| return r;
+    if (canvasKeyProc(s, msg, wparam, lparam)) |r| return r;
+    if (canvasControlProc(s, hwnd, msg, wparam, lparam)) |r| return r;
+    return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/// The canvas's own timers, then the page's.
+fn onCanvasTimer(s: *Surface, hwnd: c.HWND, wparam: c.WPARAM) void {
+    _ = c.KillTimer(hwnd, wparam);
+    if (wparam == sb_timer) return onScrollbarTimer(s);
+    if (wparam == sb_fade_timer) return onOverlayFade(s);
+    if (wparam == doomed_timer) {
+        s.doomed_posted = c.PostMessageW(hwnd, WM_FREE_FIELDS, 0, 0) != 0;
+        return;
+    }
+    if (wparam == warm_timer) return onWarmTimer(s, hwnd);
+    if (wparam == trim_timer) {
+        s.trim_armed = false;
+        const freed = s.engine.tree.trimPools();
+        prof.report("trim pools {d}", .{freed});
+        return;
+    }
+    // Ours are the page's ids + 1 (addTimer): nothing else is.
+    if (wparam == 0 or wparam > std.math.maxInt(u32) + 1) return;
+    if (comptime prof.enabled) {
+        const id: u32 = @intCast(wparam - 1);
+        const d = timer_due[id % timer_due.len];
+        if (d.id == id) prof.report("timer late {d:.2}", .{prof.now() - d.due});
+    }
+    s.engine.timerFired(@intCast(wparam - 1));
+}
+
+/// Mouse buttons and moves.
+fn canvasButtonProc(s: *Surface, hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    switch (msg) {
+        c.WM_LBUTTONDOWN, c.WM_LBUTTONDBLCLK => onCanvasLeftDown(s, hwnd, lparam),
         c.WM_RBUTTONDOWN, c.WM_RBUTTONDBLCLK, c.WM_MBUTTONDOWN, c.WM_MBUTTONDBLCLK => {
             if (fromTouch()) return 0;
             const right = msg == c.WM_RBUTTONDOWN or msg == c.WM_RBUTTONDBLCLK;
             onButtonDown(s, lparam, if (right) 2 else 4);
-            return 0;
         },
-        c.WM_LBUTTONUP => {
-            if (fromTouch()) return 0;
-            if (onScrollbarUp(s)) return 0;
-            const ls = onButtonUp(s, lparam, 1) orelse return 0;
-            _ = ls.engine.event(0, "release", "null");
-            const ls2 = liveSurface(hwnd) orelse return 0;
-            // The click, with the up's coordinates.
-            const pt = pointOf(ls2, lparam);
-            var buf: [16]u8 = undefined;
-            const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return 0;
-            // A link amid the text: its element's click.
-            const link = linkAt(ls2, pt);
-            if (link != 0) {
-                _ = ls2.engine.event(link, "click", flags);
-                return 0;
-            }
-            const n = ls2.engine.tree.hit(pt[0], pt[1]) orelse return 0;
-            if (disabledUp(n)) return 0;
-            _ = ls2.engine.event(n.id, "click", flags);
-            return 0;
-        },
-        c.WM_RBUTTONUP => {
-            if (fromTouch()) return 0;
-            const ls = onButtonUp(s, lparam, 2) orelse return 0;
-            const pt = pointOf(ls, lparam);
-            const target = targetAt(ls, pt);
-            if (target == 0) return 0;
-            // As Chromium on Windows: on the release, after auxclick, the
-            // secondary button's with the buttons still held (measured).
-            var buf: [64]u8 = undefined;
-            const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},2,{d},{d}]", .{ pt[0], pt[1], ls.buttons, modFlags() }) catch return 0;
-            _ = ls.engine.event(target, "contextmenu", json);
-            return 0;
-        },
+        c.WM_LBUTTONUP => onCanvasLeftUp(s, hwnd, lparam),
+        c.WM_RBUTTONUP => onCanvasRightUp(s, lparam),
         c.WM_MBUTTONUP => {
             if (fromTouch()) return 0;
             _ = onButtonUp(s, lparam, 4);
-            return 0;
         },
         // Back and forward (buttons 3 and 4, bits 8 and 16): the page's
         // downs, ups and auxclicks, as Chromium's. TRUE, as the docs ask.
@@ -3103,8 +3079,15 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             if (onScrollbarMove(s, pt)) return 0;
             onMove(s, pt);
             if (liveSurface(hwnd)) |ls| queueMove(ls, pt, buttonsOf(wparam), .mouse, modFlags());
-            return 0;
         },
+        else => return null,
+    }
+    return 0;
+}
+
+/// The mouse taken away or gone, pen and touch, the cursor and the wheel.
+fn canvasPointerProc(s: *Surface, hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    switch (msg) {
         // The mouse taken away while a button was down (another window, a
         // menu): the buttons are up as far as the page goes.
         c.WM_CAPTURECHANGED => {
@@ -3140,59 +3123,29 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             onWheel(s, wparam, lparam, msg == c.WM_MOUSEHWHEEL);
             return 0;
         },
-        c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
-            // The key a WM_CHAR from this one belongs to (its keyup's).
-            s.char_vk = wparam;
-            if (keyName(wparam)) |name| {
-                if (sendKey(s, 0, name, wparam, repeated(lparam))) return 0;
-            } else if (c.GetKeyState(c.VK_CONTROL) < 0 and ((wparam >= 'A' and wparam <= 'Z') or (wparam >= '0' and wparam <= '9'))) {
-                // Ctrl+letter types no character: the shortcut as its key.
-                const ch: u8 = std.ascii.toLower(@intCast(wparam));
-                if (sendKey(s, 0, &.{ch}, wparam, repeated(lparam))) return 0;
-            }
-            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
-        },
-        c.WM_KEYUP, c.WM_SYSKEYUP => {
-            sendKeyUp(s, 0, wparam);
-            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
-        },
+        else => {},
+    }
+    return null;
+}
+
+fn canvasKeyProc(s: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    switch (msg) {
+        c.WM_KEYDOWN, c.WM_SYSKEYDOWN => if (onCanvasKeyDown(s, wparam, lparam)) return 0,
+        c.WM_KEYUP, c.WM_SYSKEYUP => sendKeyUp(s, 0, wparam),
         c.WM_CHAR => {
-            if (wparam < 0x20 or wparam == 0x7F) return 0; // control characters: WM_KEYDOWN's
-            if (c.GetKeyState(c.VK_CONTROL) < 0 and c.GetKeyState(c.VK_MENU) >= 0) return 0;
-            var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
-            var buf: [8]u8 = undefined;
-            const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return 0;
-            _ = sendKey(s, 0, buf[0..len], s.char_vk, repeated(lparam));
+            onCanvasChar(s, wparam, lparam);
             return 0;
         },
-        // Removed fields' controls: now that no control's code is running.
-        WM_FREE_FIELDS => {
-            s.doomed_posted = false;
-            if (s.in_control > 0 or control_depth > 0) {
-                // A nested message loop inside a control's notification or
-                // its own code (a context menu's): again in a moment.
-                s.doomed_posted = c.SetTimer(hwnd, doomed_timer, 50, null) != 0;
-                return 0;
-            }
-            flushDoomed(s);
-            return 0;
-        },
+        else => {},
+    }
+    return null;
+}
+
+/// What the fields' controls tell their parent.
+fn canvasControlProc(s: *Surface, hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    switch (msg) {
         c.WM_COMMAND => {
-            s.in_control += 1;
-            defer s.in_control -= 1;
-            const code: c.WORD = @truncate(wparam >> 16);
-            // A field took or lost the keyboard.
-            if (code == c.EN_SETFOCUS or code == c.EN_KILLFOCUS or code == c.CBN_SETFOCUS or code == c.CBN_KILLFOCUS) {
-                queueFocusCheck(s);
-                return 0;
-            }
-            // A native check's focus (BS_NOTIFY; its codes are a
-            // combobox's others, so only from a check).
-            if ((code == c.BN_SETFOCUS or code == c.BN_KILLFOCUS) and lparam != 0) if (fieldOf(s, toHandle(c.HWND, @bitCast(lparam)))) |fx| if (fx.field.kind == .check or fx.field.kind == .button) {
-                queueFocusCheck(s);
-                return 0;
-            };
-            if (lparam != 0) onFieldCommand(s, code, toHandle(c.HWND, @bitCast(lparam)));
+            onCanvasCommand(s, wparam, lparam);
             return 0;
         },
         // A trackbar (<input type=range>) moved.
@@ -3202,43 +3155,138 @@ fn canvasProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             if (lparam != 0) onSlider(s, @truncate(wparam), toHandle(c.HWND, @bitCast(lparam)));
             return 0;
         },
-        c.WM_NOTIFY => if (lparam != 0) {
-            const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            // NM_SETFOCUS / NM_KILLFOCUS (NM_FIRST - 7, - 8): a trackbar's focus.
-            if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -7))) or hdr.code == @as(c.UINT, @bitCast(@as(i32, -8)))) {
-                queueFocusCheck(s);
-                return 0;
-            }
-            // NM_CUSTOMDRAW (NM_FIRST - 12; the header's macro doesn't translate).
-            if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -12)))) {
-                if (sliderDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
-                if (buttonDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
-            }
-        },
+        c.WM_NOTIFY => if (lparam != 0) return onCanvasNotify(s, lparam),
         c.WM_CTLCOLOREDIT, c.WM_CTLCOLORLISTBOX, c.WM_CTLCOLORSTATIC, c.WM_CTLCOLORBTN => {
-            const field_hwnd = toHandle(c.HWND, @bitCast(lparam));
-            const hdc = toHandle(c.HDC, wparam);
-            // A combobox's list asks for itself: look at its owner.
-            const fx = fieldOf(s, field_hwnd) orelse fieldOf(s, c.GetParent(field_hwnd)) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
-            // A trackbar's or a native check's background: the page's behind it
-            // (else black, or the dialog grey).
-            if (fx.field.slider or fx.field.kind == .check or fx.field.kind == .button) {
-                const behind = colorBehind(s, fx.node);
-                if (fx.field.brush == null or fx.field.bg != behind) {
-                    if (fx.field.brush) |b| _ = c.DeleteObject(b);
-                    fx.field.bg = behind;
-                    fx.field.brush = c.CreateSolidBrush(behind);
-                }
-                _ = c.SetBkColor(hdc, behind);
-                return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
-            }
-            _ = c.SetTextColor(hdc, fx.field.fg);
-            _ = c.SetBkColor(hdc, fx.field.bg);
-            return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
+            return onCanvasCtlColor(s, hwnd, msg, wparam, lparam);
         },
         else => {},
     }
-    return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    return null;
+}
+
+fn onCanvasLeftDown(s: *Surface, hwnd: c.HWND, lparam: c.LPARAM) void {
+    if (fromTouch()) return;
+    // A scrollbar's: not the page's.
+    if (onScrollbarDown(s, pointOf(s, lparam))) return;
+    _ = c.SetFocus(hwnd);
+    const pt = pointOf(s, lparam);
+    // :active while the button is down.
+    const pressed = targetAt(s, pt);
+    if (pressed != 0) _ = s.engine.event(pressed, "press", "null");
+    if (liveSurface(hwnd)) |ls| onButtonDown(ls, lparam, 1);
+}
+
+fn onCanvasLeftUp(s: *Surface, hwnd: c.HWND, lparam: c.LPARAM) void {
+    if (fromTouch()) return;
+    if (onScrollbarUp(s)) return;
+    const ls = onButtonUp(s, lparam, 1) orelse return;
+    _ = ls.engine.event(0, "release", "null");
+    const ls2 = liveSurface(hwnd) orelse return;
+    // The click, with the up's coordinates.
+    const pt = pointOf(ls2, lparam);
+    var buf: [16]u8 = undefined;
+    const flags = std.fmt.bufPrint(&buf, "{d}", .{modFlags()}) catch return;
+    // A link amid the text: its element's click.
+    const link = linkAt(ls2, pt);
+    if (link != 0) {
+        _ = ls2.engine.event(link, "click", flags);
+        return;
+    }
+    const n = ls2.engine.tree.hit(pt[0], pt[1]) orelse return;
+    if (disabledUp(n)) return;
+    _ = ls2.engine.event(n.id, "click", flags);
+}
+
+fn onCanvasRightUp(s: *Surface, lparam: c.LPARAM) void {
+    if (fromTouch()) return;
+    const ls = onButtonUp(s, lparam, 2) orelse return;
+    const pt = pointOf(ls, lparam);
+    const target = targetAt(ls, pt);
+    if (target == 0) return;
+    // As Chromium on Windows: on the release, after auxclick, the
+    // secondary button's with the buttons still held (measured).
+    var buf: [64]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "[{d:.0},{d:.0},2,{d},{d}]", .{ pt[0], pt[1], ls.buttons, modFlags() }) catch return;
+    _ = ls.engine.event(target, "contextmenu", json);
+}
+
+/// True if the page took the key (else DefWindowProc's).
+fn onCanvasKeyDown(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) bool {
+    // The key a WM_CHAR from this one belongs to (its keyup's).
+    s.char_vk = wparam;
+    if (keyName(wparam)) |name| {
+        return sendKey(s, 0, name, wparam, repeated(lparam));
+    } else if (c.GetKeyState(c.VK_CONTROL) < 0 and ((wparam >= 'A' and wparam <= 'Z') or (wparam >= '0' and wparam <= '9'))) {
+        // Ctrl+letter types no character: the shortcut as its key.
+        const ch: u8 = std.ascii.toLower(@intCast(wparam));
+        return sendKey(s, 0, &.{ch}, wparam, repeated(lparam));
+    }
+    return false;
+}
+
+fn onCanvasChar(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) void {
+    if (wparam < 0x20 or wparam == 0x7F) return; // control characters: WM_KEYDOWN's
+    if (c.GetKeyState(c.VK_CONTROL) < 0 and c.GetKeyState(c.VK_MENU) >= 0) return;
+    var units: [2]u16 = .{ @intCast(wparam & 0xFFFF), 0 };
+    var buf: [8]u8 = undefined;
+    const len = std.unicode.utf16LeToUtf8(&buf, units[0..1]) catch return;
+    _ = sendKey(s, 0, buf[0..len], s.char_vk, repeated(lparam));
+}
+
+fn onCanvasCommand(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) void {
+    s.in_control += 1;
+    defer s.in_control -= 1;
+    const code: c.WORD = @truncate(wparam >> 16);
+    // A field took or lost the keyboard.
+    if (code == c.EN_SETFOCUS or code == c.EN_KILLFOCUS or code == c.CBN_SETFOCUS or code == c.CBN_KILLFOCUS) {
+        queueFocusCheck(s);
+        return;
+    }
+    // A native check's focus (BS_NOTIFY; its codes are a
+    // combobox's others, so only from a check).
+    if ((code == c.BN_SETFOCUS or code == c.BN_KILLFOCUS) and lparam != 0) if (fieldOf(s, toHandle(c.HWND, @bitCast(lparam)))) |fx| if (fx.field.kind == .check or fx.field.kind == .button) {
+        queueFocusCheck(s);
+        return;
+    };
+    if (lparam != 0) onFieldCommand(s, code, toHandle(c.HWND, @bitCast(lparam)));
+}
+
+/// A control's notification (lparam non-zero); null: DefWindowProc's.
+fn onCanvasNotify(s: *Surface, lparam: c.LPARAM) ?c.LRESULT {
+    const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    // NM_SETFOCUS / NM_KILLFOCUS (NM_FIRST - 7, - 8): a trackbar's focus.
+    if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -7))) or hdr.code == @as(c.UINT, @bitCast(@as(i32, -8)))) {
+        queueFocusCheck(s);
+        return 0;
+    }
+    // NM_CUSTOMDRAW (NM_FIRST - 12; the header's macro doesn't translate).
+    if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -12)))) {
+        if (sliderDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
+        if (buttonDraw(s, @ptrFromInt(@as(usize, @bitCast(lparam))))) |r| return r;
+    }
+    return null;
+}
+
+fn onCanvasCtlColor(s: *Surface, hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
+    const field_hwnd = toHandle(c.HWND, @bitCast(lparam));
+    const hdc = toHandle(c.HDC, wparam);
+    // A combobox's list asks for itself: look at its owner.
+    const fx = fieldOf(s, field_hwnd) orelse fieldOf(s, c.GetParent(field_hwnd)) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    // A trackbar's or a native check's background: the page's behind it
+    // (else black, or the dialog grey).
+    if (fx.field.slider or fx.field.kind == .check or fx.field.kind == .button) {
+        const behind = colorBehind(s, fx.node);
+        if (fx.field.brush == null or fx.field.bg != behind) {
+            if (fx.field.brush) |b| _ = c.DeleteObject(b);
+            fx.field.bg = behind;
+            fx.field.brush = c.CreateSolidBrush(behind);
+        }
+        _ = c.SetBkColor(hdc, behind);
+        return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
+    }
+    _ = c.SetTextColor(hdc, fx.field.fg);
+    _ = c.SetBkColor(hdc, fx.field.bg);
+    return @bitCast(@intFromPtr(fx.field.brush orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam)));
 }
 
 // ---------------------------------------------------------------------------
