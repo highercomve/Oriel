@@ -105,6 +105,16 @@
 					<p><code>oriel.updater</code> checks Ed25519-signed manifests, swaps the binary, AppImage or <code>.app</code> atomically and restarts in place on Linux, Windows and macOS. The page can't change the URL or the key.</p>
 				</article>
 				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></div>
+					<h3>Find nearby devices</h3>
+					<p><code>oriel.network</code> announces and finds services on the local network with mDNS/DNS-SD, through each platform's own responder; <code>oriel.bluetooth</code> sends a Bluetooth LE beacon nearby phones see. No server in between.</p>
+				</article>
+				<article class="feature">
+					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg></div>
+					<h3>Your own native code</h3>
+					<p>App extensions: your Kotlin, Swift, Objective-C or Zig, declared by name in <code>build.zig</code> and called with one API on every platform, from Zig or the page.</p>
+				</article>
+				<article class="feature">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
 					<h3>Ship it</h3>
 					<p><code>oriel package</code> builds deb, rpm, AppImage, <code>.dmg</code> and Windows <code>setup.exe</code> (natively or cross-compiled from Linux); <code>oriel android build</code> an APK and AAB; <code>oriel ios build</code> an <code>.ipa</code>.</p>
