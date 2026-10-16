@@ -53,15 +53,15 @@ jobs:
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
       - name: Sampler test (one full sample)
         # Zig's own glibc: the container's crt files can be newer than its linker reads.
-        run: zig test src/sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseFast
+        run: zig test src/sampler_linux.zig -lc -target x86_64-linux-gnu -OReleaseSafe
       - name: Model tests (histories, process filtering and sorting)
         run: zig build test
       - name: Native renderer build (for its update files)
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseSafe -p zig-out-native --summary all
       - name: Build (the Oriel renderer, the default)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseSafe --summary all
       - name: Packages (.deb, .rpm, .AppImage)
-        run: zig build package-deb package-rpm package-appimage -Drenderer=oriel -Doptimize=ReleaseFast
+        run: zig build package-deb package-rpm package-appimage -Drenderer=oriel -Doptimize=ReleaseSafe
       - run: ls -la zig-out/package
       # What "Check for updates" installs, named by its manifest target
       # (src/updates.zig): each renderer's executable, and the AppImage.
@@ -101,17 +101,17 @@ jobs:
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
       - name: Sampler test (one full sample)
-        run: zig test src/sampler_windows.zig -OReleaseFast
+        run: zig test src/sampler_windows.zig -OReleaseSafe
       - name: Model tests (applications, histories, process filtering and sorting)
         run: zig build test
       - name: Native renderer build (for its update files)
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseSafe -p zig-out-native --summary all
       - name: Build (the Oriel renderer, the default)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseSafe --summary all
       - name: Installer (setup.exe) and portable zip
         shell: pwsh
         run: |
-          zig build package-nsis -Drenderer=oriel -Doptimize=ReleaseFast
+          zig build package-nsis -Drenderer=oriel -Doptimize=ReleaseSafe
           Compress-Archive -Path zig-out/bin/* -DestinationPath zig-out/package/oriel-system-monitor-windows-x86_64.zip -Force
           Get-ChildItem zig-out/package
       - name: Update files
@@ -145,16 +145,16 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: Sampler test (one full sample)
-        run: zig test src/sampler_macos.zig -OReleaseFast
+        run: zig test src/sampler_macos.zig -OReleaseSafe
       - name: Model tests (applications, histories, process filtering and sorting)
         run: zig build test
       - name: Native renderer build (for its update files)
-        run: zig build -Drenderer=native -Doptimize=ReleaseFast -p zig-out-native --summary all
+        run: zig build -Drenderer=native -Doptimize=ReleaseSafe -p zig-out-native --summary all
       - name: Build (the Oriel renderer, the default)
-        run: zig build -Drenderer=oriel -Doptimize=ReleaseFast --summary all
+        run: zig build -Drenderer=oriel -Doptimize=ReleaseSafe --summary all
       - name: Disk image (.app in a .dmg, unsigned)
         run: |
-          zig build package-dmg -Drenderer=oriel -Doptimize=ReleaseFast
+          zig build package-dmg -Drenderer=oriel -Doptimize=ReleaseSafe
           ls -la zig-out/package
       # The .app as a tar (the updater swaps the whole bundle), and each
       # renderer's executable for copies run outside a bundle.
