@@ -5,7 +5,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<meta name="description" content="Oriel: desktop and mobile apps with Zig and the web platform. A native window or app, the system webview, your frontend, and typed Zig commands. Linux, Windows, macOS, Android and iOS.">
 		<meta property="og:title" content="Oriel: apps with Zig and the web, on desktop and mobile">
-		<meta property="og:description" content="A Tauri-like framework in Zig 0.16. Small binaries, typed IPC, secure by default.">
+		<meta property="og:description" content="Desktop and mobile apps in Zig, with a web UI or native views. Linux, Windows, macOS, Android and iOS from one codebase: typed IPC, local AI and voice, signed updates.">
 		<meta property="og:image" content="$site.asset('brand/oriel-banner.png').link()">
 		<meta name="theme-color" content="#12151C">
 		<link rel="icon" type="image/png" href="$site.asset('brand/oriel-icon-32.png').link()">

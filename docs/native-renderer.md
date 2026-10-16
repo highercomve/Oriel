@@ -625,4 +625,4 @@ an app is built:
 - [Commands](commands.md): how the page calls Zig, the same in both renderers.
 - [Security](security.md): the CSP and capabilities the renderer applies.
 - [Building](building.md): build options and targets.
-- [Comparison](comparison.md): Oriel against Tauri, Electron and React Native.
+- [Comparison](comparison.md): Oriel next to Electron, Tauri and Vercel native.

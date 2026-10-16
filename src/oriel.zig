@@ -1,4 +1,4 @@
-//! oriel: a Tauri-like desktop framework for Zig.
+//! oriel: desktop and mobile apps in Zig, with a web UI or native views.
 //!
 //! Core (always on): GTK4 window + WebKitGTK 6.0 webview, `app://` asset
 //! scheme, JS <-> Zig IPC. Built-in modules and plugins are opt-in via

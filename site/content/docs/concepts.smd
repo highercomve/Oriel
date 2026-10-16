@@ -379,4 +379,4 @@ Generated into `oriel_app.build`; an app doesn't write it by hand.
 - [Modules]($link.page('docs/modules')): everything an app can switch on.
 - [Architecture]($link.page('docs/architecture')): the layers the renderers share, and where new behavior goes.
 - [Native renderer]($link.page('docs/native-renderer')): the page without a web view.
-- [Comparison]($link.page('docs/comparison')): Oriel next to Tauri and Vercel native.
+- [Comparison]($link.page('docs/comparison')): Oriel next to Electron, Tauri and Vercel native.

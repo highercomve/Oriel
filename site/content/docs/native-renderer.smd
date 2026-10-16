@@ -629,4 +629,4 @@ an app is built:
 - [Commands]($link.page('docs/commands')): how the page calls Zig, the same in both renderers.
 - [Security]($link.page('docs/security')): the CSP and capabilities the renderer applies.
 - [Building]($link.page('docs/building')): build options and targets.
-- [Comparison]($link.page('docs/comparison')): Oriel against Tauri, Electron and React Native.
+- [Comparison]($link.page('docs/comparison')): Oriel next to Electron, Tauri and Vercel native.
