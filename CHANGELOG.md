@@ -2,6 +2,27 @@
 
 Notable changes in Oriel releases.
 
+## [0.17.2] — 2026-10-16
+
+### Fixed
+
+- Windows: a failed allocation while reading the launch arguments freed
+  them twice.
+- Linux: the custom media scheme's empty responses (errors, 416) no
+  longer read from a stack buffer after the handler returned.
+- Linux tray: a menu child is no longer leaked when its parent's list
+  runs out of memory.
+- Windows: the custom media scheme answers 500 when it runs out of memory
+  building its headers, instead of leaving the page waiting.
+- System monitor (macOS): the process list no longer reads past its
+  buffer when the buffer couldn't be allocated.
+
+### Changed
+
+- Assertions (Power of 10, rule 5) where outside data enters: IPC, the
+  updater, the native DOM and the system monitor's samplers. The system
+  monitor's release builds are ReleaseSafe.
+
 ## [0.17.1] — 2026-10-15
 
 ### Added
