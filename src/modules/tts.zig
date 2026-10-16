@@ -1200,7 +1200,7 @@ fn freeResult(r: Result) void {
 
 fn report(what: []const u8, b: Backend, r: Result) void {
     std.debug.print("[tts] {s:<4} {s} on {s}: first audio {d} ms (load {d}), {d} chunks, synth {d} ms for {d:.1} s audio, RTF {d:.3}, gaps {d} ms\n", .{
-        @tagName(b),                                             what,      r.backend, r.first_audio_ms, r.load_ms, r.chunks, r.synth_ms, r.audio_s,
+        @tagName(b),                                            what,     r.backend, r.first_audio_ms, r.load_ms, r.chunks, r.synth_ms, r.audio_s,
         @as(f32, @floatFromInt(r.synth_ms)) / 1000 / r.audio_s, r.gap_ms,
     });
 }

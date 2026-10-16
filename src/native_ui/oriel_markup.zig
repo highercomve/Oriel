@@ -618,8 +618,7 @@ fn spanAttribute(run: *RunSpec, comptime key: []const u8, v: []const u8) void {
                 run.ib.?.bg = null;
             } else @compileError(".oriel <span> can't unset " ++ name);
         }
-    }
-    else if (std.mem.startsWith(u8, key, "outline")) {
+    } else if (std.mem.startsWith(u8, key, "outline")) {
         var o: ?tree.Outline = if (run.ol) |cur| cur else null;
         outlineAttribute(&o, key, v);
         run.ol = o;
@@ -930,28 +929,28 @@ fn corners(s: []const u8) [4]tree.Corner {
 
 /// The attributes `unset` can name, and their props.
 const nullable = .{
-    .{ "direction", "fd" },        .{ "wrap", "fw" },                 .{ "justify", "jc" },
-    .{ "align", "ai" },            .{ "align-self", "as" },           .{ "align-content", "ac" },
-    .{ "grow", "fg" },             .{ "shrink", "fs" },               .{ "basis", "fb" },
-    .{ "width", "w" },             .{ "height", "h" },                .{ "min-width", "minw" },
-    .{ "min-height", "minh" },     .{ "max-width", "maxw" },          .{ "max-height", "maxh" },
-    .{ "margin", "m" },            .{ "padding", "pad" },             .{ "border-width", "bw" },
-    .{ "border-color", "bc" },     .{ "border-style", "bs" },         .{ "row-gap", "rg" },
-    .{ "column-gap", "cg" },       .{ "position", "pos" },            .{ "relative", "rel" },
-    .{ "scrollbar-width", "sbw" }, .{ "scrollbar-color", "sbc" },     .{ "table", "table" },
-    .{ "table-cell", "tcell" },    .{ "sticky", "sticky" },           .{ "aspect-ratio", "ar" },
-    .{ "translate-x", "tx" },      .{ "translate-y", "ty" },          .{ "scale", "sc" },
-    .{ "rotate", "rot" },          .{ "background", "bg" },           .{ "radius", "br" },
-    .{ "opacity", "op" },          .{ "shadow", "sh" },               .{ "outline", "ol" },               .{ "visible", "vis" },
-    .{ "z", "z" },                 .{ "color", "col" },               .{ "font-size", "fz" },
-    .{ "font-weight", "fwt" },     .{ "font-family", "ff" },          .{ "line-height", "lh" },
-    .{ "text-align", "ta" },       .{ "letter-spacing", "ls" },       .{ "value", "val" },
-    .{ "placeholder", "ph" },      .{ "cols", "cols" },               .{ "rows", "rows" },
-    .{ "label", "al" },            .{ "control", "ctl" },             .{ "baseline", "blb" },
-    .{ "accent", "acc" },          .{ "tooltip", "tip" },             .{ "tabindex", "ti" },
-    .{ "src", "src" },             .{ "fit", "fit" },                 .{ "pixel-width", "cw" },
-    .{ "pixel-height", "ch" },     .{ "type", "itype" },              .{ "inputmode", "im" },
-    .{ "enterkey", "ek" },         .{ "autocapitalize", "cap" },
+    .{ "direction", "fd" },        .{ "wrap", "fw" },             .{ "justify", "jc" },
+    .{ "align", "ai" },            .{ "align-self", "as" },       .{ "align-content", "ac" },
+    .{ "grow", "fg" },             .{ "shrink", "fs" },           .{ "basis", "fb" },
+    .{ "width", "w" },             .{ "height", "h" },            .{ "min-width", "minw" },
+    .{ "min-height", "minh" },     .{ "max-width", "maxw" },      .{ "max-height", "maxh" },
+    .{ "margin", "m" },            .{ "padding", "pad" },         .{ "border-width", "bw" },
+    .{ "border-color", "bc" },     .{ "border-style", "bs" },     .{ "row-gap", "rg" },
+    .{ "column-gap", "cg" },       .{ "position", "pos" },        .{ "relative", "rel" },
+    .{ "scrollbar-width", "sbw" }, .{ "scrollbar-color", "sbc" }, .{ "table", "table" },
+    .{ "table-cell", "tcell" },    .{ "sticky", "sticky" },       .{ "aspect-ratio", "ar" },
+    .{ "translate-x", "tx" },      .{ "translate-y", "ty" },      .{ "scale", "sc" },
+    .{ "rotate", "rot" },          .{ "background", "bg" },       .{ "radius", "br" },
+    .{ "opacity", "op" },          .{ "shadow", "sh" },           .{ "outline", "ol" },
+    .{ "visible", "vis" },         .{ "z", "z" },                 .{ "color", "col" },
+    .{ "font-size", "fz" },        .{ "font-weight", "fwt" },     .{ "font-family", "ff" },
+    .{ "line-height", "lh" },      .{ "text-align", "ta" },       .{ "letter-spacing", "ls" },
+    .{ "value", "val" },           .{ "placeholder", "ph" },      .{ "cols", "cols" },
+    .{ "rows", "rows" },           .{ "label", "al" },            .{ "control", "ctl" },
+    .{ "baseline", "blb" },        .{ "accent", "acc" },          .{ "tooltip", "tip" },
+    .{ "tabindex", "ti" },         .{ "src", "src" },             .{ "fit", "fit" },
+    .{ "pixel-width", "cw" },      .{ "pixel-height", "ch" },     .{ "type", "itype" },
+    .{ "inputmode", "im" },        .{ "enterkey", "ek" },         .{ "autocapitalize", "cap" },
 };
 
 /// `unset="font-size left ..."`: those props with no value (not the
@@ -1118,7 +1117,7 @@ fn layout(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
     else if (eq(u8, key, "display")) p.none = eq(u8, oneOf(key, v, &.{ "flex", "none" }), "none") //
     else if (eq(u8, key, "box-sizing")) p.cb = eq(u8, oneOf(key, v, &.{ "border-box", "content-box" }), "content-box") //
     else if (eq(u8, key, "z")) p.z = std.fmt.parseInt(i32, v, 10) catch @compileError(".oriel z is an integer") //
-    // Drawn moved, scaled and rotated (degrees) around the frame's center.
+        // Drawn moved, scaled and rotated (degrees) around the frame's center.
     else if (eq(u8, key, "translate-x")) p.tx = number(v) //
     else if (eq(u8, key, "translate-y")) p.ty = number(v) //
     else if (eq(u8, key, "scale")) p.sc = number(v) //
@@ -1214,8 +1213,8 @@ fn text(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
     else if (eq(u8, key, "letter-spacing")) p.ls = number(v) //
     else if (eq(u8, key, "line-height")) p.lh = number(v) //
     else if (eq(u8, key, "nowrap")) p.nowrap = boolean(v) //
-    // Lines as long as the content (width: max-content), or the whole
-    // width offered once they wrap (width: fit-content).
+        // Lines as long as the content (width: max-content), or the whole
+        // width offered once they wrap (width: fit-content).
     else if (eq(u8, key, "max-content")) p.mc = boolean(v) //
     else if (eq(u8, key, "fit-content")) p.fc = boolean(v) //
     else return false;
@@ -1246,8 +1245,8 @@ fn controls(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
     else if (eq(u8, key, "autocapitalize")) p.cap = oneOf(key, v, &.{ "none", "sentences", "words", "characters" }) //
     else if (eq(u8, key, "autocorrect")) p.cor = boolean(v) //
     else if (eq(u8, key, "spellcheck")) p.spellcheck = boolean(v) //
-    // A default checkbox or radio (<checkbox>, <radio> set it) and its
-    // baseline this far above its bottom border edge.
+        // A default checkbox or radio (<checkbox>, <radio> set it) and its
+        // baseline this far above its bottom border edge.
     else if (eq(u8, key, "control")) p.ctl = oneOf(key, v, &.{ "checkbox", "radio" }) //
     else if (eq(u8, key, "baseline")) p.blb = number(v) //
     else return false;

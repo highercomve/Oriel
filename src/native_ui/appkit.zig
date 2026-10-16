@@ -544,7 +544,7 @@ fn runDisplayLink(s: *Surface) void {
     const link = s.view.msgSend(Object, "displayLinkWithTarget:selector:", .{ s.view, apple.objc.sel("nuiDisplayFrame:").value });
     if (link.value == null) return;
     s.display_link = link.retain();
-    
+
     const loop = apple.class("NSRunLoop").msgSend(Object, "currentRunLoop", .{});
     link.msgSend(void, "addToRunLoop:forMode:", .{ loop, Object{ .value = NSRunLoopCommonModes } });
 }
@@ -1852,7 +1852,6 @@ fn queueMove(s: *Surface, p: [2]f32, buttons: u32, mods: u32) void {
 /// A layout that dropped many nodes (a list that went): the tree's emptied
 /// pool slabs go back 2 s later, if the window is still there (a list
 /// rebuilt at once reuses them first).
-
 /// The user scrolled `n`: its overlay indicator shows (apple_draw
 /// paintIndicators), the view redrawn each frame until it has faded.
 fn flash(s: *Surface, n: *Node) void {

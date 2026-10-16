@@ -46,7 +46,7 @@ const IID_ID2D1Factory = c.GUID{ .Data1 = 0x06152247, .Data2 = 0x6f50, .Data3 = 
 const CLSID_WICImagingFactory = c.GUID{ .Data1 = 0xcacaf262, .Data2 = 0x9370, .Data3 = 0x4615, .Data4 = .{ 0xa1, 0x3b, 0x9f, 0x55, 0x39, 0xda, 0x4c, 0x0a } };
 const IID_IWICImagingFactory = c.GUID{ .Data1 = 0xec5ec8a9, .Data2 = 0xc395, .Data3 = 0x4314, .Data4 = .{ 0x9c, 0x77, 0x54, 0xd7, 0xa9, 0x35, 0xff, 0x70 } };
 const IID_ID2D1DeviceContext = c.GUID{ .Data1 = 0xe8f7fe7a, .Data2 = 0x191c, .Data3 = 0x466d, .Data4 = .{ 0xad, 0x95, 0x97, 0x56, 0x78, 0xbd, 0xa9, 0x98 } };
-const GUID_WICPixelFormat32bppPBGRA =c.GUID{ .Data1 = 0x6fddc324, .Data2 = 0x4e03, .Data3 = 0x4bfe, .Data4 = .{ 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
+const GUID_WICPixelFormat32bppPBGRA = c.GUID{ .Data1 = 0x6fddc324, .Data2 = 0x4e03, .Data3 = 0x4bfe, .Data4 = .{ 0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, 0x10 } };
 
 const D2DERR_RECREATE_TARGET: c.HRESULT = @bitCast(@as(u32, 0x8899000C));
 /// D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT (Windows 8.1+): color emoji.
@@ -3343,13 +3343,13 @@ fn familyOf(list: ?[]const u8, mono: bool) [:0]const u16 {
 
 fn resolveFamily(list: []const u8) ?[:0]const u16 {
     const generics = .{
-        .{ "system-ui", "@system" },     .{ "-apple-system", "@system" },     .{ "blinkmacsystemfont", "@system" },
-        .{ "ui-sans-serif", "@system" }, .{ "sans-serif", "Arial" },           .{ "serif", "Times New Roman" },
-        .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },     .{ "ui-monospace", "Consolas" },
-        .{ "cursive", "Comic Sans MS" },  .{ "fantasy", "Impact" },             .{ "math", "Cambria Math" },
-        .{ "emoji", "Segoe UI Emoji" },   .{ "ui-rounded", "@system" },
+        .{ "system-ui", "@system" },        .{ "-apple-system", "@system" }, .{ "blinkmacsystemfont", "@system" },
+        .{ "ui-sans-serif", "@system" },    .{ "sans-serif", "Arial" },      .{ "serif", "Times New Roman" },
+        .{ "ui-serif", "Times New Roman" }, .{ "monospace", "Consolas" },    .{ "ui-monospace", "Consolas" },
+        .{ "cursive", "Comic Sans MS" },    .{ "fantasy", "Impact" },        .{ "math", "Cambria Math" },
+        .{ "emoji", "Segoe UI Emoji" },     .{ "ui-rounded", "@system" },
         // Chromium's control font (render.js's UA sheet for fields).
-        .{ "-webkit-small-control", "Arial" },
+           .{ "-webkit-small-control", "Arial" },
         // The page set no font-family: the system UI face (native look).
         .{ "default", "@system" },
     };
@@ -6986,16 +6986,16 @@ fn mimeOf(name: []const u8, buf: []u8) []const u8 {
     if (dot == 0 or dot + 1 == name.len) return "";
     const ext = name[dot + 1 ..];
     const known = [_][2][]const u8{
-        .{ "html", "text/html" },      .{ "htm", "text/html" },          .{ "css", "text/css" },
-        .{ "js", "text/javascript" },  .{ "mjs", "text/javascript" },    .{ "json", "application/json" },
-        .{ "txt", "text/plain" },      .{ "text", "text/plain" },        .{ "csv", "text/csv" },
-        .{ "xml", "text/xml" },        .{ "md", "text/markdown" },       .{ "png", "image/png" },
-        .{ "jpg", "image/jpeg" },      .{ "jpeg", "image/jpeg" },        .{ "gif", "image/gif" },
-        .{ "webp", "image/webp" },     .{ "svg", "image/svg+xml" },      .{ "ico", "image/x-icon" },
-        .{ "bmp", "image/bmp" },       .{ "avif", "image/avif" },        .{ "pdf", "application/pdf" },
-        .{ "zip", "application/zip" }, .{ "gz", "application/gzip" },   .{ "wasm", "application/wasm" },
-        .{ "mp3", "audio/mpeg" },      .{ "wav", "audio/wav" },          .{ "ogg", "audio/ogg" },
-        .{ "flac", "audio/flac" },     .{ "mp4", "video/mp4" },          .{ "webm", "video/webm" },
+        .{ "html", "text/html" },      .{ "htm", "text/html" },       .{ "css", "text/css" },
+        .{ "js", "text/javascript" },  .{ "mjs", "text/javascript" }, .{ "json", "application/json" },
+        .{ "txt", "text/plain" },      .{ "text", "text/plain" },     .{ "csv", "text/csv" },
+        .{ "xml", "text/xml" },        .{ "md", "text/markdown" },    .{ "png", "image/png" },
+        .{ "jpg", "image/jpeg" },      .{ "jpeg", "image/jpeg" },     .{ "gif", "image/gif" },
+        .{ "webp", "image/webp" },     .{ "svg", "image/svg+xml" },   .{ "ico", "image/x-icon" },
+        .{ "bmp", "image/bmp" },       .{ "avif", "image/avif" },     .{ "pdf", "application/pdf" },
+        .{ "zip", "application/zip" }, .{ "gz", "application/gzip" }, .{ "wasm", "application/wasm" },
+        .{ "mp3", "audio/mpeg" },      .{ "wav", "audio/wav" },       .{ "ogg", "audio/ogg" },
+        .{ "flac", "audio/flac" },     .{ "mp4", "video/mp4" },       .{ "webm", "video/webm" },
     };
     for (known) |k| if (std.ascii.eqlIgnoreCase(ext, k[0])) return k[1];
     // The registry: ".ext" under HKEY_CLASSES_ROOT.

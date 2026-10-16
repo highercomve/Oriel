@@ -610,7 +610,7 @@ test "generateNsisScript produces valid script with all options and escaping" {
     // Once per section: its labels must stay unique.
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, install[0..std.mem.indexOf(u8, install, "SectionEnd").?], "!insertmacro ORIEL_REQUIRE_NOT_RUNNING"));
     try testing.expect(std.mem.indexOf(u8, install, "ReadRegStr $R8 HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_ID}\" \"UninstallString\"").? < upgrade_at);
-    try testing.expect(std.mem.indexOf(u8, install[0..upgrade_at + 80], "/REMOVEDATA") == null);
+    try testing.expect(std.mem.indexOf(u8, install[0 .. upgrade_at + 80], "/REMOVEDATA") == null);
     try testing.expect(std.mem.indexOf(u8, install, "${ElseIf} $R7 == 2\n      IfSilent oriel_upgrade_abort") != null);
     try testing.expect(std.mem.indexOf(u8, install, "Delete \"$INSTDIR\\Uninstall.exe\"\n  ${EndIf}") != null);
 

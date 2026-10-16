@@ -1,0 +1,22 @@
+# `zig fmt --check` on Oriel's own Zig code (src, tools, examples, scripts):
+# warnings stay at zero (Power of 10, rule 10). Fix locally with
+# `zig fmt src tools examples scripts`.
+name: Format
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  zig-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig fmt --check src tools examples scripts build.zig

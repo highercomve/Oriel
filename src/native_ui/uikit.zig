@@ -1786,7 +1786,6 @@ fn sendPointer(s: *Surface, phase: []const u8, p: [2]f32, buttons: u32) bool {
 /// A layout that dropped many nodes (a list that went): the tree's emptied
 /// pool slabs go back 2 s later, if the window is still there (a list
 /// rebuilt at once reuses them first).
-
 /// The user scrolled `n`: its overlay indicator shows (apple_draw
 /// paintIndicators), the view redrawn each frame until it has faded.
 fn flash(s: *Surface, n: *Node) void {

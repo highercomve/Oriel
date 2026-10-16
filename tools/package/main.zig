@@ -1611,11 +1611,11 @@ fn packageMsixCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         const v: []const u8 = args[i + 1];
         const Opt = struct { []const u8, *?[]const u8 };
         const singles = [_]Opt{
-            .{ "--out-dir", &out_dir },             .{ "--filename", &filename },           .{ "--bin", &bin_path },
-            .{ "--icons-dir", &icons_dir },         .{ "--webview2-loader", &webview2_loader }, .{ "--app-id", &app_id },
-            .{ "--name", &name },                   .{ "--exe-name", &exe_name },           .{ "--publisher", &publisher },
-            .{ "--description", &description },     .{ "--msix-publisher", &msix_publisher }, .{ "--identity-name", &identity_name },
-            .{ "--pfx", &pfx },                     .{ "--cert-sha1", &cert_sha1 },         .{ "--timestamp", &timestamp },
+            .{ "--out-dir", &out_dir },         .{ "--filename", &filename },               .{ "--bin", &bin_path },
+            .{ "--icons-dir", &icons_dir },     .{ "--webview2-loader", &webview2_loader }, .{ "--app-id", &app_id },
+            .{ "--name", &name },               .{ "--exe-name", &exe_name },               .{ "--publisher", &publisher },
+            .{ "--description", &description }, .{ "--msix-publisher", &msix_publisher },   .{ "--identity-name", &identity_name },
+            .{ "--pfx", &pfx },                 .{ "--cert-sha1", &cert_sha1 },             .{ "--timestamp", &timestamp },
             .{ "--share-label", &share_label },
         };
         const matched = for (singles) |s| {

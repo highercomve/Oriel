@@ -214,19 +214,19 @@ pub fn generateInfoPlist(gpa: std.mem.Allocator, o: PlistOptions) ![]u8 {
 /// UTIs don't name falls back to its family's), or null for none.
 pub fn utiForMime(mime: []const u8) ?[]const u8 {
     const exact = .{
-        .{ "*/*", "public.data" },                  .{ "text/plain", "public.plain-text" },
-        .{ "text/html", "public.html" },            .{ "text/csv", "public.comma-separated-values-text" },
-        .{ "application/json", "public.json" },     .{ "application/pdf", "com.adobe.pdf" },
-        .{ "application/zip", "public.zip-archive" }, .{ "application/xml", "public.xml" },
-        .{ "image/png", "public.png" },             .{ "image/jpeg", "public.jpeg" },
-        .{ "image/gif", "com.compuserve.gif" },     .{ "image/heic", "public.heic" },
-        .{ "image/svg+xml", "public.svg-image" },   .{ "video/mp4", "public.mpeg-4" },
+        .{ "*/*", "public.data" },                           .{ "text/plain", "public.plain-text" },
+        .{ "text/html", "public.html" },                     .{ "text/csv", "public.comma-separated-values-text" },
+        .{ "application/json", "public.json" },              .{ "application/pdf", "com.adobe.pdf" },
+        .{ "application/zip", "public.zip-archive" },        .{ "application/xml", "public.xml" },
+        .{ "image/png", "public.png" },                      .{ "image/jpeg", "public.jpeg" },
+        .{ "image/gif", "com.compuserve.gif" },              .{ "image/heic", "public.heic" },
+        .{ "image/svg+xml", "public.svg-image" },            .{ "video/mp4", "public.mpeg-4" },
         .{ "video/quicktime", "com.apple.quicktime-movie" }, .{ "audio/mpeg", "public.mp3" },
     };
     inline for (exact) |e| if (std.ascii.eqlIgnoreCase(mime, e[0])) return e[1];
     const slash = std.mem.indexOfScalar(u8, mime, '/') orelse return null;
     const family = .{
-        .{ "image", "public.image" }, .{ "video", "public.movie" }, .{ "audio", "public.audio" },
+        .{ "image", "public.image" }, .{ "video", "public.movie" },      .{ "audio", "public.audio" },
         .{ "text", "public.text" },   .{ "application", "public.data" },
     };
     inline for (family) |f| if (std.ascii.eqlIgnoreCase(mime[0..slash], f[0])) return f[1];
