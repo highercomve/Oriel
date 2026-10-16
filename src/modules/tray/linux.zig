@@ -86,7 +86,13 @@ fn menuLayout(menu: *Menu, id: i32, depth: i32) *glib.Variant {
         const next = if (depth < 0) -1 else depth - 1;
         if (menu.node(id)) |n| {
             for (n.children) |child| {
-                children.append(std.heap.smp_allocator, glib.Variant.newVariant(menuLayout(menu, child, next))) catch break;
+                const v = glib.Variant.newVariant(menuLayout(menu, child, next));
+                children.append(std.heap.smp_allocator, v) catch {
+                    // Not handed to newArray: sink and drop the floating ref.
+                    _ = v.refSink();
+                    v.unref();
+                    break;
+                };
             }
         }
     }
