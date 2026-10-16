@@ -236,7 +236,7 @@
 					</ul>
 				</div>
 				<figure class="smoke-shot">
-					<img src="$site.asset('screenshots/system-monitor.png').link()" alt="Oriel System Monitor on Linux in the Oriel renderer: CPU per core, memory, disks, network and the Applications list" loading="lazy">
+					<a href="$site.asset('screenshots/system-monitor.png').link()" title="Open full size"><img src="$site.asset('screenshots/system-monitor.png').link()" alt="Oriel System Monitor on Linux in the Oriel renderer: CPU per core, memory, disks, network and the Applications list" loading="lazy"></a>
 					<figcaption>Linux, the Oriel renderer: a frame in under 6 ms, kernel telemetry with no processes spawned</figcaption>
 				</figure>
 			</div>

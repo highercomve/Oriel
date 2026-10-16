@@ -374,6 +374,9 @@ body.viewing-diagram { overflow: hidden; }
   .feature-grid, .platforms, .shots { grid-template-columns: 1fr 1fr; }
   .shots.phones { grid-template-columns: repeat(3, 1fr); }
   .code-pair { grid-template-columns: 1fr; }
+  /* The example rows stack: a desktop screenshot needs the full width. */
+  .smoke-row { grid-template-columns: 1fr; gap: 8px; margin-top: 56px; }
+  .smoke-shot { margin: 0; }
   .docs { grid-template-columns: 1fr; gap: 0; padding: 0 16px; }
   .sidebar { position: static; max-height: none; padding: 20px 0 0; border-bottom: 1px solid var(--border); }
   .sidebar nav { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -387,8 +390,6 @@ body.viewing-diagram { overflow: hidden; }
   .section { padding: 48px 16px; }
   .feature-grid, .platforms, .shots { grid-template-columns: 1fr; }
   .shots.phones { grid-template-columns: 1fr 1fr; }
-  .smoke-row { grid-template-columns: 1fr; gap: 8px; margin-top: 56px; }
-  .smoke-shot { margin: 0; }
   .footer-cols { gap: 40px; }
   .cta { margin: 16px 16px 64px; }
 }
