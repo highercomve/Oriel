@@ -96,7 +96,7 @@ Oriel is experimental and APIs will change. It targets Linux, Windows,
 macOS, Android, and iOS; see the [desktop](docs/desktop.md), [Android](docs/android.md)
 and [iOS](docs/ios.md) guides for verification details and limitations.
 
-[Changelog](CHANGELOG.md) · [Project background](IDEA.md) · [Dependencies](LIBRARIES.md)
+[Changelog](CHANGELOG.md) · [Project background](docs/architecture.md#background) · [Dependencies](LIBRARIES.md)
 
 ## License
 

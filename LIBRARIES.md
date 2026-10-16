@@ -1,6 +1,6 @@
 # Oriel — library investigation
 
-Researched 2026-09-23 for **Zig 0.16.0**. Companion to [IDEA.md](./IDEA.md).
+Researched 2026-09-23 for **Zig 0.16.0**. Companion to [the architecture](docs/architecture.md).
 Driven by what ghostpen and ghostreel actually use.
 
 ## TL;DR
@@ -182,7 +182,7 @@ runtime itself is preinstalled on Windows 10/11.
    apps depend on QuickJS, Yoga, or native drawing code.
 2. **Use zig-gobject rather than raw `@cImport`** for GTK/WebKit/GIO. It gives
    type-safe signals and GObject casting, and Ghostty has proven it in production.
-3. **Keep platform code behind the shell interfaces** from IDEA.md, with one
+3. **Keep platform code behind the shell interfaces** ([architecture](docs/architecture.md#layers)), with one
    implementation per OS and separate Wayland/X11 variants on Linux. Native drawing
    should stay behind the same window/runtime boundary.
 4. **Keep the dependency budget small:** vendored QuickJS-ng/Yoga for native UI;

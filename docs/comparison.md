@@ -160,6 +160,14 @@ lives in their own window, especially where a WebView isn't wanted. Oriel
 fits apps that need a web UI plus the desktop around it: hotkeys, the
 clipboard, other apps' input, audio, and local AI models.
 
+## Other Zig and webview frameworks
+
+- **Verve**, **Ziew**, **Electrobun** and the Zig webview bindings: useful
+  references for pure-Zig or system-webview apps, though none covers Oriel's
+  renderers, modules and platforms together.
+- **libghostty and Ghostty**: the model for a Zig core with thin native
+  platform shells, which Oriel follows.
+
 ## Related
 
 - [Examples](examples.md#system-monitor): the system monitor measured above.
