@@ -467,9 +467,10 @@ pub const Sampler = struct {
             s.pids = s.gpa.alloc(c_int, want * 2) catch &.{};
         }
         const n = proc_listallpids(s.pids.ptr, @intCast(s.pids.len * @sizeOf(c_int)));
-        // Given a buffer, it counts the pids it wrote into it.
-        std.debug.assert(n <= s.pids.len);
-        for (s.pids[0..@intCast(@max(n, 0))]) |pid_c| {
+        // Given a buffer, it counts the pids it wrote; with an empty one (the
+        // allocation above failed) it counts them all: never past the buffer.
+        const got: usize = @min(@as(usize, @intCast(@max(n, 0))), s.pids.len);
+        for (s.pids[0..got]) |pid_c| {
             if (pid_c <= 0) continue;
             try s.appendProcess(arena, &scan, pid_c, dt_ns);
         }
