@@ -204,8 +204,7 @@ fn appendAppHeaders(headers: *soup.MessageHeaders) void {
 }
 
 fn finishWithError(request: *webkit.URISchemeRequest, status: c_uint, reason: [:0]const u8) void {
-    var empty_buf: [1]u8 = undefined;
-    const empty_stream = gio.MemoryInputStream.newFromData(&empty_buf, 0, null);
+    const empty_stream = gio.MemoryInputStream.new();
     defer empty_stream.unref();
     const response = webkit.URISchemeResponse.new(empty_stream.as(gio.InputStream), 0);
     defer response.unref();
@@ -219,8 +218,7 @@ fn finishWithError(request: *webkit.URISchemeRequest, status: c_uint, reason: [:
 }
 
 fn finishWith416(request: *webkit.URISchemeRequest, file_size: u64, mime: [:0]const u8) void {
-    var empty_buf: [1]u8 = undefined;
-    const empty_stream = gio.MemoryInputStream.newFromData(&empty_buf, 0, null);
+    const empty_stream = gio.MemoryInputStream.new();
     defer empty_stream.unref();
     const response = webkit.URISchemeResponse.new(empty_stream.as(gio.InputStream), 0);
     defer response.unref();

@@ -371,8 +371,9 @@ var on_second_instance_fn: ?*const fn (json: []const u8) void = null;
 /// This launch's arguments without argv[0], as UTF-8. Caller frees with `freeArgs`.
 fn launchArgs(gpa: std.mem.Allocator) ![][]u8 {
     var list: std.ArrayList([]u8) = .empty;
-    errdefer freeArgs(gpa, list.items);
+    // errdefers run LIFO: free the element strings, then the list once.
     errdefer list.deinit(gpa);
+    errdefer for (list.items) |a| gpa.free(a);
     var argc: c_int = 0;
     const w_argv = win32.CommandLineToArgvW(win32.GetCommandLineW(), &argc) orelse return list.toOwnedSlice(gpa);
     defer _ = win32.LocalFree(@ptrCast(w_argv));

@@ -371,7 +371,10 @@ fn serveRange(
         std.unicode.utf8ToUtf16LeStringLiteral("OK");
 
     // The app's extra headers (security.headers), as on app:// responses.
-    const extra = security.headerLines(gpa, internal.current_security.headers) catch return;
+    const extra = security.headerLines(gpa, internal.current_security.headers) catch {
+        finishWithError(env, args, 500, "Internal Server Error");
+        return;
+    };
     defer gpa.free(extra);
     var hdr_str: []u8 = undefined;
     if (status_code == 206) {
@@ -379,17 +382,26 @@ fn serveRange(
             gpa,
             "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\nContent-Range: bytes {d}-{d}/{d}\r\n{s}",
             .{ mime, length, start, end, file_size, extra },
-        ) catch return;
+        ) catch {
+            finishWithError(env, args, 500, "Internal Server Error");
+            return;
+        };
     } else {
         hdr_str = std.fmt.allocPrint(
             gpa,
             "Content-Type: {s}\r\nX-Content-Type-Options: nosniff\r\nAccept-Ranges: bytes\r\nContent-Length: {d}\r\n{s}",
             .{ mime, length, extra },
-        ) catch return;
+        ) catch {
+            finishWithError(env, args, 500, "Internal Server Error");
+            return;
+        };
     }
     defer gpa.free(hdr_str);
 
-    const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch return;
+    const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch {
+        finishWithError(env, args, 500, "Internal Server Error");
+        return;
+    };
     defer gpa.free(hdr_w);
 
     var resp_opt: ?*webview2.ICoreWebView2WebResourceResponse = null;
@@ -442,9 +454,15 @@ fn finishWith416(
         gpa,
         "Content-Type: {s}\r\nAccept-Ranges: bytes\r\nContent-Length: 0\r\nContent-Range: bytes */{d}\r\n",
         .{ mime, file_size },
-    ) catch return;
+    ) catch {
+        finishWithError(env, args, 500, "Internal Server Error");
+        return;
+    };
     defer gpa.free(hdr_str);
-    const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch return;
+    const hdr_w = std.unicode.utf8ToUtf16LeAllocZ(gpa, hdr_str) catch {
+        finishWithError(env, args, 500, "Internal Server Error");
+        return;
+    };
     defer gpa.free(hdr_w);
 
     const empty_stream = FileWindowStream.createEmpty() catch return;
