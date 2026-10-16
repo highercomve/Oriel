@@ -285,6 +285,8 @@ pub const Store = struct {
     fn alloc(s: *Store, kind: Kind, name: u32) Error!Index {
         var idx = s.free_head;
         if (idx != none) {
+            // Only released records are on the free list.
+            std.debug.assert(s.get(idx).kind == .free);
             s.free_head = s.get(idx).next;
         } else {
             if (s.used == std.math.maxInt(Index)) return error.OutOfMemory;
@@ -395,6 +397,8 @@ pub const Store = struct {
 
     /// Frees a detached subtree without live wrappers.
     fn freeTree(s: *Store, root: Index) void {
+        std.debug.assert(root != s.document);
+        std.debug.assert(s.get(root).parent == none and s.get(root).wrapped == 0);
         // The stack may already be in use by a caller up the stack (a
         // finalizer during an operation): walk with links instead.
         var n = root;
@@ -407,6 +411,8 @@ pub const Store = struct {
             }
             const parent = s.get(n).parent;
             const next = s.get(n).next;
+            // Reached through `first` links: the leftmost child.
+            std.debug.assert(s.get(parent).first == n and s.get(n).prev == none);
             // Unlink this leaf from its parent, then free it.
             s.get(parent).first = next;
             if (next != none) s.get(next).prev = none else s.get(parent).last = none;
@@ -803,18 +809,25 @@ pub const Store = struct {
 
     fn link(s: *Store, parent: Index, child: Index, ref: Index) void {
         std.debug.assert(s.get(child).parent == none);
+        std.debug.assert(s.get(child).prev == none and s.get(child).next == none);
+        // insertBefore refused the rest, and moves a fragment's children.
+        const ck = s.get(child).kind;
+        std.debug.assert(ck == .element or ck == .text or ck == .comment);
+        std.debug.assert(ref == none or s.get(ref).parent == parent);
         // The child was a root: its wrapper stops owning its subtree's.
         s.disown(child, child, true);
         const c = s.get(child);
         const p = s.get(parent);
         c.parent = parent;
         if (ref == none) {
+            std.debug.assert(p.last == none or s.get(p.last).next == none);
             c.prev = p.last;
             c.next = none;
             if (p.last != none) s.get(p.last).next = child else p.first = child;
             p.last = child;
         } else {
             const r = s.get(ref);
+            std.debug.assert(r.prev != none or p.first == ref);
             c.prev = r.prev;
             c.next = ref;
             if (r.prev != none) s.get(r.prev).next = child else p.first = child;
@@ -839,7 +852,11 @@ pub const Store = struct {
         if (!s.get(child).connected) s.disown(child, s.rootOf(child), true);
         const c = s.get(child);
         const parent = c.parent;
+        std.debug.assert(parent != none);
         const p = s.get(parent);
+        // The sibling links agree with each other and with the parent's ends.
+        std.debug.assert(if (c.prev != none) s.get(c.prev).next == child else p.first == child);
+        std.debug.assert(if (c.next != none) s.get(c.next).prev == child else p.last == child);
         if (c.prev != none) s.get(c.prev).next = c.next else p.first = c.next;
         if (c.next != none) s.get(c.next).prev = c.prev else p.last = c.prev;
         c.parent = none;
@@ -986,6 +1003,8 @@ pub const Store = struct {
             }
             if (n.attr_len == std.math.maxInt(u16)) return error.OutOfMemory;
             n.attr_len += 1;
+            // The spilled attributes fit the array grown above.
+            std.debug.assert(n.attr_len <= inline_attrs + n.more.len);
             const a = s.attrAt(idx, n.attr_len - 1).?;
             s.js.dupAtom(s.js.ctx, name);
             s.js.dup(s.js.ctx, value);
