@@ -157,6 +157,33 @@ A rule that both front ends need is written once, in Zig, and the front end
 that can't call Zig directly (the page's JavaScript) asks through a host
 function. A front end keeps only what belongs to its language.
 
+# [Background]($heading.id('background'))
+
+Oriel started from two apps' needs. [GhostPen](https://highercomve.github.io/GhostPen/),
+AI text editing anywhere on the desktop, needed a tray, global shortcuts,
+typing into other apps, the clipboard, a single instance and network calls.
+GhostReel, local video search and AI-assisted editing, needed media
+streaming, dialogs, SQLite with vector search, whisper.cpp, llama.cpp and
+packaging. Both started in Rust; its build sizes and iteration time were
+the reason to start over in Zig 0.16, which gives small binaries, direct C
+interop, `comptime` reflection and one build system for desktop and mobile
+targets.
+
+# [Limits]($heading.id('limits'))
+
+- The native renderer doesn't promise full browser compatibility. CSS, DOM,
+  accessibility and JavaScript behavior it doesn't support yet belongs on the
+  web view until it's implemented and tested.
+- Native renderers keep the UI thread's affinity: commands and model work
+  run on workers, and their results go back to the platform's main loop.
+- Linux spans GTK, Wayland, X11 and several portal implementations; macOS,
+  Windows and the phones each need their own SDK and testing on the real
+  platform.
+- Zig 0.16 and several packages around it still move: dependency versions
+  stay pinned and tested in CI.
+- Security is part of the framework's contract: capabilities, asset origins,
+  navigation and IPC validation change together with each new module.
+
 # [Related]($heading.id('related'))
 
 - [Concepts]($link.page('docs/concepts')): the process, the bridge, commands and events.
