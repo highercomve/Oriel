@@ -67,15 +67,15 @@ fn impliedEnd(open: Class, tag: []const u8) bool {
 }
 
 const named_entities = std.StaticStringMap([]const u8).initComptime(.{
-    .{ "amp", "&" },    .{ "lt", "<" },       .{ "gt", ">" },       .{ "quot", "\"" },
-    .{ "apos", "'" },   .{ "nbsp", "\u{a0}" }, .{ "copy", "\u{a9}" }, .{ "reg", "\u{ae}" },
+    .{ "amp", "&" },          .{ "lt", "<" },            .{ "gt", ">" },           .{ "quot", "\"" },
+    .{ "apos", "'" },         .{ "nbsp", "\u{a0}" },     .{ "copy", "\u{a9}" },    .{ "reg", "\u{ae}" },
     .{ "trade", "\u{2122}" }, .{ "hellip", "\u{2026}" }, .{ "mdash", "\u{2014}" }, .{ "ndash", "\u{2013}" },
-    .{ "lsquo", "\u{2018}" }, .{ "rsquo", "\u{2019}" }, .{ "ldquo", "\u{201c}" }, .{ "rdquo", "\u{201d}" },
-    .{ "bull", "\u{2022}" }, .{ "middot", "\u{b7}" }, .{ "times", "\u{d7}" }, .{ "divide", "\u{f7}" },
-    .{ "laquo", "\u{ab}" }, .{ "raquo", "\u{bb}" }, .{ "euro", "\u{20ac}" }, .{ "deg", "\u{b0}" },
-    .{ "larr", "\u{2190}" }, .{ "rarr", "\u{2192}" }, .{ "uarr", "\u{2191}" }, .{ "darr", "\u{2193}" },
-    .{ "check", "\u{2713}" }, .{ "hearts", "\u{2665}" }, .{ "star", "\u{2606}" }, .{ "para", "\u{b6}" },
-    .{ "sect", "\u{a7}" }, .{ "shy", "\u{ad}" }, .{ "zwj", "\u{200d}" }, .{ "zwnj", "\u{200c}" },
+    .{ "lsquo", "\u{2018}" }, .{ "rsquo", "\u{2019}" },  .{ "ldquo", "\u{201c}" }, .{ "rdquo", "\u{201d}" },
+    .{ "bull", "\u{2022}" },  .{ "middot", "\u{b7}" },   .{ "times", "\u{d7}" },   .{ "divide", "\u{f7}" },
+    .{ "laquo", "\u{ab}" },   .{ "raquo", "\u{bb}" },    .{ "euro", "\u{20ac}" },  .{ "deg", "\u{b0}" },
+    .{ "larr", "\u{2190}" },  .{ "rarr", "\u{2192}" },   .{ "uarr", "\u{2191}" },  .{ "darr", "\u{2193}" },
+    .{ "check", "\u{2713}" }, .{ "hearts", "\u{2665}" }, .{ "star", "\u{2606}" },  .{ "para", "\u{b6}" },
+    .{ "sect", "\u{a7}" },    .{ "shy", "\u{ad}" },      .{ "zwj", "\u{200d}" },   .{ "zwnj", "\u{200c}" },
 });
 
 /// Decodes entities in `raw` into `buf` (cleared first); returns the text,

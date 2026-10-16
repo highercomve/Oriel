@@ -782,7 +782,9 @@ fn applyTemplate(arena: std.mem.Allocator, model: *c.llama_model, turns: []const
         size += t.content.len * 2;
     }
     const own = c.llama_model_chat_template(model, null);
-    while (true) {
+    // The template says how long it is: a second try with that size fits.
+    // A third is a template that grows each time: refused, not looped on.
+    for (0..3) |_| {
         const buf = try arena.alloc(u8, size);
         const len = std.math.cast(i32, buf.len) orelse return error.PromptTooLong;
         var n: i32 = -1;
@@ -792,6 +794,7 @@ fn applyTemplate(arena: std.mem.Allocator, model: *c.llama_model, turns: []const
         if (@as(usize, @intCast(n)) <= buf.len) return buf[0..@intCast(n)];
         size = @intCast(n);
     }
+    return error.ChatTemplateFailed;
 }
 
 /// The index after the oldest droppable turn (a user message and the

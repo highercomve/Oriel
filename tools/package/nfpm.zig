@@ -341,8 +341,16 @@ test "generateNfpmYaml replaces and conflicts" {
     try std.testing.expect(std.mem.indexOf(u8, yaml, "replaces:\n  - \"ghost-pen\"\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, yaml, "conflicts:\n  - \"ghost-pen\"\n") != null);
     try std.testing.expectError(error.InvalidPackageName, generateNfpmYaml(gpa, .{
-        .name = "x", .version = "1", .arch = "amd64", .maintainer = "M", .description = "D",
-        .binary_src = "/b", .binary_name = "x", .desktop_src = "/d", .app_id = "x", .icons_dir = "/i",
+        .name = "x",
+        .version = "1",
+        .arch = "amd64",
+        .maintainer = "M",
+        .description = "D",
+        .binary_src = "/b",
+        .binary_name = "x",
+        .desktop_src = "/d",
+        .app_id = "x",
+        .icons_dir = "/i",
         .replaces = &.{"bad name"},
     }));
 }

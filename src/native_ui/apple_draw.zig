@@ -1065,7 +1065,7 @@ pub fn linkAt(comptime font_class: [:0]const u8, n: *Node, x: f32, y: f32) ?u32 
         const width = CTLineGetTypographicBounds(line, &ascent, &descent, null);
         // The line box: its place, the fixed line height, else the font's.
         const top: CGFloat, const bottom: CGFloat = if (pl.places) |places| (if (i < places.len) .{ places[@intCast(i)].top, places[@intCast(i)].top + places[@intCast(i)].h } else .{ base - ascent, base + descent }) else if (lb) |box| .{ @as(CGFloat, @floatFromInt(i)) * box.h, @as(CGFloat, @floatFromInt(i + 1)) * box.h } else .{ base - ascent, base + descent };
-            if (ty < top or ty >= bottom) continue;
+        if (ty < top or ty >= bottom) continue;
         if (tx < o.x or tx > o.x + width) return null;
         const range = CTLineGetStringRange(line);
         var off = CTLineGetStringIndexForPosition(line, .{ .x = tx - o.x, .y = 0 });

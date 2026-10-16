@@ -321,17 +321,17 @@ fn paintOf(node: *const Node) [3]f32 {
 
 /// Keys by frequency, as Kotlin's PROP_KEYS: append only, never reorder.
 pub const prop_keys = [_][]const u8{
-    "fd",     "w",      "h",      "fs",     "ai",      "runs",  "t",     "c",    "sz",     "wt",
-    "dis",    "click",  "cg",     "rg",     "ar",      "val",   "maxw",  "maxh", "minw",   "minh",
-    "fw",     "fg",     "fb",     "as",     "ac",      "jc",    "acc",   "src",  "range",  "pw",
-    "pos",    "ph",     "pad",    "m",      "options", "on",    "icon",  "fit",  "cw",     "ch",
-    "cv",     "ctl",    "cols",   "trow",   "tcell",   "table", "bc",    "bg",   "br",     "bw",
-    "clip",   "col",    "fwt",    "fz",     "ins",     "it",    "lh",    "ls",   "mono",   "nowrap",
-    "op",     "rel",    "rot",    "sc",     "scroll",  "scrollx", "sh",  "sticky", "ta",   "tx",
-    "ty",     "vis",    "z",      "root",   "color",   "gradient", "angle", "stops", "radial", "spread",
-    "blur",   "x",      "y",      "vb",     "shapes",  "d",     "fill",  "stroke", "sw",   "cap",
-    "join",   "evenodd", "u",     "i",      "label",   "href",  "hover", "radius", "cx",   "cy",
-    "ff",     "ol",
+    "fd",   "w",       "h",    "fs",   "ai",      "runs",     "t",     "c",      "sz",     "wt",
+    "dis",  "click",   "cg",   "rg",   "ar",      "val",      "maxw",  "maxh",   "minw",   "minh",
+    "fw",   "fg",      "fb",   "as",   "ac",      "jc",       "acc",   "src",    "range",  "pw",
+    "pos",  "ph",      "pad",  "m",    "options", "on",       "icon",  "fit",    "cw",     "ch",
+    "cv",   "ctl",     "cols", "trow", "tcell",   "table",    "bc",    "bg",     "br",     "bw",
+    "clip", "col",     "fwt",  "fz",   "ins",     "it",       "lh",    "ls",     "mono",   "nowrap",
+    "op",   "rel",     "rot",  "sc",   "scroll",  "scrollx",  "sh",    "sticky", "ta",     "tx",
+    "ty",   "vis",     "z",    "root", "color",   "gradient", "angle", "stops",  "radial", "spread",
+    "blur", "x",       "y",    "vb",   "shapes",  "d",        "fill",  "stroke", "sw",     "cap",
+    "join", "evenodd", "u",    "i",    "label",   "href",     "hover", "radius", "cx",     "cy",
+    "ff",   "ol",
 };
 
 const prop_key_ids = blk: {
