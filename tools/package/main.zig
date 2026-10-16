@@ -1301,121 +1301,114 @@ fn fileSize(io: Io, path: []const u8) u64 {
     return st.size;
 }
 
-fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
-    var out_dir: ?[]const u8 = null;
-    var filename: ?[]const u8 = null;
-    var bin_path: ?[]const u8 = null;
-    var icons_dir: ?[]const u8 = null;
-    var icon_path_arg: ?[]const u8 = null;
-    var webview2_loader: ?[]const u8 = null;
-    var app_id: ?[]const u8 = null;
-    var name: ?[]const u8 = null;
-    var exe_name: ?[]const u8 = null;
-    var version: []const u8 = "0.1.0";
-    var publisher: ?[]const u8 = null;
-    var homepage: ?[]const u8 = null;
-    var url_schemes: std.ArrayList([]const u8) = .empty;
-    defer url_schemes.deinit(gpa);
-    var send_to: ?[]const u8 = null;
-    var open_with_exts: std.ArrayList([]const u8) = .empty;
-    defer open_with_exts.deinit(gpa);
-    var extras: contents.Contents = .{};
-    defer extras.deinit(gpa);
+/// package-nsis's command line.
+const NsisArgs = struct {
+    out_dir: ?[]const u8 = null,
+    filename: ?[]const u8 = null,
+    bin_path: ?[]const u8 = null,
+    icons_dir: ?[]const u8 = null,
+    icon_path_arg: ?[]const u8 = null,
+    webview2_loader: ?[]const u8 = null,
+    app_id: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    exe_name: ?[]const u8 = null,
+    version: []const u8 = "0.1.0",
+    publisher: ?[]const u8 = null,
+    homepage: ?[]const u8 = null,
+    url_schemes: std.ArrayList([]const u8) = .empty,
+    send_to: ?[]const u8 = null,
+    open_with_exts: std.ArrayList([]const u8) = .empty,
+    extras: contents.Contents = .{},
 
+    fn deinit(self: *NsisArgs, gpa: std.mem.Allocator) void {
+        self.extras.deinit(gpa);
+        self.open_with_exts.deinit(gpa);
+        self.url_schemes.deinit(gpa);
+    }
+};
+
+/// False when a contents argument was bad (error printed).
+fn parseNsisArgs(gpa: std.mem.Allocator, args: []const [:0]const u8, a: *NsisArgs) !bool {
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (parseContentsArg(&extras, gpa, "package-nsis", args, &i) orelse return 1) {
+        if (parseContentsArg(&a.extras, gpa, "package-nsis", args, &i) orelse return false) {
             continue;
         } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
             i += 1;
-            out_dir = args[i];
+            a.out_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
             i += 1;
-            filename = args[i];
+            a.filename = args[i];
         } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
             i += 1;
-            bin_path = args[i];
+            a.bin_path = args[i];
         } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
             i += 1;
-            icons_dir = args[i];
+            a.icons_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--icon") and i + 1 < args.len) {
             i += 1;
-            icon_path_arg = args[i];
+            a.icon_path_arg = args[i];
         } else if (std.mem.eql(u8, arg, "--webview2-loader") and i + 1 < args.len) {
             i += 1;
-            webview2_loader = args[i];
+            a.webview2_loader = args[i];
         } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
             i += 1;
-            app_id = args[i];
+            a.app_id = args[i];
         } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
             i += 1;
-            name = args[i];
+            a.name = args[i];
         } else if (std.mem.eql(u8, arg, "--exe-name") and i + 1 < args.len) {
             i += 1;
-            exe_name = args[i];
+            a.exe_name = args[i];
         } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
             i += 1;
-            version = args[i];
+            a.version = args[i];
         } else if (std.mem.eql(u8, arg, "--publisher") and i + 1 < args.len) {
             i += 1;
-            publisher = args[i];
+            a.publisher = args[i];
         } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
             i += 1;
-            homepage = args[i];
+            a.homepage = args[i];
         } else if (std.mem.eql(u8, arg, "--url-scheme") and i + 1 < args.len) {
             i += 1;
-            try url_schemes.append(gpa, args[i]);
+            try a.url_schemes.append(gpa, args[i]);
         } else if (std.mem.eql(u8, arg, "--send-to") and i + 1 < args.len) {
             i += 1;
-            send_to = args[i];
+            a.send_to = args[i];
         } else if (std.mem.eql(u8, arg, "--open-with-ext") and i + 1 < args.len) {
             i += 1;
-            try open_with_exts.append(gpa, args[i]);
+            try a.open_with_exts.append(gpa, args[i]);
         }
     }
+    return true;
+}
 
-    const target_out_dir = out_dir orelse {
-        std.debug.print("error: package-nsis: missing --out-dir\n", .{});
-        return 1;
-    };
-    const target_filename = filename orelse {
-        std.debug.print("error: package-nsis: missing --filename\n", .{});
-        return 1;
-    };
-    const target_bin = bin_path orelse {
-        std.debug.print("error: package-nsis: missing --bin\n", .{});
-        return 1;
-    };
-    const target_name = name orelse "app";
-    const target_exe_name = exe_name orelse target_name;
-    const target_app_id = app_id orelse target_name;
-    const target_publisher = publisher orelse metadata.organizationFromAppId(target_app_id);
-
-    const clean_exe_name = if (std.mem.endsWith(u8, target_exe_name, ".exe"))
-        target_exe_name[0 .. target_exe_name.len - 4]
-    else
-        target_exe_name;
-
+/// The exe name, the extra contents and the binary, before anything is
+/// written; false (error printed) when one is wrong.
+fn checkNsisInputs(gpa: std.mem.Allocator, io: Io, a: *const NsisArgs, exe_name: []const u8, clean_exe_name: []const u8, bin: []const u8) !bool {
     metadata.validateExeName(clean_exe_name) catch |err| {
-        std.debug.print("error: package-nsis: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
-        return 1;
+        std.debug.print("error: package-nsis: invalid --exe-name '{s}': {s}\n", .{ exe_name, @errorName(err) });
+        return false;
     };
     {
         // What the installer itself puts in $INSTDIR.
         const app_exe_file = try std.fmt.allocPrint(gpa, "{s}.exe", .{clean_exe_name});
         defer gpa.free(app_exe_file);
         const taken = [_][]const u8{ app_exe_file, "Uninstall.exe", "WebView2Loader.dll" };
-        if (!validateContents(&extras, "package-nsis", taken[0..if (webview2_loader != null) taken.len else 2])) return 1;
+        if (!validateContents(&a.extras, "package-nsis", taken[0..if (a.webview2_loader != null) taken.len else 2])) return false;
     }
 
-    if (!pathExists(io, target_bin)) {
-        std.debug.print("error: package-nsis: binary file not found: {s}\n", .{target_bin});
-        return 1;
+    if (!pathExists(io, bin)) {
+        std.debug.print("error: package-nsis: binary file not found: {s}\n", .{bin});
+        return false;
     }
+    return true;
+}
 
-    // Locate makensis
-    const makensis_bin = findMakensis(gpa, io) catch |err| {
+/// makensis's path (caller frees), or null with the error printed.
+fn findMakensisOrReport(gpa: std.mem.Allocator, io: Io) ?[]const u8 {
+    return findMakensis(gpa, io) catch |err| {
         switch (err) {
             error.MakensisNotFound => {
                 std.debug.print("error: package-nsis: 'makensis' not found (run: oriel setup nsis)\n", .{});
@@ -1425,121 +1418,87 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
             },
             else => std.debug.print("error: package-nsis: looking for makensis: {s}\n", .{@errorName(err)}),
         }
-        return 1;
+        return null;
     };
-    defer gpa.free(makensis_bin);
+}
 
-    // Ensure target out_dir exists
-    try Dir.cwd().createDirPath(io, target_out_dir);
-
-    const abs_out_dir = try ensureAbsolutePath(gpa, io, target_out_dir);
-    defer gpa.free(abs_out_dir);
-
-    const abs_bin = try ensureAbsolutePath(gpa, io, target_bin);
-    defer gpa.free(abs_bin);
-
-    const abs_out_file = try std.fs.path.join(gpa, &.{ abs_out_dir, target_filename });
-    defer gpa.free(abs_out_file);
-
-    // Resolve the .ico: `--icon` wins, else `<icons-dir>/icon.ico` written by resize-icons.
-    var final_icon_path: ?[]const u8 = null;
-    defer if (final_icon_path) |p| gpa.free(p);
-    if (icon_path_arg) |arg_ico| {
+/// The absolute .ico and WebView2Loader.dll paths (caller frees), when
+/// given; false (error printed) when one is missing.
+fn resolveNsisAssets(gpa: std.mem.Allocator, io: Io, a: *const NsisArgs, icon: *?[]const u8, loader: *?[]const u8) !bool {
+    // `--icon` wins, else `<icons-dir>/icon.ico` written by resize-icons.
+    if (a.icon_path_arg) |arg_ico| {
         if (!std.mem.endsWith(u8, arg_ico, ".ico")) {
             std.debug.print("error: package-nsis: --icon must be a .ico file: {s}\n", .{arg_ico});
-            return 1;
+            return false;
         }
-        final_icon_path = try ensureAbsolutePath(gpa, io, arg_ico);
-    } else if (icons_dir) |idir| {
+        icon.* = try ensureAbsolutePath(gpa, io, arg_ico);
+    } else if (a.icons_dir) |idir| {
         const candidate_ico = try std.fs.path.join(gpa, &.{ idir, "icon.ico" });
         defer gpa.free(candidate_ico);
         if (!pathExists(io, candidate_ico)) {
             std.debug.print("error: package-nsis: {s} not found (run resize-icons first)\n", .{candidate_ico});
-            return 1;
+            return false;
         }
-        final_icon_path = try ensureAbsolutePath(gpa, io, candidate_ico);
+        icon.* = try ensureAbsolutePath(gpa, io, candidate_ico);
     }
 
-    // Resolve webview2_loader
-    var abs_wv2_loader: ?[]const u8 = null;
-    defer if (abs_wv2_loader) |wl| gpa.free(wl);
-    if (webview2_loader) |wl| {
+    if (a.webview2_loader) |wl| {
         if (!pathExists(io, wl)) {
             std.debug.print("error: package-nsis: webview2-loader file not found: {s}\n", .{wl});
-            return 1;
+            return false;
         }
-        abs_wv2_loader = try ensureAbsolutePath(gpa, io, wl);
+        loader.* = try ensureAbsolutePath(gpa, io, wl);
     }
+    return true;
+}
 
-    // Calculate estimated installed size in KiB
-    var total_size_bytes: u64 = 0;
-    if (Dir.cwd().statFile(io, abs_bin, .{})) |st| {
-        total_size_bytes += st.size;
-    } else |_| {}
-    if (abs_wv2_loader) |wl| {
-        if (Dir.cwd().statFile(io, wl, .{})) |st| {
-            total_size_bytes += st.size;
-        } else |_| {}
-    }
+/// Extra executables and files, with absolute sources (makensis runs with -NOCD).
+const NsisExtras = struct {
+    exes: std.ArrayList(contents.Exe) = .empty,
+    files: std.ArrayList(contents.File) = .empty,
 
-    // Extra executables and files, with absolute sources (makensis runs with -NOCD).
-    var abs_exes: std.ArrayList(contents.Exe) = .empty;
-    defer {
-        for (abs_exes.items) |e| gpa.free(e.src);
-        abs_exes.deinit(gpa);
+    fn deinit(self: *NsisExtras, gpa: std.mem.Allocator) void {
+        for (self.files.items) |f| gpa.free(f.src);
+        self.files.deinit(gpa);
+        for (self.exes.items) |e| gpa.free(e.src);
+        self.exes.deinit(gpa);
     }
-    var abs_files: std.ArrayList(contents.File) = .empty;
-    defer {
-        for (abs_files.items) |f| gpa.free(f.src);
-        abs_files.deinit(gpa);
-    }
+};
+
+/// Fills `out` from `extras` and adds their sizes to `total_size_bytes`;
+/// false (error printed) when a source is missing.
+fn absoluteNsisExtras(gpa: std.mem.Allocator, io: Io, extras: *const contents.Contents, out: *NsisExtras, total_size_bytes: *u64) !bool {
     for (extras.exes.items) |e| {
-        const src = try absExistingFile(gpa, io, e.src) orelse return 1;
-        abs_exes.append(gpa, .{ .src = src, .name = e.name }) catch |err| {
+        const src = try absExistingFile(gpa, io, e.src) orelse return false;
+        out.exes.append(gpa, .{ .src = src, .name = e.name }) catch |err| {
             gpa.free(src);
             return err;
         };
-        total_size_bytes += fileSize(io, src);
+        total_size_bytes.* += fileSize(io, src);
     }
     for (extras.files.items) |f| {
-        const src = try absExistingFile(gpa, io, f.src) orelse return 1;
-        abs_files.append(gpa, .{ .src = src, .rel = f.rel }) catch |err| {
+        const src = try absExistingFile(gpa, io, f.src) orelse return false;
+        out.files.append(gpa, .{ .src = src, .rel = f.rel }) catch |err| {
             gpa.free(src);
             return err;
         };
-        total_size_bytes += fileSize(io, src);
+        total_size_bytes.* += fileSize(io, src);
     }
-    const estimated_size_kb: u64 = if (total_size_bytes > 0) (total_size_bytes + 1023) / 1024 else 0;
+    return true;
+}
 
-    // Generate installer.nsi
+/// Writes `<out-dir>/installer.nsi` and builds it into `out_file`.
+fn buildNsisInstaller(gpa: std.mem.Allocator, io: Io, makensis_bin: []const u8, abs_out_dir: []const u8, opts: nsis.NsisOptions) !u8 {
     const nsi_path = try std.fs.path.join(gpa, &.{ abs_out_dir, "installer.nsi" });
     defer gpa.free(nsi_path);
 
-    const script_content = nsis.generateNsisScript(gpa, .{
-        .name = target_name,
-        .exe_name = clean_exe_name,
-        .version = version,
-        .publisher = target_publisher,
-        .id = target_app_id,
-        .binary_src = abs_bin,
-        .out_file = abs_out_file,
-        .icon_path = final_icon_path,
-        .webview2_loader = abs_wv2_loader,
-        .homepage = homepage,
-        .url_schemes = url_schemes.items,
-        .send_to = send_to,
-        .open_with_extensions = open_with_exts.items,
-        .estimated_size_kb = estimated_size_kb,
-        .extra_exes = abs_exes.items,
-        .extra_files = abs_files.items,
-    }) catch |err| {
+    const script_content = nsis.generateNsisScript(gpa, opts) catch |err| {
         std.debug.print("error: package-nsis: installer script: {s}\n", .{contents.describe(err)});
         return 1;
     };
     defer gpa.free(script_content);
     try Dir.cwd().writeFile(io, .{ .sub_path = nsi_path, .data = script_content });
 
-    // Run makensis
     const res = std.process.run(gpa, io, .{
         .argv = &.{ makensis_bin, "-NOCD", "-WX", nsi_path },
     }) catch |err| {
@@ -1554,12 +1513,82 @@ fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u
         return 1;
     }
 
-    if (!pathExists(io, abs_out_file)) {
-        std.debug.print("error: package-nsis: output file '{s}' was not generated by makensis\n", .{abs_out_file});
+    if (!pathExists(io, opts.out_file)) {
+        std.debug.print("error: package-nsis: output file '{s}' was not generated by makensis\n", .{opts.out_file});
         return 1;
     }
 
     return 0;
+}
+
+/// `value`, or null with "missing <flag>" printed.
+fn requireNsisArg(value: ?[]const u8, flag: []const u8) ?[]const u8 {
+    if (value == null) std.debug.print("error: package-nsis: missing {s}\n", .{flag});
+    return value;
+}
+
+fn packageNsisCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var a: NsisArgs = .{};
+    defer a.deinit(gpa);
+    if (!try parseNsisArgs(gpa, args, &a)) return 1;
+
+    const target_out_dir = requireNsisArg(a.out_dir, "--out-dir") orelse return 1;
+    const target_filename = requireNsisArg(a.filename, "--filename") orelse return 1;
+    const target_bin = requireNsisArg(a.bin_path, "--bin") orelse return 1;
+    const target_name = a.name orelse "app";
+    const target_exe_name = a.exe_name orelse target_name;
+    const target_app_id = a.app_id orelse target_name;
+    const target_publisher = a.publisher orelse metadata.organizationFromAppId(target_app_id);
+
+    const clean_exe_name = if (std.mem.endsWith(u8, target_exe_name, ".exe"))
+        target_exe_name[0 .. target_exe_name.len - 4]
+    else
+        target_exe_name;
+
+    if (!try checkNsisInputs(gpa, io, &a, target_exe_name, clean_exe_name, target_bin)) return 1;
+    const makensis_bin = findMakensisOrReport(gpa, io) orelse return 1;
+    defer gpa.free(makensis_bin);
+
+    try Dir.cwd().createDirPath(io, target_out_dir);
+    const abs_out_dir = try ensureAbsolutePath(gpa, io, target_out_dir);
+    defer gpa.free(abs_out_dir);
+    const abs_bin = try ensureAbsolutePath(gpa, io, target_bin);
+    defer gpa.free(abs_bin);
+    const abs_out_file = try std.fs.path.join(gpa, &.{ abs_out_dir, target_filename });
+    defer gpa.free(abs_out_file);
+
+    var final_icon_path: ?[]const u8 = null;
+    defer if (final_icon_path) |p| gpa.free(p);
+    var abs_wv2_loader: ?[]const u8 = null;
+    defer if (abs_wv2_loader) |wl| gpa.free(wl);
+    if (!try resolveNsisAssets(gpa, io, &a, &final_icon_path, &abs_wv2_loader)) return 1;
+
+    // Estimated installed size in KiB.
+    var total_size_bytes: u64 = fileSize(io, abs_bin);
+    if (abs_wv2_loader) |wl| total_size_bytes += fileSize(io, wl);
+    var extras: NsisExtras = .{};
+    defer extras.deinit(gpa);
+    if (!try absoluteNsisExtras(gpa, io, &a.extras, &extras, &total_size_bytes)) return 1;
+    const estimated_size_kb: u64 = if (total_size_bytes > 0) (total_size_bytes + 1023) / 1024 else 0;
+
+    return buildNsisInstaller(gpa, io, makensis_bin, abs_out_dir, .{
+        .name = target_name,
+        .exe_name = clean_exe_name,
+        .version = a.version,
+        .publisher = target_publisher,
+        .id = target_app_id,
+        .binary_src = abs_bin,
+        .out_file = abs_out_file,
+        .icon_path = final_icon_path,
+        .webview2_loader = abs_wv2_loader,
+        .homepage = a.homepage,
+        .url_schemes = a.url_schemes.items,
+        .send_to = a.send_to,
+        .open_with_extensions = a.open_with_exts.items,
+        .estimated_size_kb = estimated_size_kb,
+        .extra_exes = extras.exes.items,
+        .extra_files = extras.files.items,
+    });
 }
 
 // ---------------------------------------------------------------------------

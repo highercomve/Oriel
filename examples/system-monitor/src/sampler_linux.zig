@@ -393,7 +393,56 @@ pub const Sampler = struct {
         const dt_s: f64 = if (s.prev_time) |p| @as(f64, @floatFromInt(p.durationTo(t0).raw.toNanoseconds())) / 1e9 else 0;
         s.prev_time = t0;
 
-        var cpu: CpuInfo = .{
+        var cpu = try s.emptyCpu(arena);
+        if (!is_linux) return unsupportedSample(cpu);
+
+        const delta_total = try s.sampleCpu(io, arena, &cpu);
+        const threads = s.sampleLoadAvg(io, &cpu);
+        const mem = s.sampleMemory(io);
+        const uptime_seconds = s.sampleUptime(io);
+
+        var procs: std.ArrayList(ProcessRow) = .empty;
+        try procs.ensureTotalCapacity(arena, 1024);
+        var starts: std.AutoHashMapUnmanaged(u32, u64) = .empty;
+        try s.sampleProcesses(io, arena, delta_total, &procs, &starts);
+        const total_procs: u32 = @intCast(procs.items.len);
+        try s.attachMeta(io, arena, procs.items, &starts);
+        const apps = applications.visible(try applications.collect(arena, procs.items));
+        applications.order(apps, s.filter);
+        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
+        const top = procs.items[0..@min(procs.items.len, max_rows)];
+        if (s.samples % 16 == 0) s.forgetStaleMeta(arena);
+
+        // Disks: the mounts list again now and then, then size and I/O rates.
+        if (s.samples % 15 == 0) s.loadMounts(io);
+        const disks = try s.sampleDisks(io, arena, dt_s);
+        const nets = try s.sampleNets(io, arena, dt_s);
+        const sensors = try s.sampleSensors(io, arena, &cpu);
+
+        const t1 = Io.Clock.Timestamp.now(io, .awake);
+        return .{
+            .cpu = cpu,
+            .mem = mem,
+            .uptime_seconds = uptime_seconds,
+            .processes = top,
+            .applications = apps[0..@min(apps.len, max_rows)],
+            .applications_supported = true,
+            .total_applications = @intCast(apps.len),
+            .application_id = s.application_id,
+            .application_process_count = application_process_count,
+            .total_processes = total_procs,
+            .threads_total = threads.total,
+            .running = threads.running,
+            .disks = disks,
+            .net = nets,
+            .sensors = sensors,
+            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
+            .engine = "Zig direct /proc + /sys (kernel telemetry, 0 spawns)",
+        };
+    }
+
+    fn emptyCpu(s: *const Sampler, arena: std.mem.Allocator) !CpuInfo {
+        return .{
             .percent = 0,
             .user_percent = 0,
             .system_percent = 0,
@@ -405,15 +454,12 @@ pub const Sampler = struct {
             .load_avg = null,
             .per_core = &.{},
         };
-        var delta_total: u64 = 0;
-        var mem: MemInfo = std.mem.zeroes(MemInfo);
-        var uptime_seconds: u64 = 0;
-        var threads_total: u32 = 0;
-        var running: u32 = 0;
+    }
 
-        if (!is_linux) return .{
+    fn unsupportedSample(cpu: CpuInfo) SystemSample {
+        return .{
             .cpu = cpu,
-            .mem = mem,
+            .mem = std.mem.zeroes(MemInfo),
             .uptime_seconds = 0,
             .processes = &.{},
             .total_processes = 0,
@@ -425,98 +471,119 @@ pub const Sampler = struct {
             .sample_time_ms = 0,
             .engine = "telemetry is Linux-only for now",
         };
+    }
 
-        // CPU: the aggregate line, then one per core.
-        {
-            var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/stat", s.buf), '\n');
-            var cores: std.ArrayList(CoreSample) = .empty;
-            try cores.ensureTotalCapacity(arena, s.cpu_cores);
-            var core: usize = 0;
-            while (lines.next()) |line| {
-                if (!std.mem.startsWith(u8, line, "cpu")) break;
-                const t = parseTicks(line);
-                if (line[3] == ' ') {
-                    if (s.prev.total > 0 and t.total > s.prev.total) {
-                        delta_total = t.total - s.prev.total;
-                        const idle = (t.idle + t.iowait) -| (s.prev.idle + s.prev.iowait);
-                        cpu.percent = pct(delta_total -| idle, delta_total);
-                        cpu.user_percent = pct(t.user -| s.prev.user, delta_total);
-                        cpu.system_percent = pct(t.system -| s.prev.system, delta_total);
-                        cpu.iowait_percent = pct(t.iowait -| s.prev.iowait, delta_total);
-                    }
-                    s.prev = t;
-                    continue;
+    /// CPU: the aggregate line, then one per core; the ticks since the last
+    /// sample (0 on the first), the base of every process's share.
+    fn sampleCpu(s: *Sampler, io: Io, arena: std.mem.Allocator, cpu: *CpuInfo) !u64 {
+        var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/stat", s.buf), '\n');
+        var cores: std.ArrayList(CoreSample) = .empty;
+        try cores.ensureTotalCapacity(arena, s.cpu_cores);
+        var delta_total: u64 = 0;
+        var core: usize = 0;
+        while (lines.next()) |line| {
+            if (!std.mem.startsWith(u8, line, "cpu")) break;
+            const t = parseTicks(line);
+            if (line[3] == ' ') {
+                if (s.prev.total > 0 and t.total > s.prev.total) {
+                    delta_total = t.total - s.prev.total;
+                    const idle = (t.idle + t.iowait) -| (s.prev.idle + s.prev.iowait);
+                    cpu.percent = pct(delta_total -| idle, delta_total);
+                    cpu.user_percent = pct(t.user -| s.prev.user, delta_total);
+                    cpu.system_percent = pct(t.system -| s.prev.system, delta_total);
+                    cpu.iowait_percent = pct(t.iowait -| s.prev.iowait, delta_total);
                 }
-                if (core >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
-                const p = &s.prev_cores.items[core];
-                var percent: f64 = 0;
-                if (p.total > 0 and t.total > p.total) {
-                    const d = t.total - p.total;
-                    percent = pct(d -| ((t.idle + t.iowait) -| (p.idle + p.iowait)), d);
-                }
-                p.* = t;
-                try cores.append(arena, .{ .percent = percent, .freq_mhz = 0 });
-                core += 1;
+                s.prev = t;
+                continue;
             }
-            // Frequencies (kHz), and their average.
-            var path_buf: [80]u8 = undefined;
-            var small: [32]u8 = undefined;
-            var freq_sum: f64 = 0;
-            for (cores.items, 0..) |*c, i| {
-                const path = std.fmt.bufPrint(&path_buf, "/sys/devices/system/cpu/cpu{d}/cpufreq/scaling_cur_freq", .{i}) catch continue;
-                const khz = std.fmt.parseInt(u64, std.mem.trim(u8, read(io, path, &small), " \n"), 10) catch continue;
-                c.freq_mhz = @round(@as(f64, @floatFromInt(khz)) / 1000.0);
-                freq_sum += c.freq_mhz;
+            if (core >= s.prev_cores.items.len) try s.prev_cores.append(s.gpa, .{});
+            const p = &s.prev_cores.items[core];
+            var percent: f64 = 0;
+            if (p.total > 0 and t.total > p.total) {
+                const d = t.total - p.total;
+                percent = pct(d -| ((t.idle + t.iowait) -| (p.idle + p.iowait)), d);
             }
-            if (cores.items.len > 0) cpu.freq_mhz = @round(freq_sum / @as(f64, @floatFromInt(cores.items.len)));
-            cpu.per_core = cores.items;
+            p.* = t;
+            try cores.append(arena, .{ .percent = percent, .freq_mhz = 0 });
+            core += 1;
         }
+        // Each busy share is part of the same delta: never past the whole.
+        std.debug.assert(cpu.percent >= 0 and cpu.percent <= 100);
+        std.debug.assert(cores.items.len <= s.prev_cores.items.len);
+        if (cores.items.len > 0) cpu.freq_mhz = readFrequencies(io, cores.items);
+        cpu.per_core = cores.items;
+        return delta_total;
+    }
 
-        // Load average, and the threads running / all: "0.27 0.39 0.35 3/2014 72826".
-        {
-            var t = std.mem.tokenizeAny(u8, read(io, "/proc/loadavg", s.buf[0..128]), " /\n");
-            var la: [3]f64 = .{ 0, 0, 0 };
-            for (&la) |*l| l.* = std.fmt.parseFloat(f64, t.next() orelse break) catch 0;
-            cpu.load_avg = la;
-            running = std.fmt.parseInt(u32, t.next() orelse "0", 10) catch 0;
-            threads_total = std.fmt.parseInt(u32, t.next() orelse "0", 10) catch 0;
+    /// Each core's frequency (kHz in sysfs) in MHz, and their average.
+    fn readFrequencies(io: Io, cores: []CoreSample) f64 {
+        var path_buf: [80]u8 = undefined;
+        var small: [32]u8 = undefined;
+        var freq_sum: f64 = 0;
+        for (cores, 0..) |*c, i| {
+            const path = std.fmt.bufPrint(&path_buf, "/sys/devices/system/cpu/cpu{d}/cpufreq/scaling_cur_freq", .{i}) catch continue;
+            const khz = std.fmt.parseInt(u64, std.mem.trim(u8, read(io, path, &small), " \n"), 10) catch continue;
+            c.freq_mhz = @round(@as(f64, @floatFromInt(khz)) / 1000.0);
+            freq_sum += c.freq_mhz;
         }
+        return @round(freq_sum / @as(f64, @floatFromInt(cores.len)));
+    }
 
-        // Memory.
-        {
-            var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/meminfo", s.buf[0..8192]), '\n');
-            var swap_free: u64 = 0;
-            var reclaimable: u64 = 0;
-            while (lines.next()) |line| {
-                const v = parseKb(line);
-                if (std.mem.startsWith(u8, line, "MemTotal:")) mem.total_bytes = v //
-                else if (std.mem.startsWith(u8, line, "MemFree:")) mem.free_bytes = v //
-                else if (std.mem.startsWith(u8, line, "MemAvailable:")) mem.available_bytes = v //
-                else if (std.mem.startsWith(u8, line, "Buffers:")) mem.buffers_bytes = v //
-                else if (std.mem.startsWith(u8, line, "Cached:")) mem.cached_bytes = v //
-                else if (std.mem.startsWith(u8, line, "SReclaimable:")) reclaimable = v //
-                else if (std.mem.startsWith(u8, line, "SwapTotal:")) mem.swap_total_bytes = v //
-                else if (std.mem.startsWith(u8, line, "SwapFree:")) swap_free = v;
-            }
-            mem.cached_bytes += reclaimable;
-            if (mem.available_bytes == 0) mem.available_bytes = mem.free_bytes;
-            mem.used_bytes = mem.total_bytes -| mem.available_bytes;
-            mem.swap_used_bytes = mem.swap_total_bytes -| swap_free;
-            mem.percent = pct(mem.used_bytes, mem.total_bytes);
+    const Threads = struct { running: u32, total: u32 };
+
+    /// Load average, and the threads running / all: "0.27 0.39 0.35 3/2014 72826".
+    fn sampleLoadAvg(s: *Sampler, io: Io, cpu: *CpuInfo) Threads {
+        var t = std.mem.tokenizeAny(u8, read(io, "/proc/loadavg", s.buf[0..128]), " /\n");
+        var la: [3]f64 = .{ 0, 0, 0 };
+        for (&la) |*l| l.* = std.fmt.parseFloat(f64, t.next() orelse break) catch 0;
+        cpu.load_avg = la;
+        const running = std.fmt.parseInt(u32, t.next() orelse "0", 10) catch 0;
+        const total = std.fmt.parseInt(u32, t.next() orelse "0", 10) catch 0;
+        return .{ .running = running, .total = total };
+    }
+
+    fn sampleMemory(s: *Sampler, io: Io) MemInfo {
+        var mem: MemInfo = std.mem.zeroes(MemInfo);
+        var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/meminfo", s.buf[0..8192]), '\n');
+        var swap_free: u64 = 0;
+        var reclaimable: u64 = 0;
+        while (lines.next()) |line| {
+            const v = parseKb(line);
+            if (std.mem.startsWith(u8, line, "MemTotal:")) mem.total_bytes = v //
+            else if (std.mem.startsWith(u8, line, "MemFree:")) mem.free_bytes = v //
+            else if (std.mem.startsWith(u8, line, "MemAvailable:")) mem.available_bytes = v //
+            else if (std.mem.startsWith(u8, line, "Buffers:")) mem.buffers_bytes = v //
+            else if (std.mem.startsWith(u8, line, "Cached:")) mem.cached_bytes = v //
+            else if (std.mem.startsWith(u8, line, "SReclaimable:")) reclaimable = v //
+            else if (std.mem.startsWith(u8, line, "SwapTotal:")) mem.swap_total_bytes = v //
+            else if (std.mem.startsWith(u8, line, "SwapFree:")) swap_free = v;
         }
+        mem.cached_bytes += reclaimable;
+        if (mem.available_bytes == 0) mem.available_bytes = mem.free_bytes;
+        mem.used_bytes = mem.total_bytes -| mem.available_bytes;
+        mem.swap_used_bytes = mem.swap_total_bytes -| swap_free;
+        mem.percent = pct(mem.used_bytes, mem.total_bytes);
+        std.debug.assert(mem.percent >= 0 and mem.percent <= 100);
+        return mem;
+    }
 
-        {
-            const up = read(io, "/proc/uptime", s.buf[0..64]);
-            const space = std.mem.indexOfScalar(u8, up, ' ') orelse up.len;
-            uptime_seconds = @intFromFloat(@max(0, std.fmt.parseFloat(f64, up[0..space]) catch 0));
-        }
+    fn sampleUptime(s: *Sampler, io: Io) u64 {
+        const up = read(io, "/proc/uptime", s.buf[0..64]);
+        const space = std.mem.indexOfScalar(u8, up, ' ') orelse up.len;
+        return @intFromFloat(@max(0, std.fmt.parseFloat(f64, up[0..space]) catch 0));
+    }
 
-        // Processes: one read of /proc/<pid>/stat each, relative to /proc.
-        var procs: std.ArrayList(ProcessRow) = .empty;
-        try procs.ensureTotalCapacity(arena, 1024);
+    /// Processes: one read of /proc/<pid>/stat each, relative to /proc.
+    fn sampleProcesses(
+        s: *Sampler,
+        io: Io,
+        arena: std.mem.Allocator,
+        delta_total: u64,
+        procs: *std.ArrayList(ProcessRow),
+        starts: *std.AutoHashMapUnmanaged(u32, u64),
+    ) !void {
         s.curr_proc_ticks.clearRetainingCapacity();
         const page = std.heap.pageSize();
-        var starts: std.AutoHashMapUnmanaged(u32, u64) = .empty;
         if (s.proc_dir) |dir| {
             var it = dir.iterate();
             var path_buf: [32]u8 = undefined;
@@ -524,51 +591,76 @@ pub const Sampler = struct {
             while (it.next(io) catch null) |entry| {
                 const pid = std.fmt.parseInt(u32, entry.name, 10) catch continue;
                 const stat = s.readStat(dir, pid, &path_buf, &stat_buf) orelse continue;
-                const open = std.mem.indexOfScalar(u8, stat, '(') orelse continue;
-                const close = std.mem.lastIndexOfScalar(u8, stat, ')') orelse continue;
-                if (close <= open) continue;
-                // Fields from 3 (state) on, 0-based here.
-                var f: [22][]const u8 = undefined;
-                var tok = std.mem.tokenizeScalar(u8, stat[close + 1 ..], ' ');
-                var n: usize = 0;
-                while (n < f.len) : (n += 1) f[n] = tok.next() orelse break;
-                if (n < f.len) continue;
-                const ticks = (std.fmt.parseInt(u64, f[11], 10) catch 0) + (std.fmt.parseInt(u64, f[12], 10) catch 0);
-                const rss = (std.fmt.parseInt(u64, f[21], 10) catch 0) * page;
-                s.curr_proc_ticks.put(pid, ticks) catch {};
-                var p_cpu: f64 = 0;
-                if (s.prev_proc_ticks.get(pid)) |prev| if (ticks >= prev and delta_total > 0) {
-                    p_cpu = round1(pct(ticks - prev, delta_total) * @as(f64, @floatFromInt(s.cpu_cores)));
-                };
-                starts.put(arena, pid, std.fmt.parseInt(u64, f[19], 10) catch 0) catch {};
-                procs.append(arena, .{
-                    .pid = pid,
-                    .parent_pid = std.fmt.parseInt(u32, f[1], 10) catch 0,
-                    .start_time = std.fmt.parseInt(u64, f[19], 10) catch 0,
-                    .name = try arena.dupe(u8, stat[open + 1 .. close]),
-                    .command = "",
-                    .user = "",
-                    .state = try arena.dupe(u8, f[0]),
-                    .threads = std.fmt.parseInt(u32, f[17], 10) catch 1,
-                    .cpu_percent = p_cpu,
-                    .mem_rss_bytes = rss,
-                }) catch {};
+                const row = try s.parseProcess(arena, pid, stat, delta_total, page, starts) orelse continue;
+                procs.append(arena, row) catch {};
             }
         }
-        // The stat files of processes gone: closed.
-        {
-            var gone: std.ArrayList(u32) = .empty;
-            var fit = s.stat_fds.keyIterator();
-            while (fit.next()) |pid| if (!s.curr_proc_ticks.contains(pid.*)) gone.append(arena, pid.*) catch {};
-            for (gone.items) |pid| if (s.stat_fds.fetchRemove(pid)) |kv| {
-                _ = linux.close(kv.value);
-            };
-        }
+        s.closeGoneStatFds(arena);
         std.mem.swap(std.AutoHashMap(u32, u64), &s.prev_proc_ticks, &s.curr_proc_ticks);
-        const total_procs: u32 = @intCast(procs.items.len);
+    }
 
-        // Cached metadata for all rows: grouping must precede the display cut.
-        for (procs.items) |*p| {
+    /// A process's row from its stat line ("pid (comm) state ppid ..."),
+    /// its ticks noted for the next sample's share; null when malformed.
+    fn parseProcess(
+        s: *Sampler,
+        arena: std.mem.Allocator,
+        pid: u32,
+        stat: []const u8,
+        delta_total: u64,
+        page: usize,
+        starts: *std.AutoHashMapUnmanaged(u32, u64),
+    ) !?ProcessRow {
+        const open = std.mem.indexOfScalar(u8, stat, '(') orelse return null;
+        const close = std.mem.lastIndexOfScalar(u8, stat, ')') orelse return null;
+        if (close <= open) return null;
+        // Fields from 3 (state) on, 0-based here.
+        var f: [22][]const u8 = undefined;
+        var tok = std.mem.tokenizeScalar(u8, stat[close + 1 ..], ' ');
+        var n: usize = 0;
+        while (n < f.len) : (n += 1) f[n] = tok.next() orelse break;
+        if (n < f.len) return null;
+        const ticks = (std.fmt.parseInt(u64, f[11], 10) catch 0) + (std.fmt.parseInt(u64, f[12], 10) catch 0);
+        const rss = (std.fmt.parseInt(u64, f[21], 10) catch 0) * page;
+        s.curr_proc_ticks.put(pid, ticks) catch {};
+        var p_cpu: f64 = 0;
+        if (s.prev_proc_ticks.get(pid)) |prev| if (ticks >= prev and delta_total > 0) {
+            p_cpu = round1(pct(ticks - prev, delta_total) * @as(f64, @floatFromInt(s.cpu_cores)));
+        };
+        std.debug.assert(std.math.isFinite(p_cpu) and p_cpu >= 0);
+        starts.put(arena, pid, std.fmt.parseInt(u64, f[19], 10) catch 0) catch {};
+        return .{
+            .pid = pid,
+            .parent_pid = std.fmt.parseInt(u32, f[1], 10) catch 0,
+            .start_time = std.fmt.parseInt(u64, f[19], 10) catch 0,
+            .name = try arena.dupe(u8, stat[open + 1 .. close]),
+            .command = "",
+            .user = "",
+            .state = try arena.dupe(u8, f[0]),
+            .threads = std.fmt.parseInt(u32, f[17], 10) catch 1,
+            .cpu_percent = p_cpu,
+            .mem_rss_bytes = rss,
+        };
+    }
+
+    /// The stat files of processes gone: closed.
+    fn closeGoneStatFds(s: *Sampler, arena: std.mem.Allocator) void {
+        var gone: std.ArrayList(u32) = .empty;
+        var fit = s.stat_fds.keyIterator();
+        while (fit.next()) |pid| if (!s.curr_proc_ticks.contains(pid.*)) gone.append(arena, pid.*) catch {};
+        for (gone.items) |pid| if (s.stat_fds.fetchRemove(pid)) |kv| {
+            _ = linux.close(kv.value);
+        };
+    }
+
+    /// Cached metadata for all rows: grouping must precede the display cut.
+    fn attachMeta(
+        s: *Sampler,
+        io: Io,
+        arena: std.mem.Allocator,
+        procs: []ProcessRow,
+        starts: *const std.AutoHashMapUnmanaged(u32, u64),
+    ) !void {
+        for (procs) |*p| {
             const start = starts.get(p.pid) orelse 0;
             const gop = s.meta.getOrPut(p.pid) catch continue;
             var have = gop.found_existing;
@@ -593,109 +685,119 @@ pub const Sampler = struct {
             p.app_key = try arena.dupe(u8, m.app_key);
             p.app_name = try arena.dupe(u8, m.app_name);
         }
-        const apps = applications.visible(try applications.collect(arena, procs.items));
-        applications.order(apps, s.filter);
-        const application_process_count = applications.prioritize(procs.items, s.filter, s.application_id);
-        const top = procs.items[0..@min(procs.items.len, max_rows)];
-        // Processes gone (or out of the top rows a while): forgotten.
-        if (s.samples % 16 == 0) {
-            var stale: std.ArrayList(u32) = .empty;
-            var mit = s.meta.iterator();
-            while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
-            for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| freeMeta(s.gpa, kv.value);
-        }
+    }
 
-        // Disks: the mounts list again now and then, then size and I/O rates.
-        if (s.samples % 15 == 0) s.loadMounts(io);
+    /// Processes gone (or out of the top rows a while): forgotten.
+    fn forgetStaleMeta(s: *Sampler, arena: std.mem.Allocator) void {
+        var stale: std.ArrayList(u32) = .empty;
+        var mit = s.meta.iterator();
+        while (mit.next()) |e| if (e.value_ptr.seen + 16 < s.samples) stale.append(arena, e.key_ptr.*) catch {};
+        for (stale.items) |pid| if (s.meta.fetchRemove(pid)) |kv| freeMeta(s.gpa, kv.value);
+    }
+
+    fn sampleDisks(s: *Sampler, io: Io, arena: std.mem.Allocator, dt_s: f64) ![]DiskSample {
+        // loadMounts keeps at most 16.
+        std.debug.assert(s.mounts.items.len <= 16);
         const disks = try arena.alloc(DiskSample, s.mounts.items.len);
-        {
-            const stats = read(io, "/proc/diskstats", s.buf);
-            for (s.mounts.items, disks) |*m, *d| {
-                d.* = .{
-                    .name = try arena.dupe(u8, m.name),
-                    .mount = try arena.dupe(u8, m.mount),
-                    .device = try arena.dupe(u8, m.device),
-                    .fs = try arena.dupe(u8, m.fs),
-                    .total_bytes = 0,
-                    .used_bytes = 0,
-                    .read_bps = 0,
-                    .write_bps = 0,
-                };
-                if (fsSize(m.mount)) |size| {
-                    d.total_bytes = size[0];
-                    d.used_bytes = size[1];
-                }
-                var lines = std.mem.tokenizeScalar(u8, stats, '\n');
-                while (lines.next()) |line| {
-                    var f = std.mem.tokenizeScalar(u8, line, ' ');
-                    _ = f.next();
-                    _ = f.next();
-                    if (!std.mem.eql(u8, f.next() orelse continue, m.stat_name)) continue;
-                    var v: [7]u64 = undefined;
-                    for (&v) |*x| x.* = std.fmt.parseInt(u64, f.next() orelse "0", 10) catch 0;
-                    // reads merged sectors ms writes merged sectors
-                    const rd = v[2];
-                    const wr = v[6];
-                    if (m.has_prev and dt_s > 0) {
-                        d.read_bps = @as(f64, @floatFromInt(rd -| m.read_sectors)) * 512 / dt_s;
-                        d.write_bps = @as(f64, @floatFromInt(wr -| m.write_sectors)) * 512 / dt_s;
-                    }
-                    m.read_sectors = rd;
-                    m.write_sectors = wr;
-                    m.has_prev = true;
-                    break;
-                }
+        const stats = read(io, "/proc/diskstats", s.buf);
+        for (s.mounts.items, disks) |*m, *d| {
+            d.* = .{
+                .name = try arena.dupe(u8, m.name),
+                .mount = try arena.dupe(u8, m.mount),
+                .device = try arena.dupe(u8, m.device),
+                .fs = try arena.dupe(u8, m.fs),
+                .total_bytes = 0,
+                .used_bytes = 0,
+                .read_bps = 0,
+                .write_bps = 0,
+            };
+            if (fsSize(m.mount)) |size| {
+                d.total_bytes = size[0];
+                d.used_bytes = size[1];
             }
+            updateDiskIo(m, d, stats, dt_s);
         }
+        return disks;
+    }
 
-        // Network: every interface but loopback and container plumbing.
+    /// A mount's read and write rates from its /proc/diskstats line.
+    fn updateDiskIo(m: *Mount, d: *DiskSample, stats: []const u8, dt_s: f64) void {
+        var lines = std.mem.tokenizeScalar(u8, stats, '\n');
+        while (lines.next()) |line| {
+            var f = std.mem.tokenizeScalar(u8, line, ' ');
+            _ = f.next();
+            _ = f.next();
+            if (!std.mem.eql(u8, f.next() orelse continue, m.stat_name)) continue;
+            var v: [7]u64 = undefined;
+            for (&v) |*x| x.* = std.fmt.parseInt(u64, f.next() orelse "0", 10) catch 0;
+            // reads merged sectors ms writes merged sectors
+            const rd = v[2];
+            const wr = v[6];
+            if (m.has_prev and dt_s > 0) {
+                d.read_bps = @as(f64, @floatFromInt(rd -| m.read_sectors)) * 512 / dt_s;
+                d.write_bps = @as(f64, @floatFromInt(wr -| m.write_sectors)) * 512 / dt_s;
+            }
+            m.read_sectors = rd;
+            m.write_sectors = wr;
+            m.has_prev = true;
+            return;
+        }
+    }
+
+    /// Network: every interface but loopback and container plumbing.
+    fn sampleNets(s: *Sampler, io: Io, arena: std.mem.Allocator, dt_s: f64) ![]NetSample {
         var nets: std.ArrayList(NetSample) = .empty;
-        {
-            var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/net/dev", s.buf), '\n');
-            _ = lines.next();
-            _ = lines.next();
-            var path_buf: [96]u8 = undefined;
-            var small: [16]u8 = undefined;
-            while (lines.next()) |line| {
-                const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-                const name = std.mem.trim(u8, line[0..colon], " ");
-                if (std.mem.eql(u8, name, "lo") or std.mem.startsWith(u8, name, "veth") or std.mem.startsWith(u8, name, "br-") or
-                    std.mem.startsWith(u8, name, "docker") or std.mem.startsWith(u8, name, "virbr")) continue;
-                var f = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
-                var v: [9]u64 = undefined;
-                for (&v) |*x| x.* = std.fmt.parseInt(u64, f.next() orelse "0", 10) catch 0;
-                const rx = v[0];
-                const tx = v[8];
-                var rx_bps: f64 = 0;
-                var tx_bps: f64 = 0;
-                var found = false;
-                for (s.nets.items) |*p| if (std.mem.eql(u8, p.name, name)) {
-                    if (dt_s > 0) {
-                        rx_bps = @as(f64, @floatFromInt(rx -| p.rx)) / dt_s;
-                        tx_bps = @as(f64, @floatFromInt(tx -| p.tx)) / dt_s;
-                    }
-                    p.rx = rx;
-                    p.tx = tx;
-                    found = true;
-                    break;
-                };
-                if (!found) if (s.gpa.dupe(u8, name)) |owned| {
-                    s.nets.append(s.gpa, .{ .name = owned, .rx = rx, .tx = tx }) catch s.gpa.free(owned);
-                } else |_| {};
-                const state_path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/operstate", .{name}) catch continue;
-                const state = std.mem.trim(u8, read(io, state_path, &small), " \n");
-                try nets.append(arena, .{
-                    .name = try arena.dupe(u8, name),
-                    .up = std.mem.eql(u8, state, "up") or std.mem.eql(u8, state, "unknown"),
-                    .rx_bps = rx_bps,
-                    .tx_bps = tx_bps,
-                    .rx_total = rx,
-                    .tx_total = tx,
-                });
-            }
+        var lines = std.mem.tokenizeScalar(u8, read(io, "/proc/net/dev", s.buf), '\n');
+        _ = lines.next();
+        _ = lines.next();
+        var path_buf: [96]u8 = undefined;
+        var small: [16]u8 = undefined;
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const name = std.mem.trim(u8, line[0..colon], " ");
+            if (std.mem.eql(u8, name, "lo") or std.mem.startsWith(u8, name, "veth") or std.mem.startsWith(u8, name, "br-") or
+                std.mem.startsWith(u8, name, "docker") or std.mem.startsWith(u8, name, "virbr")) continue;
+            var f = std.mem.tokenizeScalar(u8, line[colon + 1 ..], ' ');
+            var v: [9]u64 = undefined;
+            for (&v) |*x| x.* = std.fmt.parseInt(u64, f.next() orelse "0", 10) catch 0;
+            const rx = v[0];
+            const tx = v[8];
+            const rates = s.netRates(name, rx, tx, dt_s);
+            const state_path = std.fmt.bufPrint(&path_buf, "/sys/class/net/{s}/operstate", .{name}) catch continue;
+            const state = std.mem.trim(u8, read(io, state_path, &small), " \n");
+            try nets.append(arena, .{
+                .name = try arena.dupe(u8, name),
+                .up = std.mem.eql(u8, state, "up") or std.mem.eql(u8, state, "unknown"),
+                .rx_bps = rates[0],
+                .tx_bps = rates[1],
+                .rx_total = rx,
+                .tx_total = tx,
+            });
         }
+        return nets.items;
+    }
 
-        // Sensors.
+    /// An interface's receive and send rates since the last sample (0 for
+    /// one first seen, kept for the next).
+    fn netRates(s: *Sampler, name: []const u8, rx: u64, tx: u64, dt_s: f64) [2]f64 {
+        for (s.nets.items) |*p| if (std.mem.eql(u8, p.name, name)) {
+            var rates: [2]f64 = .{ 0, 0 };
+            if (dt_s > 0) {
+                rates[0] = @as(f64, @floatFromInt(rx -| p.rx)) / dt_s;
+                rates[1] = @as(f64, @floatFromInt(tx -| p.tx)) / dt_s;
+            }
+            p.rx = rx;
+            p.tx = tx;
+            return rates;
+        };
+        if (s.gpa.dupe(u8, name)) |owned| {
+            s.nets.append(s.gpa, .{ .name = owned, .rx = rx, .tx = tx }) catch s.gpa.free(owned);
+        } else |_| {}
+        return .{ 0, 0 };
+    }
+
+    fn sampleSensors(s: *Sampler, io: Io, arena: std.mem.Allocator, cpu: *CpuInfo) ![]SensorSample {
+        if (s.cpu_sensor) |i| std.debug.assert(i < s.sensors.items.len);
         const sensors = try arena.alloc(SensorSample, s.sensors.items.len);
         var sensor_count: usize = 0;
         for (s.sensors.items, 0..) |*x, i| {
@@ -708,31 +810,12 @@ pub const Sampler = struct {
                 } else |_| {}
             }
             const c = x.last orelse continue;
+            std.debug.assert(std.math.isFinite(c));
             if (s.cpu_sensor == i) cpu.temp_c = c;
             sensors[sensor_count] = .{ .name = try arena.dupe(u8, x.name), .temp_c = c };
             sensor_count += 1;
         }
-
-        const t1 = Io.Clock.Timestamp.now(io, .awake);
-        return .{
-            .cpu = cpu,
-            .mem = mem,
-            .uptime_seconds = uptime_seconds,
-            .processes = top,
-            .applications = apps[0..@min(apps.len, max_rows)],
-            .applications_supported = true,
-            .total_applications = @intCast(apps.len),
-            .application_id = s.application_id,
-            .application_process_count = application_process_count,
-            .total_processes = total_procs,
-            .threads_total = threads_total,
-            .running = running,
-            .disks = disks,
-            .net = nets.items,
-            .sensors = sensors[0..sensor_count],
-            .sample_time_ms = @as(f64, @floatFromInt(t0.durationTo(t1).raw.toNanoseconds())) / 1e6,
-            .engine = "Zig direct /proc + /sys (kernel telemetry, 0 spawns)",
-        };
+        return sensors[0..sensor_count];
     }
 
     fn failed(rc: usize) bool {

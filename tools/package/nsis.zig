@@ -44,6 +44,56 @@ pub const WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId
 
 /// Generate the complete NSIS script (.nsi) from application metadata and options.
 pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]const u8 {
+    try validateOptions(opts);
+
+    // Strip trailing .exe if present in exe_name
+    const clean_exe_name = if (std.mem.endsWith(u8, opts.exe_name, ".exe"))
+        opts.exe_name[0 .. opts.exe_name.len - 4]
+    else
+        opts.exe_name;
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    const w = &out.writer;
+
+    try writeDefines(allocator, w, opts, clean_exe_name);
+    try writePrologue(allocator, w, opts);
+    try writeWebView2Check(w);
+
+    try writeInstallSectionStart(w);
+    try writeExtraInstallFiles(allocator, w, opts);
+    try writeInstallRegistry(w);
+    try writeUrlSchemes(allocator, w, opts, .install);
+    try writeShareTarget(allocator, w, opts, .install);
+
+    try writeUninstallSectionStart(w);
+    try writeExtraUninstallFiles(allocator, w, opts);
+    try w.writeAll(
+        \\  Delete "$INSTDIR\Uninstall.exe"
+        \\
+        \\  Delete "$SMPROGRAMS\${NAME}\${NAME}.lnk"
+        \\  Delete "$SMPROGRAMS\${NAME}\Uninstall ${NAME}.lnk"
+        \\  RMDir "$SMPROGRAMS\${NAME}"
+        \\
+        \\  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
+        \\
+    );
+    try writeUrlSchemes(allocator, w, opts, .uninstall);
+    try writeShareTarget(allocator, w, opts, .uninstall);
+    try w.writeAll(
+        \\  RMDir "$INSTDIR"
+        \\
+        \\  ${If} $uninst_remove_data == "1"
+        \\    RMDir /r "$LOCALAPPDATA\${APP_ID}"
+        \\  ${EndIf}
+        \\SectionEnd
+        \\
+    );
+
+    return try allocator.dupe(u8, out.written());
+}
+
+fn validateOptions(opts: NsisOptions) !void {
     try metadata.validateExeName(opts.exe_name);
     try metadata.validateNoControlOrNewline(opts.id);
     if (!metadata.validAppId(opts.id)) return error.InvalidAppId;
@@ -54,55 +104,23 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
     if (opts.icon_path) |p| try metadata.validateNsisSource(p);
     for (opts.extra_exes) |e| try metadata.validateNsisSource(e.src);
     for (opts.extra_files) |f| try metadata.validateNsisSource(f.src);
+}
 
-    // Strip trailing .exe if present in exe_name
-    const clean_exe_name = if (std.mem.endsWith(u8, opts.exe_name, ".exe"))
-        opts.exe_name[0 .. opts.exe_name.len - 4]
-    else
-        opts.exe_name;
-
-    const esc_name = try metadata.escapeNsisString(allocator, opts.name);
-    defer allocator.free(esc_name);
-
-    const esc_exe_name = try metadata.escapeNsisString(allocator, clean_exe_name);
-    defer allocator.free(esc_exe_name);
-
-    const esc_version = try metadata.escapeNsisString(allocator, opts.version);
-    defer allocator.free(esc_version);
-
-    const esc_publisher = try metadata.escapeNsisString(allocator, opts.publisher);
-    defer allocator.free(esc_publisher);
-
-    const esc_id = try metadata.escapeNsisString(allocator, opts.id);
-    defer allocator.free(esc_id);
-
-    const esc_bin_src = try metadata.escapeNsisString(allocator, opts.binary_src);
-    defer allocator.free(esc_bin_src);
-
-    const esc_out_file = try metadata.escapeNsisString(allocator, opts.out_file);
-    defer allocator.free(esc_out_file);
-
-    var esc_icon: ?[]const u8 = null;
-    defer if (esc_icon) |ic| allocator.free(ic);
-    if (opts.icon_path) |ic| {
-        esc_icon = try metadata.escapeNsisString(allocator, ic);
-    }
-
-    var esc_wv2: ?[]const u8 = null;
-    defer if (esc_wv2) |w| allocator.free(w);
-    if (opts.webview2_loader) |w| {
-        esc_wv2 = try metadata.escapeNsisString(allocator, w);
-    }
-
-    var esc_homepage: ?[]const u8 = null;
-    defer if (esc_homepage) |hp| allocator.free(hp);
-    if (opts.homepage) |hp| {
-        esc_homepage = try metadata.escapeNsisString(allocator, hp);
-    }
-
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    const w = &out.writer;
+/// The script's header and its `!define`s; the optional ones only when set.
+fn writeDefines(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions, clean_exe_name: []const u8) !void {
+    const Define = struct { name: []const u8, value: ?[]const u8 };
+    const defines = [_]Define{
+        .{ .name = "NAME", .value = opts.name },
+        .{ .name = "EXE_NAME", .value = clean_exe_name },
+        .{ .name = "VERSION", .value = opts.version },
+        .{ .name = "PUBLISHER", .value = opts.publisher },
+        .{ .name = "APP_ID", .value = opts.id },
+        .{ .name = "BINARY_SRC", .value = opts.binary_src },
+        .{ .name = "OUT_FILE", .value = opts.out_file },
+        .{ .name = "ICON_PATH", .value = opts.icon_path },
+        .{ .name = "WEBVIEW2_LOADER", .value = opts.webview2_loader },
+        .{ .name = "HOMEPAGE", .value = opts.homepage },
+    };
 
     try w.writeAll(
         \\; Generated by Oriel packaging tool - DO NOT EDIT MANUALLY
@@ -112,28 +130,20 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\
         \\
     );
-
-    try w.print("!define NAME \"{s}\"\n", .{esc_name});
-    try w.print("!define EXE_NAME \"{s}\"\n", .{esc_exe_name});
-    try w.print("!define VERSION \"{s}\"\n", .{esc_version});
-    try w.print("!define PUBLISHER \"{s}\"\n", .{esc_publisher});
-    try w.print("!define APP_ID \"{s}\"\n", .{esc_id});
-    try w.print("!define BINARY_SRC \"{s}\"\n", .{esc_bin_src});
-    try w.print("!define OUT_FILE \"{s}\"\n", .{esc_out_file});
-
-    if (esc_icon) |ic| {
-        try w.print("!define ICON_PATH \"{s}\"\n", .{ic});
-    }
-    if (esc_wv2) |loader| {
-        try w.print("!define WEBVIEW2_LOADER \"{s}\"\n", .{loader});
-    }
-    if (esc_homepage) |hp| {
-        try w.print("!define HOMEPAGE \"{s}\"\n", .{hp});
+    for (defines) |d| {
+        const value = d.value orelse continue;
+        const esc = try metadata.escapeNsisString(allocator, value);
+        defer allocator.free(esc);
+        try w.print("!define {s} \"{s}\"\n", .{ d.name, esc });
     }
     if (opts.estimated_size_kb) |kb| {
         try w.print("!define ESTIMATED_SIZE {d}\n", .{kb});
     }
+}
 
+/// Installer attributes, includes, the ORIEL_REQUIRE_NOT_RUNNING macro and
+/// the Modern UI pages.
+fn writePrologue(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions) !void {
     try w.writeAll(
         \\
         \\Name "${NAME}"
@@ -183,6 +193,12 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\
         \\!insertmacro MUI_LANGUAGE "English"
         \\
+        \\
+    );
+}
+
+fn writeWebView2Check(w: *std.Io.Writer) !void {
+    try w.writeAll(
         \\; Check for the Microsoft Edge WebView2 Evergreen runtime.
         \\; Checks HKCU and HKLM in both 64-bit and 32-bit registry views.
         \\Function CheckWebView2
@@ -239,6 +255,14 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  ${EndIf}
         \\FunctionEnd
         \\
+        \\
+    );
+}
+
+/// The install section up to the app's own files: the running check, then
+/// the installed version's uninstaller for an upgrade.
+fn writeInstallSectionStart(w: *std.Io.Writer) !void {
+    try w.writeAll(
         \\Section "Install"
         \\  ; First, by name, whatever of ours is installed and running; the old
         \\  ; uninstaller below then refuses for files under older names.
@@ -276,8 +300,10 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  !endif
         \\
     );
+}
 
-    // Extra executables and files (paths validated: no `..`, no `\\`).
+/// Extra executables and files (paths validated: no `..`, no `\\`).
+fn writeExtraInstallFiles(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions) !void {
     for (opts.extra_exes) |e| {
         try metadata.validateExeName(e.name);
         const esc_src = try metadata.escapeNsisString(allocator, e.src);
@@ -297,7 +323,10 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         }
         try w.print("  File \"/oname=$INSTDIR\\{s}\" \"{s}\"\n", .{ esc_dest, esc_src });
     }
+}
 
+/// The uninstaller, Start Menu shortcuts and the Add/Remove Programs entry.
+fn writeInstallRegistry(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\
         \\  ; Generate uninstaller
@@ -324,20 +353,29 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  !endif
         \\
     );
+}
 
+/// URL protocol handlers under HKCU\Software\Classes, or their removal.
+fn writeUrlSchemes(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions, comptime part: enum { install, uninstall }) !void {
     for (opts.url_schemes) |s| {
         try metadata.validateNoControlOrNewline(s);
         if (!metadata.isValidSchemeFormat(s)) return error.InvalidUrlScheme;
         const esc_s = try metadata.escapeNsisString(allocator, s);
         defer allocator.free(esc_s);
+        if (part == .uninstall) {
+            try w.print("  DeleteRegKey HKCU \"Software\\Classes\\{s}\"\n", .{esc_s});
+            continue;
+        }
         try w.print("  ; URL Protocol handler for {s}\n", .{esc_s});
         try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\" \"\" \"URL:${{NAME}}\"\n", .{esc_s});
         try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\" \"URL Protocol\" \"\"\n", .{esc_s});
         try w.print("  WriteRegStr HKCU \"Software\\Classes\\{s}\\shell\\open\\command\" \"\" \"$\\\"$INSTDIR\\${{EXE_NAME}}.exe$\\\" $\\\"%1$\\\"\"\n", .{esc_s});
     }
+}
 
-    try writeShareTarget(allocator, w, opts, .install);
-
+/// The uninstall section up to the extra files: the running check, the
+/// question about the user's data, and the app's own files.
+fn writeUninstallSectionStart(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\SectionEnd
         \\
@@ -365,7 +403,9 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         \\  !endif
         \\
     );
+}
 
+fn writeExtraUninstallFiles(allocator: std.mem.Allocator, w: *std.Io.Writer, opts: NsisOptions) !void {
     for (opts.extra_exes) |e| {
         const esc_dest = try metadata.escapeNsisString(allocator, e.name);
         defer allocator.free(esc_dest);
@@ -400,39 +440,6 @@ pub fn generateNsisScript(allocator: std.mem.Allocator, opts: NsisOptions) ![]co
         defer allocator.free(esc_dir);
         try w.print("  RMDir \"$INSTDIR\\{s}\"\n", .{esc_dir});
     }
-
-    try w.writeAll(
-        \\  Delete "$INSTDIR\Uninstall.exe"
-        \\
-        \\  Delete "$SMPROGRAMS\${NAME}\${NAME}.lnk"
-        \\  Delete "$SMPROGRAMS\${NAME}\Uninstall ${NAME}.lnk"
-        \\  RMDir "$SMPROGRAMS\${NAME}"
-        \\
-        \\  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
-        \\
-    );
-
-    for (opts.url_schemes) |s| {
-        try metadata.validateNoControlOrNewline(s);
-        if (!metadata.isValidSchemeFormat(s)) return error.InvalidUrlScheme;
-        const esc_s = try metadata.escapeNsisString(allocator, s);
-        defer allocator.free(esc_s);
-        try w.print("  DeleteRegKey HKCU \"Software\\Classes\\{s}\"\n", .{esc_s});
-    }
-
-    try writeShareTarget(allocator, w, opts, .uninstall);
-
-    try w.writeAll(
-        \\  RMDir "$INSTDIR"
-        \\
-        \\  ${If} $uninst_remove_data == "1"
-        \\    RMDir /r "$LOCALAPPDATA\${APP_ID}"
-        \\  ${EndIf}
-        \\SectionEnd
-        \\
-    );
-
-    return try allocator.dupe(u8, out.written());
 }
 
 /// The share target's entries (src/modules/share/windows.zig reads the

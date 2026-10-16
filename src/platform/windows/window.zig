@@ -1194,8 +1194,14 @@ pub fn WindowCreator(
                 const size = outerSize(options.width, options.height, style, false, ex_style, windowDpi(hwnd));
                 _ = win32.SetWindowPos(hwnd, null, 0, 0, size.w, size.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
             }
+            setWindowIcons(hwnd, hInst);
 
-            // Set window icons (big and small) from embedded resource 1
+            if (comptime build_opts.native_ui) return createNativeWindow(hwnd, options, win_inst, style, ex_style);
+            return createWebViewWindow(hwnd, options, win_inst, style, ex_style);
+        }
+
+        /// Set window icons (big and small) from embedded resource 1.
+        fn setWindowIcons(hwnd: win32.HWND, hInst: win32.HINSTANCE) void {
             const icon_res: [*:0]align(1) const u16 = @ptrFromInt(1);
             if (win32.LoadImageW(
                 hInst,
@@ -1217,28 +1223,99 @@ pub fn WindowCreator(
             )) |icon_handle| {
                 _ = win32.SendMessageW(hwnd, win32.WM_SETICON, win32.ICON_SMALL, @bitCast(@intFromPtr(icon_handle)));
             }
+        }
 
-            if (comptime build_opts.native_ui) return createNativeWindow(hwnd, options, win_inst, style, ex_style);
-
-            // Compute userDataFolder: %LOCALAPPDATA%\<app_id>\WebView2
-            const user_data_folder_w = blk: {
-                var buf: [win32.MAX_PATH]u16 = undefined;
-                var len = win32.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA"), &buf, buf.len);
-                if (len == 0 or len >= buf.len) {
-                    len = win32.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TEMP"), &buf, buf.len);
-                }
-                if (len > 0 and len < buf.len) {
-                    const base_u8 = std.unicode.utf16LeToUtf8Alloc(gpa, buf[0..len]) catch break :blk null;
-                    defer gpa.free(base_u8);
-                    const folder_path = std.fmt.allocPrint(gpa, "{s}\\{s}\\WebView2", .{ base_u8, config.app.id }) catch break :blk null;
-                    defer gpa.free(folder_path);
-                    break :blk std.unicode.utf8ToUtf16LeAllocZ(gpa, folder_path) catch null;
-                }
-                break :blk null;
-            };
+        /// The WebView2 renderer: environment, controller and view, the
+        /// event handlers, then the first page once the bridge applies.
+        fn createWebViewWindow(hwnd: win32.HWND, options: App.WindowOptions, win_inst: *App.Window, style: win32.DWORD, ex_style: win32.DWORD) anyerror!WindowHandle {
+            const gpa = std.heap.smp_allocator;
+            const user_data_folder_w = webViewUserDataFolder(gpa);
             defer if (user_data_folder_w) |ud| gpa.free(ud);
 
-            // Initialize WebView2
+            const created = try initWebView2(hwnd, if (user_data_folder_w) |ud| ud.ptr else null);
+            const env = created.env;
+            errdefer _ = env.lpVtbl.Release(env);
+            const controller = created.controller;
+            errdefer {
+                _ = controller.lpVtbl.Close(controller);
+                _ = controller.lpVtbl.Release(controller);
+            }
+
+            const view = try coreWebView(controller);
+            errdefer _ = view.lpVtbl.Release(view);
+            try configureWebView(gpa, view);
+
+            const data = try createWindowData(gpa, hwnd, env, controller, view);
+            errdefer gpa.destroy(data);
+            try addEventHandlers(view, data);
+            errdefer removeEventHandlers(view, data);
+
+            // Size controller to client area
+            var client_rect: win32.RECT = undefined;
+            _ = win32.GetClientRect(hwnd, &client_rect);
+            _ = controller.putBounds(client_rect);
+            _ = controller.putIsVisible(win32.TRUE);
+
+            // Inject the bridge, then load the first page once it applies.
+            const nav = try createFirstNavigation(gpa, view, options.url);
+            defer _ = NavigateWhenReady.release(&nav.handler);
+            // The page loads once the bridge script applies (true) or now.
+            const deferred = BridgeImpl.setupUserContent(view, options.label, &nav.handler);
+
+            if (ShellMod.on_window_created_fn) |hook| {
+                hook(hwnd);
+                fitMenuBar(hwnd, options, style, ex_style, controller);
+            }
+
+            if (options.transparent) overlay.makeTransparent(hwnd, controller);
+            // Shown (placed, focused or not) by App.openWindow when `visible`.
+
+            const handle = WindowHandle{
+                .hwnd = hwnd,
+                .controller = controller,
+                .webview = view,
+                .data = data,
+                .deinit_fn = &WindowData.deinitTypeErased,
+                .label = options.label,
+            };
+            // Bridge installed, first navigation not started (it waits for
+            // the bridge script's completion, a message this thread has not
+            // pumped yet, or starts below); nothing fails past this point.
+            hooks.created(options.label, handle.hookWindow(), handle.hookView());
+            if (!deferred) nav.navigate();
+            win_inst.handle = handle;
+            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
+
+            return handle;
+        }
+
+        /// %LOCALAPPDATA%\<app_id>\WebView2 (or under %TEMP%), null if
+        /// neither is set: WebView2 then picks its own folder.
+        fn webViewUserDataFolder(gpa: std.mem.Allocator) ?[:0]u16 {
+            var buf: [win32.MAX_PATH]u16 = undefined;
+            var len = win32.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA"), &buf, buf.len);
+            if (len == 0 or len >= buf.len) {
+                len = win32.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TEMP"), &buf, buf.len);
+            }
+            if (len > 0 and len < buf.len) {
+                const base_u8 = std.unicode.utf16LeToUtf8Alloc(gpa, buf[0..len]) catch return null;
+                defer gpa.free(base_u8);
+                const folder_path = std.fmt.allocPrint(gpa, "{s}\\{s}\\WebView2", .{ base_u8, config.app.id }) catch return null;
+                defer gpa.free(folder_path);
+                return std.unicode.utf8ToUtf16LeAllocZ(gpa, folder_path) catch null;
+            }
+            return null;
+        }
+
+        const WebView2Created = struct {
+            env: *webview2.ICoreWebView2Environment,
+            controller: *webview2.ICoreWebView2Controller,
+        };
+
+        /// Creates the WebView2 environment and controller for `hwnd`; the
+        /// caller owns (and releases) both.
+        fn initWebView2(hwnd: win32.HWND, user_data_ptr: ?win32.LPCWSTR) anyerror!WebView2Created {
+            const gpa = std.heap.smp_allocator;
             const state = try gpa.create(InitState);
             state.* = .{};
 
@@ -1254,7 +1331,6 @@ pub fn WindowCreator(
                 .init_state = state,
             };
 
-            const user_data_ptr: ?win32.LPCWSTR = if (user_data_folder_w) |ud| ud.ptr else null;
             const env_hr = webview2.createEnvironmentWithOptions(user_data_ptr, &env_handler.handler);
             _ = env_handler.handler.lpVtbl.Release(&env_handler.handler);
             if (env_hr) |_| {} else |err| {
@@ -1263,52 +1339,51 @@ pub fn WindowCreator(
                 return err;
             }
 
-            // Pump modal messages until WebView2 environment and controller are initialized.
-            // This runs queued tasks and every window's messages re-entrantly
-            // (even from inside NewWindowRequested): callers into openWindow
-            // must copy what they need before calling, never hold it across.
-            var msg: win32.MSG = undefined;
-            var early_exit = false;
-            while (!state.completed.load(.acquire)) {
-                const res = win32.GetMessageW(&msg, null, 0, 0);
-                if (@intFromEnum(res) == 0) {
-                    win32.PostQuitMessage(@intCast(msg.wParam));
-                    early_exit = true;
-                    break;
-                } else if (@intFromEnum(res) < 0) {
-                    early_exit = true;
-                    break;
-                }
-                _ = win32.TranslateMessage(&msg);
-                _ = win32.DispatchMessageW(&msg);
-            }
-
+            const early_exit = pumpUntilInitialized(state);
             if (early_exit or state.err != null or state.controller == null or state.env == null) {
                 state.abandoned.store(true, .release);
                 state.unref();
                 return error.WebView2InitFailed;
             }
 
-            const env = state.env.?;
+            const created = WebView2Created{ .env = state.env.?, .controller = state.controller.? };
             state.env = null;
-            errdefer _ = env.lpVtbl.Release(env);
-
-            const controller = state.controller.?;
             state.controller = null;
-            errdefer {
-                _ = controller.lpVtbl.Close(controller);
-                _ = controller.lpVtbl.Release(controller);
-            }
             state.unref();
+            return created;
+        }
 
+        /// Pump modal messages until WebView2 environment and controller are initialized.
+        /// This runs queued tasks and every window's messages re-entrantly
+        /// (even from inside NewWindowRequested): callers into openWindow
+        /// must copy what they need before calling, never hold it across.
+        /// True if the loop ended early (WM_QUIT, reposted, or an error).
+        fn pumpUntilInitialized(state: *InitState) bool {
+            var msg: win32.MSG = undefined;
+            while (!state.completed.load(.acquire)) {
+                const res = win32.GetMessageW(&msg, null, 0, 0);
+                if (@intFromEnum(res) == 0) {
+                    win32.PostQuitMessage(@intCast(msg.wParam));
+                    return true;
+                } else if (@intFromEnum(res) < 0) {
+                    return true;
+                }
+                _ = win32.TranslateMessage(&msg);
+                _ = win32.DispatchMessageW(&msg);
+            }
+            return false;
+        }
+
+        fn coreWebView(controller: *webview2.ICoreWebView2Controller) anyerror!*webview2.ICoreWebView2 {
             var view_opt: ?*webview2.ICoreWebView2 = null;
             if (controller.getCoreWebView2(&view_opt) < 0 or view_opt == null) {
                 return error.WebView2InitFailed;
             }
-            const view = view_opt.?;
-            errdefer _ = view.lpVtbl.Release(view);
+            return view_opt.?;
+        }
 
-            // Settings
+        /// Settings, and the asset filter for "https://app.localhost/*".
+        fn configureWebView(gpa: std.mem.Allocator, view: *webview2.ICoreWebView2) anyerror!void {
             var settings_opt: ?*webview2.ICoreWebView2Settings = null;
             if (view.getSettings(&settings_opt) >= 0 and settings_opt != null) {
                 const s = settings_opt.?;
@@ -1319,7 +1394,6 @@ pub fn WindowCreator(
                 _ = s.lpVtbl.put_AreDefaultScriptDialogsEnabled(s, win32.TRUE);
             }
 
-            // Register asset filter for "https://app.localhost/*"
             const filter_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, scheme_mod.filter_pattern);
             defer gpa.free(filter_w);
             // Without the filter, app.localhost requests would go to the
@@ -1333,11 +1407,16 @@ pub fn WindowCreator(
                     return error.WebView2AddEventHandlerFailed;
                 }
             }
+        }
 
-            // Allocate WindowData
+        fn createWindowData(
+            gpa: std.mem.Allocator,
+            hwnd: win32.HWND,
+            env: *webview2.ICoreWebView2Environment,
+            controller: *webview2.ICoreWebView2Controller,
+            view: *webview2.ICoreWebView2,
+        ) anyerror!*WindowData {
             const data = try gpa.create(WindowData);
-            errdefer gpa.destroy(data);
-
             data.* = .{
                 .env = env,
                 .controller = controller,
@@ -1373,8 +1452,12 @@ pub fn WindowCreator(
                     .target_hwnd = hwnd,
                 } else {},
             };
+            return data;
+        }
 
-            // Register event handlers
+        /// Registers `data`'s handlers on `view`; on failure, the ones
+        /// already added are removed.
+        fn addEventHandlers(view: *webview2.ICoreWebView2, data: *WindowData) anyerror!void {
             if (view.addWebResourceRequested(&data.res_handler.handler, &data.res_token) < 0) {
                 return error.WebView2AddEventHandlerFailed;
             }
@@ -1419,69 +1502,49 @@ pub fn WindowCreator(
                     return error.WebView2AddEventHandlerFailed;
                 }
             }
-            errdefer if (has_dev) {
-                _ = view.lpVtbl.remove_NavigationCompleted(view, data.dev_token);
-            };
+        }
 
-            // Size controller to client area
-            var client_rect: win32.RECT = undefined;
-            _ = win32.GetClientRect(hwnd, &client_rect);
-            _ = controller.putBounds(client_rect);
-            _ = controller.putIsVisible(win32.TRUE);
+        /// Undoes addEventHandlers, in reverse order.
+        fn removeEventHandlers(view: *webview2.ICoreWebView2, data: *WindowData) void {
+            if (has_dev) _ = view.lpVtbl.remove_NavigationCompleted(view, data.dev_token);
+            _ = view.lpVtbl.remove_WindowCloseRequested(view, data.cl_token);
+            _ = view.lpVtbl.remove_PermissionRequested(view, data.perm_token);
+            _ = view.lpVtbl.remove_NewWindowRequested(view, data.nw_token);
+            _ = view.lpVtbl.remove_FrameNavigationStarting(view, data.frame_nav_token);
+            _ = view.lpVtbl.remove_NavigationStarting(view, data.nav_token);
+            _ = view.lpVtbl.remove_WebMessageReceived(view, data.msg_token);
+            _ = view.lpVtbl.remove_WebResourceRequested(view, data.res_token);
+        }
 
-            // Inject the bridge, then load the first page once it applies.
+        /// The first page's URL, waiting to load until the bridge applies.
+        fn createFirstNavigation(gpa: std.mem.Allocator, view: *webview2.ICoreWebView2, url: ?[:0]const u8) anyerror!*NavigateWhenReady {
             const target_uri = try security.resolveWindowUrl(
                 gpa,
                 config.security,
                 local,
                 if (config.app.dev) |d| d.url else null,
-                options.url,
+                url,
                 config.start,
             );
             defer gpa.free(target_uri);
             const target_uri_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, target_uri);
             defer gpa.free(target_uri_w);
-            const nav = try NavigateWhenReady.create(view, target_uri_w);
-            defer _ = NavigateWhenReady.release(&nav.handler);
-            // The page loads once the bridge script applies (true) or now.
-            const deferred = BridgeImpl.setupUserContent(view, options.label, &nav.handler);
+            return NavigateWhenReady.create(view, target_uri_w);
+        }
 
-            if (ShellMod.on_window_created_fn) |hook| {
-                hook(hwnd);
-                // A menu bar takes its height from the client area: grow the
-                // window so the client area keeps the requested size (as on
-                // GTK), then size the webview (the WM_SIZE this causes is
-                // ignored until the window is registered).
-                if (win32.GetMenu(hwnd) != null) {
-                    const outer = outerSize(options.width, options.height, style, true, ex_style, windowDpi(hwnd));
-                    _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.w, outer.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
-                }
-                var client: win32.RECT = undefined;
-                if (win32.GetClientRect(hwnd, &client) != win32.FALSE) {
-                    _ = controller.putBounds(client);
-                }
+        /// A menu bar takes its height from the client area: grow the
+        /// window so the client area keeps the requested size (as on
+        /// GTK), then size the webview (the WM_SIZE this causes is
+        /// ignored until the window is registered).
+        fn fitMenuBar(hwnd: win32.HWND, options: App.WindowOptions, style: win32.DWORD, ex_style: win32.DWORD, controller: *webview2.ICoreWebView2Controller) void {
+            if (win32.GetMenu(hwnd) != null) {
+                const outer = outerSize(options.width, options.height, style, true, ex_style, windowDpi(hwnd));
+                _ = win32.SetWindowPos(hwnd, null, 0, 0, outer.w, outer.h, win32.SWP_NOMOVE | win32.SWP_NOZORDER | win32.SWP_NOACTIVATE);
             }
-
-            if (options.transparent) overlay.makeTransparent(hwnd, controller);
-            // Shown (placed, focused or not) by App.openWindow when `visible`.
-
-            const handle = WindowHandle{
-                .hwnd = hwnd,
-                .controller = controller,
-                .webview = view,
-                .data = data,
-                .deinit_fn = &WindowData.deinitTypeErased,
-                .label = options.label,
-            };
-            // Bridge installed, first navigation not started (it waits for
-            // the bridge script's completion, a message this thread has not
-            // pumped yet, or starts below); nothing fails past this point.
-            hooks.created(options.label, handle.hookWindow(), handle.hookView());
-            if (!deferred) nav.navigate();
-            win_inst.handle = handle;
-            _ = win32.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @bitCast(@intFromPtr(win_inst)));
-
-            return handle;
+            var client: win32.RECT = undefined;
+            if (win32.GetClientRect(hwnd, &client) != win32.FALSE) {
+                _ = controller.putBounds(client);
+            }
         }
 
         /// -Dnative_ui: the page's HTML, CSS and JS run on the native renderer
