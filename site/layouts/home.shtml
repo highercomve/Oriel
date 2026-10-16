@@ -294,9 +294,26 @@
 
 		<section class="section">
 			<div class="section-head">
-				<h2>Coming from Tauri?</h2>
-				<p>The same model: a web frontend, a native backend, typed calls between them.</p>
+				<h2>Coming from Electron or Tauri?</h2>
+				<p>The same model: a web frontend, a native backend, calls between them. What changes is what ships with your app.</p>
 			</div>
+			<div class="table-wrap">
+				<table class="compare">
+					<thead><tr><th></th><th>Electron</th><th>Tauri</th><th>Oriel</th></tr></thead>
+					<tbody>
+						<tr><td>Backend</td><td>JavaScript on Node.js</td><td>Rust</td><td>Zig 0.16</td></tr>
+						<tr><td>UI</td><td>Chromium, bundled with every app</td><td>The system webview</td><td>The system webview, or native views with no webview (<a href="$site.page('docs/native-renderer').link()">native renderer</a>, compiled <code>.oriel</code> views)</td></tr>
+						<tr><td>App size</td><td>Chromium and Node.js in every app</td><td>Small: no browser bundled</td><td>A few MB: no browser bundled</td></tr>
+						<tr><td>UI ↔ backend</td><td><code>ipcMain</code> / <code>ipcRenderer</code> through a preload script</td><td><code>invoke</code> commands and events</td><td>Plain Zig structs; TypeScript generated at compile time; sync and async worker pool</td></tr>
+						<tr><td>Mobile</td><td>Desktop only</td><td>Android and iOS</td><td>Android and iOS from the same Zig and web code</td></tr>
+						<tr><td>Local AI and voice</td><td>Packages you add</td><td>Plugins or crates you add</td><td>Built in: llama.cpp, whisper.cpp, Kokoro text to speech, speaker diarization</td></tr>
+						<tr><td>Updates</td><td><code>autoUpdater</code> or electron-updater</td><td>Updater plugin, signed</td><td>Ed25519-signed manifests, atomic replace, progress events</td></tr>
+						<tr><td>Packages</td><td>Electron Forge or electron-builder</td><td>The Tauri bundler</td><td><code>oriel package</code>: deb, rpm, AppImage, <code>.dmg</code>, <code>setup.exe</code>; APK, AAB and <code>.ipa</code></td></tr>
+						<tr><td>Toolchain</td><td>Node.js and npm</td><td>Rust and Cargo: multi-GB target directories</td><td>Zig: a build cache in hundreds of MB, incremental rebuilds</td></tr>
+					</tbody>
+				</table>
+			</div>
+			<h3 style="margin:40px 0 12px">Porting from Tauri</h3>
 			<div class="table-wrap">
 				<table class="compare">
 					<thead><tr><th>Tauri</th><th>Oriel</th></tr></thead>
@@ -305,13 +322,11 @@
 						<tr><td>Events (<code>emit</code> / <code>listen</code>)</td><td>Zig → JS, type-checked on both sides; targeted and broadcast</td></tr>
 						<tr><td>Capabilities</td><td>Per origin, per command, per window</td></tr>
 						<tr><td>Multiple windows</td><td><code>oriel.window.open()</code> from JS, routes, targeted events</td></tr>
-						<tr><td>Updater</td><td>Ed25519-signed manifests, atomic replace, progress events</td></tr>
 						<tr><td><code>create-tauri-app</code>, <code>tauri dev/build</code></td><td><code>oriel init</code> (React, Vue, Svelte, vanilla), <code>oriel dev/build/package</code>, <code>oriel doctor</code></td></tr>
-						<tr><td>Tauri mobile</td><td>Android and iOS from the same Zig and web code; <code>oriel android</code> and <code>oriel ios</code></td></tr>
-						<tr><td>Rust + Cargo</td><td>Zig 0.16 and its build system: no multi-GB target directories</td></tr>
 					</tbody>
 				</table>
 			</div>
+			<p style="margin-top:24px"><a class="btn btn-ghost" href="$site.page('docs/comparison').link()">How Oriel compares, in detail</a></p>
 		</section>
 
 		<section class="cta">

@@ -1,8 +1,37 @@
 <!-- Generated from site/content/docs/comparison.smd by tools/docs/gen-md.mjs: edit that file. -->
 
-# Oriel and Vercel native
+# How Oriel compares
 
-How Oriel compares with Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.
+Oriel next to Electron and Tauri, and next to Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.
+
+Oriel builds desktop and mobile apps from Zig and a web UI, like Electron and
+Tauri do from JavaScript and Rust. This page sets it next to those two, then
+next to Vercel Labs' native, the other Zig framework.
+
+## Electron and Tauri
+
+All three keep the same model: a web frontend, a native backend, and calls
+between them. What changes is what ships with the app and what's built in.
+
+| | Electron | Tauri | Oriel |
+|---|---|---|---|
+| Backend | JavaScript on Node.js | Rust | Zig 0.16 |
+| UI | Chromium, bundled with every app | The system webview | The system webview, or native views with no webview ([native renderer](native-renderer.md), compiled `.oriel` views) |
+| App size | Chromium and Node.js in every app | Small: no browser bundled | A few MB: no browser bundled |
+| UI ↔ backend | `ipcMain` / `ipcRenderer` through a preload script | `invoke` commands and events | Plain Zig structs; TypeScript generated at compile time ([commands](commands.md)) |
+| Mobile | Desktop only | Android and iOS | Android and iOS from the same Zig and web code |
+| Local AI and voice | Packages you add | Plugins or crates you add | Built in: llama.cpp, whisper.cpp, Kokoro text to speech, speaker diarization ([local AI](local-ai.md)) |
+| Updates | `autoUpdater` or electron-updater | Updater plugin, signed | Ed25519-signed manifests, atomic replace ([updater](updater.md)) |
+| Packages | Electron Forge or electron-builder | The Tauri bundler | `oriel package`: deb, rpm, AppImage, `.dmg`, `setup.exe`; APK, AAB and `.ipa` ([packaging](packaging.md)) |
+| Toolchain | Node.js and npm | Rust and Cargo | Zig: a build cache in hundreds of MB, incremental rebuilds |
+
+Oriel's security model follows Tauri's (per-origin command capabilities, a
+strict CSP, navigation limits: [security](security.md)), and
+its commands, events and windows map onto Tauri's one for one, which made
+GhostPen's port from Tauri direct. Its README
+[measures the two](https://github.com/highercomve/GhostPen#compared-with-the-rust-tauri-ghostpen).
+
+## Vercel native
 
 [Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
 zero-native) is the other Zig framework for desktop apps. Both use Zig 0.16

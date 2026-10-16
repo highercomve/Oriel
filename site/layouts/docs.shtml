@@ -67,7 +67,7 @@
 				<a href="$site.page('docs/drag-and-drop').link()">Drag and drop</a>
 				<h4>Reference</h4>
 				<a href="$site.page('docs/modules').link()">Modules</a>
-				<a href="$site.page('docs/comparison').link()">Oriel and Vercel native</a>
+				<a href="$site.page('docs/comparison').link()">How Oriel compares</a>
 				<a href="$site.page('docs/changelog').link()">Changelog</a>
 				<!-- oriel:sidebar end -->
 			</nav>

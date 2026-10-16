@@ -81,7 +81,7 @@ The same pages as the website, https://highercomve.github.io/Oriel/docs/.
 ## Reference
 
 - [Modules](modules.md): What an Oriel module is, how build flags turn modules on, and every module and plugin with its flag, platforms and page.
-- [Oriel and Vercel native](comparison.md): How Oriel compares with Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.
+- [How Oriel compares](comparison.md): Oriel next to Electron and Tauri, and next to Vercel Labs' native (formerly zero-native), measured against what GhostPen needs.
 
 ## For contributors
 

@@ -9,13 +9,15 @@
 
 # Oriel
 
-**Desktop and mobile apps with Zig and the web.** Oriel is a Tauri-like framework in
-Zig 0.16: a native window with the system webview, your frontend (React, Vite,
-plain HTML…) embedded in a small binary, and typed JS ↔ Zig calls generated
-from plain Zig structs. It targets Linux, Windows, macOS, Android and iOS
-(iOS is verified in the simulator; device testing is next). An optional
-[native renderer](docs/native-renderer.md) runs the same frontend
-without a WebView.
+**Desktop and mobile apps in Zig, with a web UI or native views.** One
+codebase for Linux, Windows, macOS, Android and iOS (iOS is verified in the
+simulator; device testing is next): your frontend (React, Vite, plain
+HTML…) in the system webview, embedded in a small binary, with typed JS ↔
+Zig calls generated from plain Zig structs. Local AI and voice are built in,
+updates are signed, and every platform gets its packages. The optional
+[native renderer](docs/native-renderer.md) runs the same frontend without
+a WebView, or compiled `.oriel` views with no JavaScript at all. Coming
+from Electron or Tauri? See [how Oriel compares](docs/comparison.md).
 
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
