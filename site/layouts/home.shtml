@@ -226,20 +226,18 @@
 			</div>
 			<div class="smoke-row">
 				<div class="smoke-info">
-					<h3>smoke</h3>
-					<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/smoke"><code>examples/smoke</code></a>: every module gets a pass/fail check inside a real webview — one run tells you Oriel works end to end on your machine, not just that it compiles.</p>
+					<h3>system-monitor</h3>
+					<p><a href="https://github.com/highercomve/Oriel/tree/main/examples/system-monitor"><code>examples/system-monitor</code></a>: a live CPU, memory, disk, network and process monitor that reads the kernel directly and spawns nothing, on Linux, Windows and macOS.</p>
 					<ul>
-						<li><strong>Tray &amp; menus</strong> — dbusmenu icons, layout and actions</li>
-						<li><strong>Updater</strong> — Ed25519-verified manifests, tampered copies rejected</li>
-						<li><strong>Data</strong> — SQLite (with sqlite-vec), the JSON store, fs watching</li>
-						<li><strong>Desktop</strong> — dialogs, notifications, global shortcuts, clipboard, typed input into other apps</li>
-						<li><strong>Webview &amp; IPC</strong> — page fetch, <code>invoke</code> round trips, async commands from worker threads</li>
+						<li><strong>Three renderers, one app</strong> — compiled <code>.oriel</code> views with no JavaScript runtime (the default), the <a href="$site.page('docs/native-renderer').link()">native renderer</a>, or the WebView</li>
+						<li><strong>Applications</strong> — each app's combined CPU and memory, its processes as a parent/child tree, or every process</li>
+						<li><strong>Updates itself</strong> — Check for updates installs the next release with <code>oriel.updater</code>, signed and verified</li>
+						<li><strong>Ships everywhere</strong> — AppImage, deb, rpm, a Windows installer and a macOS <code>.app</code> with every release</li>
 					</ul>
-					<p>It runs in CI on every platform with each check listed, so a red one names the module.</p>
 				</div>
 				<figure class="smoke-shot">
-					<img src="$site.asset('screenshots/smoke.png').link()" alt="The smoke test app: a table of green OK rows, one per module, each with what it verified" loading="lazy">
-					<figcaption>Linux, continuous output: green per module, with what was actually verified</figcaption>
+					<img src="$site.asset('screenshots/system-monitor.png').link()" alt="Oriel System Monitor on Linux in the Oriel renderer: CPU per core, memory, disks, network and the Applications list" loading="lazy">
+					<figcaption>Linux, the Oriel renderer: a frame in under 6 ms, kernel telemetry with no processes spawned</figcaption>
 				</figure>
 			</div>
 			<div class="smoke-row">
