@@ -277,6 +277,7 @@ pub fn fail(comptime fmt: []const u8, args: anytype) error{CommandFailed} {
 /// What the page sees for a failed command: the `fail` message, or the error name.
 pub fn errorText(err: anyerror) [:0]const u8 {
     if (err == error.CommandFailed) if (fail_len) |n| {
+        std.debug.assert(n < fail_buf.len and fail_buf[n] == 0); // set by `fail`
         fail_len = null;
         return fail_buf[0..n :0];
     };
@@ -415,7 +416,10 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = try std.json.parseFromValueLeaky(Args, arena, request.args, .{ .ignore_unknown_fields = true });
         var bytes: std.ArrayList(u8) = .empty;
         defer bytes.deinit(@import("heap.zig").gpa);
-        try @import("../modules/share/common.zig").read(args.handle, args.offset, @min(args.length, 16 << 20), &bytes);
+        const want = @min(args.length, 16 << 20);
+        try @import("../modules/share/common.zig").read(args.handle, args.offset, want, &bytes);
+        // `read` appends at most the length asked for.
+        std.debug.assert(bytes.items.len <= want);
         const enc = std.base64.standard.Encoder;
         const out = try arena.alloc(u8, enc.calcSize(bytes.items.len));
         _ = enc.encode(out, bytes.items);

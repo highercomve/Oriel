@@ -45,6 +45,14 @@ pub const PUBLIC_KEY_B64_LEN = 44;
 pub const SIGNATURE_B64_LEN = 88;
 pub const PRIVATE_KEY_SEED_B64_LEN = 44;
 
+comptime {
+    // The base64 lengths are those of the Ed25519 sizes they encode.
+    const enc = std.base64.standard.Encoder;
+    std.debug.assert(enc.calcSize(Ed25519.PublicKey.encoded_length) == PUBLIC_KEY_B64_LEN);
+    std.debug.assert(enc.calcSize(Ed25519.Signature.encoded_length) == SIGNATURE_B64_LEN);
+    std.debug.assert(enc.calcSize(Ed25519.KeyPair.seed_length) == PRIVATE_KEY_SEED_B64_LEN);
+}
+
 pub const Manifest = struct {
     app_id: []const u8,
     version: []const u8,
@@ -359,6 +367,10 @@ pub fn verify(
     );
     try sig.verify(signed_data, pk);
 
+    // What validateManifestFields guarantees, and the download relies on:
+    // a size to stop at and a full digest to compare.
+    std.debug.assert(manifest.size > 0);
+    std.debug.assert(manifest.sha256.len == 64);
     return manifest;
 }
 

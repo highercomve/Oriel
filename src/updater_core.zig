@@ -317,6 +317,8 @@ pub fn checkForUpdate(
     errdefer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // A fixed writer never reports more than its buffer.
+    std.debug.assert(fetch_info.bytes <= manifest_buf.len);
     const manifest_json = try arena.dupe(u8, manifest_buf[0..fetch_info.bytes]);
 
     // A combined manifest (latest.json) or a single-platform one.
@@ -504,6 +506,9 @@ fn downloadInternal(
     else |_|
         try gpa.dupeZ(u8, target_path);
     defer gpa.free(real_dest_path);
+    // The OS resolves an absolute path to an absolute one: the parent
+    // directory below, and the path `restart` executes, come from it.
+    std.debug.assert(std.fs.path.isAbsolute(real_dest_path));
 
     const parent_dir_path = std.fs.path.dirname(real_dest_path) orelse if (builtin.os.tag == .windows) "." else "/";
     const target_file_name = std.fs.path.basename(real_dest_path);
@@ -731,7 +736,9 @@ pub fn unpack(gpa: std.mem.Allocator, manifest: Manifest, payload_gz: []const u8
     var in: std.Io.Reader = .fixed(payload_gz);
     var window: [std.compress.flate.max_window_len]u8 = undefined;
     var decompress: std.compress.flate.Decompress = .init(&in, .gzip, &window);
-    return decompress.reader.allocRemaining(gpa, .limited(MAX_UNPACKED_SIZE));
+    const out = try decompress.reader.allocRemaining(gpa, .limited(MAX_UNPACKED_SIZE));
+    std.debug.assert(out.len <= MAX_UNPACKED_SIZE);
+    return out;
 }
 
 pub const test_payload_gz = [_]u8{
