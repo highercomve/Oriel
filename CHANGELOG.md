@@ -2,6 +2,14 @@
 
 Notable changes in Oriel releases.
 
+## [0.17.3] — 2026-10-17
+
+### Fixed
+
+- Android: apps opened from the launcher icon now appear in Recents. The
+  launcher activity passed its own exclusion from Recents on to the app's
+  window; windows also clear it from tasks created by earlier versions.
+
 ## [0.17.2] — 2026-10-16
 
 ### Fixed
