@@ -1,10 +1,18 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.17.2, 0.17.1 and earlier.",
-.date = .date("2026-10-16T00:00:00"),
+.description = "Release notes for Oriel 0.17.3, 0.17.2 and earlier.",
+.date = .date("2026-10-17T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.17.3 · October 17, 2026]($heading.id('oriel-0-17-3-october-17-2026'))
+
+## [Fixed]($heading.id('fixed-0-17-3'))
+
+- Android: apps opened from the launcher icon now appear in Recents. The
+  launcher activity passed its own exclusion from Recents on to the app's
+  window; windows also clear it from tasks created by earlier versions.
 
 # [Oriel 0.17.2 · October 16, 2026]($heading.id('oriel-0-17-2-october-16-2026'))
 
