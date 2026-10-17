@@ -39,6 +39,7 @@ open class OrielActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        showInRecents()
         root = FrameLayout(this)
         // Android 15 draws apps targeting API 35 edge to edge: keep the page
         // clear of the status and navigation bars, the display cutout and the
@@ -61,8 +62,23 @@ open class OrielActivity : Activity() {
         OrielHooksRegistry.registered.forEach { it.onActivityCreated(this, savedInstanceState) }
     }
 
+    /**
+     * A window always belongs in Recents. Tasks started by launchers before
+     * OrielLaunchActivity stopped forwarding FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+     * keep that flag (singleTask reuses them, and a hidden task can't be
+     * swiped away), so the task clears it itself.
+     */
+    private fun showInRecents() {
+        try {
+            getSystemService(ActivityManager::class.java)?.appTasks?.forEach { task ->
+                if (task.taskInfo.taskId == taskId) task.setExcludeFromRecents(false)
+            }
+        } catch (_: Exception) {}
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        showInRecents()
         setIntent(intent)
         OrielRuntime.onActivityNewIntent(this, intent)
         OrielHooksRegistry.registered.forEach { it.onNewIntent(this, intent) }
@@ -302,7 +318,10 @@ class OrielMainActivity : OrielActivity()
 class OrielLaunchActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The launcher's intent carries this activity's excludeFromRecents as a
+        // flag; copied on, it would hide the app's real window from Recents.
         val main = Intent(intent).setClass(this, OrielMainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        main.removeFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
         val size = OrielRuntime.rememberedMainSize(this)
         val options = size?.let { OrielRuntime.launchBounds(this, it.first, it.second) }
         startActivity(main, options?.toBundle())
