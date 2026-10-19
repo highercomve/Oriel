@@ -240,19 +240,22 @@ fn setText(obj: Object, comptime setter: [:0]const u8, text: []const u8) void {
 }
 
 /// An 18 pt NSImage from PNG bytes (autoreleased), or null if AppKit can't
-/// decode them.
-fn imageFromPng(png: []const u8) ?Object {
+/// decode them. A template image is monochrome (only its alpha shows):
+/// the menu bar recolours it for light and dark mode.
+fn imageFromPng(png: []const u8, template: bool) ?Object {
     const data = apple.class("NSData").msgSend(Object, "dataWithBytes:length:", .{ png.ptr, @as(c_ulong, png.len) });
     const image = apple.class("NSImage").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithData:", .{data});
     if (image.value == null) return null;
     _ = image.msgSend(Object, "autorelease", .{});
     image.msgSend(void, "setSize:", .{apple.NSSize{ .width = icon_points, .height = icon_points }});
+    if (template) image.msgSend(void, "setTemplate:", .{apple.boolean(true)});
     return image;
 }
 
 fn applyIcon(btn: Object, icon: Icon, title: []const u8) !void {
     const image: ?Object = switch (icon) {
-        .png => |bytes| imageFromPng(bytes) orelse return error.InvalidIcon,
+        .png => |bytes| imageFromPng(bytes, false) orelse return error.InvalidIcon,
+        .template_png => |bytes| imageFromPng(bytes, true) orelse return error.InvalidIcon,
         // Icon theme names are a Linux concept: try an app/system image of
         // that name, else show the title as text.
         .name => |name| blk: {
@@ -347,7 +350,7 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check {
         .separator,
         .{ .item = .{ .id = "quit", .label = "Quit" } },
     });
-    if (imageFromPng(ctx.icon_png) == null) return .{ .module = "tray", .ok = false, .detail = "the icon PNG didn't decode" };
+    if (imageFromPng(ctx.icon_png, false) == null) return .{ .module = "tray", .ok = false, .detail = "the icon PNG didn't decode" };
     if (!ShellMod.isRunning() or global_tray != null) {
         return .{ .module = "tray", .ok = true, .detail = try std.fmt.allocPrint(gpa, "icon {d} B PNG decodes; {d} menu items (no running app: no status item)", .{ ctx.icon_png.len, menu.nodes.items.len - 1 }) };
     }

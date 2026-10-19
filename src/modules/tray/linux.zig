@@ -235,7 +235,7 @@ pub const Tray = struct {
         self.pixmap = null;
         try common.replaceString(self.gpa, &self.icon_name, "");
         switch (icon) {
-            .png => |bytes| self.pixmap = try pixmapFromImage(self.gpa, bytes),
+            .png, .template_png => |bytes| self.pixmap = try pixmapFromImage(self.gpa, bytes),
             .name => |name| try common.replaceString(self.gpa, &self.icon_name, name),
         }
     }

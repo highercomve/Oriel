@@ -117,8 +117,10 @@ backend shows that model its own way:
   `TrackPopupMenu`. A PNG is decoded with zigimg into a 32-bit `HICON`
   (Windows' own decoder is the fallback). One tray per app.
 - **macOS** (`src/modules/tray/macos.zig`). An `NSStatusItem` whose button
-  takes the PNG at 18 points high. The `NSMenu` is rebuilt from the model
-  every time it opens, so changes always show. One tray per app.
+  takes the PNG at 18 points high; a `template_png` is marked as a template
+  image, so the menu bar recolours it for light and dark mode. The `NSMenu`
+  is rebuilt from the model every time it opens, so changes always show.
+  One tray per app.
 
 Clicks call `on_menu(id, checked)` on the main thread. A check item flips
 its own state first, so `checked` is the new value; plain items pass
@@ -225,8 +227,9 @@ pub const Options = struct {
 };
 
 pub const Icon = union(enum) {
-    png: []const u8,  // PNG bytes (any format zigimg reads)
-    name: []const u8, // icon theme name, e.g. "mail-unread"
+    png: []const u8,          // PNG bytes (any format zigimg reads)
+    template_png: []const u8, // monochrome PNG; a macOS template image
+    name: []const u8,         // icon theme name, e.g. "mail-unread"
 };
 
 pub const MenuItem = union(enum) {
@@ -266,7 +269,12 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check; // s
 scales them; 22 to 64 pixels square is plenty), Windows makes an `HICON`,
 macOS draws it 18 points high (a 36 or 54 pixel PNG stays sharp on Retina).
 The image is shown as is, not as a template image, so pick one that reads on
-both light and dark menu bars. `.name` is an icon theme name on Linux; macOS
+both light and dark menu bars. `.template_png` takes a monochrome PNG (the
+shape as black, the background transparent) and, on macOS, shows it as a
+[template image](https://developer.apple.com/documentation/appkit/nsimage/istemplate):
+the menu bar picks black or white from the system theme itself, and the
+icon inverts while its menu is open; Linux and Windows send the pixels as
+for `.png`. `.name` is an icon theme name on Linux; macOS
 tries `NSImage imageNamed:` and shows `title` as text when there's no such
 image; Windows returns `error.NamedIconsNotSupportedOnWindows`.
 
@@ -307,8 +315,10 @@ this build has one; use your own events and commands to connect the two.
   `oriel.main` started the app: create it in `setup`.
 - **`error.NamedIconsNotSupportedOnWindows`.** Use `.png` (embed the file
   with `@embedFile`).
-- **The icon is a black square on a dark macOS menu bar.** The PNG is drawn
-  as is: use a light-on-transparent or coloured icon that reads on both.
+- **The icon is a black square on a dark macOS menu bar.** A `.png` is drawn
+  as is: use a light-on-transparent or coloured icon that reads on both, or
+  embed the app's mark as a monochrome PNG and pass `.template_png` (the
+  menu bar recolours it for the theme).
 - **The second tray's menu never opens (Windows, macOS).** Only one tray
   gets clicks there.
 - **Using `oriel.tray` in a phone build is a build error** naming the
