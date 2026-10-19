@@ -19,7 +19,9 @@
 // and calls `__oriel.boot()`, then `__oriel.event/timer/resolve/resize`;
 // after each call it runs the pending jobs and `__oriel.render()`.
 
-import { installURL } from "./url.js";
+import { installURL, URL as PageURL } from "./url.js";
+import { installIntl } from "./intl.js";
+import { installImages, imageSize } from "./image.js";
 import { openDocument, STYLE_RECORDS, collect, markListens } from "#dom";
 import { StyleEngine, viewport, mediaMatches, fontSpecs, splitRules, color as cssColor } from "./css.js";
 import { snapBorder, isInputButton, withInputButtons, setNativeControls, Renderer, UA_CSS, UA_CSS_WEBKIT, UA_CSS_MAC, UA_CSS_CHROME_ANDROID, uaCssWebkitGtk, setFocusVisible, setFocusRingOS } from "./render.js";
@@ -170,6 +172,17 @@ canvas.install(dom, () => {
   try { if (renderer) renderer.dirty = true; } catch {}
 });
 const Event = g.Event;
+// The runtime's own events (input, keys, pointers, focus, close, toggle…)
+// are trusted, as a browser's are; a page's dispatchEvent and el.click()
+// stay untrusted.
+let synthetic = 0;
+if (!("isTrusted" in new Event("probe"))) Object.defineProperty(Event.prototype, "isTrusted", { value: false, writable: true, configurable: true });
+function trusted(ev) {
+  if (!synthetic && ev && typeof ev === "object") {
+    try { Object.defineProperty(ev, "isTrusted", { value: true, configurable: true }); } catch {}
+  }
+  return ev;
+}
 class KeyboardEvent extends Event {
   constructor(type, init = {}) {
     super(type, init);
@@ -478,9 +491,74 @@ for (const tag of ["button", "textarea", "select"]) {
   }
 }
 
+// new Image() and <img>: their size from the file's header, "load"/"error".
+// A data: URL's bytes (its start first: an image's header is near it), or
+// an app asset's.
+function urlBytes(src, all) {
+  const s = String(src);
+  if (s.startsWith("data:")) {
+    const comma = s.indexOf(",");
+    if (comma < 0) return null;
+    const meta = s.slice(5, comma), body = s.slice(comma + 1);
+    if (/;base64$/i.test(meta)) return blobs.fromBase64(all ? body : body.slice(0, 262144));
+    const text = decodeURIComponent(body);
+    const out = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 255;
+    return out;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith("app:")) return null; // remote: not fetched
+  const buf = host.assetBytes?.(assetName(s.replace(/^app:\/\/[^/]*\//, "")));
+  return buf ? new Uint8Array(buf) : null;
+}
+installImages(g, document, {
+  bytesOf: (src) => {
+    const head = urlBytes(src, false);
+    return !head || imageSize(head) || !String(src).startsWith("data:") ? head : urlBytes(src, true);
+  },
+  later: (fn) => setTimeout(fn, 0),
+  fire: (el, type) => el.dispatchEvent(trusted(new Event(type))),
+});
+
+// <datalist>.options: its <option>s, in document order.
+Object.defineProperty(Object.getPrototypeOf(document.createElement("datalist")), "options", {
+  get() { return this.localName === "datalist" ? this.querySelectorAll("option") : undefined; },
+  configurable: true,
+});
+
 // Forms: requestSubmit() fires `submit` (cancelable); submit() doesn't.
 const formProto = Object.getPrototypeOf(document.createElement("form"));
-formProto.requestSubmit = function () { submit(this); };
+formProto.requestSubmit = function (submitter) { submit(this, submitter || null); };
+// form.elements: its listed controls in document order (its descendants
+// and those naming it with form="id"), by index, name or id, with
+// namedItem(); several with a name are a RadioNodeList-like list whose
+// value is the checked radio's.
+const LISTED = "button, fieldset, input, object, output, select, textarea";
+function formControls(form) {
+  const id = form.getAttribute("id");
+  const els = [...document.querySelectorAll(LISTED)].filter((el) =>
+    !(el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "image") &&
+    (el.hasAttribute("form") ? id && el.getAttribute("form") === id : el.closest("form") === form));
+  const named = (name) => els.filter((el) => el.getAttribute("id") === name || el.getAttribute("name") === name);
+  const list = {
+    get length() { return els.length; },
+    item(i) { return els[i >>> 0] ?? null; },
+    namedItem(name) {
+      const found = named(String(name));
+      if (found.length < 2) return found[0] ?? null;
+      return Object.assign([...found], {
+        item(i) { return found[i >>> 0] ?? null; },
+        get value() { return found.find((el) => el.type === "radio" && el.checked)?.value ?? ""; },
+        set value(v) { const r = found.find((el) => el.type === "radio" && el.value === String(v)); if (r) setNative(r, "checked", true); },
+      });
+    },
+    [Symbol.iterator]() { return els[Symbol.iterator](); },
+  };
+  els.forEach((el, i) => { list[i] = el; });
+  for (const el of els) for (const key of [el.getAttribute("id"), el.getAttribute("name")]) if (key && !(key in list)) list[key] = list.namedItem(key);
+  return list;
+}
+Object.defineProperty(formProto, "elements", { get() { return formControls(this); }, configurable: true });
+Object.defineProperty(formProto, "length", { get() { return formControls(this).length; }, configurable: true });
 formProto.submit = function () {};
 formProto.reset = function () { reset(this); };
 
@@ -613,6 +691,16 @@ elProto.scrollBy = function (x, y) {
 elProto.getBoundingClientRect = function () {
   return rectOf(frameOf(this));
 };
+// SVG elements (not HTML elements here): an <svg>'s box is its icon's
+// node; a shape inside it has none of its own, so it reports its <svg>'s.
+{
+  const svgProto = Object.getPrototypeOf(document.createElementNS("http://www.w3.org/2000/svg", "svg"));
+  if (svgProto !== elProto && !Object.prototype.hasOwnProperty.call(svgProto, "getBoundingClientRect")) {
+    const own = (el) => (el.localName === "svg" ? el : el.closest?.("svg") || el);
+    svgProto.getBoundingClientRect = function () { return rectOf(frameOf(own(this))); };
+    svgProto.getClientRects = function () { const r = rectOf(frameOf(own(this))); return r.width || r.height ? [r] : []; };
+  }
+}
 // One rect for a box, one per line fragment for an inline element, none
 // for an element not rendered.
 elProto.getClientRects = function () {
@@ -650,7 +738,8 @@ const clicking = internalWeak(new WeakSet());
 Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function () {
   if (clicking.has(this)) return;
   clicking.add(this);
-  try { activate(this, 0); } finally { clicking.delete(this); }
+  synthetic++;
+  try { activate(this, 0); } finally { clicking.delete(this); synthetic--; }
 };
 // The page scrolls in the window's scroll view (node -1, render.js):
 // window.scrollTo(x, y) and scrollTo({ top }).
@@ -677,6 +766,7 @@ Object.defineProperty(document, "scrollingElement", { get() { return this.docume
 // Before any pointer press, a script's focus() counts as the keyboard's
 // (WebKit and Chromium show the ring for it then).
 let active = null;
+const quietBlur = () => { active = null; setFocusVisible(null); };
 let keyboardFocus = true;
 const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
 const textField = (el) => el?.localName === "textarea" || el?.isContentEditable ||
@@ -694,7 +784,7 @@ function fireChange(el) {
   edited.delete(el);
   if (el.value === changeBase.get(el)) return;
   changeBase.set(el, el.value);
-  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
 }
 // Where dropped text goes by default (dnd.js): an enabled, writable text
 // field or textarea, or contenteditable.
@@ -715,7 +805,7 @@ function dropEditable(el) {
 function dropText(el, text) {
   if (active !== el) el.focus();
   const before = inputEvent("beforeinput", "insertFromDrop", text, true);
-  el.dispatchEvent(before);
+  el.dispatchEvent(trusted(before));
   if (before.defaultPrevented) return false;
   if (el.localName === "input" || el.localName === "textarea") {
     const t = el.localName === "input" ? text.replace(/[\r\n]+/g, "") : text;
@@ -724,11 +814,11 @@ function dropText(el, text) {
     setNative(el, "value", value.slice(0, start) + t + value.slice(end));
     edited.add(el);
     el.setSelectionRange(start + t.length, start + t.length);
-    el.dispatchEvent(inputEvent("input", "insertFromDrop", t, false));
+    el.dispatchEvent(trusted(inputEvent("input", "insertFromDrop", t, false)));
     return true;
   }
   el.appendChild(document.createTextNode(text));
-  el.dispatchEvent(inputEvent("input", "insertFromDrop", text, false));
+  el.dispatchEvent(trusted(inputEvent("input", "insertFromDrop", text, false)));
   return true;
 }
 const focusEvent = (type, bubbles, relatedTarget) => {
@@ -754,8 +844,8 @@ Object.defineProperty(document, "__active", {
       active = null;
       setFocusVisible(null);
       if (old.dispatchEvent) {
-        old.dispatchEvent(focusEvent("blur", false, el || null));
-        old.dispatchEvent(focusEvent("focusout", true, el || null));
+        old.dispatchEvent(trusted(focusEvent("blur", false, el || null)));
+        old.dispatchEvent(trusted(focusEvent("focusout", true, el || null)));
       }
       if (active !== null) return;
     }
@@ -767,8 +857,8 @@ Object.defineProperty(document, "__active", {
     if (visible) el.setAttribute?.("data-nui-focus-visible", "");
     setFocusVisible(visible ? el : null);
     if (el.dispatchEvent) {
-      el.dispatchEvent(focusEvent("focus", false, old));
-      if (active === el) el.dispatchEvent(focusEvent("focusin", true, old));
+      el.dispatchEvent(trusted(focusEvent("focus", false, old)));
+      if (active === el) el.dispatchEvent(trusted(focusEvent("focusin", true, old)));
     }
   },
   configurable: true,
@@ -780,13 +870,54 @@ Object.defineProperty(document, "activeElement", { get() { return this.__active 
 
 // The window's own URL ("index.html#/settings", "index.html?second=1"): its
 // query and fragment, as a WebView window loading that URL would see them.
+// The session history: one entry per pushState or fragment navigation, each
+// with its URL (path, query, fragment) and the state the page gave it.
+const ORIGIN = "app://localhost";
 const startUrl = String(host.url || "");
-const hashAt = startUrl.indexOf("#");
-let hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
-const beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
-let search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
-if (hash === "#") hash = "";
-const fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
+const entryOf = (href, state) => { const u = new PageURL(href, ORIGIN + "/index.html"); return { pathname: u.pathname, search: u.search, hash: u.hash === "#" ? "" : u.hash, state }; };
+const sessionEntries = [entryOf(startUrl.replace(/^\/+/, ""), null)];
+let sessionIndex = 0;
+const current = () => sessionEntries[sessionIndex];
+const fireHash = (oldURL, newURL) => setTimeout(() => { const ev = trusted(new Event("hashchange")); ev.oldURL = oldURL; ev.newURL = newURL; fireWindow(ev); }, 0);
+const firePop = (state) => { const ev = trusted(new Event("popstate")); ev.state = state; fireWindow(ev); };
+// A page's state is copied when stored, as structuredClone would (JSON-like
+// data: what history state holds in practice).
+const cloneState = (state) => {
+  if (state === undefined || state === null) return null;
+  if (typeof g.structuredClone === "function") return g.structuredClone(state);
+  return JSON.parse(JSON.stringify(state));
+};
+// Same-origin URLs only, as browsers (a SecurityError otherwise).
+const sameOrigin = (url) => {
+  const u = new PageURL(String(url), location.href);
+  if (u.origin !== ORIGIN) throw typeof DOMException === "function" ? new DOMException(`Can't change the URL to ${u.href}`, "SecurityError") : new Error("SecurityError");
+  return u.href;
+};
+const hrefOf = (e) => ORIGIN + e.pathname + e.search + e.hash;
+// A fragment navigation (location.hash, an <a href="#x">): a new entry,
+// then popstate and hashchange, as browsers fire them.
+const navigateHash = (newHash, replace) => {
+  const before = current();
+  if (newHash === before.hash) return;
+  const entry = { ...before, hash: newHash, state: null };
+  if (replace) sessionEntries[sessionIndex] = entry;
+  else { sessionEntries.length = sessionIndex + 1; sessionEntries.push(entry); sessionIndex++; }
+  if (!replace) firePop(null);
+  fireHash(hrefOf(before), hrefOf(entry));
+};
+// back, forward, go(n): asynchronous, as browsers' traversal.
+const traverse = (delta) => {
+  const to = sessionIndex + delta;
+  if (!delta || to < 0 || to >= sessionEntries.length) return;
+  setTimeout(() => {
+    if (to < 0 || to >= sessionEntries.length) return;
+    const before = current();
+    sessionIndex = to;
+    const after = current();
+    firePop(after.state);
+    if (after.hash !== before.hash) fireHash(hrefOf(before), hrefOf(after));
+  }, 0);
+};
 // Text selection: native fields keep their own; the page has none to read
 // (an empty, collapsed selection, as in a browser with nothing selected).
 const emptySelection = () => ({
@@ -795,30 +926,252 @@ const emptySelection = () => ({
   collapse() {}, selectAllChildren() {}, containsNode() { return false; },
 });
 g.getSelection = emptySelection;
+// alert, confirm and prompt would block the UI thread the page runs on (on
+// Android too): they answer as a browser's do when its dialogs are
+// suppressed (a sandboxed frame): no dialog, confirm false, prompt null.
+for (const [name, answer] of [["alert", undefined], ["confirm", false], ["prompt", null]]) {
+  if (typeof g[name] === "function") continue;
+  g[name] = (message) => {
+    console.warn(`${name}() isn't available in the native renderer (it would block): use a <dialog>. Message: ${String(message ?? "").slice(0, 200)}`);
+    return answer;
+  };
+}
 if (typeof document !== "undefined" && !document.getSelection) document.getSelection = emptySelection;
 
 g.location = {
-  get hash() { return hash; },
-  set hash(v) { v = String(v); if (v && !v.startsWith("#")) v = "#" + v; if (v !== hash) { hash = v; history.push(v); fireHash(); } },
-  get search() { return search; },
-  get href() { return `app://localhost/index.html${search}${hash}`; },
+  get hash() { return current().hash; },
+  set hash(v) { v = String(v); if (v && !v.startsWith("#")) v = "#" + v; if (v === "#") v = ""; navigateHash(v, false); },
+  get search() { return current().search; },
+  get href() { return hrefOf(current()); },
   set href(v) { const i = String(v).indexOf("#"); if (i >= 0) this.hash = String(v).slice(i); },
-  get pathname() { return "/index.html"; },
-  get origin() { return "app://localhost"; },
+  get pathname() { return current().pathname; },
+  get origin() { return ORIGIN; },
   get protocol() { return "app:"; },
   get host() { return "localhost"; },
-  replace(v) { const i = String(v).indexOf("#"); if (i >= 0) { const nv = String(v).slice(i); if (nv !== hash) { hash = nv; fireHash(); } } },
+  get hostname() { return "localhost"; },
+  get port() { return ""; },
+  replace(v) { const i = String(v).indexOf("#"); if (i >= 0) navigateHash(String(v).slice(i) === "#" ? "" : String(v).slice(i), true); },
   assign(v) { this.href = v; },
   // The page starts again in this window (a new runtime and DOM).
   reload() { host.reload?.(); },
   toString() { return this.href; },
 };
-const history = [];
 g.history = {
-  get length() { return history.length + 1; },
-  back() { history.pop(); const v = history[history.length - 1] || ""; if (v !== hash) { hash = v; fireHash(); } },
-  pushState() {}, replaceState() {}, go() {}, forward() {},
+  get length() { return sessionEntries.length; },
+  get state() { return current().state; },
+  scrollRestoration: "auto",
+  pushState(state, _title, url) {
+    const entry = url == null ? { ...current() } : entryOf(sameOrigin(url), null);
+    entry.state = cloneState(state);
+    sessionEntries.length = sessionIndex + 1;
+    sessionEntries.push(entry);
+    sessionIndex++;
+  },
+  replaceState(state, _title, url) {
+    const entry = url == null ? { ...current() } : entryOf(sameOrigin(url), null);
+    entry.state = cloneState(state);
+    sessionEntries[sessionIndex] = entry;
+  },
+  back() { traverse(-1); },
+  forward() { traverse(1); },
+  go(delta = 0) { traverse(Math.trunc(Number(delta)) || 0); },
 };
+// The platform's back (Android's back button): the previous entry, if any.
+// A modal dialog takes it first (its "cancel"), as Chrome's close watchers.
+const historyBack = () => {
+  const d = topModal();
+  if (d) { cancelDialog(d); return true; }
+  if (sessionIndex === 0) return false;
+  traverse(-1);
+  return true;
+};
+// <details>: open reflects the attribute; a change fires "toggle" after it,
+// as browsers queue it.
+function setDetailsOpen(details, v) {
+  if (!!v === details.hasAttribute("open")) return;
+  if (v) details.setAttribute("open", ""); else details.removeAttribute("open");
+  const newState = v ? "open" : "closed", oldState = v ? "closed" : "open";
+  setTimeout(() => { const ev = new Event("toggle"); ev.oldState = oldState; ev.newState = newState; details.dispatchEvent(trusted(ev)); }, 0);
+}
+// <dialog>: show(), showModal() and close(). A modal one is in the top layer
+// (render.js draws it over the page with its ::backdrop), the page outside
+// it is inert (Tab stays inside), and Escape or the platform's back sends
+// it "cancel". "close" fires after it closes, as browsers queue it.
+const topLayer = [];
+// What's still in the top layer (modal dialogs and open popovers), in the
+// order shown: one closed or removed meanwhile leaves it.
+const openModals = () => {
+  for (let i = topLayer.length - 1; i >= 0; i--) {
+    const el = topLayer[i];
+    const live = el.isConnected && (el.localName === "dialog" && el.hasAttribute("data-nui-modal") ? el.hasAttribute("open") : el.hasAttribute("data-nui-popover-open"));
+    if (!live) { topLayer.splice(i, 1); el.removeAttribute("data-nui-modal"); el.removeAttribute("data-nui-popover-open"); }
+  }
+  return topLayer;
+};
+// The topmost modal dialog: the page outside it is inert.
+const topModal = () => { const l = openModals(); for (let i = l.length - 1; i >= 0; i--) if (l[i].hasAttribute("data-nui-modal")) return l[i]; return null; };
+const dialogState = new WeakMap(); // dialog → { returnValue, focusBack }
+const stateOf = (d) => { let st = dialogState.get(d); if (!st) dialogState.set(d, (st = { returnValue: "", focusBack: null })); return st; };
+const invalidState = (msg) => (typeof DOMException === "function" ? new DOMException(msg, "InvalidStateError") : new Error(msg));
+// Its autofocus element, else its first focusable one, else itself.
+function focusDialog(d) {
+  const auto = d.querySelector("[autofocus]");
+  const target = auto && !disabledControl(auto) && shown(auto) ? auto : tabCandidates(d).els[0];
+  if (target) target.focus();
+  else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+}
+function closeDialog(d, returnValue) {
+  if (!d.hasAttribute("open")) return;
+  const st = stateOf(d);
+  if (returnValue !== undefined) st.returnValue = String(returnValue);
+  d.removeAttribute("open");
+  d.removeAttribute("data-nui-modal");
+  const at = topLayer.indexOf(d);
+  if (at >= 0) topLayer.splice(at, 1);
+  // The focus goes back where it was before the dialog opened.
+  const back = st.focusBack;
+  st.focusBack = null;
+  if (back && back.isConnected && back !== document.body && typeof back.focus === "function" && (!document.activeElement || d.contains(document.activeElement) || document.activeElement === document.body)) back.focus();
+  setTimeout(() => d.dispatchEvent(trusted(new Event("close"))), 0);
+}
+// "cancel" (cancelable), then the close it asks for.
+function cancelDialog(d, returnValue) {
+  const ev = new Event("cancel", { cancelable: true });
+  d.dispatchEvent(trusted(ev));
+  if (!ev.defaultPrevented) closeDialog(d, returnValue);
+}
+// `open` on both: one accessor where they share a prototype (linkedom, the
+// tests' DOM, has no class of its own for either).
+{
+  const detailsProto = Object.getPrototypeOf(document.createElement("details"));
+  const proto = Object.getPrototypeOf(document.createElement("dialog"));
+  const setDialogOpen = (d, v) => { if (v) d.setAttribute("open", ""); else closeDialog(d); };
+  const openOf = (set) => ({ get() { return this.hasAttribute("open"); }, set(v) { set(this, v); }, configurable: true });
+  if (detailsProto === proto) {
+    Object.defineProperty(proto, "open", openOf((el, v) => (el.localName === "dialog" ? setDialogOpen : setDetailsOpen)(el, v)));
+  } else {
+    Object.defineProperty(detailsProto, "open", openOf(setDetailsOpen));
+    Object.defineProperty(proto, "open", openOf(setDialogOpen));
+  }
+  Object.defineProperties(proto, {
+    returnValue: {
+      get() { return stateOf(this).returnValue; },
+      set(v) { stateOf(this).returnValue = String(v); },
+      configurable: true,
+    },
+    show: {
+      value: function show() {
+        if (this.hasAttribute("open")) {
+          if (topLayer.includes(this)) throw invalidState("The dialog is already open as a modal");
+          return;
+        }
+        stateOf(this).focusBack = document.activeElement;
+        this.setAttribute("open", "");
+        focusDialog(this);
+      },
+      writable: true, configurable: true,
+    },
+    showModal: {
+      value: function showModal() {
+        if (this.hasAttribute("open")) {
+          if (openModals().includes(this)) return;
+          throw invalidState("The dialog is already open as a non-modal dialog");
+        }
+        if (!this.isConnected) throw invalidState("The dialog isn't in the document");
+        stateOf(this).focusBack = document.activeElement;
+        this.setAttribute("open", "");
+        this.setAttribute("data-nui-modal", "");
+        topLayer.push(this);
+        focusDialog(this);
+      },
+      writable: true, configurable: true,
+    },
+    close: { value: function close(returnValue) { closeDialog(this, returnValue); }, writable: true, configurable: true },
+    requestClose: { value: function requestClose(returnValue) { if (this.hasAttribute("open")) cancelDialog(this, returnValue); }, writable: true, configurable: true },
+  });
+  g.HTMLDialogElement ??= proto.constructor;
+}
+// The Popover API: [popover] elements shown in the top layer
+// (showPopover), ":popover-open" while they are; "beforetoggle" (cancelable
+// when opening) and then "toggle". An auto popover closes the other auto
+// ones, and with Escape or a press outside it (light dismiss).
+const popoverState = (el) => {
+  const v = el.getAttribute("popover");
+  if (v === null) return null;
+  return v.toLowerCase() === "manual" ? "manual" : v.toLowerCase() === "hint" ? "hint" : "auto";
+};
+const autoPopover = (el) => popoverState(el) === "auto" && el.hasAttribute("data-nui-popover-open");
+const notSupported = (msg) => (typeof DOMException === "function" ? new DOMException(msg, "NotSupportedError") : new Error(msg));
+function fireToggle(el, oldState, newState, cancelable) {
+  const ev = new Event("beforetoggle", { cancelable });
+  ev.oldState = oldState; ev.newState = newState;
+  el.dispatchEvent(trusted(ev));
+  return !ev.defaultPrevented;
+}
+function queueToggle(el, oldState, newState) {
+  setTimeout(() => { const ev = new Event("toggle"); ev.oldState = oldState; ev.newState = newState; el.dispatchEvent(trusted(ev)); }, 0);
+}
+function showPopoverEl(el) {
+  if (!popoverState(el)) throw notSupported("Not a popover");
+  if (el.hasAttribute("data-nui-popover-open")) return;
+  if (!el.isConnected) throw invalidState("The popover isn't in the document");
+  if (!fireToggle(el, "closed", "open", true)) return;
+  if (popoverState(el) === "auto") for (const other of [...openModals()]) if (other !== el && autoPopover(other) && !other.contains(el)) hidePopoverEl(other);
+  el.setAttribute("data-nui-popover-open", "");
+  topLayer.push(el);
+  queueToggle(el, "closed", "open");
+}
+function hidePopoverEl(el) {
+  if (!el.hasAttribute("data-nui-popover-open")) return;
+  fireToggle(el, "open", "closed", false);
+  el.removeAttribute("data-nui-popover-open");
+  const at = topLayer.indexOf(el);
+  if (at >= 0) topLayer.splice(at, 1);
+  queueToggle(el, "open", "closed");
+}
+// A press outside every open auto popover closes them.
+function lightDismiss(target) {
+  for (const el of [...openModals()].reverse()) {
+    if (!autoPopover(el)) continue;
+    if (target && el.contains(target)) return;
+    hidePopoverEl(el);
+  }
+}
+{
+  const proto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
+  Object.defineProperties(proto, {
+    popover: {
+      get() { return popoverState(this); },
+      set(v) { if (v === null) this.removeAttribute("popover"); else this.setAttribute("popover", String(v)); },
+      configurable: true,
+    },
+    showPopover: { value: function showPopover() { showPopoverEl(this); }, writable: true, configurable: true },
+    hidePopover: { value: function hidePopover() { hidePopoverEl(this); }, writable: true, configurable: true },
+    togglePopover: {
+      value: function togglePopover(force) {
+        const open = this.hasAttribute("data-nui-popover-open");
+        const want = typeof force === "object" && force !== null ? force.force : force;
+        if (want === undefined ? open : !want) hidePopoverEl(this); else showPopoverEl(this);
+        return this.hasAttribute("data-nui-popover-open");
+      },
+      writable: true, configurable: true,
+    },
+  });
+}
+// Selectors the DOM's engines don't know, as the attributes the runtime
+// keeps for them (the style sheets get the same rewrite, css.js).
+
+const statePseudos = (sel) => typeof sel === "string" && sel.includes(":")
+  ? sel.replace(/(?<!:):(focus-visible|focus|hover|active|popover-open|modal)(?![-\w(])/g, (_, name) => `[data-nui-${name}]`) : sel;
+for (const proto of new Set([Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div"))), Object.getPrototypeOf(document), Object.getPrototypeOf(document.createDocumentFragment())])) {
+  for (const name of ["matches", "closest", "querySelector", "querySelectorAll", "webkitMatchesSelector"]) {
+    let owner = proto;
+    while (owner && !Object.prototype.hasOwnProperty.call(owner, name)) owner = Object.getPrototypeOf(owner);
+    const original = owner?.[name];
+    if (typeof original !== "function") continue;
+    Object.defineProperty(proto, name, { value: function (sel, ...rest) { return original.call(this, statePseudos(sel), ...rest); }, writable: true, configurable: true });
+  }
+}
 // Links like <a href="#chat"> point the tabs at their sections.
 for (const a of document.querySelectorAll("a[href]")) {
   Object.defineProperty(a, "hash", { get() { const h = this.getAttribute("href") || ""; const i = h.indexOf("#"); return i >= 0 ? h.slice(i) : ""; }, configurable: true });
@@ -912,7 +1265,11 @@ viewport.forced = forcedColorsOf(platform.forcedColors);
 // The ring in the accent the page last heard (platform.accent, "accent").
 setFocusRingOS(platform.os, (kind) => host.focusRing(kind, platform.accent));
 setNativeControls(platform.controls);
-g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
+// The user's language (the backend's platform JSON "locale", "es-CL"), and
+// Intl over it (QuickJS has none: intl.js).
+const language = typeof platform.locale === "string" && /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/.test(platform.locale) ? platform.locale : "en-US";
+installIntl(g, language);
+g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language, languages: [language], clipboard: undefined, maxTouchPoints: viewport.coarse ? 5 : 0 };
 Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
 Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
 // The screen's pixels per CSS px: the backend's scale (platform.dpr:
@@ -991,6 +1348,15 @@ function buttonType(el) {
   if (el.localName === "input" && /^(button|submit|reset|image)$/.test(el.type)) return el.type === "image" ? "submit" : el.type;
   return null;
 }
+// The focus fixup rule: a focused element removed from the page or
+// disabled loses the focus, quietly (no blur), and the body has it.
+function focusFixup() {
+  const el = document.__active;
+  if (!el || (el.isConnected && !disabledControl(el))) return;
+  el.removeAttribute?.("data-nui-focus");
+  el.removeAttribute?.("data-nui-focus-visible");
+  quietBlur();
+}
 // A form control that's disabled (itself, or in a disabled fieldset not in its first legend): it takes no clicks.
 function disabledControl(el) {
   if (!CONTROLS.has(el?.localName)) return false;
@@ -1018,43 +1384,154 @@ function activate(el, flags) {
   const [clientX, clientY] = lastPointer;
   lastPointer = [0, 0]; // one click's (a keyboard's or el.click()'s has none)
   const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
-  el.dispatchEvent(ev);
+  el.dispatchEvent(trusted(ev));
   if (undo) {
     if (ev.defaultPrevented) undo();
     else if (!radioWasOn) {
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(trusted(new Event("input", { bubbles: true })));
+      el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
     }
     return;
   }
   if (ev.defaultPrevented || isCheckable(el)) return;
   for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
     const tag = n.localName;
+    if (isFileInput(n)) { pickFile(n); return; }
     if (tag === "a") {
       const href = n.getAttribute("href") || "";
       if (href.startsWith("#")) location.hash = href;
       else if (/^https?:|^mailto:/.test(href)) g.oriel.openExternal(href).catch(() => {});
       return;
     }
+    // A details element's summary opens or closes it.
+    if (tag === "summary" && n.parentElement?.localName === "details") {
+      setDetailsOpen(n.parentElement, !n.parentElement.hasAttribute("open"));
+      return;
+    }
     if (tag === "label") {
       // The label clicks its control (which toggles a checkbox or radio).
       const ctl = n.htmlFor ? document.getElementById(n.getAttribute("for")) : n.querySelector("input, textarea, select, button");
       if (ctl && ctl !== el && !ctl.contains?.(el) && !disabledControl(ctl)) {
-        if (isCheckable(ctl)) activate(ctl, flags);
+        if (isCheckable(ctl) || isFileInput(ctl)) activate(ctl, flags);
         else ctl.focus();
       }
       return;
     }
     const type = buttonType(n);
+    // popovertarget: the button shows, hides or toggles that popover.
+    if (type && n.hasAttribute("popovertarget")) {
+      const target = document.getElementById(n.getAttribute("popovertarget"));
+      if (target && popoverState(target) && !disabledControl(n)) {
+        const action = (n.getAttribute("popovertargetaction") || "toggle").toLowerCase();
+        if (action === "show") showPopoverEl(target); else if (action === "hide") hidePopoverEl(target); else target.togglePopover();
+      }
+      return;
+    }
     if (type) {
       if (disabledControl(n)) return;
       const form = n.closest("form");
-      if (type === "submit" && form) submit(form);
+      if (type === "submit" && form) submit(form, n);
       else if (type === "reset" && form) reset(form);
       return;
     }
   }
 }
+// <input type=file>: its click opens the platform's file dialog (or, with
+// `capture` for images on a phone, the camera); the files picked become
+// its `files`, then "input" and "change"; a cancelled pick fires "cancel".
+const isFileInput = (el) => el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "file";
+const pickedFiles = new WeakMap(); // input → FileList
+const isDateInput = (el) => el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "date";
+function validDate(s) {
+  const m = /^(\d{4,})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const [y, mo, d] = [+m[1], +m[2], +m[3]];
+  return y > 0 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+}
+const picking = new WeakSet();
+// Extensions for the desktop dialogs' filter, from accept (".pdf",
+// "application/pdf", "image/*"): none means every file.
+const ACCEPT_EXTENSIONS = {
+  "image/*": ["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp"], "image/jpeg": ["jpg", "jpeg"], "image/png": ["png"],
+  "image/gif": ["gif"], "image/webp": ["webp"], "image/heic": ["heic"], "application/pdf": ["pdf"], "application/json": ["json"],
+  "text/plain": ["txt"], "text/csv": ["csv"], "video/*": ["mp4", "mov", "webm", "mkv"], "audio/*": ["mp3", "wav", "ogg", "m4a", "flac"],
+};
+function acceptExtensions(accept) {
+  const out = [];
+  for (const raw of String(accept || "").split(",")) {
+    const a = raw.trim().toLowerCase();
+    if (!a) continue;
+    if (a.startsWith(".")) out.push(a.slice(1));
+    else if (ACCEPT_EXTENSIONS[a]) out.push(...ACCEPT_EXTENSIONS[a]);
+    else return []; // a type we can't name by extension: offer every file
+  }
+  return [...new Set(out)];
+}
+async function pickFile(input) {
+  if (disabledControl(input) || picking.has(input)) return;
+  picking.add(input);
+  try {
+    const accept = (input.getAttribute("accept") || "").toLowerCase();
+    const camera = input.hasAttribute("capture") && (platform.os === "android" || platform.os === "ios") &&
+      (!accept || accept.split(",").some((a) => a.trim().startsWith("image/")));
+    let file = null;
+    if (camera) {
+      let photo = null;
+      try { photo = await invoke("camera:capture", { source: "camera" }); } catch (e) {
+        // Closed, or the camera permission refused: no photo, as a cancel.
+        const why = String(e?.message || e);
+        if (why === "PermissionDenied") console.warn("file input: the camera permission was refused");
+        else if (why !== "Cancelled") throw e;
+      }
+      if (photo) {
+        const bytes = blobs.fromBase64(photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1));
+        file = new g.File([bytes], `photo.${photo.mime === "image/png" ? "png" : "jpg"}`, { type: photo.mime });
+      }
+    } else {
+      const picked = await invoke("nui:pick_file", { extensions: acceptExtensions(accept) });
+      const item = picked && await invoke("nui:picked_file", { token: picked.token });
+      if (item) file = blobs.droppedFile(item[1], item[0], item[2], item[3], item[4]);
+    }
+    if (!file) { input.dispatchEvent(trusted(new Event("cancel", { bubbles: true }))); return; }
+    pickedFiles.set(input, blobs.fileList([file]));
+    renderer?.mark(input, 1); // its label shows the file
+    input.dispatchEvent(trusted(new Event("input", { bubbles: true })));
+    input.dispatchEvent(trusted(new Event("change", { bubbles: true })));
+  } catch (e) {
+    console.error("file input:", e?.message || e);
+    input.dispatchEvent(trusted(new Event("cancel", { bubbles: true })));
+  } finally {
+    picking.delete(input);
+  }
+}
+// files, and value as browsers show it ("C:\fakepath\name"); value = ""
+// clears it (the only value a page may set). A date field's value is a
+// valid YYYY-MM-DD or "", as browsers sanitize it.
+{
+  const proto = Object.getPrototypeOf(document.createElement("input"));
+  const valueDesc = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(proto), "value");
+  Object.defineProperty(proto, "files", {
+    get() { return isFileInput(this) ? (pickedFiles.get(this) || blobs.fileList([])) : null; },
+    set(list) { if (isFileInput(this) && list && typeof list.length === "number") { pickedFiles.set(this, list); renderer?.mark(this, 1); } },
+    configurable: true,
+  });
+  if (valueDesc?.get) {
+    Object.defineProperty(proto, "value", {
+      get() {
+        if (!isFileInput(this)) return valueDesc.get.call(this);
+        const first = pickedFiles.get(this)?.[0];
+        return first ? "C:\\fakepath\\" + first.name : "";
+      },
+      set(v) {
+        if (isDateInput(this)) return valueDesc.set.call(this, validDate(String(v)) ? String(v) : "");
+        if (!isFileInput(this)) return valueDesc.set.call(this, v);
+        if (String(v) === "" && pickedFiles.delete(this)) renderer?.mark(this, 1);
+      },
+      configurable: true,
+    });
+  }
+}
+
 // Toggle a checkbox, or check a radio and uncheck the rest of its group;
 // returns what puts them back.
 function check(input) {
@@ -1071,16 +1548,24 @@ function check(input) {
   } else setNative(input, "checked", !input.checked);
   return () => { for (const [n, v] of before) setNative(n, "checked", v); };
 }
-function submit(form) {
+function submit(form, submitter = null) {
   const ev = new Event("submit", { bubbles: true, cancelable: true });
-  form.dispatchEvent(ev);
+  ev.submitter = submitter;
+  form.dispatchEvent(trusted(ev));
+  // method="dialog" (or a submitter's formmethod): the form's dialog
+  // closes, its returnValue the submitter's value.
+  const method = (submitter?.getAttribute?.("formmethod") || form.getAttribute("method") || "").toLowerCase();
+  if (!ev.defaultPrevented && method === "dialog") {
+    const d = form.closest("dialog");
+    if (d) closeDialog(d, submitter?.hasAttribute?.("value") ? submitter.getAttribute("value") : undefined);
+  }
 }
 // Form reset: the "reset" event, then (unless cancelled) each control back
 // to its default: a field's value attribute (a textarea's text), a box's
 // checkedness as authored, a select's selected options.
 function reset(form) {
   const ev = new Event("reset", { bubbles: true, cancelable: true });
-  form.dispatchEvent(ev);
+  form.dispatchEvent(trusted(ev));
   if (ev.defaultPrevented) return;
   for (const c of form.querySelectorAll("input, textarea, select")) {
     if (isCheckable(c)) {
@@ -1112,14 +1597,14 @@ function keyEvent(el, data, type = "keydown") {
   const [key, flags, repeat] = data;
   const init = { key, code: key, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
   const ev = new KeyboardEvent(type, init);
-  (el || document.body).dispatchEvent(ev);
+  (el || document.body).dispatchEvent(trusted(ev));
   if (!ev.defaultPrevented) fireWindow(ev);
   // keypress after a keydown let through, for a character or Enter (not
   // with Control or Command); WebKit's also for Escape, and on macOS with
   // Command. Preventing it keeps the character out too.
   if (type === "keydown" && !ev.defaultPrevented && keypressFor(key, init)) {
     const press = new KeyboardEvent("keypress", init);
-    (el || document.body).dispatchEvent(press);
+    (el || document.body).dispatchEvent(trusted(press));
     if (!press.defaultPrevented) fireWindow(press);
     if (press.defaultPrevented) return true;
   }
@@ -1128,11 +1613,18 @@ function keyEvent(el, data, type = "keydown") {
   // checkbox or a radio on keyup (a keydown prevented cancels it); the
   // arrows move a radio group's check.
   const mods = init.ctrlKey || init.altKey || init.metaKey;
+  // Escape closes the topmost auto popover, else cancels the top modal
+  // dialog (unless the key was taken).
+  if (type === "keydown" && key === "Escape" && !ev.defaultPrevented) {
+    const top = openModals()[openModals().length - 1];
+    if (top && autoPopover(top)) { hidePopoverEl(top); return true; }
+    if (topModal()) { cancelDialog(topModal()); return true; }
+  }
   if (el && !mods && !disabledControl(el)) {
     if (type === "keydown" && key === " ") spacePress = ev.defaultPrevented ? null : el;
     if (!ev.defaultPrevented) {
       const link = (el.localName === "a" && el.hasAttribute("href")) || el.localName === "summary";
-      if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el), link, isCheckable(el))) {
+      if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el) || isFileInput(el), link, isCheckable(el))) {
         if (key === " ") spacePress = null;
         activate(el, flags);
         return true;
@@ -1160,7 +1652,7 @@ function keyEvent(el, data, type = "keydown") {
   // submitted.
   if (type === "keydown" && !ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
     if (changeField(el)) {
-      el.dispatchEvent(inputEvent("beforeinput", "insertLineBreak", null, true));
+      el.dispatchEvent(trusted(inputEvent("beforeinput", "insertLineBreak", null, true)));
       fireChange(el);
     }
     const form = el.closest("form");
@@ -1212,10 +1704,11 @@ const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex]
 function focusKind(el) {
   return textLike(el) ? 0 : CONTROLS.has(el.localName) ? 1 : 2;
 }
-function tabCandidates() {
+// Within `scope`: the top modal dialog's, the rest of the page being inert.
+function tabCandidates(scope = topModal() || document) {
   const els = [], spec = [], groups = new Map(); // form (or document) → name → group number
   let groupCount = 0;
-  for (const el of document.querySelectorAll(FOCUSABLE)) {
+  for (const el of scope.querySelectorAll(FOCUSABLE)) {
     // A missing or invalid tabindex (not an integer a 32-bit int holds,
     // as HTML parses it): none, if the element is focusable itself.
     const index = parseInt(el.getAttribute("tabindex"), 10);
@@ -1292,6 +1785,8 @@ function tabFocus(back) {
   const next = els[at];
   keyboardFocus = true;
   next.focus();
+  // A text field Tab enters has its text selected, as browsers do.
+  if (textField(next) && next.localName !== "textarea" && !next.isContentEditable && typeof next.select === "function") next.select();
   next.scrollIntoView({ block: "nearest" });
   return true;
 }
@@ -1324,7 +1819,7 @@ function changedButton(bits) {
 // still bubbles (unless the document forwards its type there already).
 // True when it was prevented.
 function fireAt(target, ev) {
-  target.dispatchEvent(ev);
+  target.dispatchEvent(trusted(ev));
   if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
     // The dispatch is over (the native DOM clears its target then): the
     // window's listeners still see the element, as in a browser.
@@ -1345,6 +1840,7 @@ function pointerEvent(el, data) {
   if (phase === "down" || !target?.isConnected) target = el || document.documentElement || document.body;
   if (phase === "down") blankPress.set(pointerId, !el && buttons === 1);
   if (phase === "down") captured.set(pointerId, target);
+  if (phase === "down") lightDismiss(el);
   else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
   const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
   const held = heldButtons.get(pointerId) || 0;
@@ -1412,7 +1908,7 @@ function hoverEvents(from, to) {
     const ev = new Event(type, { bubbles, cancelable: bubbles });
     Object.defineProperty(ev, "relatedTarget", { value: related, configurable: true });
     for (const k of ["clientX", "clientY", "pageX", "pageY", "screenX", "screenY", "button", "buttons"]) Object.defineProperty(ev, k, { value: 0, configurable: true });
-    target.dispatchEvent(ev);
+    target.dispatchEvent(trusted(ev));
   };
   for (const prefix of ["pointer", "mouse"]) {
     fire(from, prefix + "out", true, to);
@@ -1528,6 +2024,10 @@ const ownSlot = (name) => {
 };
 const sheetOf = ownSlot("sheet"); // <style>/<link> → its CSSStyleSheet
 
+// An app asset's name from a page URL ("./styles.css?v=8" → "styles.css"):
+// the query and fragment don't name another file, as a server ignores a
+// cache-busting query.
+const assetName = (url) => String(url).replace(/[?#].*$/, "").replace(/^\.?\//, "");
 function isSheetLink(el) {
   const rel = el.getAttribute("rel") || "";
   return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");
@@ -1540,10 +2040,10 @@ function ownText(el, booting) {
   const href = el.getAttribute("href");
   let got = linkCss.get(el);
   if (!got || got.href !== href) {
-    const css = host.asset(href.replace(/^\.?\//, "")) ?? null;
+    const css = host.asset(assetName(href)) ?? null;
     linkCss.set(el, (got = { href, css }));
     if (css === null) console.warn(`stylesheet not found: ${href}`);
-    if (!booting) queueMicrotask(() => el.dispatchEvent(new Event(css === null ? "error" : "load")));
+    if (!booting) queueMicrotask(() => el.dispatchEvent(trusted(new Event(css === null ? "error" : "load"))));
   }
   return got.css;
 }
@@ -1560,7 +2060,7 @@ function pageSheets(booting) {
     // the text changes.
     const css = sheet ? sheet.__css(text) : text;
     if (!css) continue;
-    const path = el.localName === "link" ? el.getAttribute("href").replace(/^\.?\//, "") : undefined;
+    const path = el.localName === "link" ? assetName(el.getAttribute("href")) : undefined;
     out.push({ owner: el, css, path });
   }
   return out;
@@ -1703,7 +2203,7 @@ const oriel = {
       renderer = new Renderer(document, engine, host);
       // The accessibility tree, sent while an assistive technology asks.
       a11y = new A11y(renderer, host, document);
-      renderer.afterRender = () => a11y.update();
+      renderer.afterRender = () => { focusFixup(); a11y.update(); };
       // A <style> or <link> added, removed or changed later (CSS-in-JS,
       // a dev server's styles): read at the next render. Only the boot's
       // sheets go through the process's parsed-sheet cache.
@@ -1717,6 +2217,8 @@ const oriel = {
         if (active) out.push(active);
         return out;
       };
+      // The modal dialogs over the page, bottom to top (render.js draws them last).
+      renderer.topLayer = () => openModals();
       // What changed, for the next render (render.js: only that is made again).
       renderer.observer = new MutationObserver((records) => renderer.note(records));
       renderer.observer.__nuiConnectedOnly = true;
@@ -1729,13 +2231,13 @@ const oriel = {
       // The page's scripts, in order, at the top level (like <script> tags).
       for (const s of document.querySelectorAll("script")) {
         const src = s.getAttribute("src");
-        const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
+        const code = src ? host.asset(assetName(src)) : s.textContent;
         if (!code) { if (src) console.warn(`script not found: ${src}`); continue; }
         if (s.getAttribute("type") === "module") {
           // An ES module (Vite's output): its imports and import() load from
           // the app's assets; a failure shows up as a rejected promise.
           try {
-            Promise.resolve(hostRun.module(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+            Promise.resolve(hostRun.module(src ? assetName(src) : "inline.js", code)).catch((e) => console.error(e));
           } catch (e) { console.error(e); }
           continue;
         }
@@ -1745,7 +2247,7 @@ const oriel = {
       // The fonts the rules use, loaded while the window is idle.
       if (host.warmFonts) { try { host.warmFonts(fontSpecs(engine.rules)); } catch (e) { console.error(e); } }
       const b3 = P && P();
-      document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
+      document.dispatchEvent(trusted(new Event("DOMContentLoaded", { bubbles: true })));
       fireWindow(new Event("load"));
       watchThemeColor();
       if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
@@ -1773,7 +2275,7 @@ const oriel = {
           renderer.native.set(id, value);
           setNative(el, "value", value);
           edited.add(el);
-          el.dispatchEvent(inputEvent("input", inputType, text, false));
+          el.dispatchEvent(trusted(inputEvent("input", inputType, text, false)));
           return false;
         }
         // An edit a native field is about to make: data [inputType, data].
@@ -1781,14 +2283,14 @@ const oriel = {
         case "beforeinput": {
           if (!el || !Array.isArray(data)) return false;
           const ev = inputEvent("beforeinput", data[0], data[1], true);
-          el.dispatchEvent(ev);
+          el.dispatchEvent(trusted(ev));
           return ev.defaultPrevented;
         }
         case "change": {
           if (!el) return false;
           renderer.native.set(id, data);
           setNative(el, "value", data);
-          el.dispatchEvent(new Event("change", { bubbles: true }));
+          el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
           return false;
         }
         case "key": {
@@ -1855,7 +2357,7 @@ const oriel = {
           const f = data[4] | 0;
           const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button, buttons, shiftKey: !!(f & 1), ctrlKey: !!(f & 2), altKey: !!(f & 4), metaKey: !!(f & 8) });
           const on = el || document.body;
-          on.dispatchEvent(ev);
+          on.dispatchEvent(trusted(ev));
           // The window's listeners see the element (as pointerEvent's fire).
           if (ev.target !== on) Object.defineProperty(ev, "target", { value: on, configurable: true });
           if (!ev.defaultPrevented) fireWindow(ev);
@@ -1872,7 +2374,7 @@ const oriel = {
         }
         case "press": markChain("data-nui-active", el); return false;
         case "release": markChain("data-nui-active", null); return false;
-        case "back": if (!history.length) return false; g.history.back(); return true;
+        case "back": return historyBack();
         // A drag from the system over the page, or its drop (dnd.js): an
         // effect mask (copy 1, move 2, link 4), not a bool.
         case "drag": {
@@ -1894,12 +2396,12 @@ const oriel = {
       for (const [id, top] of list) {
         if (id === -1) {
           const ev = new Event("scroll", { bubbles: true });
-          document.dispatchEvent(ev);
+          document.dispatchEvent(trusted(ev));
           fireWindow(ev);
           continue;
         }
         const el = renderer?.elementFor(id);
-        if (el) el.dispatchEvent(new Event("scroll", { bubbles: false }));
+        if (el) el.dispatchEvent(trusted(new Event("scroll", { bubbles: false })));
       }
     });
   },
@@ -1933,10 +2435,18 @@ const oriel = {
   resize(w, h, dark) {
     guard(() => {
       const before = mediaSnapshot();
+      const shrank = h < viewport.height;
       Object.assign(viewport, { width: w, height: h, dark: !!dark });
       if (renderer) renderer.markAll();
       fireWindow(new Event("resize"));
       mediaChanged(before);
+      // The keyboard came up over a phone's page: the field being typed in
+      // scrolls into what's left, as Chrome and Safari bring it into view.
+      const a = document.__active;
+      if (shrank && renderer && (platform.os === "android" || platform.os === "ios") && (textField(a) || a?.isContentEditable)) {
+        renderer.render();
+        a.scrollIntoView({ block: "nearest" });
+      }
     });
   },
   // A message for the page from a platform that posts JSON (Android's

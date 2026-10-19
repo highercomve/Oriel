@@ -26,6 +26,7 @@ const internal = @import("internal.zig");
 const extensions = @import("extensions/runtime.zig");
 const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
 const camera_page = @import("../modules/camera/page.zig");
+const dialog_page = @import("../modules/dialog/page.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -235,6 +236,8 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     if (system_ai_bridge.isAsyncCommand(cmd)) return true;
     // oriel.camera.capturePhoto waits for the user.
     if (std.mem.eql(u8, cmd, camera_page.command)) return true;
+    // A native page's <input type=file> waits for the user too.
+    if (std.mem.eql(u8, cmd, dialog_page.pick_command)) return true;
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
     comptime checkAsyncCommands(Commands, list);
@@ -479,6 +482,11 @@ pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, reques
         if (@import("build_options").camera) {
             return camera_page.capture(io orelse return error.Unavailable, arena, request.args);
         } else return error.Unsupported;
+    }
+    if (std.mem.eql(u8, request.cmd, dialog_page.pick_command)) {
+        // A native page's <input type=file>: the dialog module, when built.
+        const opts = @import("build_options");
+        if (opts.native_ui and opts.dialog) return dialog_page.pick(arena, request.args) else return error.Unsupported;
     }
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);

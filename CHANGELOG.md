@@ -2,6 +2,113 @@
 
 Notable changes in Oriel releases.
 
+## [0.18.0] — 2026-10-19
+
+The native renderer (`-Dnative_ui`) runs full apps that were written for a
+web view: dialogs, disclosures, the session history, file and camera
+inputs, date pickers, popovers, `Intl`, and the drawing such an app's CSS
+asks for, drawn to match the web view build on Linux and Android.
+
+### Added
+
+- `<dialog>`: `show()`, `showModal()` (the top layer over every
+  `z-index`, with its `::backdrop`; `:modal`; the page outside inert, Tab
+  kept inside), `close()` and `requestClose()`, `returnValue`, `cancel` on
+  Escape and the platform's back, `close` after it, the focus back where it
+  was, `method=dialog` forms.
+- `<details>` and `<summary>`: closed, only the summary shows, with its
+  disclosure triangle; a click, Enter or `open` toggles it and fires
+  `toggle`.
+- The Popover API: `popover`, `showPopover()`, `hidePopover()`,
+  `togglePopover()`, `popovertarget` buttons, `:popover-open`,
+  `beforetoggle` and `toggle`; auto popovers close on Escape, a press
+  outside or another auto popover.
+- The session history: `history.pushState`, `replaceState`, `state`,
+  `back`, `forward`, `go`, `popstate` and `hashchange`; the platform's
+  back closes a modal dialog, then walks the history.
+- `<input type=file>`: the platform's file dialog (`accept` narrows it on
+  the desktops), or with `capture` on a phone the camera; the pick is
+  `files[0]` (read lazily, as a dropped file), then `input` and `change`;
+  `cancel` when there's none. New page commands `nui:pick_file` and
+  `nui:picked_file` (src/modules/dialog/page.zig).
+- `<input type=date>`: the platform's date picker on every platform (a
+  `GtkCalendar` popover, the Date and Time Picker control, an
+  `NSDatePicker` popover, a `UIDatePicker`, `DatePickerDialog`), the value
+  `YYYY-MM-DD`, the date shown in the user's format.
+- `Intl`: `NumberFormat`, `DateTimeFormat`, `Collator`, `PluralRules` and
+  the `toLocale*String` and `localeCompare` methods over them (English,
+  Spanish, Portuguese, French, German and Italian data, matching ICU's
+  output for the common options); `navigator.language` is the user's on
+  Linux and Android.
+- `new Image()` and `<img>`: `naturalWidth`/`naturalHeight` from the file's
+  header, `complete`, `decode()`, `load` and `error`.
+- `conic-gradient()` backgrounds (pie and donut charts); `background-image`
+  gradients with `background-size`, `background-position` and
+  `no-repeat`; `:empty` in style sheets; an `appearance: none` checkbox's
+  `::before` and `::after` (a switch's knob); `form.elements`,
+  `requestSubmit(submitter)` and `submit` events' `submitter`;
+  `datalist.options`; `env()` (the safe-area insets are 0).
+- `grid-column` places grid items (`1 / -1`, `span N`, a start line), as
+  browsers auto-place them row by row; absolutely positioned children take
+  no cell.
+- `::placeholder` (and `::-webkit-input-placeholder`) colors a field's
+  placeholder; without one it's the platform browser's (WebKit's
+  `darkgray`, Chrome's `#757575`).
+- Every CSS named color (`darkgray`, `crimson`, `rebeccapurple`…), not a
+  dozen.
+- `alert`, `confirm` and `prompt` answer as a browser with its dialogs
+  suppressed (they would block the UI thread) and log a warning.
+- Events the runtime fires are `isTrusted`; a promise rejected with no
+  handler is logged.
+
+### Fixed
+
+- The page starts after the app's `setup` on the desktops, as a web
+  view's page does, so its first commands see what `setup` made (a tray).
+- A block-level button centres its content only in its height (its
+  `text-align` places the text); `justify-content` and gaps apply to flex
+  and grid boxes only. The UA sheet centres a button's text.
+- A select with `appearance: none` hides the platform's arrow when the
+  page draws its own beside it; GTK's drop-down takes new options.
+- Stylesheet and script links with a query (`styles.css?v=8`) load.
+- SVG icons follow the page's CSS `fill`, `stroke` and `stroke-width` on
+  the `<svg>`; an inline `::before`/`::after` text stays on its line.
+- Android: fields inside a modal dialog show; a border on only some sides
+  of a rotated box no longer draws hairlines on the others.
+- A focused control that gets disabled or leaves the page loses the focus
+  (the focus fixup rule), so its focus ring goes.
+- `matches()`, `closest()` and `querySelector()` know `:focus`,
+  `:focus-visible`, `:hover` and `:active`.
+- A modal dialog with `margin: auto`, a set width and an auto height is
+  centred, as tall as its content's room up to its `max-height`.
+- Grid `fr` columns stay equal beside padded cells (a partial last row
+  of `repeat(auto-fit, …)`), and an auto-fit grid's column count follows
+  its laid-out width.
+- `inline-flex` and `inline-grid` lay their children out as `flex` and
+  `grid` do.
+- Line heights are in WebKit's 1/64 px units, so text sits on the same
+  pixel rows as the web view's; SVG elements have
+  `getBoundingClientRect()`.
+- GTK: text fields and selects take the page's `font-weight`, style and
+  family, and place their text where WebKit does; `focus()` keeps a field's
+  selection (Tab still selects its text); a field under a modal's backdrop
+  shows its text, dimmed; a date shows its year in full; text fields use
+  WebKitGTK's 1px padding and select widths leave room for the arrow only
+  when it's drawn; `gtk-interface-color-scheme` (GTK 4.20, the desktop's
+  light or dark) sets `prefers-color-scheme`, and a change of it applies
+  at once.
+- Android: a date shows its year in full, as Chrome does; a one-line
+  field shows its text from the start until it's focused, and again once
+  left; a field under a modal's backdrop stays drawn there, dimmed.
+- A transparent box (`opacity: 0`, a faded-out toast) no longer hides the
+  fields under it (Android cut a select's label to a sliver; GTK and
+  Windows hid the field).
+- `desktop-entry-release` / `desktop-entry` install what the packages put
+  next to the executable (`libggml-cuda.so`, `libggml-vulkan.so`,
+  `contents.files`), so an app installed that way finds its GPU backends.
+- Phones: when the keyboard comes up, the focused field scrolls into what's
+  left of the page, as Chrome and Safari bring it into view.
+
 ## [0.17.3] — 2026-10-17
 
 ### Fixed

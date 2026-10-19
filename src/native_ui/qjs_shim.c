@@ -165,6 +165,30 @@ static void report(JSContext *ctx) {
     JS_FreeValue(ctx, exc);
 }
 
+// A promise rejected with no handler (an async function's exception): to
+// the log, as a browser's console reports it ("Uncaught (in promise)").
+static void nui_rejection(JSContext *ctx, JSValueConst promise, JSValueConst reason, bool is_handled, void *opaque) {
+    (void)promise; (void)opaque;
+    if (is_handled) return;
+    size_t len = 0;
+    const char *msg = JS_ToCStringLen(ctx, &len, reason);
+    char buf[4096];
+    size_t n = (size_t)snprintf(buf, sizeof buf, "Uncaught (in promise) %.*s", msg ? (int)len : 0, msg ? msg : "");
+    if (msg) JS_FreeCString(ctx, msg);
+    else JS_FreeValue(ctx, JS_GetException(ctx)); // its toString threw
+    if (JS_IsObject(reason) && n < sizeof buf) {
+        JSValue stack = JS_GetPropertyStr(ctx, reason, "stack");
+        if (JS_IsString(stack)) {
+            size_t slen = 0;
+            const char *st = JS_ToCStringLen(ctx, &slen, stack);
+            if (st) { n += (size_t)snprintf(buf + n, sizeof buf - n, "\n%.*s", (int)slen, st); JS_FreeCString(ctx, st); }
+        }
+        JS_FreeValue(ctx, stack);
+    }
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    oriel_nui_log(opaque_of(ctx), 3, buf, n);
+}
+
 // The app's CSP's refusals for this engine (engine.zig): 0 of the page's
 // eval, 1 of inline event handlers; their messages, or NULL (allowed).
 extern const char *oriel_nui_csp(void *opaque, int which);
@@ -191,6 +215,22 @@ static JSValue h_asset(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     JS_FreeCString(ctx, p);
     if (!ok) return JS_UNDEFINED;
     return JS_NewStringLen(ctx, out, out_len);
+}
+
+// An app asset's bytes as an ArrayBuffer (an image's header: its size),
+// undefined when there's none; host.asset decodes text.
+static JSValue h_asset_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1) return JS_UNDEFINED;
+    size_t len = 0;
+    const char *p = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!p) return JS_EXCEPTION;
+    const char *out = NULL;
+    size_t out_len = 0;
+    int ok = oriel_nui_asset(opaque_of(ctx), p, len, &out, &out_len);
+    JS_FreeCString(ctx, p);
+    if (!ok) return JS_UNDEFINED;
+    return JS_NewArrayBufferCopy(ctx, (const uint8_t *)out, out_len);
 }
 
 static JSValue h_invoke(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -1146,6 +1186,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     JS_SetMaxStackSize(rt, NUI_MAX_STACK);
     JS_SetMemoryLimit(rt, NUI_MEMORY_LIMIT);
     JS_SetInterruptHandler(rt, nui_interrupt, self);
+    JS_SetHostPromiseRejectionTracker(rt, nui_rejection, NULL);
     JS_SetModuleLoaderFunc(rt, nui_normalize, nui_load_module, NULL);
 
     JSValue global = JS_GetGlobalObject(ctx);
@@ -1154,6 +1195,7 @@ void *oqjs_new(void *opaque, const char *platform_json, const char *label, const
     JSValue host = JS_NewObjectProto(ctx, JS_NULL);
     set_fn(ctx, host, "log", h_log, 2);
     set_fn(ctx, host, "asset", h_asset, 1);
+    set_fn(ctx, host, "assetBytes", h_asset_bytes, 1);
     set_fn(ctx, host, "invoke", h_invoke, 3);
     set_fn(ctx, host, "timer", h_timer, 2);
     set_fn(ctx, host, "ops", h_ops, 1);

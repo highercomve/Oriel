@@ -62,12 +62,37 @@ extern fn gtk_widget_queue_draw(w: *Widget) void;
 extern fn gtk_widget_queue_allocate(w: *Widget) void;
 extern fn gtk_widget_set_focusable(w: *Widget, focusable: c_int) void;
 extern fn gtk_widget_grab_focus(w: *Widget) c_int;
+extern fn gtk_entry_grab_focus_without_selecting(e: *Widget) c_int;
 extern fn gtk_widget_set_visible(w: *Widget, visible: c_int) void;
 extern fn gtk_widget_set_overflow(w: *Widget, overflow: c_int) void;
 extern fn gtk_widget_set_sensitive(w: *Widget, sensitive: c_int) void;
 extern fn gtk_editable_set_editable(w: *Widget, editable: c_int) void;
 extern fn gtk_check_button_new() *Widget;
 extern fn gtk_button_new_with_label(label: [*:0]const u8) *Widget;
+// <input type=date>: a calendar in a popover under the field.
+extern fn gtk_popover_new() *Widget;
+extern fn gtk_popover_set_child(p: *Widget, child: *Widget) void;
+extern fn gtk_popover_popup(p: *Widget) void;
+extern fn gtk_popover_popdown(p: *Widget) void;
+extern fn gtk_widget_set_parent(w: *Widget, parent: *Widget) void;
+extern fn gtk_widget_unparent(w: *Widget) void;
+extern fn gtk_calendar_new() *Widget;
+extern fn gtk_calendar_select_day(c: *Widget, date: *anyopaque) void;
+extern fn gtk_calendar_get_date(c: *Widget) *anyopaque;
+extern fn gtk_box_new(orientation: c_int, spacing: c_int) *Widget;
+extern fn gtk_box_append(b: *Widget, child: *Widget) void;
+extern fn gtk_entry_set_icon_from_icon_name(e: *Widget, pos: c_int, name: ?[*:0]const u8) void;
+extern fn g_date_time_new_local(year: c_int, month: c_int, day: c_int, hour: c_int, minute: c_int, seconds: f64) ?*anyopaque;
+extern fn g_date_time_new_now_local() ?*anyopaque;
+extern fn g_date_time_get_year(dt: *anyopaque) c_int;
+extern fn g_date_time_get_month(dt: *anyopaque) c_int;
+extern fn g_date_time_get_day_of_month(dt: *anyopaque) c_int;
+extern fn g_date_time_format(dt: *anyopaque, format: [*:0]const u8) ?[*:0]u8;
+extern fn nl_langinfo(item: c_int) [*:0]const u8;
+/// nl_langinfo's D_FMT: the locale's date pattern (glibc and musl, the BSDs).
+const D_FMT: c_int = if (@import("builtin").os.tag == .linux) 0x20029 else 2;
+extern fn g_date_time_unref(dt: *anyopaque) void;
+extern fn g_strndup(str: [*]const u8, n: usize) ?*anyopaque;
 extern fn gtk_button_set_label(w: *Widget, label: [*:0]const u8) void;
 extern fn gtk_check_button_set_active(w: *Widget, active: c_int) void;
 extern fn gtk_check_button_set_inconsistent(w: *Widget, inconsistent: c_int) void;
@@ -115,6 +140,9 @@ extern fn gtk_text_buffer_get_text(b: *anyopaque, s: *[80]u8, e: *[80]u8, hidden
 extern fn gtk_drop_down_new_from_strings(strings: [*]const ?[*:0]const u8) *Widget;
 extern fn gtk_drop_down_get_selected(d: *Widget) c_uint;
 extern fn gtk_drop_down_set_selected(d: *Widget, pos: c_uint) void;
+extern fn gtk_drop_down_set_show_arrow(d: *Widget, show: c_int) void;
+extern fn gtk_drop_down_set_model(d: *Widget, model: ?*anyopaque) void;
+extern fn gtk_string_list_new(strings: [*]const ?[*:0]const u8) *anyopaque;
 extern fn gtk_gesture_click_new() *anyopaque;
 extern fn gtk_gesture_single_set_button(g: *anyopaque, button: c_uint) void;
 extern fn gtk_gesture_single_get_current_button(g: *anyopaque) c_uint;
@@ -269,6 +297,10 @@ extern fn pango_font_description_set_absolute_size(d: *PangoFontDescription, siz
 extern fn pango_font_description_set_weight(d: *PangoFontDescription, w: c_int) void;
 extern fn pango_font_description_set_style(d: *PangoFontDescription, s: c_int) void;
 extern fn pango_font_description_free(d: *PangoFontDescription) void;
+extern fn gtk_widget_get_visible(w: *Widget) c_int;
+/// A class's property by name, or null (an instance's class is its first word,
+/// G_OBJECT_GET_CLASS).
+extern fn g_object_class_find_property(class: *anyopaque, name: [*:0]const u8) ?*anyopaque;
 const PangoFontMetrics = opaque {};
 extern fn pango_context_get_metrics(ctx: *PangoContext, desc: ?*const PangoFontDescription, lang: ?*anyopaque) ?*PangoFontMetrics;
 extern fn pango_font_metrics_get_ascent(m: *PangoFontMetrics) c_int;
@@ -411,6 +443,8 @@ pub const Surface = struct {
     /// handler on it; null once either goes.
     scale_surface: ?*anyopaque = null,
     scale_handler: c_ulong = 0,
+    /// GtkSettings' color-scheme notifications (onThemeChanged).
+    theme_handlers: [2]c_ulong = .{ 0, 0 },
     /// The page in tiles kept from frame to frame (paintTiles), painted
     /// again when everything changed or under patches let go.
     tiles: std.ArrayList(?*GskRenderNode) = .empty,
@@ -556,7 +590,13 @@ pub const Surface = struct {
             s.engine.destroy();
             return err;
         };
-        s.engine.boot(s.dark, false);
+        if (gtk_settings_get_default()) |settings| {
+            s.theme_handlers[0] = g_signal_connect_data(settings, "notify::gtk-application-prefer-dark-theme", @ptrCast(&onThemeChanged), s, null, 0);
+            if (g_object_class_find_property(@as(*const *anyopaque, @ptrCast(@alignCast(settings))).*, "gtk-interface-color-scheme") != null)
+                s.theme_handlers[1] = g_signal_connect_data(settings, "notify::gtk-interface-color-scheme", @ptrCast(&onThemeChanged), s, null, 0);
+        }
+        // After the app's setup, as a web view page starts (Engine.bootSoon).
+        s.engine.bootSoon(s.dark, false);
         return s;
     }
 
@@ -565,6 +605,10 @@ pub const Surface = struct {
     /// theirs reaches the surface from here on (timers find no token).
     pub fn destroy(s: *Surface) void {
         _ = surfaces.remove(s.token);
+        if (gtk_settings_get_default()) |settings| for (&s.theme_handlers) |*h| {
+            if (h.* != 0) g_signal_handler_disconnect(settings, h.*);
+            h.* = 0;
+        };
         if (s.tick_id != 0) gtk_widget_remove_tick_callback(s.area, s.tick_id);
         s.tick_id = 0;
         if (s.warm_id != 0) _ = g_source_remove(s.warm_id);
@@ -636,9 +680,17 @@ pub const Surface = struct {
         while (it.next()) |sp| if (@as(*anyopaque, @ptrCast(sp.*.engine)) == engine) return sp.*.destroy();
     }
 
-    fn prefersDark() bool {
+    pub fn prefersDark() bool {
         if (g_getenv("ORIEL_COLOR_SCHEME")) |v| return std.mem.eql(u8, std.mem.span(v), "dark");
         const settings = gtk_settings_get_default() orelse return false;
+        // GTK 4.20's gtk-interface-color-scheme (the desktop's, as WebKitGTK
+        // follows it): DARK 2, LIGHT 3; else the older prefer-dark flag.
+        if (g_object_class_find_property(@as(*const *anyopaque, @ptrCast(@alignCast(settings))).*, "gtk-interface-color-scheme") != null) {
+            var scheme: c_int = 0;
+            g_object_get(settings, "gtk-interface-color-scheme", &scheme, @as(?*anyopaque, null));
+            if (scheme == 2) return true;
+            if (scheme == 3) return false;
+        }
         var dark: c_int = 0;
         g_object_get(settings, "gtk-application-prefer-dark-theme", &dark, @as(?*anyopaque, null));
         return dark != 0;
@@ -659,6 +711,12 @@ fn disconnectField(s: *Surface, id: i64, w: *Widget) void {
     disconnect(s, w);
     if (g_object_get_data(w, "oriel-focus")) |c| disconnect(s, c);
     if (g_object_get_data(w, "oriel-legacy")) |c| disconnect(s, c);
+    if (g_object_get_data(w, "oriel-date-click")) |c| disconnect(s, c);
+    if (g_object_get_data(w, "oriel-date-popover")) |p| {
+        const pop = widgetOf(p);
+        if (g_object_get_data(pop, "oriel-calendar")) |c| disconnect(s, c);
+        if (g_object_get_data(pop, "oriel-clear")) |c| disconnect(s, c);
+    }
     const n = s.engine.tree.get(id) orelse return;
     if (n.kind == .textarea) disconnect(s, gtk_text_view_get_buffer(w));
 }
@@ -723,6 +781,24 @@ fn fontMetricsFamily(ctx: *anyopaque, size: f32, mono: bool, family: []const u8,
 /// its controls: `accent` (the accent color, [r, g, b]: its focus ring)
 /// and `uiFont` (gtk-font-name's family and size in whole px: its form
 /// controls' font). Owned by the caller; null: as is.
+/// The locale from LC_ALL, LC_MESSAGES or LANG ("es_CL.UTF-8") as a BCP 47
+/// tag ("es-CL"), in `buf`; null for C/POSIX or anything else.
+fn localeTag(buf: []u8) ?[]const u8 {
+    for ([_][*:0]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" }) |name| {
+        const value = std.mem.span(std.c.getenv(name) orelse continue);
+        if (value.len == 0) continue;
+        const end = std.mem.indexOfAny(u8, value, ".@") orelse value.len;
+        const raw = value[0..end];
+        if (raw.len < 2 or raw.len > buf.len or std.mem.eql(u8, raw, "C") or std.mem.eql(u8, raw, "POSIX")) return null;
+        for (raw, 0..) |c, i| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') return null;
+            buf[i] = if (c == '_') '-' else c;
+        }
+        return buf[0..raw.len];
+    }
+    return null;
+}
+
 fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:0]const u8 {
     const trimmed = std.mem.trimEnd(u8, platform_json, " \n");
     if (trimmed.len < 2 or trimmed[trimmed.len - 1] != '}') return null;
@@ -734,6 +810,9 @@ fn withLook(gpa: std.mem.Allocator, platform_json: [:0]const u8, w: *Widget) ?[:
     // The controls hosted as native widgets (docs/design/native-controls-a11y-design.md).
     out.writer.print("{s}\"controls\":[\"check\",\"button\"]", .{sep}) catch return null;
     sep = ",";
+    // The user's language (navigator.language, Intl's default).
+    var locale_buf: [32]u8 = undefined;
+    if (localeTag(&locale_buf)) |tag| out.writer.print(",\"locale\":\"{s}\"", .{tag}) catch return null;
     var rgba: GdkRGBA = undefined;
     if (gtk_style_context_lookup_color(gtk_widget_get_style_context(w), "accent_bg_color", &rgba) != 0) {
         out.writer.print("{s}\"accent\":[{d},{d},{d}]", .{ sep, @round(rgba.red * 255), @round(rgba.green * 255), @round(rgba.blue * 255) }) catch return null;
@@ -909,10 +988,14 @@ fn fontXHeight(ctx: *anyopaque, size: f32, mono: bool, family: []const u8) ?f32 
 fn lineBox(s: *Surface, props: *const tree_mod.Props) ?f32 {
     if (props.lh) |lh| if (lh < 1) return null;
     if (textExtent(s, props)) |e| return e.top + e.bottom;
-    // A CSS line-height in whole pixels, as WebKit (the WebView here, and
-    // WKWebView) keeps it: 145% of 16px is 23 (Chromium: 23.2).
-    if (props.lh) |lh| return @floor(lh);
+    if (props.lh) |lh| return layoutUnits(lh);
     return null;
+}
+
+/// A CSS line-height as WebKitGTK keeps it: in its layout units, 1/64 px
+/// (measured: 13px × 1.35 is 17.546875, 145% of 16px is 23.1875).
+fn layoutUnits(px: f32) f32 {
+    return @floor(px * 64) / 64;
 }
 
 /// Above and below a line's baseline (px).
@@ -928,9 +1011,10 @@ fn fontExtent(s: *Surface, size: f32, mono: bool, family: ?[]const u8, lh: ?f32)
     const a = @round(m[0]);
     const d = @round(m[1]);
     if (lh) |h| if (h >= 1) {
-        // The half-leading above is floored, as WebKit does (24px over
-        // 14 + 5: 2 above, 3 below).
-        const leading = @floor(h) - (a + d);
+        // The half-leading above is floored to a pixel, as WebKit places
+        // the text (24px over 14 + 5: 2 above, 3 below); the rest of the
+        // line, fractional, below.
+        const leading = layoutUnits(h) - (a + d);
         const up = @floor(leading / 2);
         return .{ .top = a + up, .bottom = d + leading - up };
     };
@@ -1088,7 +1172,10 @@ fn focus(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     // A drawn element (a button, a link, tabindex): the keys go to the
     // page's view, not to the field that had them.
-    _ = gtk_widget_grab_focus(s.fields.get(node.id) orelse s.area);
+    const w = s.fields.get(node.id) orelse s.area;
+    // A one-line field keeps its selection, as a browser's focus() does
+    // (GTK's would select all; Tab's select-all is the page's, main.js).
+    _ = if (node.kind == .input and node.props.range == null) gtk_entry_grab_focus_without_selecting(w) else gtk_widget_grab_focus(w);
 }
 
 /// New props: a text node's size is measured again.
@@ -1104,7 +1191,11 @@ fn textChanged(ctx: *anyopaque, node: *Node) void {
 fn removed(ctx: *anyopaque, node: *Node) void {
     const s = surfaceOf(ctx);
     dropPaintLayout(s, node.id);
-    if (s.fields.fetchRemove(node.id)) |kv| gtk_overlay_remove_overlay(s.overlay, clipOf(kv.value));
+    if (s.fields.fetchRemove(node.id)) |kv| {
+        // A date field's calendar popover goes before the field.
+        if (g_object_get_data(kv.value, "oriel-date-popover")) |p| gtk_widget_unparent(widgetOf(p));
+        gtk_overlay_remove_overlay(s.overlay, clipOf(kv.value));
+    }
     _ = s.field_rects.remove(node.id);
     if (s.images.fetchRemove(node.id)) |kv| kv.value.deinit();
     if (s.canvases.fetchRemove(node.id)) |kv| cairo_surface_destroy(kv.value.surf);
@@ -1167,7 +1258,8 @@ fn uncovered(s: *Surface, field: *Node, box: Rect) ?Rect {
         gone: bool = false,
         depth: usize = 0,
         fn visit(w: *@This(), n: *Node) void {
-            if (w.gone or n.props.vis == false) return;
+            // Nothing painted: hidden, or transparent (a faded-out toast).
+            if (w.gone or n.props.vis == false or (n.props.op orelse 1) <= 0) return;
             if (n == w.field) {
                 w.seen = true;
                 return;
@@ -1233,8 +1325,21 @@ fn onClipChildPosition(_: *Widget, child: *Widget, alloc: *GdkRectangle, data: ?
     const s = surfaceOf(data);
     const n = nodeOfWidget(s, child) orelse return 0;
     const fr = s.field_rects.get(n.id) orelse return 0;
-    alloc.* = .{ .x = gdkInt(fr.box.x - fr.vis.x), .y = gdkInt(fr.box.y - fr.vis.y), .width = @max(1, gdkInt(fr.box.w)), .height = @max(1, gdkInt(fr.box.h)) };
+    const box = lineOf(s, n, fr.box);
+    alloc.* = .{ .x = gdkInt(box.x - fr.vis.x), .y = gdkInt(box.y - fr.vis.y), .width = @max(1, gdkInt(box.w)), .height = @max(1, gdkInt(box.h)) };
     return 1;
+}
+
+/// A one-line field's text where WebKit puts it: a line of the font's
+/// height, centered in the content box (GTK would center its own,
+/// hinted line, a pixel or two higher). Other fields: their box.
+fn lineOf(s: *Surface, n: *const Node, box: Rect) Rect {
+    if (n.kind != .input and n.kind != .select) return box;
+    if (n.props.range != null) return box;
+    const m = unhintedMetrics(s, n.props.fz orelse 16, n.props.mono, n.props.ff) orelse return box;
+    const line = m[0] + m[1];
+    if (line >= box.h) return box;
+    return .{ .x = box.x, .y = box.y + @round((box.h - line) / 2), .w = box.w, .h = @ceil(line) };
 }
 
 /// Page geometry as GDK's ints: it can be huge (a 1e10px width, a far
@@ -1272,6 +1377,8 @@ fn syncFields(s: *Surface) void {
             switch (n.kind) {
                 .input => if (n.props.range != null) {
                     gtk_range_set_value(w, tree_mod.Range.of(n).parse(v));
+                } else if (isDateField(n)) {
+                    showDate(w, v);
                 } else gtk_editable_set_text(w, z.ptr),
                 .textarea => gtk_text_buffer_set_text(gtk_text_view_get_buffer(w), z.ptr, @intCast(z.len)),
                 .select => if (n.props.options) |opts| for (opts, 0..) |o, i| {
@@ -1281,6 +1388,11 @@ fn syncFields(s: *Surface) void {
             }
         }
         gtk_widget_set_sensitive(w, @intFromBool(!n.props.dis));
+        // appearance: none: the page draws the select's arrow.
+        if (n.kind == .select) gtk_drop_down_set_show_arrow(w, @intFromBool(!n.props.na));
+        // New options (a page fills its select after it was made): a new
+        // list, the page's value selected in it, without a change event.
+        if (n.kind == .select) syncOptions(s, w, n);
         // A native button: its label, every sync.
         if (n.kind == .button) {
             const label = if (n.props.runs) |runs| (if (runs.len > 0) runs[0].t else "") else "";
@@ -1296,7 +1408,7 @@ fn syncFields(s: *Surface) void {
         }
         // readonly: selectable and focusable, not editable.
         switch (n.kind) {
-            .input => if (n.props.range == null) gtk_editable_set_editable(w, @intFromBool(!n.props.ro)),
+            .input => if (n.props.range == null) gtk_editable_set_editable(w, @intFromBool(!n.props.ro and !isDateField(n))),
             .textarea => gtk_text_view_set_editable(w, @intFromBool(!n.props.ro)),
             else => {},
         }
@@ -1400,6 +1512,7 @@ fn makeField(s: *Surface, n: *Node) !*Widget {
                 gtk_entry_set_placeholder_text(e, z.ptr);
             }
             _ = g_signal_connect_data(@ptrCast(e), "changed", @ptrCast(&onEntryChanged), s, null, 0);
+            if (isDateField(n)) makeDateField(s, e);
             stripDropTargets(e);
             break :blk e;
         },
@@ -1512,10 +1625,12 @@ fn updateCss(s: *Surface) void {
             continue;
         }
         const c = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-        // The page's text color and size, on a dropdown's label and arrow too.
-        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label, .nui-f{d} arrow {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
-            n.id, n.id, n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, c[0], c[1], c[2],
+        // The page's text color, size and weight, on a dropdown's label and arrow too.
+        s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label, .nui-f{d} arrow {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); font-size: {d:.1}px; font-weight: {d:.0}; font-style: {s}; caret-color: rgba({d:.0},{d:.0},{d:.0},1); }}\n", .{
+            n.id, n.id, n.id, n.id, c[0], c[1], c[2], c[3], n.props.fz orelse 16, n.props.fwt orelse 400, if (n.props.it) "italic" else "normal", c[0], c[1], c[2],
         }) catch return;
+        if (n.props.ff) |family| s.css_text.print(a, ".nui-f{d}, .nui-f{d} text, .nui-f{d} label {{ font-family: '{s}'; }}\n", .{ n.id, n.id, n.id, resolveFamily(s, family) }) catch return;
+        if (n.props.phc) |p| s.css_text.print(a, ".nui-f{d} text > placeholder {{ color: rgba({d:.0},{d:.0},{d:.0},{d:.2}); opacity: 1; }}\n", .{ n.id, p[0], p[1], p[2], p[3] }) catch return;
     }
     s.css_text.append(a, 0) catch return;
     // The same as loaded (a sync with nothing new): loading it again would
@@ -1554,6 +1669,150 @@ fn onCheckToggled(c: *Widget, data: ?*anyopaque) callconv(.c) void {
     gtk_check_button_set_active(c, @intFromBool(n.props.on));
     s.updating = false;
     _ = s.engine.event(n.id, "click", "0");
+}
+
+// --- <input type=date> ------------------------------------------------------
+// A read-only entry showing the date in the locale's format; a click, Enter
+// or its calendar icon opens a GtkCalendar in a popover (and a Clear
+// button). The page's value is YYYY-MM-DD, kept on the entry.
+
+fn widgetOf(p: *anyopaque) *Widget {
+    return @ptrCast(@alignCast(p));
+}
+
+fn isDateField(n: *const Node) bool {
+    return n.kind == .input and n.props.range == null and if (n.props.itype) |t| std.mem.eql(u8, t, "date") else false;
+}
+
+fn makeDateField(s: *Surface, e: *Widget) void {
+    gtk_entry_set_icon_from_icon_name(e, 1, "x-office-calendar-symbolic"); // secondary
+    _ = g_signal_connect_data(@ptrCast(e), "icon-press", @ptrCast(&onDateIcon), s, null, 0);
+    _ = g_signal_connect_data(@ptrCast(e), "activate", @ptrCast(&onDateActivate), s, null, 0);
+    // In the capture phase: the entry's text claims its clicks otherwise.
+    const click = gtk_gesture_click_new();
+    gtk_event_controller_set_propagation_phase(click, 1);
+    _ = g_signal_connect_data(click, "pressed", @ptrCast(&onDateClick), s, null, 0);
+    gtk_widget_add_controller(e, click);
+    g_object_set_data(@ptrCast(e), "oriel-date-click", click);
+}
+
+/// The ISO date `iso` ("" for none) on the entry: kept, shown as "%x".
+fn showDate(e: *Widget, iso: []const u8) void {
+    // Replacing the data frees the last value (g_free).
+    g_object_set_data_full(@ptrCast(e), "oriel-date", g_strndup(iso.ptr, iso.len), &g_free);
+    const dt = isoDate(iso) orelse return gtk_editable_set_text(e, "");
+    defer g_date_time_unref(dt);
+    // The locale's date (%x), with the year in full as browsers show it.
+    var pattern: [64:0]u8 = undefined;
+    const shown = g_date_time_format(dt, fullYear(&pattern, std.mem.span(nl_langinfo(D_FMT)))) orelse return gtk_editable_set_text(e, "");
+    defer g_free(shown);
+    gtk_editable_set_text(e, shown);
+}
+
+/// `pattern` (a strftime date pattern) into `buf` with %y as %Y; "%x" when
+/// it doesn't fit or is empty.
+fn fullYear(buf: *[64:0]u8, pattern: []const u8) [*:0]const u8 {
+    if (pattern.len == 0 or pattern.len >= buf.len) return "%x";
+    @memcpy(buf[0..pattern.len], pattern);
+    buf[pattern.len] = 0;
+    var i: usize = 0;
+    while (i + 1 < pattern.len) : (i += 1) if (buf[i] == '%') {
+        if (buf[i + 1] == 'y') buf[i + 1] = 'Y';
+        i += 1;
+    };
+    return buf;
+}
+
+test fullYear {
+    var buf: [64:0]u8 = undefined;
+    try std.testing.expectEqualStrings("%d/%m/%Y", std.mem.span(fullYear(&buf, "%d/%m/%y")));
+    try std.testing.expectEqualStrings("%%y %Y", std.mem.span(fullYear(&buf, "%%y %Y")));
+    try std.testing.expectEqualStrings("%x", std.mem.span(fullYear(&buf, "")));
+}
+
+fn isoDate(iso: []const u8) ?*anyopaque {
+    if (iso.len != 10 or iso[4] != '-' or iso[7] != '-') return null;
+    const y = std.fmt.parseInt(c_int, iso[0..4], 10) catch return null;
+    const m = std.fmt.parseInt(c_int, iso[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(c_int, iso[8..10], 10) catch return null;
+    return g_date_time_new_local(y, m, d, 0, 0, 0);
+}
+
+fn onDateIcon(e: *Widget, _: c_int, data: ?*anyopaque) callconv(.c) void {
+    openDatePicker(surfaceOf(data), e);
+}
+fn onDateActivate(e: *Widget, data: ?*anyopaque) callconv(.c) void {
+    openDatePicker(surfaceOf(data), e);
+}
+fn onDateClick(ctrl: *anyopaque, _: c_int, _: f64, _: f64, data: ?*anyopaque) callconv(.c) void {
+    const e = gtk_event_controller_get_widget(ctrl) orelse return;
+    openDatePicker(surfaceOf(data), e);
+}
+
+fn openDatePicker(s: *Surface, e: *Widget) void {
+    const n = nodeOfWidget(s, e) orelse return;
+    if (n.props.dis or n.props.ro) return;
+    const pop: *Widget = if (g_object_get_data(e, "oriel-date-popover")) |p| widgetOf(p) else blk: {
+        const p = gtk_popover_new();
+        const box = gtk_box_new(1, 6); // vertical
+        const cal = gtk_calendar_new();
+        const clear = gtk_button_new_with_label("Clear");
+        gtk_box_append(box, cal);
+        gtk_box_append(box, clear);
+        gtk_popover_set_child(p, box);
+        gtk_widget_set_parent(p, e);
+        g_object_set_data(@ptrCast(cal), "oriel-entry", e);
+        g_object_set_data(@ptrCast(clear), "oriel-entry", e);
+        g_object_set_data(@ptrCast(p), "oriel-calendar", cal);
+        g_object_set_data(@ptrCast(p), "oriel-clear", clear);
+        _ = g_signal_connect_data(@ptrCast(cal), "day-selected", @ptrCast(&onDayPicked), s, null, 0);
+        _ = g_signal_connect_data(@ptrCast(clear), "clicked", @ptrCast(&onDateClear), s, null, 0);
+        g_object_set_data(@ptrCast(e), "oriel-date-popover", p);
+        break :blk p;
+    };
+    // The field's date selected (today when empty), not sent back.
+    const cal = widgetOf(g_object_get_data(pop, "oriel-calendar").?);
+    const iso: []const u8 = if (g_object_get_data(e, "oriel-date")) |v| std.mem.span(@as([*:0]const u8, @ptrCast(v))) else "";
+    if (isoDate(iso) orelse g_date_time_new_now_local()) |dt| {
+        defer g_date_time_unref(dt);
+        s.updating = true;
+        defer s.updating = false;
+        gtk_calendar_select_day(cal, dt);
+    }
+    gtk_popover_popup(pop);
+}
+
+/// A day picked: the page's value, "input" then "change", as a browser's picker.
+fn onDayPicked(cal: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    if (s.updating) return;
+    const e = widgetOf(g_object_get_data(cal, "oriel-entry") orelse return);
+    const dt = gtk_calendar_get_date(cal);
+    defer g_date_time_unref(dt);
+    var buf: [16]u8 = undefined;
+    const iso = std.fmt.bufPrint(&buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(g_date_time_get_year(dt))), @as(u32, @intCast(g_date_time_get_month(dt))), @as(u32, @intCast(g_date_time_get_day_of_month(dt))) }) catch return;
+    pickDate(s, e, iso);
+}
+
+fn onDateClear(b: *Widget, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    const e = widgetOf(g_object_get_data(b, "oriel-entry") orelse return);
+    pickDate(s, e, "");
+}
+
+fn pickDate(s: *Surface, e: *Widget, iso: []const u8) void {
+    const n = nodeOfWidget(s, e) orelse return;
+    s.updating = true;
+    showDate(e, iso);
+    s.updating = false;
+    if (g_object_get_data(e, "oriel-date-popover")) |p| gtk_popover_popdown(widgetOf(p));
+    const token = s.token;
+    const nid = n.id;
+    sendValue(s, n, "input", iso);
+    // The page may have closed the window or removed the field.
+    const again = surfaces.get(token) orelse return;
+    const n2 = again.engine.tree.get(nid) orelse return;
+    sendValue(again, n2, "change", iso);
 }
 
 fn onEntryChanged(e: *Widget, data: ?*anyopaque) callconv(.c) void {
@@ -1661,6 +1920,42 @@ fn onSliderEvent(controller: *anyopaque, event: *anyopaque, data: ?*anyopaque) c
     return 0;
 }
 
+/// The drop-down's options as the page has them now; `s.updating` is set.
+fn syncOptions(s: *Surface, w: *Widget, n: *Node) void {
+    const opts = n.props.options orelse &.{};
+    var h = std.hash.Wyhash.init(opts.len);
+    for (opts) |o| {
+        h.update(o[1]);
+        h.update("\x00");
+    }
+    const hash: usize = @truncate(h.final() | 1);
+    if (@intFromPtr(g_object_get_data(w, "oriel-opts") orelse @as(*anyopaque, @ptrFromInt(1))) == hash) return;
+    // Prepare every label and the pointer array before touching the widget; the
+    // cached hash is committed with the model, so a failed rebuild is retried by
+    // the next sync. The owned slices are freed as allocated (a label may hold
+    // a NUL, so the C pointers' length is not theirs).
+    var owned: std.ArrayList([:0]u8) = .empty;
+    defer {
+        for (owned.items) |l| s.gpa.free(l);
+        owned.deinit(s.gpa);
+    }
+    const ptrs = s.gpa.alloc(?[*:0]const u8, opts.len + 1) catch return;
+    defer s.gpa.free(ptrs);
+    owned.ensureTotalCapacity(s.gpa, opts.len) catch return;
+    for (opts, 0..) |o, i| {
+        const l = s.gpa.dupeZ(u8, o[1]) catch return;
+        owned.appendAssumeCapacity(l);
+        ptrs[i] = l.ptr;
+    }
+    ptrs[opts.len] = null;
+    const model = gtk_string_list_new(ptrs.ptr);
+    g_object_set_data(@ptrCast(w), "oriel-opts", @ptrFromInt(hash));
+    gtk_drop_down_set_model(w, model); // the drop-down holds its own reference
+    g_object_unref(model);
+    const value = n.props.val orelse "";
+    for (opts, 0..) |o, i| if (std.mem.eql(u8, o[0], value)) gtk_drop_down_set_selected(w, @intCast(i));
+}
+
 fn onSelected(d: *Widget, _: ?*anyopaque, data: ?*anyopaque) callconv(.c) void {
     const s = surfaceOf(data);
     if (s.updating) return;
@@ -1728,6 +2023,16 @@ fn modifierBit(name: []const u8) u32 {
     if (std.mem.eql(u8, name, "Alt")) return 4;
     if (std.mem.eql(u8, name, "Meta")) return 8;
     return 0;
+}
+
+/// The desktop switched between light and dark: the page's
+/// prefers-color-scheme follows, as WebKitGTK's does.
+fn onThemeChanged(_: *anyopaque, _: *anyopaque, data: ?*anyopaque) callconv(.c) void {
+    const s = surfaceOf(data);
+    const dark = Surface.prefersDark();
+    if (dark == s.dark) return;
+    s.dark = dark;
+    s.engine.resize(@floatFromInt(gtk_widget_get_width(s.area)), @floatFromInt(gtk_widget_get_height(s.area)), dark);
 }
 
 fn onResize(_: *Widget, width: c_int, height: c_int, data: ?*anyopaque) callconv(.c) void {
@@ -2838,7 +3143,8 @@ fn fieldSize(s: *Surface, n: *Node, max_width: f32) [2]f32 {
     const cols = n.props.cols orelse 20;
     var size: [2]f32 = switch (n.kind) {
         .textarea => .{ cols * m[3], line * (n.props.rows orelse 2) },
-        .select => .{ longestOption(s, n) + 16, line },
+        // No room for an arrow the page draws itself (appearance: none).
+        .select => .{ longestOption(s, n) + @as(f32, if (n.props.na) 0 else 16), line },
         else => .{ cols * m[3] + 6, line },
     };
     if (!std.math.isInf(max_width) and n.kind != .textarea) size[0] = @min(size[0], max_width);
@@ -3551,6 +3857,11 @@ fn pangoRect(r: PangoRectangle) Rect {
 /// What a node's pixels depend on beyond the tree (damage.zig's
 /// Hooks.extra): a text area's placeholder shows while it's empty.
 fn paintExtra(ctx: *anyopaque, n: *Node) u64 {
+    // A covered field: its text, drawn while it's covered (paintCoveredField).
+    if (n.kind == .input or n.kind == .select) {
+        const w = coveredWidget(surfaceOf(ctx), n) orelse return 0;
+        return std.hash.Wyhash.hash(0, fieldText(n, w)) | 1;
+    }
     if (n.kind != .textarea or n.props.ph == null) return 0;
     const s = surfaceOf(ctx);
     const w = s.fields.get(n.id) orelse return 1;
@@ -3653,6 +3964,7 @@ fn paintBox(s: *Surface, cr: *cairo_t, n: *Node, r: Radii, own_clipped: bool) vo
         .icon => paintIcon(cr, n),
         .image => paintImage(s, cr, n),
         .textarea => paintPlaceholder(s, cr, n),
+        .input, .select => paintCoveredField(s, cr, n),
         .canvas => paintCanvas(s, cr, n),
         .view => if (p.ctl != null) paintControl(cr, n),
         else => {},
@@ -4325,6 +4637,82 @@ fn paintControl(cr: *cairo_t, n: *Node) void {
     }
 }
 
+/// A one-line field or select something painted later covers (a modal's
+/// backdrop over it): its widget is hidden (syncFields), so its text, or
+/// its placeholder, is drawn here, under what covers it, as a browser
+/// shows the field there.
+fn paintCoveredField(s: *Surface, cr: *cairo_t, n: *Node) void {
+    const w = coveredWidget(s, n) orelse return;
+    var text = fieldText(n, w);
+    var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+    var dots: [64 * 3]u8 = undefined;
+    if (n.props.pw and text.len > 0) {
+        // A password's bullets (U+2022), one a character.
+        const count = @min(std.unicode.utf8CountCodepoints(text) catch text.len, 64);
+        for (0..count) |i| @memcpy(dots[i * 3 ..][0..3], "\u{2022}");
+        text = dots[0 .. count * 3];
+    }
+    if (text.len == 0) {
+        text = n.props.ph orelse return;
+        col = n.props.phc orelse half: {
+            col[3] *= 0.5;
+            break :half col;
+        };
+    }
+    if (text.len == 0) return;
+    // The layout and font description are made and released each paint (no
+    // leak): accepted allocation churn, since only a field under a modal's
+    // backdrop paints here and the text and style vary per field.
+    const layout = gtk_widget_create_pango_layout(s.area, null);
+    defer g_object_unref(layout);
+    const desc = pango_font_description_from_string("Sans");
+    defer pango_font_description_free(desc);
+    var buf: [256]u8 = undefined;
+    if (n.props.ff) |f| pango_font_description_set_family(desc, std.fmt.bufPrintZ(&buf, "{s}", .{resolveFamily(s, f)}) catch "Sans");
+    pango_font_description_set_absolute_size(desc, (n.props.fz orelse 16) * PANGO_SCALE);
+    pango_font_description_set_weight(desc, @intFromFloat(std.math.clamp(n.props.fwt orelse 400, 100, 1000)));
+    if (n.props.it) pango_font_description_set_style(desc, 2); // PANGO_STYLE_ITALIC
+    pango_layout_set_font_description(layout, desc);
+    pango_layout_set_text(layout, text.ptr, @intCast(text.len));
+    const c = n.content();
+    const line = lineOf(s, n, c);
+    cairo_save(cr);
+    defer cairo_restore(cr);
+    cairo_rectangle(cr, c.x, c.y, c.w, c.h);
+    cairo_clip(cr);
+    setColor(cr, col);
+    // A select's label sits past the dropdown button's 2px padding.
+    cairo_move_to(cr, line.x + @as(f32, if (n.kind == .select) 2 else 0), line.y);
+    pango_cairo_show_layout(cr, layout);
+    if (n.kind == .select and !n.props.na) {
+        // The dropdown's arrow (pan-down, 16px, at the button's end).
+        const cx = c.x + c.w - 10;
+        const cy = c.y + c.h / 2;
+        setColor(cr, n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 });
+        cairo_set_line_width(cr, 1.5);
+        cairo_move_to(cr, cx - 4, cy - 2);
+        cairo_line_to(cr, cx, cy + 2);
+        cairo_line_to(cr, cx + 4, cy - 2);
+        cairo_stroke(cr);
+    }
+}
+
+/// A one-line field's or select's widget while it's hidden under a box
+/// painted after it; null when it shows (or is a slider).
+fn coveredWidget(s: *Surface, n: *const Node) ?*Widget {
+    if (n.props.range != null) return null;
+    const w = s.fields.get(n.id) orelse return null;
+    return if (gtk_widget_get_visible(clipOf(w)) != 0) null else w;
+}
+
+/// What a one-line field or select shows: its text, the chosen option's label.
+fn fieldText(n: *const Node, w: *Widget) []const u8 {
+    if (n.kind == .input) return std.mem.span(gtk_editable_get_text(w));
+    const opts = n.props.options orelse return "";
+    const i = gtk_drop_down_get_selected(w);
+    return if (i < opts.len) opts[i][1] else "";
+}
+
 /// A <textarea>'s placeholder: GtkTextView has none, so it's drawn under the
 /// (transparent) view while the buffer is empty, in the text color at half
 /// strength, as a browser does.
@@ -4343,8 +4731,12 @@ fn paintPlaceholder(s: *Surface, cr: *cairo_t, n: *Node) void {
     pango_layout_set_text(layout, ph.ptr, @intCast(ph.len));
     pango_layout_set_width(layout, tree_mod.sat(c_int, @max(1, c.w) * PANGO_SCALE));
     pango_layout_set_wrap(layout, 2);
-    var col = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
-    col[3] *= 0.5;
+    // The ::placeholder color; else the text's at half strength.
+    const col = n.props.phc orelse half: {
+        var color = n.props.col orelse tree_mod.Color{ 0, 0, 0, 1 };
+        color[3] *= 0.5;
+        break :half color;
+    };
     setColor(cr, col);
     cairo_move_to(cr, c.x, c.y);
     pango_cairo_show_layout(cr, layout);

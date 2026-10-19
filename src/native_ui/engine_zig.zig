@@ -87,6 +87,12 @@ pub const Engine = struct {
         if (e.backend.deinit) |cb| cb(e.backend.ctx);
         e.gpa.destroy(e);
     }
+    /// As the JS engine's: an .oriel view has no page scripts to run before
+    /// the app's setup, so it starts now.
+    pub fn bootSoon(e: *Engine, dark: bool, coarse: bool) void {
+        e.boot(dark, coarse);
+    }
+
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
         e.dark = dark;
         e.tree.dark = e.scheme orelse dark;
@@ -336,6 +342,7 @@ pub const Engine = struct {
         e.tree.scrolled.clearRetainingCapacity();
     }
     pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
+        if (e.tree.imageData(path)) |data| return data;
         return if (internal.findAsset(e.assets, path, false)) |a| a.data else null;
     }
     pub fn back(e: *Engine) bool {
@@ -382,6 +389,10 @@ pub const Engine = struct {
         const parsed = std.json.parseFromSliceLeaky(struct { handle: u32 }, arena, args_json, .{ .ignore_unknown_fields = true }) catch return arena.dupe(u8, "null");
         const path = e.drops.nativePath(arena, parsed.handle) catch return arena.dupe(u8, "null");
         return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
+    }
+    /// The file the user picked for an `<input type=file>` (`nui:picked_file`).
+    pub fn pickedFileCommand(e: *Engine, arena: std.mem.Allocator, args_json: []const u8) ![]u8 {
+        return @import("../modules/dialog/page.zig").openPicked(arena, &e.drops, args_json);
     }
 };
 

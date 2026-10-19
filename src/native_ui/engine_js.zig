@@ -489,6 +489,8 @@ pub const Engine = struct {
     // (std.math.maxInt(u32) - 2: core.display_frame_timer; - 3: core.dump_timer.)
     /// The timer id of a turn for the answers exports left (exportAnswers).
     pub const export_timer_id: u32 = std.math.maxInt(u32) - 4;
+    /// The timer id of the page's start (bootSoon).
+    pub const boot_timer_id: u32 = std.math.maxInt(u32) - 5;
 
     /// Drag effects (the "drag" event's masks), as Win32's DROPEFFECT_*.
     pub const drag_copy: u8 = 1;
@@ -644,6 +646,16 @@ pub const Engine = struct {
     }
 
     /// Load the page: stylesheets, scripts, the first frame.
+    /// Start the page on the main loop's next turn, as a web view's page
+    /// starts once its window is up: after the app's setup (oriel.main runs
+    /// it right after opening the main window), so the page's first
+    /// commands see what setup did (a tray it created).
+    pub fn bootSoon(e: *Engine, dark: bool, coarse: bool) void {
+        e.dark = dark;
+        e.coarse = coarse;
+        e.backend.add_timer(e.backend.ctx, e, boot_timer_id, 0);
+    }
+
     pub fn boot(e: *Engine, dark: bool, coarse: bool) void {
         e.dark = dark;
         e.coarse = coarse;
@@ -869,6 +881,11 @@ pub const Engine = struct {
         return std.fmt.allocPrint(arena, "{f}", .{std.json.fmt(path, .{})}) catch error.OutOfMemory;
     }
 
+    /// The file the user picked for an `<input type=file>` (`nui:picked_file`).
+    pub fn pickedFileCommand(e: *Engine, arena: std.mem.Allocator, args_json: []const u8) ![]u8 {
+        return @import("../modules/dialog/page.zig").openPicked(arena, &e.drops, args_json);
+    }
+
     /// A JSON message for the page (Android's events), see `__oriel.message`.
     pub fn message(e: *Engine, json: []const u8) void {
         _ = e.callf("__oriel.message({s})", .{json});
@@ -885,6 +902,7 @@ pub const Engine = struct {
         if (id == core.dump_timer) return core.dumpNow(e);
         if (id == reload_timer_id) return e.reloadNow();
         if (id == export_timer_id) return e.exportAnswers();
+        if (id == boot_timer_id) return if (!e.booted) e.boot(e.dark orelse false, e.coarse);
         if (id == jobs_timer_id) {
             e.jobs_pending = false;
             if (e.in_call == 0) e.settle(); // else that call's settle runs them
@@ -1141,6 +1159,7 @@ pub const Engine = struct {
 
     /// The bytes of an app asset ("assets/x.png"), or null.
     pub fn assetData(e: *Engine, path: []const u8) ?[]const u8 {
+        if (e.tree.imageData(path)) |data| return data;
         const a = internal.findAsset(e.assets, path, false) orelse return null;
         return a.data;
     }

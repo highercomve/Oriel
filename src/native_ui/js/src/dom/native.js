@@ -403,7 +403,8 @@ export function installNativeDom(g, document) {
     HTMLBRElement: [["br"]], HTMLBaseElement: [["base"]], HTMLBodyElement: [["body"]],
     HTMLButtonElement: [["button"], { type: { get() { const t = (this.getAttribute("type") || "").toLowerCase(); return t === "button" || t === "reset" ? t : "submit"; }, set(v) { this.setAttribute("type", v); } }, name: reflect("name"), value: reflect("value"), form }],
     HTMLCanvasElement: [["canvas"]], HTMLDataElement: [["data"]], HTMLDataListElement: [["datalist"]],
-    HTMLDetailsElement: [["details"], { open: boolAttr("open") }], HTMLDialogElement: [["dialog"], { open: boolAttr("open"), show() { this.setAttribute("open", ""); }, showModal() { this.setAttribute("open", ""); }, close() { this.removeAttribute("open"); } }],
+    // open, show(), showModal(), close(): main.js (toggle events, the top layer).
+    HTMLDetailsElement: [["details"]], HTMLDialogElement: [["dialog"]],
     HTMLDivElement: [["div"]], HTMLDListElement: [["dl"]], HTMLEmbedElement: [["embed"]], HTMLFieldSetElement: [["fieldset"], { disabled: boolAttr("disabled") }],
     HTMLFormElement: [["form"], { action: reflect("action"), method: reflect("method"), name: reflect("name"), elements: { get() { return this.querySelectorAll("input, select, textarea, button"); } } }],
     HTMLHeadingElement: [["h1", "h2", "h3", "h4", "h5", "h6"]], HTMLHeadElement: [["head"]], HTMLHRElement: [["hr"]], HTMLHtmlElement: [["html"]],

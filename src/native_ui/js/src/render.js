@@ -27,12 +27,25 @@ html, body, div, section, main, header, footer, nav, article, aside, form, field
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
+/* <details>: the summary with its disclosure triangle (the rest of a
+   closed one is hidden by style(), whatever the page's CSS says). */
+details > summary { display: list-item; list-style-type: disclosure-closed; list-style-position: inside; }
+details[open] > summary { list-style-type: disclosure-open; }
+/* <dialog>, as browsers': hidden until open, centered over the page; a
+   modal one in the top layer (render.js) with its ::backdrop. */
+dialog:not([open]) { display: none; }
+dialog { position: absolute; left: 0; right: 0; width: fit-content; height: fit-content; margin: auto; border: 3px solid; padding: 1em; background-color: Canvas; color: CanvasText; }
+dialog[data-nui-modal] { position: fixed; top: 0; bottom: 0; max-width: calc(100% - 6px - 2em); max-height: calc(100% - 6px - 2em); overflow: auto; }
+dialog::backdrop { background-color: rgba(0, 0, 0, 0.1); }
+/* [popover]: hidden until shown (the top layer), centered as browsers'. */
+[popover]:not([data-nui-popover-open]) { display: none; }
+[popover] { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: fit-content; height: fit-content; margin: auto; border: 1px solid; padding: .25em; overflow: auto; color: CanvasText; background-color: Canvas; }
 ul { list-style-type: disc; }
 ol { list-style-type: decimal; }
 ul ul, ol ul { list-style-type: circle; }
 ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
-button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
+button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
 html { font-size: 16px; color: CanvasText; }
 body { margin: 8px; }
@@ -86,6 +99,7 @@ thead { display: table-header-group; } tbody { display: table-row-group; } tfoot
 tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-align: middle; }
 th { text-align: center; } caption { display: table-caption; text-align: center; }
 col, colgroup { display: none; }
+::placeholder { color: #757575; }
 `;
 
 // WebKit's controls (WKWebView, so the native renderer on macOS and iOS):
@@ -102,6 +116,7 @@ input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin:
 
 export const UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
+::placeholder { color: rgb(169, 169, 169); }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
 
@@ -117,18 +132,25 @@ input[type=radio] { margin: 3px 3px 0 5px; }
 // UI font (gtk-font-name's family, its size in whole px: platform.uiFont)
 // on every control, Adwaita's 1px #cdcdcd border rounded 5px, white text
 // fields, #f4f4f4 buttons and selects, 12px checkboxes and 20px sliders.
+// WebKitGTK lays a text field out with a 2px border and 1px padding (its
+// computed style) but paints the border 1px: a field the page left its
+// UA border keeps that layout and is drawn so (render.js thinUaBorder).
+let thinUaInputBorder = false;
 export function uaCssWebkitGtk(font, accent) {
+  thinUaInputBorder = true;
   const [family, px] = Array.isArray(font) && font.length === 2 ? font : ["system-ui", 14];
   // Sliders and checkboxes in the theme's accent color.
   const acc = Array.isArray(accent) && accent.length === 3 ? `input { accent-color: rgb(${accent.map((v) => +v || 0).join(", ")}); }` : "";
   return `${acc}
 button, input, textarea, select { font-size: ${+px || 14}px; font-family: ${JSON.stringify(String(family))}, system-ui; }
-input, textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+input { padding: 1px; border: 2px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
 button, select { border: 1px solid #cdcdcd; border-radius: 5px; background-color: #f4f4f4; color: rgba(0, 0, 0, 0.8); }
 button { padding: 3px 7px 4px; }
 select { padding: 5px 6px; }
 input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin: 3px 2px; }
 input[type="range"] { height: 20px; margin: 2px; }
+::placeholder { color: rgb(169, 169, 169); }
 `;
 }
 
@@ -144,6 +166,50 @@ const ATOMIC_INLINE = new Set(["inline-block", "inline-flex", "inline-grid"]);
 // Replaced elements: an image's bottom sits on the line's baseline.
 const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
 
+const FIELD_TAGS = new Set(["input", "select", "textarea"]);
+
+// background-position's x and y, each { p: percent, px }: keywords,
+// percentages, lengths and calc(p% ± npx).
+function backgroundPosition(v) {
+  const parts = splitSpaces(v.trim());
+  const one = (t) => {
+    if (t === "left" || t === "top") return { p: 0, px: 0 };
+    if (t === "center") return { p: 50, px: 0 };
+    if (t === "right" || t === "bottom") return { p: 100, px: 0 };
+    const c = /^calc\(\s*(-?[\d.]+)%\s*([+-])\s*(-?[\d.]+)px\s*\)$/.exec(t);
+    if (c) return { p: +c[1], px: (c[2] === "-" ? -1 : 1) * +c[3] };
+    if (/%$/.test(t)) return { p: parseFloat(t), px: 0 };
+    return { p: 0, px: parseFloat(t) || 0 };
+  };
+  let [x = "50%", y = "50%"] = parts;
+  if (parts.length === 1) y = x === "top" || x === "bottom" ? x : "50%";
+  if (x === "top" || x === "bottom") [x, y] = [y, x];
+  return [one(x), one(y)];
+}
+
+// The top layer paints over every z-index (the backends paint by it).
+const TOP_LAYER_Z = 2147483647;
+
+// An element a closed <details> hides: any child but its first <summary>.
+function closedDetailsContent(el) {
+  const parent = el.parentNode;
+  if (parent?.localName !== "details" || parent.hasAttribute("open")) return false;
+  if (el.localName !== "summary") return true;
+  for (let c = parent.firstElementChild; c; c = c.nextElementSibling) if (c.localName === "summary") return c !== el;
+  return true;
+}
+
+// A fixed box CSS centers: auto margins between set insets, with a width
+// that isn't auto (a dialog's fit-content); its height either set or
+// auto (filling the insets up to its max-height, topLayerOver).
+function centeredByMargins(cs) {
+  if (!cs) return false;
+  const set = (v) => v !== undefined && v !== "auto";
+  const sized = (v) => v !== undefined && v !== "auto";
+  return cs["margin-left"] === "auto" && cs["margin-right"] === "auto" && cs["margin-top"] === "auto" && cs["margin-bottom"] === "auto" &&
+    set(cs.left) && set(cs.right) && set(cs.top) && set(cs.bottom) && sized(cs.width);
+}
+
 // A line-height other than normal in px at font size `fs`: a number times
 // it, a percentage of it, a length.
 // A text field's keyboard and typing aids, as browsers give them to the
@@ -153,7 +219,9 @@ const REPLACED = new Set(["img", "svg", "canvas", "video", "iframe", "object", "
 // default: none for email, url, tel, number and password, sentences
 // otherwise), autocorrect (Safari's attribute; off where autocapitalize
 // is), spellcheck (the attribute, inherited; on by default).
-const TYPED = new Set(["email", "url", "tel", "number", "search"]);
+// "date": the backend shows the platform's date picker (the value as
+// YYYY-MM-DD both ways).
+const TYPED = new Set(["email", "url", "tel", "number", "search", "date"]);
 const INPUT_MODES = new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
 const ENTER_HINTS = new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
 function keyboardProps(el, tag, type, props) {
@@ -378,6 +446,7 @@ export class Renderer {
     // getClientRects (inlineRects).
     this.spans = internalWeak(new WeakMap());
     this.runOwner = internalWeak(new WeakMap());
+    this.autoFit = new Map();      // auto-fit grids → the column count they were made with
     this.volatile = new Set();     // elements whose output can change without a mutation (fields…)
     this.shared = internalWeak(new WeakMap());   // parent cs → Map(specified → cs): siblings with the same rules share one
     this.cascades = new Map();     // matched rules → { normal, important } longhands
@@ -715,6 +784,9 @@ export class Renderer {
         if (!k || k.kind !== "text") return false;
         holder = k.props || (k.props = JSON.parse(k.p));
       } else if (fc.root.kind !== "text") return false;
+      // Its runs hold generated text too (a ::before/::after on its line, an
+      // inside marker): made again, not patched from the text alone.
+      else if (cs.__rules?.before?.length || cs.__rules?.after?.length || cs.display === "list-item") return false;
       if (!holder.runs || this.tx.targets.has(tid) || this.anim.state.has(tid)) return false;
       const old = this.prev.get(tid);
       if (!old || old.kind !== "text") return false;
@@ -994,9 +1066,10 @@ export class Renderer {
     // Neither: the canvas, dark in a dark color-scheme (Canvas: Chromium's
     // #121212), else the backend's default.
     const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null) || (usedDark(rootCS) ? { color: [18, 18, 18, 1] } : null);
-    nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
+    nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: this.topLayerOver([-1, ...fixed], nodes) });
     const t1 = P && P();
     this.emit(nodes, full);
+    this.checkAutoFit();
     if (P) {
       const ms = (x) => x.toFixed(2);
       this.host.log(1, `PROF render ${full ? "full" : "incremental"}: ${nodes.size} nodes made, flatten ${ms(t1 - t0)}, emit ${ms(P() - t1 - this.applyMs)}, apply ${ms(this.applyMs)}`);
@@ -1005,6 +1078,68 @@ export class Renderer {
     const scroll = this.pendingScroll;
     this.pendingScroll = null;
     if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
+  }
+
+  // The root's children with the top layer last: each modal dialog or open
+  // popover (a fixed node, hoisted like any) moved to the end in the order
+  // they were shown, a modal dialog's ::backdrop just below it. One centered
+  // by CSS (auto margins between set insets, as the UA's dialog and popover
+  // are) goes in a box over the window that centers it: Yoga doesn't center
+  // an absolute node by its margins. Others keep the position they have.
+  topLayerOver(kids, nodes) {
+    const made = new Set();
+    for (const el of this.topLayer?.() || []) {
+      const id = this.idOf(el, "el");
+      const at = kids.indexOf(id);
+      if (at < 0) continue; // not shown (display: none)
+      kids.splice(at, 1);
+      if (el.localName === "dialog") {
+        const bid = this.idOf(el, "backdrop");
+        this.own(bid, el);
+        nodes.set(bid, { kind: "view", props: { ...this.backdropProps(el), z: TOP_LAYER_Z }, kids: [] });
+        made.add(bid);
+        kids.push(bid);
+      }
+      const n = nodes.get(id);
+      if (!centeredByMargins(this.styleOf(el))) {
+        if (n) n.props.z = TOP_LAYER_Z;
+        kids.push(id);
+        continue;
+      }
+      if (n) {
+        delete n.props.pos; delete n.props.ins; delete n.props.m;
+        // An auto height between its insets fills them, up to its
+        // max-height, centered in what's left (CSS's absolute sizing).
+        const h = this.styleOf(el).height;
+        if (h === undefined || h === "auto") { n.props.fg = 1; n.props.fb = 0; n.props.minh ??= 0; }
+      }
+      const lid = this.idOf(el, "toplayer");
+      this.own(lid, el);
+      nodes.set(lid, { kind: "view", props: { pos: "absolute", ins: [0, 0, 0, 0], fd: "column", jc: "center", ai: "center", z: TOP_LAYER_Z }, kids: [id] });
+      made.add(lid);
+      kids.push(lid);
+    }
+    // Closed since the last frame: its backdrop and box go.
+    for (const id of this.layerIds || []) if (!made.has(id)) this.gone.push(id);
+    this.layerIds = made;
+    return kids;
+  }
+
+  // A modal dialog's ::backdrop: the window under the dialog, styled by the
+  // ::backdrop rules (inheriting from the dialog).
+  backdropProps(d) {
+    const dcs = this.styleOf(d);
+    const rules = this.sc.get(d)?.m?.backdrop || this.matchOf(d).backdrop || [];
+    const pcs = computeStyle(StyleEngine.cascade(rules, null), dcs);
+    const props = boxProps(pcs, "block", fontSizeOf(pcs, dcs), null);
+    delete props.m;
+    return Object.assign(props, { pos: "absolute", ins: [0, 0, 0, 0] });
+  }
+
+  // A field's ::placeholder color (inheriting from the field).
+  placeholderColor(el, cs) {
+    const rules = this.sc.get(el)?.m?.placeholder || this.matchOf(el).placeholder || [];
+    return color(computeStyle(StyleEngine.cascade(rules, null), cs).color) || undefined;
   }
 
   // An element's computed style: the last frame's while neither it nor its
@@ -1039,6 +1174,10 @@ export class Renderer {
     // parent (em/%/inherited relative sizes). Keep style identity only when
     // its previously resolved font size is also unchanged.
     if (c && c.cs !== cs && sameStyle(c.cs, cs) && c.cs.__fs === fontSizeOf(cs, parentCS)) cs = c.cs;
+    // A closed <details> shows only its summary, as a browser's (its shadow
+    // tree's slot) does: its other children are display: none whatever
+    // their CSS. Opening it restyles them (an attribute change rematches below).
+    if (closedDetailsContent(el)) cs = Object.assign(Object.create(null), cs, { display: "none" });
     cs.__rules = m;
     this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
     return cs;
@@ -1413,6 +1552,20 @@ export class Renderer {
     const id = this.idOf(el, "el");
     this.own(id, el);
     const props = boxProps(cs, display, fontSize, el);
+    // A conic-gradient background: wedges the backends draw as an icon,
+    // under the element's content (conicKid), clipped to its corners.
+    // Backgrounds drawn as children under the content: a conic gradient
+    // (wedges), and gradient layers with a size of their own
+    // (background-size/-position, no-repeat: a select's drawn arrow).
+    const bgKids = [];
+    if (props.bg?.conic) {
+      const { conic: cg, ...rest } = props.bg;
+      if (Object.keys(rest).length) props.bg = rest; else delete props.bg;
+      bgKids.push(this.conicNode(el, cg, nodes));
+      if (props.br) props.clip = true;
+    }
+    // (Not for a field: a platform widget has no children.)
+    if (!FIELD_TAGS.has(tag)) bgKids.push(...this.imageLayers(el, cs, fontSize, nodes));
     // align-self applies to flex and grid items only: in a block it does
     // nothing (the box fills the line). Inline boxes get theirs below.
     if (!ctx.blockify) delete props.as;
@@ -1536,7 +1689,9 @@ export class Renderer {
     // a <button> with that text would be.
     // A native push button (the backend hosts one; rule 1.4 of
     // docs/design/native-controls-a11y-design.md): the page left its box to the UA.
-    if ((tag === "button" || isInputButton(el)) && nativeControls.has("button")) {
+    // Not when it's transparent (a file input laid invisibly over its label):
+    // a platform widget ignores the page's opacity; the drawn button keeps it.
+    if ((tag === "button" || isInputButton(el)) && nativeControls.has("button") && parseFloat(cs.opacity ?? "1") !== 0) {
       const label = this.nativeButtonLabel(el, cs);
       if (label !== null) {
         this.volatile.add(el);
@@ -1560,8 +1715,7 @@ export class Renderer {
     }
     if (isInputButton(el)) {
       this.volatile.add(el);
-      const t = el.getAttribute("type").toLowerCase();
-      const label = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+      const label = inputButtonLabel(el);
       props.click = true;
       if (el.hasAttribute("disabled")) props.dis = true;
       const al = accessibleName(el);
@@ -1611,7 +1765,10 @@ export class Renderer {
         // A native checkbox or radio (the backend hosts one): it draws its
         // own focus ring.
         if (props.ctl && nativeControls.has("check")) { delete props.ol; return this.put(nodes, id, "check", props, [], fixedNode); }
-        return this.put(nodes, id, "view", props, [], fixedNode);
+        // Drawn by the page (appearance: none): its ::before and ::after too
+        // (a switch's knob), as browsers draw them on such a box.
+        const parts = props.ctl ? [] : [this.pseudo(el, cs, "before", nodes), this.pseudo(el, cs, "after", nodes)].filter(Boolean);
+        return this.put(nodes, id, "view", props, parts, fixedNode);
       }
       Object.assign(props, textProps(cs, fontSize));
       darkControl(cs, props, false);
@@ -1619,6 +1776,11 @@ export class Renderer {
         props.options = [...el.querySelectorAll("option")].map((o) => [o.getAttribute("value") ?? o.textContent, o.textContent]);
         props.val = el.value ?? "";
         props.dis = el.hasAttribute("disabled");
+        // appearance: none: no platform arrow, the page draws one (beside
+        // it: a label's ::after). One drawn in its own background-image
+        // can't be (a field is a platform widget, it has no children):
+        // the platform's arrow stands in for it.
+        if ((cs.appearance || cs["-webkit-appearance"]) === "none" && !/gradient\(|url\(/.test(cs["background-image"] || "")) props.na = true;
         return this.put(nodes, id, "select", props, [], fixedNode);
       }
       // The value goes to the native field only when the page changed it
@@ -1626,6 +1788,7 @@ export class Renderer {
       const value = el.value ?? "";
       if (this.native.get(id) !== value) props.val = value;
       props.ph = el.getAttribute("placeholder") || "";
+      if (props.ph) props.phc = this.placeholderColor(el, cs);
       props.dis = el.hasAttribute("disabled");
       // readonly: selectable, not editable (a disabled field is neither).
       if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
@@ -1652,12 +1815,16 @@ export class Renderer {
         if (acc) props.acc = acc;
         delete props.pad; delete props.bw; delete props.bc; delete props.bg; delete props.br;
       }
+      if (tag === "input" && thinUaInputBorder) thinUaBorder(el, cs, props);
       return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
     }
 
     // Plain leaves need no inline-flow objects, pseudo nodes or child-layout
     // contexts. This also covers empty decorative elements in large lists.
     const layoutBox = display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid";
+    // How it lays out its children: an inline-flex or inline-grid box is a
+    // flex or grid container inside, whatever it is to its own line.
+    const inner = display === "inline-flex" ? "flex" : display === "inline-grid" ? "grid" : display;
     const aligns = (layoutBox &&
       (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"]))) ||
       // A button centers its label in its height (a row stretches it to
@@ -1667,10 +1834,12 @@ export class Renderer {
     // scrolls, clips nor keeps scrollbar room): its text goes in a child.
     // A list item's marker sits beside its box: it keeps its box too.
     const marker = display === "list-item" ? listMarker(el, cs) : null;
-    const keepsBox = props.scroll || props.scrollx || props.clip || !!marker;
+    const keepsBox = props.scroll || props.scrollx || props.clip || !!marker || bgKids.length > 0;
     if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox &&
         display !== "grid" && !isTableDisplay(display)) {
       const raw = [];
+      const inside = display === "list-item" ? insideMarker(el, cs) : null;
+      if (inside) raw.push({ ...runFor(inside, cs, fontSize), ws: "pre" });
       for (let child = el.firstChild; child; child = child.nextSibling) {
         this.parentOf.set(child, el);
         if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, cs, fontSize));
@@ -1682,10 +1851,10 @@ export class Renderer {
         props.runs = runs;
         return this.put(nodes, id, "text", props, [], fixedNode);
       }
-      return this.put(nodes, id, "view", props, [], fixedNode);
+      return this.put(nodes, id, "view", props, bgKids, fixedNode);
     }
 
-    const shape = display === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
+    const shape = inner === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
     if (shape?.plan) {
       // The tree makes the children itself from the native DOM (host.stamp,
       // after emit): no node, map entry or JSON per child here.
@@ -1702,22 +1871,29 @@ export class Renderer {
     }
 
     // Children: blocks, and inline content collected into text runs.
-    const childCtx = { blockify: display === "flex" || display === "grid" || tableHolds(display), parentText: cs["text-align"],
+    const childCtx = { blockify: inner === "flex" || inner === "grid" || tableHolds(display), parentText: cs["text-align"],
       tableSpacing: tableSpacingFor(display, props, ctx), rematch };
     // A list of the same row again and again: its first row here, the rest
     // stamped by the tree (host.stampList, after emit).
-    const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+    const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, inner, childCtx, nodes, id) : null;
     if (listed) {
       this.putClick(props, el);
       return this.put(nodes, id, "view", props, listed, fixedNode);
     }
     const kids = [];
     let orders = null; // CSS order of the element children that set one
-    const before = this.pseudo(el, cs, "before", nodes);
+    // Generated text that is just inline text (" ▾" after a summary's
+    // label) goes on the element's line, as a browser lays it out; a
+    // pseudo-element with a box of its own is a node of its own.
+    const beforeRun = childCtx.blockify ? null : this.pseudoRun(el, cs, "before", fontSize);
+    const afterRun = childCtx.blockify ? null : this.pseudoRun(el, cs, "after", fontSize);
+    const before = beforeRun ? null : this.pseudo(el, cs, "before", nodes);
     if (before) kids.push(before);
     const flow = [];
     const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
-    let runs = [];
+    const inside = display === "list-item" ? insideMarker(el, cs) : null;
+    let runs = inside ? [{ ...runFor(inside, cs, fontSize), ws: "pre" }] : [];
+    if (beforeRun) runs.push(beforeRun);
     // An inline box before or after a stretch of text (a <code> chip in a
     // sentence): the space between them stays, collapsed to one, as on a
     // browser's line; only the line's own ends drop theirs.
@@ -1754,6 +1930,7 @@ export class Renderer {
       flow.push({ el: child });
       afterBox = box;
     }
+    if (afterRun) runs.push(afterRun);
     flushRuns();
 
     // An element holding only text becomes one text view, unless it centers
@@ -1762,7 +1939,7 @@ export class Renderer {
     // A button's label spans its width (its text-align applies: a menu
     // item's left-aligned label) and is centered in its height.
     if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-    if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip || marker)) {
+    if (flow.length === 1 && flow[0].text && !before && (afterRun || !cs.__rules.after.length) && !aligns && !(props.scroll || props.scrollx || props.clip || marker || bgKids.length)) {
       Object.assign(props, textProps(cs, fontSize));
       props.runs = flow[0].text;
       this.ownRuns(id, props.runs);
@@ -1952,7 +2129,7 @@ export class Renderer {
       const ord = parseInt(this.styleOf(item.el)?.order, 10);
       if (ord) (orders ??= new Map()).set(cid, ord);
     }
-    const after = this.pseudo(el, cs, "after", nodes);
+    const after = afterRun ? null : this.pseudo(el, cs, "after", nodes);
     if (after) { kids.push(after); inLine?.add(after); }
     if (flowBlock) collapseMargins(nodes, kids, inLine, props, display, ctx);
     // CSS order: flex/grid items laid out by it, then by source order.
@@ -1962,10 +2139,10 @@ export class Renderer {
     }
     if (shape) this.saveFlexShape(shape, nodes);
 
-    if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
+    if (inner === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
     if (marker) kids.push(this.putMarker(nodes, el, cs, fontSize, props, marker));
     this.putClick(props, el);
-    return this.put(nodes, id, "view", props, kids, fixedNode);
+    return this.put(nodes, id, "view", props, bgKids.length ? [...bgKids, ...kids] : kids, fixedNode);
   }
 
   // A list item's outside marker ("• ", "3. "): a text beside its first
@@ -1977,6 +2154,117 @@ export class Renderer {
     const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
     this.put(nodes, mid, "text", mp, []);
     return mid;
+  }
+
+  // background-image layers that are gradients of a set size, not repeated
+  // (background-size, -position, -repeat: no-repeat): each a box of that
+  // size with the gradient, under the content. CSS puts it at p% of the
+  // room left (box - image) plus px: `ins` at p% less p% of its size (tx, ty).
+  imageLayers(el, cs, fs, nodes) {
+    const images = cs["background-image"];
+    if (!images || !/gradient\(/.test(images)) return [];
+    const list = (v) => (v ? splitTop(v, ",").map((x) => x.trim()) : []);
+    const layers = list(images), sizes = list(cs["background-size"]), positions = list(cs["background-position"]), repeats = list(cs["background-repeat"]);
+    const at = (arr, i) => arr.length ? arr[i % arr.length] : undefined;
+    const out = [];
+    const current = color(cs.color);
+    layers.forEach((layer, i) => {
+      if (!/gradient\(/.test(layer)) return;
+      const repeat = at(repeats, i) || "repeat";
+      const size = splitSpaces(at(sizes, i) || "auto");
+      const w = num(size[0], fs), h = num(size[1] ?? size[0], fs);
+      // A layer that fills (or tiles) the box is the box's own background.
+      if (repeat !== "no-repeat" || typeof w !== "number" || typeof h !== "number") return;
+      const bg = background(layer, current);
+      if (!bg?.gradient) return;
+      const [px, py] = backgroundPosition(at(positions, i) || "0% 0%");
+      const id = this.idOf(el, `bg${i}`);
+      this.own(id, el);
+      const props = { pos: "absolute", w, h, ins: [`${py.p}%`, null, null, `${px.p}%`], bg: { gradient: bg.gradient }, z: -1 };
+      const tx = -px.p / 100 * w + px.px, ty = -py.p / 100 * h + py.px;
+      if (tx) props.tx = tx;
+      if (ty) props.ty = ty;
+      nodes.set(id, { kind: "view", props, kids: [] });
+      out.push(id);
+    });
+    // CSS draws the first layer on top: last child here.
+    return out.reverse();
+  }
+
+  // Auto-fit grids made before their width was known: laid out now, one
+  // whose width fits another column count is made again on the next frame.
+  checkAutoFit() {
+    let again = false;
+    for (const [el, a] of this.autoFit) {
+      if (!el.isConnected) { this.autoFit.delete(el); continue; }
+      const frameW = this.host.frame(this.idOf(el, "el"))?.[2];
+      if (!frameW) continue;
+      const width = Math.max(0, frameW - (+a.pad[1] || 0) - (+a.pad[3] || 0) - (+a.bw[1] || 0) - (+a.bw[3] || 0));
+      const n = Math.max(1, Math.min(Math.floor((width + a.gap) / (a.minW + a.gap)), Math.max(a.kids, 1)));
+      if (n !== a.n) { a.n = n; this.mark(el, 2); again = true; }
+    }
+    // The page's next turn renders it (marked during this render).
+    if (again) setTimeout(() => this.render(), 0);
+  }
+
+  // A conic-gradient background as an icon over the element's padding box,
+  // under its content: wedges from the centre, one per hard stop and short
+  // ones blending a smooth stop, cut to the square the icon fills (a pie or
+  // donut's box; a wider box gets the centred square).
+  conicNode(el, cg, nodes) {
+    const id = this.idOf(el, "conic");
+    this.own(id, el);
+    const shapes = [];
+    // `from` within one turn (a huge angle loses its precision, and the
+    // corner search below is relative to it).
+    const from = Number.isFinite(cg.from) ? cg.from - Math.floor(cg.from) : 0;
+    const at = (t) => {
+      const a = 2 * Math.PI * (t + from);
+      const dx = Math.sin(a), dy = -Math.cos(a), k = 1 / Math.max(Math.abs(dx), Math.abs(dy));
+      return [dx * k, dy * k];
+    };
+    // The square's corners lie at 1/8 + k/4 of a turn (with `from`): a
+    // wedge crossing one bends there.
+    const wedge = (t0, t1, c) => {
+      if (t1 - t0 <= 1e-6 || c[3] <= 0) return;
+      // Each reaches a little into the next one (drawn over it): no seam of
+      // background between two wedges' anti-aliased edges.
+      if (t1 < 1) t1 = Math.min(1, t1 + 0.002);
+      const pts = [at(t0)];
+      for (let k = Math.floor((t0 + from - 1 / 8) * 4); 1 / 8 + k / 4 - from < t1; k++) {
+        const tc = 1 / 8 + k / 4 - from;
+        if (tc > t0) pts.push(at(tc));
+      }
+      pts.push(at(t1));
+      shapes.push({ d: `M0 0 ${pts.map(([x, y]) => `L${x.toFixed(4)} ${y.toFixed(4)}`).join(" ")} Z`, fill: c, stroke: null, sw: 0, cap: "butt", join: "miter" });
+    };
+    // Only the first turn shows: a stop past it is cut there, its color at
+    // the cut blended from its neighbours, so a huge position costs no more
+    // than a plain one. Positions are bounded (an Infinity from a long digit
+    // string would blend to NaN) and the shapes budgeted.
+    const st = cg.stops.map((s) => [s[0], s[1], s[2], s[3], Math.max(-1e9, Math.min(1e9, s[4]))]);
+    const budget = 512;
+    const colorAt = (a, b, t) => {
+      const f = (t - a[4]) / (b[4] - a[4]);
+      return a.slice(0, 4).map((v, k) => (k < 3 ? Math.round(v + (b[k] - v) * f) : v + (b[k] - v) * f));
+    };
+    // Before the first stop and after the last: their colors.
+    wedge(0, Math.min(1, st[0][4]), st[0].slice(0, 4));
+    for (let i = 0; i + 1 < st.length && shapes.length < budget; i++) {
+      const [a, b] = [st[i], st[i + 1]];
+      const lo = Math.max(0, a[4]), hi = Math.min(1, b[4]);
+      if (!(hi > lo)) continue;
+      const same = a.slice(0, 4).every((v, j) => v === b[j]);
+      const n = same ? 1 : Math.max(1, Math.ceil((hi - lo) * 180)); // 2° steps
+      for (let j = 0; j < n; j++) {
+        const t0 = lo + (hi - lo) * j / n, t1 = lo + (hi - lo) * (j + 1) / n;
+        wedge(t0, t1, same ? a.slice(0, 4) : colorAt(a, b, (t0 + t1) / 2));
+      }
+    }
+    wedge(Math.max(0, st[st.length - 1][4]), 1, st[st.length - 1].slice(0, 4));
+    // z -1: under the element's content, positioned or not, as a background.
+    nodes.set(id, { kind: "icon", props: { pos: "absolute", ins: [0, 0, 0, 0], z: -1, icon: { vb: [-1, -1, 2, 2], shapes } }, kids: [] });
+    return id;
   }
 
   // A list of rows the tree stamps (dom_stamp.stampList): every child an
@@ -2112,8 +2400,7 @@ export class Renderer {
       try { if (el.matches(rule.stateSel)) return null; } catch {}
     }
     if (isInputButton(el)) {
-      const t = el.getAttribute("type").toLowerCase();
-      const v = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+      const v = inputButtonLabel(el);
       return v.trim() ? v : null;
     }
     const plain = (n, ncs) => {
@@ -2364,6 +2651,24 @@ export class Renderer {
       this.own(id, el);
       for (let i = first; i < runs.length; i++) if (!runs[i].br && runs[i].k === undefined) runs[i].k = id;
     }
+  }
+
+  // A ::before/::after that is only inline text: its run, for the element's
+  // line; null when it has a box, a position or motion of its own.
+  pseudoRun(el, cs, which, fontSize) {
+    const rules = cs.__rules[which];
+    if (!rules.length) return null;
+    const pcs = computeStyle(StyleEngine.cascade(rules, null), cs);
+    const content = pcs.content;
+    if (!content || content === "none" || content === "normal") return null;
+    const text = /^["'](.*)["']$/.exec(content)?.[1];
+    if (!text || (pcs.display || "inline") !== "inline") return null;
+    if (pcs.position === "absolute" || pcs.position === "fixed" || pcs.float) return null;
+    for (const k in pcs) {
+      if (/^(background|padding|border|margin|transform|transition|animation|outline|box-shadow|width|height)/.test(k) &&
+        !/^(0|0px|none|auto|normal|transparent|initial)?$/.test(String(pcs[k]).trim())) return null;
+    }
+    return runFor(text, pcs, fontSizeOf(pcs, cs) || fontSize);
   }
 
   pseudo(el, cs, which, nodes) {
@@ -2830,6 +3135,18 @@ function resolveFontSize(cs, pfs) {
 // WebView2's follows the system), its scrollbar-color [thumb, track].
 // A rule's declarations that draw a button's box (rule 1.4): background,
 // border (its widths are only room), appearance.
+// A text field's UA border (WebKitGTK's 2px, uaCssWebkitGtk), drawn 1px
+// as WebKitGTK paints it: the other pixel goes to the padding, so the
+// layout stays the computed style's. Not when the page sets a border.
+function thinUaBorder(el, cs, props) {
+  if (!props.bw || props.bw.some((w) => w !== 2)) return;
+  const authored = (decls) => decls.some((dc) => /^border(?!-radius)/.test((dc.prop || dc.name || "").toLowerCase()));
+  if (cs.__rules.normal.some((rule) => !rule.ua && authored(rule.decls))) return;
+  if (/(^|;)\s*border(?!-radius)[\w-]*\s*:/i.test(el.getAttribute("style") || "")) return;
+  props.bw = [1, 1, 1, 1];
+  props.pad = (props.pad || [0, 0, 0, 0]).map((v) => (typeof v === "number" ? v : 0) + 1);
+}
+
 function touchesBox(decls) {
   return decls.some((dc) => {
     const p = (dc.prop || dc.name || "").toLowerCase();
@@ -2945,7 +3262,14 @@ function memoized(cs, key, make) {
 }
 
 // <input type=button|submit|reset>: a button, not a text field.
-const INPUT_BUTTONS = new Set(["button", "submit", "reset"]);
+const INPUT_BUTTONS = new Set(["button", "submit", "reset", "file"]);
+// An input button's label: its value; a file input's, its button and the
+// file chosen ("Choose File  photo.jpg"), as browsers show it.
+function inputButtonLabel(el) {
+  const t = el.getAttribute("type").toLowerCase();
+  if (t === "file") return `Choose File  ${el.files?.[0]?.name || "No file chosen"}`;
+  return el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+}
 export function isInputButton(el) {
   return el?.localName === "input" && INPUT_BUTTONS.has((el.getAttribute("type") || "").toLowerCase());
 }
@@ -3162,11 +3486,13 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
     p.fd = "column";
     p.ai = "stretch";
   }
-  if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
-  // A browser centers a button's content, until the page lays the button
-  // out itself (display: flex or grid: then flex-start, like any box).
-  if (button && display !== "flex" && display !== "grid") {
-    p.ai = "center";
+  // justify-content and gaps lay out flex and grid items; a block has none.
+  const layoutBox = display === "flex" || display === "grid";
+  if (layoutBox && cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
+  // A browser centers a button's content in its height, until the page lays
+  // the button out itself (display: flex or grid). Across, its blocks span
+  // the button and text-align (center, from the UA sheet) places the text.
+  if (button && !layoutBox) {
     if (!p.jc) p.jc = "center";
   }
   if (cs["align-self"] && cs["align-self"] !== "auto") p.as = cs["align-self"];
@@ -3206,7 +3532,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   }
   contentBox(cs, p, borderBox);
   outlinePart(cs, fs, p);
-  const rg = num(cs["row-gap"], fs), cg = num(cs["column-gap"], fs);
+  const rg = layoutBox ? num(cs["row-gap"], fs) : 0, cg = layoutBox ? num(cs["column-gap"], fs) : 0;
   if (typeof rg === "number" && rg) p.rg = rg;
   if (typeof cg === "number" && cg) p.cg = cg;
   positionPart(cs, fs, p);
@@ -3243,6 +3569,7 @@ function makeBoxProps(cs, display, fs, button, borderBox) {
   const sh = shadow(cs["box-shadow"], cur);
   if (sh) p.sh = sh;
   if (cs.visibility === "hidden") p.vis = false;
+  if (cs["pointer-events"] === "none" || cs["pointer-events"] === "auto") p.pe = cs["pointer-events"];
   if (cs.cursor === "pointer") p.click = true;
   if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
   if (button && pushButtons) pushButton(cs, p);
@@ -3358,9 +3685,19 @@ function weight(w) {
 // list-style-type, and for numbers its place among its
 // list's items (start, value, reversed), as browsers count them.
 function listMarker(el, cs) {
-  const type = cs["list-style-type"], position = cs["list-style-position"];
-  if (!type || type === "none" || position === "inside") return null;
-  const bullet = { disc: "\u2022", circle: "\u25e6", square: "\u25aa" }[type];
+  return cs["list-style-position"] === "inside" ? null : markerText(el, cs);
+}
+
+// An inside marker's text, the first run of the item's first line (a
+// summary's disclosure triangle), or null.
+function insideMarker(el, cs) {
+  return cs["list-style-position"] === "inside" ? markerText(el, cs) : null;
+}
+
+function markerText(el, cs) {
+  const type = cs["list-style-type"];
+  if (!type || type === "none") return null;
+  const bullet = { disc: "\u2022", circle: "\u25e6", square: "\u25aa", "disclosure-closed": "\u25b8", "disclosure-open": "\u25be" }[type];
   if (bullet) return bullet + " ";
   const list = el.parentNode;
   const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
@@ -3578,6 +3915,24 @@ function minmaxMin(track) {
   return null;
 }
 
+// A grid item's columns (grid-column, or its -start/-end): its start line
+// (0-based; null for auto placement) and how many it spans, of `n`.
+export function gridColumn(cs, n) {
+  let [a, b] = String(cs?.["grid-column"] || "").split("/").map((t) => t.trim());
+  a = a || cs?.["grid-column-start"] || "auto";
+  b = b || cs?.["grid-column-end"] || "auto";
+  const line = (t) => { const v = parseInt(t, 10); return !/^-?\d+$/.test(t) || v === 0 ? null : v < 0 ? n + 2 + v : v; };
+  const spanOf = (t) => { const m = /^span\s+(\d+)$/.exec(t); return m ? Math.max(1, +m[1]) : null; };
+  const sa = line(a), sb = line(b);
+  let start = sa !== null ? Math.min(sa, n) - 1 : null;
+  let span = spanOf(a) || spanOf(b) || 1;
+  if (sa !== null && sb !== null) { start = Math.min(sa, sb) - 1; span = Math.max(1, Math.abs(sb - sa)); }
+  else if (sa === null && sb !== null && !spanOf(a)) start = Math.max(0, sb - 2);
+  else if (sa === null && sb !== null) start = Math.max(0, sb - 1 - span);
+  span = Math.min(span, n - (start ?? 0));
+  return { start, span: Math.max(1, span) };
+}
+
 // display: grid → rows of flex items (the column count from the template
 // and, for auto-fit, the container's last width).
 function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
@@ -3606,6 +3961,9 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
       })();
       const gap = props.cg || 0;
       const n = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
+      // Without a width yet (its first layout) the count is a guess: checked
+      // once laid out (checkAutoFit), made again if the width says otherwise.
+      renderer.autoFit.set(el, { n: Math.max(1, Math.min(n, Math.max(kids.length, 1))), minW, gap, pad, bw, kids: kids.length });
       cols = Array(Math.max(1, Math.min(n, Math.max(kids.length, 1)))).fill("1fr");
     } else {
       cols = Array(parseInt(rep[1], 10) || 1).fill(what);
@@ -3614,32 +3972,73 @@ function gridToRows(cs, props, kids, nodes, renderer, el, fs) {
     cols = splitSpaces(tpl);
   }
   if (cols.length <= 1) return;
+  const n = cols.length, gap = props.cg || 0;
+  const fr = (c) => /fr$|minmax/.test(c);
+  // A cell spanning columns `at` to `at + span`: the fr columns' shares
+  // (the gaps it covers in its basis: equal to a browser's track sizes
+  // while every row fills its columns), or the fixed ones' widths.
+  const size = (p, at, span) => {
+    const cs = cols.slice(at, at + span);
+    if (cs.every(fr)) { p.fg = cs.reduce((t, c) => t + parseFloat(/([\d.]+)fr/.exec(c)?.[1] || "1"), 0); p.fb = (span - 1) * gap; p.minw ??= 0; return; }
+    if (cs.length === 1 && (cs[0] === "auto" || cs[0] === "min-content" || cs[0] === "max-content")) { p.fs = 0; return; }
+    const ls = cs.map((c) => length(c, fs, false));
+    if (ls.every((l) => typeof l === "number")) { p.w = ls.reduce((t, l) => t + l, 0) + (span - 1) * gap; p.fs = 0; }
+    else { p.fg = span; p.fb = (span - 1) * gap; p.minw ??= 0; }
+  };
   const rows = [];
-  const flat = kids.slice();
-  kids.length = 0;
-  for (let i = 0; i < flat.length; i += cols.length) {
-    const rowId = renderer.idOf(el, "row" + i);
-    const rowKids = flat.slice(i, i + cols.length);
-    rowKids.forEach((kid, j) => {
-      const n = nodes.get(kid);
-      if (!n) return;
-      const c = cols[j];
-      if (/fr$|minmax/.test(c)) { n.props.fg = parseFloat(/([\d.]+)fr/.exec(c)?.[1] || "1"); n.props.fb = 0; n.props.minw ??= 0; }
-      else if (c === "auto" || c === "min-content" || c === "max-content") { n.props.fs = 0; }
-      else { const l = length(c, fs, false); if (typeof l === "number") { n.props.w = l; n.props.fs = 0; } }
-    });
-    // A partial last row keeps its cells the same width.
-    for (let j = rowKids.length; j < cols.length && /fr$|minmax/.test(cols[j]); j++) {
-      const filler = renderer.idOf(el, `fill${i}-${j}`);
-      renderer.put0(nodes, filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
-      rowKids.push(filler);
+  let row = [], spans = [], at = 0;
+  const pad = (to) => {
+    // Empty columns up to `to`: a filler each, so the cells keep their widths.
+    for (; at < to; at++) {
+      const filler = renderer.idOf(el, `fill${rows.length}-${at}`);
+      const p = {};
+      size(p, at, 1);
+      renderer.put0(nodes, filler, { kind: "view", props: p, kids: [] });
+      row.push(filler);
+      spans.push(1);
     }
-    renderer.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: rowAlign, cg: props.cg, ...(props.cg ? {} : {}) }, kids: rowKids });
+  };
+  const close = () => {
+    pad(n);
+    // A flex basis is never less than the item's padding and border, a
+    // track's size doesn't care: every fr cell's basis gets the same
+    // share per column, at least what any cell's padding needs, so the
+    // free space still splits as the tracks do.
+    const cells = row.map((id) => nodes.get(id)?.props);
+    const across = (p) => [p.pad?.[1], p.pad?.[3], p.bw?.[1], p.bw?.[3]].reduce((t, v) => t + (typeof v === "number" ? v : 0), 0);
+    let share = 0;
+    cells.forEach((p, i) => { if (p?.fg !== undefined) share = Math.max(share, across(p) / spans[i]); });
+    if (share > 0) cells.forEach((p, i) => { if (p?.fg !== undefined) p.fb = (spans[i] - 1) * gap + share * spans[i]; });
+    const rowId = renderer.idOf(el, "row" + rows.length);
+    renderer.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: rowAlign, cg: props.cg }, kids: row });
     rows.push(rowId);
+    row = [];
+    spans = [];
+    at = 0;
+  };
+  const outOfFlow = [];
+  for (const kid of kids) {
+    const node = nodes.get(kid);
+    if (!node) continue;
+    // Absolute and fixed children take no cell: they stay the grid's own.
+    if (node.props.pos === "absolute" || node.props.pos === "fixed") { outOfFlow.push(kid); continue; }
+    const { start, span } = gridColumn(renderer.styleOf(renderer.elementFor(kid)), n);
+    // Auto placement, row by row: a cell that doesn't fit, or whose line
+    // is behind the cursor, starts the next row.
+    if (start !== null && start < at) close();
+    if (start !== null) pad(start);
+    if (at + span > n && at > 0) close();
+    size(node.props, at, Math.min(span, n - at));
+    row.push(kid);
+    spans.push(Math.min(span, n - at));
+    at += span;
+    if (at >= n) close();
   }
+  if (row.length) close();
+  kids.length = 0;
   props.fd = "column";
   props.ai = "stretch";
-  kids.push(...rows);
+  kids.push(...rows, ...outOfFlow);
 }
 
 // A plain number, also from calc() (`scale(calc(1 + 0.4 * .18))`, its

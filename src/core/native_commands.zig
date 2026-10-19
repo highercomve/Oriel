@@ -9,6 +9,7 @@ const App = @import("App.zig");
 const ipc = @import("ipc.zig");
 const security = @import("security.zig");
 const window_commands = @import("window_commands.zig");
+const dialog_page = @import("../modules/dialog/page.zig");
 
 const log = std.log.scoped(.oriel);
 
@@ -37,6 +38,8 @@ pub fn dispatch(
     // A dropped file's handle back to a path: only native pages hold drop
     // handles (a WebView's oriel.drop.path answers null without asking).
     if (std.mem.eql(u8, cmd, "drop:path")) return engine.dropPathCommand(arena, args_json);
+    // A file the user picked for an <input type=file> (nui:pick_file's token).
+    if (std.mem.eql(u8, cmd, dialog_page.picked_command)) return engine.pickedFileCommand(arena, args_json);
     if (ipc.isBuiltinCommand(cmd)) return ipc.dispatchBuiltin(config.security, arena, request);
     if (!ipc.isAsync(api.commands, cmd)) return ipc.dispatchRequest(api.commands, arena, request, io);
     return null;

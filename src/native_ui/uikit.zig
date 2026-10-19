@@ -117,6 +117,10 @@ const Field = struct {
     button: bool = false,
     /// A push button's look as last set (buttonLook's hash of it).
     look: u64 = 0,
+    /// <input type=date>: its UIDatePicker (the field's inputView) and its
+    /// toolbar's Clear and Done items, held by the field, in `by_control`
+    /// while it lives (their actions find the field's node through them).
+    date: [3]id = .{ null, null, null },
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -207,6 +211,10 @@ fn classes() void {
         .{ "nuiSliderDone:", sliderDone },
         .{ "nuiButtonTapped:", buttonTapped },
         .{ "textFieldShouldReturn:", fieldShouldReturn },
+        .{ "textFieldShouldBeginEditing:", fieldShouldBegin },
+        .{ "nuiDatePicked:", datePicked },
+        .{ "nuiDateClear:", dateClear },
+        .{ "nuiDateDone:", dateDone },
         .{ "textField:shouldChangeCharactersInRange:replacementString:", fieldShouldChange },
         .{ "textFieldDidBeginEditing:", fieldFocused },
         .{ "textFieldDidEndEditing:", fieldBlurred },
@@ -351,6 +359,9 @@ fn destroyLater(ctx: ?*anyopaque) void {
 
 fn dropField(f: Field) void {
     _ = by_control.remove(key(f.control.value));
+    for (f.date) |part| if (part != null) {
+        _ = by_control.remove(key(part));
+    };
     // What's kept of it by address: a control made later may land there.
     if (press_enter_field == f.control.value) press_enter_field = null;
     if (pending_control == f.control.value) {
@@ -758,6 +769,8 @@ fn syncFields(s: *Surface) void {
                 setValue(n, f, v);
             }
             style(n, f);
+            // No caret in a date field: its text is only the picked date's.
+            if (field.date[0] != null) f.msgSend(void, "setTintColor:", .{apple.class("UIColor").msgSend(Object, "clearColor", .{})});
         }
         // The page changes placeholders; a text area's is drawn under it.
         if (n.kind == .input and !field.slider) if (apple.nsString(n.props.ph orelse "")) |ph| {
@@ -833,6 +846,7 @@ fn textTraits(f: Object, n: *const Node) void {
 fn makeField(s: *Surface, n: *Node) ?Field {
     const zero: CGRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
     var slider = false;
+    var date: [3]id = .{ null, null, null };
     const f: Object = switch (n.kind) {
         .input => if (n.props.range != null) blk: {
             const sl = apple.class("UISlider").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
@@ -855,6 +869,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             };
             tf.msgSend(void, "setDelegate:", .{field_delegate});
             tf.msgSend(void, "addTarget:action:forControlEvents:", .{ field_delegate, apple.objc.sel("nuiFieldChanged:").value, UIControlEventEditingChanged });
+            if (isDateField(n)) date = makeDatePicker(tf);
             break :blk tf;
         },
         .textarea => blk: {
@@ -889,6 +904,12 @@ fn makeField(s: *Surface, n: *Node) ?Field {
         },
         else => return null,
     };
+    // The control's and the date toolbar's owners are registered without
+    // allocating, below; their views go with `f`.
+    by_control.ensureUnusedCapacity(std.heap.smp_allocator, 1 + date.len) catch {
+        f.release();
+        return null;
+    };
     const holder = apple.new(apple.class("UIView"));
     if (holder.value == null) {
         f.release();
@@ -897,9 +918,10 @@ fn makeField(s: *Surface, n: *Node) ?Field {
     holder.msgSend(void, "setClipsToBounds:", .{apple.boolean(true)});
     holder.msgSend(void, "addSubview:", .{f});
     f.release(); // the holder keeps it
-    by_control.put(std.heap.smp_allocator, key(f.value), .{ .token = s.token, .node = n.id }) catch {};
+    by_control.putAssumeCapacity(key(f.value), .{ .token = s.token, .node = n.id });
+    for (date) |part| if (part != null) by_control.putAssumeCapacity(key(part), .{ .token = s.token, .node = n.id });
     s.view.msgSend(void, "addSubview:", .{holder});
-    return .{ .holder = holder, .control = f, .slider = slider, .button = n.kind == .button };
+    return .{ .holder = holder, .control = f, .slider = slider, .button = n.kind == .button, .date = date };
 }
 
 /// The page's min/max (they may change) and accent-color on a UISlider.
@@ -1023,6 +1045,7 @@ fn onMenuAction(_: *anyopaque, action_id: id) callconv(.c) void {
 }
 
 fn setValue(n: *Node, f: Object, v: []const u8) void {
+    if (isDateField(n)) return showDate(f, v);
     switch (n.kind) {
         .input, .textarea => if (apple.nsString(v)) |str| {
             defer str.release();
@@ -1037,6 +1060,202 @@ fn setValue(n: *Node, f: Object, v: []const u8) void {
         },
         else => {},
     }
+}
+
+// ---------------------------------------------------------------------------
+// <input type=date>: the field's text is the date in the locale's medium
+// style, and its keyboard is a UIDatePicker (inputView) with a toolbar of
+// Clear and Done (inputAccessoryView), as native iOS forms do. The page's
+// value is YYYY-MM-DD; the picker holds the date shown (the field's text
+// is empty when there is none).
+
+fn isDateField(n: *const Node) bool {
+    return n.kind == .input and n.props.range == null and eq(n.props.itype, "date");
+}
+
+const UIDatePickerModeDate: isize = 1;
+const UIDatePickerStyleInline: isize = 3;
+const UIBarButtonSystemItemDone: isize = 0;
+const UIBarButtonSystemItemFlexibleSpace: isize = 5;
+const UIViewAutoresizingFlexibleWidth: c_ulong = 1 << 1;
+const NSCalendarUnitYear: c_ulong = 1 << 2;
+const NSCalendarUnitMonth: c_ulong = 1 << 3;
+const NSCalendarUnitDay: c_ulong = 1 << 4;
+extern var NSCalendarIdentifierGregorian: ?*anyopaque;
+
+/// The field's picker and toolbar (each held by the field) and the picker,
+/// Clear and Done to remember, all nil if UIKit made none.
+fn makeDatePicker(tf: Object) [3]id {
+    const none: [3]id = .{ null, null, null };
+    const picker = apple.new(apple.class("UIDatePicker"));
+    if (picker.value == null) return none;
+    defer picker.release(); // the field keeps it
+    picker.msgSend(void, "setDatePickerMode:", .{UIDatePickerModeDate});
+    // The calendar rather than the wheels (iOS 14; the minimum is 15).
+    picker.msgSend(void, "setPreferredDatePickerStyle:", .{UIDatePickerStyleInline});
+    // An input view keeps its own height and takes the keyboard's width.
+    picker.msgSend(void, "sizeToFit", .{});
+    picker.msgSend(void, "setAutoresizingMask:", .{UIViewAutoresizingFlexibleWidth});
+    picker.msgSend(void, "addTarget:action:forControlEvents:", .{ field_delegate, apple.objc.sel("nuiDatePicked:").value, UIControlEventValueChanged });
+
+    const bar = apple.class("UIToolbar").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{CGRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 320, .height = 44 } }});
+    if (bar.value == null) return none;
+    defer bar.release(); // the field keeps it
+    bar.msgSend(void, "sizeToFit", .{});
+    bar.msgSend(void, "setAutoresizingMask:", .{UIViewAutoresizingFlexibleWidth});
+    const title = apple.nsString("Clear") orelse return none;
+    defer title.release();
+    const item = apple.class("UIBarButtonItem");
+    const clear = item.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithTitle:style:target:action:", .{ title, @as(isize, 0), field_delegate, apple.objc.sel("nuiDateClear:").value });
+    const space = item.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithBarButtonSystemItem:target:action:", .{ UIBarButtonSystemItemFlexibleSpace, apple.nil, @as(SEL, null) });
+    const done = item.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithBarButtonSystemItem:target:action:", .{ UIBarButtonSystemItemDone, field_delegate, apple.objc.sel("nuiDateDone:").value });
+    defer for ([_]Object{ clear, space, done }) |o| if (o.value != null) o.release();
+    if (clear.value == null or space.value == null or done.value == null) return none;
+    var items = [_]id{ clear.value, space.value, done.value };
+    bar.msgSend(void, "setItems:", .{apple.class("NSArray").msgSend(Object, "arrayWithObjects:count:", .{ @as([*]const id, &items), @as(usize, items.len) })});
+
+    tf.msgSend(void, "setInputView:", .{picker});
+    tf.msgSend(void, "setInputAccessoryView:", .{bar});
+    return .{ picker.value, clear.value, done.value };
+}
+
+/// The Gregorian calendar in the device's time zone (the picker's), whose
+/// year, month and day are the ISO date's whatever calendar the user reads.
+var gregorian: Object = apple.nil;
+var date_formatter: Object = apple.nil;
+
+fn calendar() ?Object {
+    if (gregorian.value == null) {
+        const ident: Object = .{ .value = @ptrCast(@alignCast(NSCalendarIdentifierGregorian orelse return null)) };
+        gregorian = apple.class("NSCalendar").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithCalendarIdentifier:", .{ident});
+        if (gregorian.value == null) return null;
+        // Follows the device's zone as it changes, as the picker does.
+        gregorian.msgSend(void, "setTimeZone:", .{apple.class("NSTimeZone").msgSend(Object, "localTimeZone", .{})});
+    }
+    return gregorian;
+}
+
+/// The date of an ISO "YYYY-MM-DD" (at noon: no zone shift moves its day),
+/// autoreleased, or null.
+fn isoToDate(iso: []const u8) ?Object {
+    if (iso.len != 10 or iso[4] != '-' or iso[7] != '-') return null;
+    const y = std.fmt.parseInt(isize, iso[0..4], 10) catch return null;
+    const m = std.fmt.parseInt(isize, iso[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(isize, iso[8..10], 10) catch return null;
+    if (m < 1 or m > 12 or d < 1 or d > 31) return null;
+    const cal = calendar() orelse return null;
+    const parts = apple.new(apple.class("NSDateComponents"));
+    if (parts.value == null) return null;
+    defer parts.release();
+    parts.msgSend(void, "setYear:", .{y});
+    parts.msgSend(void, "setMonth:", .{m});
+    parts.msgSend(void, "setDay:", .{d});
+    parts.msgSend(void, "setHour:", .{@as(isize, 12)});
+    const date = cal.msgSend(Object, "dateFromComponents:", .{parts});
+    return if (date.value == null) null else date;
+}
+
+/// The picker's date as "YYYY-MM-DD" in `buf`.
+fn dateToIso(date: Object, buf: []u8) ?[]const u8 {
+    const cal = calendar() orelse return null;
+    const parts = cal.msgSend(Object, "components:fromDate:", .{ NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay, date });
+    if (parts.value == null) return null;
+    const y = parts.msgSend(isize, "year", .{});
+    const m = parts.msgSend(isize, "month", .{});
+    const d = parts.msgSend(isize, "day", .{});
+    if (y < 1 or y > 9999) return null;
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(usize, @intCast(y)), @as(usize, @intCast(m)), @as(usize, @intCast(d)) }) catch null;
+}
+
+/// The ISO date `iso` ("" or invalid: none) on the field: its text in the
+/// user's locale, and the picker on it. Setting either sends nothing.
+fn showDate(tf: Object, iso: []const u8) void {
+    const date = isoToDate(iso);
+    if (date) |dt| {
+        const picker = tf.msgSend(Object, "inputView", .{});
+        if (picker.value != null) picker.msgSend(void, "setDate:animated:", .{ dt, apple.boolean(false) });
+    }
+    if (date_formatter.value == null) {
+        date_formatter = apple.new(apple.class("NSDateFormatter"));
+        if (date_formatter.value == null) return;
+        date_formatter.msgSend(void, "setLocale:", .{apple.class("NSLocale").msgSend(Object, "autoupdatingCurrentLocale", .{})});
+        date_formatter.msgSend(void, "setDateStyle:", .{@as(isize, 2)}); // medium
+        date_formatter.msgSend(void, "setTimeStyle:", .{@as(isize, 0)}); // none
+    }
+    const text = if (date) |dt| date_formatter.msgSend(Object, "stringFromDate:", .{dt}) else apple.nil;
+    if (text.value != null) return tf.msgSend(void, "setText:", .{text});
+    const empty = apple.nsString("") orelse return;
+    defer empty.release();
+    tf.msgSend(void, "setText:", .{empty});
+}
+
+/// A disabled or readonly date field doesn't open its picker; one that
+/// opens shows its date, or today when it has none.
+fn fieldShouldBegin(_: id, _: SEL, field: id) callconv(.c) BOOL {
+    const o = ownerOf(field) orelse return apple.boolean(true);
+    if (!isDateField(o.n)) return apple.boolean(true);
+    if (o.n.props.dis or o.n.props.ro) return apple.boolean(false);
+    const tf: Object = .{ .value = field };
+    const picker = tf.msgSend(Object, "inputView", .{});
+    if (picker.value != null and isEmpty(tf)) picker.msgSend(void, "setDate:animated:", .{ apple.class("NSDate").msgSend(Object, "date", .{}), apple.boolean(false) });
+    return apple.boolean(true);
+}
+
+fn isEmpty(tf: Object) bool {
+    const text = apple.utf8(tf.msgSend(Object, "text", .{})) orelse return true;
+    return text.len == 0;
+}
+
+/// The date field a picker or toolbar item belongs to.
+fn dateFieldOf(part: id) ?struct { s: *Surface, n: *Node, tf: Object } {
+    const o = ownerOf(part) orelse return null;
+    const f = o.s.fields.get(o.n.id) orelse return null;
+    return .{ .s = o.s, .n = o.n, .tf = f.control };
+}
+
+/// A day picked: the page's value, "input" then "change", as a browser's
+/// picker. The field stays open (Done closes it).
+fn datePicked(_: id, _: SEL, picker: id) callconv(.c) void {
+    const o = dateFieldOf(picker) orelse return;
+    if (o.s.updating) return;
+    pickDate(o.s, o.n, o.tf, (Object{ .value = picker }).msgSend(Object, "date", .{}));
+}
+
+/// Done: an empty field takes the date the picker shows (today, untouched,
+/// sends no valueChanged), as Safari's; then the picker closes.
+fn dateDone(_: id, _: SEL, item: id) callconv(.c) void {
+    const o = dateFieldOf(item) orelse return;
+    const tf = o.tf;
+    _ = tf.msgSend(BOOL, "resignFirstResponder", .{});
+    if (!isEmpty(tf)) return;
+    const picker = tf.msgSend(Object, "inputView", .{});
+    if (picker.value != null) pickDate(o.s, o.n, tf, picker.msgSend(Object, "date", .{}));
+}
+
+fn dateClear(_: id, _: SEL, item: id) callconv(.c) void {
+    const o = dateFieldOf(item) orelse return;
+    // Closed first: the page's handlers may drop the field.
+    _ = o.tf.msgSend(BOOL, "resignFirstResponder", .{});
+    o.s.updating = true;
+    showDate(o.tf, "");
+    o.s.updating = false;
+    sendValue(o.s, o.n, "input", "");
+    // The input's handlers may have removed the node.
+    const again = dateFieldOf(item) orelse return;
+    sendValue(again.s, again.n, "change", "");
+}
+
+fn pickDate(s: *Surface, n: *Node, tf: Object, date: Object) void {
+    var buf: [16]u8 = undefined;
+    const iso = dateToIso(date, &buf) orelse return;
+    s.updating = true;
+    showDate(tf, iso);
+    s.updating = false;
+    const control = tf.value;
+    sendValue(s, n, "input", iso);
+    // The input's handlers may have removed the node (or closed the page).
+    const o = ownerOf(control) orelse return;
+    sendValue(o.s, o.n, "change", iso);
 }
 
 fn style(n: *Node, f: Object) void {
@@ -1549,8 +1768,9 @@ fn textViewShouldChange(_: id, _: SEL, tv: id, _: NSRange, text: id) callconv(.c
 }
 
 fn fieldShouldChange(_: id, _: SEL, field: id, _: NSRange, text: id) callconv(.c) BOOL {
-    // readonly: the text can be selected (and copied), not changed.
-    if (ownerOf(field)) |o| if (o.n.props.ro) return apple.boolean(false);
+    // readonly: the text can be selected (and copied), not changed. A date
+    // field's text is only ever the picked date's.
+    if (ownerOf(field)) |o| if (o.n.props.ro or isDateField(o.n)) return apple.boolean(false);
     const s = apple.utf8(.{ .value = text }) orelse "";
     return apple.boolean(askEdit(field, s, false));
 }

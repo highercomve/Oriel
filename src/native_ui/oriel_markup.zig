@@ -52,6 +52,8 @@ pub const Spec = struct {
     runs: []const RunSpec = &.{},
     /// The inherited text styles it sets itself (`Inherit` bits).
     inh: u16 = 0,
+    /// Resolves currentColor in this icon’s paths, including media variants.
+    icon_color: ?tree.Color = null,
 };
 
 /// An attribute as written (key, value with `$tokens` unresolved).
@@ -691,8 +693,8 @@ fn path(comptime s: []const u8, at: *usize, icon: *Spec) void {
         if (eq(u8, key, "d")) {
             shape.d = v;
             has_d = true;
-        } else if (eq(u8, key, "fill")) shape.fill = if (eq(u8, v, "none")) null else color(v) //
-        else if (eq(u8, key, "stroke")) shape.stroke = if (eq(u8, v, "none")) null else color(v) //
+        } else if (eq(u8, key, "fill")) shape.fill = if (eq(u8, v, "none")) null else if (eq(u8, v, "currentColor")) icon.icon_color orelse @compileError(".oriel currentColor needs icon-color") else color(v) //
+        else if (eq(u8, key, "stroke")) shape.stroke = if (eq(u8, v, "none")) null else if (eq(u8, v, "currentColor")) icon.icon_color orelse @compileError(".oriel currentColor needs icon-color") else color(v) //
         else if (eq(u8, key, "stroke-width")) shape.sw = number(v) //
         else if (eq(u8, key, "linecap")) shape.cap = oneOf(key, v, &.{ "butt", "round", "square" }) //
         else if (eq(u8, key, "linejoin")) shape.join = oneOf(key, v, &.{ "miter", "round", "bevel" }) //
@@ -929,28 +931,30 @@ fn corners(s: []const u8) [4]tree.Corner {
 
 /// The attributes `unset` can name, and their props.
 const nullable = .{
-    .{ "direction", "fd" },        .{ "wrap", "fw" },             .{ "justify", "jc" },
-    .{ "align", "ai" },            .{ "align-self", "as" },       .{ "align-content", "ac" },
-    .{ "grow", "fg" },             .{ "shrink", "fs" },           .{ "basis", "fb" },
-    .{ "width", "w" },             .{ "height", "h" },            .{ "min-width", "minw" },
-    .{ "min-height", "minh" },     .{ "max-width", "maxw" },      .{ "max-height", "maxh" },
-    .{ "margin", "m" },            .{ "padding", "pad" },         .{ "border-width", "bw" },
-    .{ "border-color", "bc" },     .{ "border-style", "bs" },     .{ "row-gap", "rg" },
-    .{ "column-gap", "cg" },       .{ "position", "pos" },        .{ "relative", "rel" },
-    .{ "scrollbar-width", "sbw" }, .{ "scrollbar-color", "sbc" }, .{ "table", "table" },
-    .{ "table-cell", "tcell" },    .{ "sticky", "sticky" },       .{ "aspect-ratio", "ar" },
-    .{ "translate-x", "tx" },      .{ "translate-y", "ty" },      .{ "scale", "sc" },
-    .{ "rotate", "rot" },          .{ "background", "bg" },       .{ "radius", "br" },
-    .{ "opacity", "op" },          .{ "shadow", "sh" },           .{ "outline", "ol" },
-    .{ "visible", "vis" },         .{ "z", "z" },                 .{ "color", "col" },
-    .{ "font-size", "fz" },        .{ "font-weight", "fwt" },     .{ "font-family", "ff" },
-    .{ "line-height", "lh" },      .{ "text-align", "ta" },       .{ "letter-spacing", "ls" },
-    .{ "value", "val" },           .{ "placeholder", "ph" },      .{ "cols", "cols" },
-    .{ "rows", "rows" },           .{ "label", "al" },            .{ "control", "ctl" },
-    .{ "baseline", "blb" },        .{ "accent", "acc" },          .{ "tooltip", "tip" },
-    .{ "tabindex", "ti" },         .{ "src", "src" },             .{ "fit", "fit" },
-    .{ "pixel-width", "cw" },      .{ "pixel-height", "ch" },     .{ "type", "itype" },
-    .{ "inputmode", "im" },        .{ "enterkey", "ek" },         .{ "autocapitalize", "cap" },
+    .{ "direction", "fd" },    .{ "wrap", "fw" },               .{ "justify", "jc" },
+    .{ "align", "ai" },        .{ "align-self", "as" },         .{ "align-content", "ac" },
+    .{ "grow", "fg" },         .{ "shrink", "fs" },             .{ "basis", "fb" },
+    .{ "width", "w" },         .{ "height", "h" },              .{ "min-width", "minw" },
+    .{ "min-height", "minh" }, .{ "max-width", "maxw" },        .{ "max-height", "maxh" },
+    .{ "margin", "m" },        .{ "padding", "pad" },           .{ "border-width", "bw" },
+    .{ "border-color", "bc" }, .{ "border-style", "bs" },       .{ "row-gap", "rg" },
+    .{ "column-gap", "cg" },   .{ "inset", "ins" },             .{ "position", "pos" },
+    .{ "relative", "rel" },    .{ "scrollbar-width", "sbw" },   .{ "scrollbar-color", "sbc" },
+    .{ "table", "table" },     .{ "table-cell", "tcell" },      .{ "sticky", "sticky" },
+    .{ "aspect-ratio", "ar" }, .{ "translate-x", "tx" },        .{ "translate-y", "ty" },
+    .{ "scale", "sc" },        .{ "rotate", "rot" },            .{ "background", "bg" },
+    .{ "radius", "br" },       .{ "opacity", "op" },            .{ "shadow", "sh" },
+    .{ "outline", "ol" },      .{ "pointer-events", "pe" },     .{ "visible", "vis" },
+    .{ "z", "z" },             .{ "color", "col" },             .{ "font-size", "fz" },
+    .{ "font-weight", "fwt" }, .{ "font-family", "ff" },        .{ "line-height", "lh" },
+    .{ "text-align", "ta" },   .{ "letter-spacing", "ls" },     .{ "value", "val" },
+    .{ "placeholder", "ph" },  .{ "cols", "cols" },             .{ "rows", "rows" },
+    .{ "label", "al" },        .{ "control", "ctl" },           .{ "baseline", "blb" },
+    .{ "accent", "acc" },      .{ "placeholder-color", "phc" }, .{ "tooltip", "tip" },
+    .{ "tabindex", "ti" },     .{ "src", "src" },               .{ "fit", "fit" },
+    .{ "pixel-width", "cw" },  .{ "pixel-height", "ch" },       .{ "type", "itype" },
+    .{ "inputmode", "im" },    .{ "enterkey", "ek" },           .{ "autocapitalize", "cap" },
+    .{ "no-arrow", "na" },
 };
 
 /// `unset="font-size left ..."`: those props with no value (not the
@@ -1028,18 +1032,36 @@ fn inset(p: *tree.Props, side: usize, v: []const u8) void {
 fn shadow(s: []const u8) tree.Shadow {
     var parts: [5][]const u8 = undefined;
     var i: usize = 0;
-    var it = std.mem.splitScalar(u8, s, ',');
-    while (it.next()) |x| {
-        if (i == 5) @compileError(".oriel shadow is x,y,blur[,spread],#color");
-        parts[i] = std.mem.trim(u8, x, " ");
-        i += 1;
+    // The exporter writes translucent colors as rgba(r,g,b,a). Only
+    // commas outside the color separate shadow components.
+    var start: usize = 0;
+    var depth: usize = 0;
+    for (s, 0..) |ch, at| {
+        if (ch == '(') depth += 1;
+        if (ch == ')') {
+            if (depth == 0) @compileError(".oriel shadow has an unmatched parenthesis");
+            depth -= 1;
+        }
+        if (ch == ',' and depth == 0) {
+            if (i == 4) @compileError(".oriel shadow is x,y,blur[,spread],color");
+            parts[i] = std.mem.trim(u8, s[start..at], " ");
+            i += 1;
+            start = at + 1;
+        }
     }
-    if (i < 4) @compileError(".oriel shadow is x,y,blur[,spread],#color");
+    if (depth != 0) @compileError(".oriel shadow has an unmatched parenthesis");
+    parts[i] = std.mem.trim(u8, s[start..], " ");
+    i += 1;
+    if (i < 4) @compileError(".oriel shadow is x,y,blur[,spread],color");
     return .{ .x = number(parts[0]), .y = number(parts[1]), .blur = number(parts[2]), .spread = if (i == 5) number(parts[3]) else 0, .color = color(parts[i - 1]) };
 }
 
 /// One attribute: each group's function takes the ones it knows.
 fn attribute(n: *Spec, comptime key: []const u8, v: []const u8) void {
+    if (std.mem.eql(u8, key, "icon-color")) {
+        n.icon_color = color(v);
+        return;
+    }
     if (std.mem.eql(u8, key, "unset")) return unset(n, v);
     if (identity(n, key, v) or layout(&n.props, key, v) or drawing(&n.props, key, v) or text(&n.props, key, v) or controls(&n.props, key, v) or image(&n.props, key, v)) return;
     @compileError("Unknown .oriel attribute: " ++ key);
@@ -1113,6 +1135,7 @@ fn layout(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
     else if (eq(u8, key, "table-cell")) p.tcell = number(v) //
     else if (eq(u8, key, "clip")) p.clip = clipValue(v) //
     else if (eq(u8, key, "visible")) p.vis = boolean(v) //
+    else if (eq(u8, key, "pointer-events")) p.pe = oneOf(key, v, &.{ "auto", "none" }) //
     else if (eq(u8, key, "clickable")) p.click = boolean(v) //
     else if (eq(u8, key, "display")) p.none = eq(u8, oneOf(key, v, &.{ "flex", "none" }), "none") //
     else if (eq(u8, key, "box-sizing")) p.cb = eq(u8, oneOf(key, v, &.{ "border-box", "content-box" }), "content-box") //
@@ -1228,18 +1251,20 @@ fn controls(p: *tree.Props, comptime key: []const u8, v: []const u8) bool {
     else if (eq(u8, key, "placeholder")) p.ph = v //
     else if (eq(u8, key, "disabled")) p.dis = boolean(v) //
     else if (eq(u8, key, "readonly")) p.ro = boolean(v) //
+    else if (eq(u8, key, "no-arrow")) p.na = boolean(v) //
     else if (eq(u8, key, "password")) p.pw = boolean(v) //
     else if (eq(u8, key, "rows")) p.rows = number(v) //
     else if (eq(u8, key, "cols")) p.cols = number(v) //
     else if (eq(u8, key, "checked")) p.on = boolean(v) //
     else if (eq(u8, key, "mixed")) p.mix = boolean(v) //
     else if (eq(u8, key, "accent")) p.acc = color(v) //
+    else if (eq(u8, key, "placeholder-color")) p.phc = color(v) //
     else if (eq(u8, key, "min") or eq(u8, key, "max") or eq(u8, key, "step")) {
         const r = &(p.range orelse @compileError(".oriel " ++ key ++ " is for <slider>"));
         r.*[if (eq(u8, key, "min")) 0 else if (eq(u8, key, "max")) 1 else 2] = number(v);
     }
     // The keyboard and typing aids of a text field.
-    else if (eq(u8, key, "type")) p.itype = oneOf(key, v, &.{ "email", "url", "tel", "number", "search" }) //
+    else if (eq(u8, key, "type")) p.itype = oneOf(key, v, &.{ "email", "url", "tel", "number", "search", "date" }) //
     else if (eq(u8, key, "inputmode")) p.im = oneOf(key, v, &.{ "none", "text", "decimal", "numeric", "tel", "search", "email", "url" }) //
     else if (eq(u8, key, "enterkey")) p.ek = oneOf(key, v, &.{ "enter", "done", "go", "next", "previous", "search", "send" }) //
     else if (eq(u8, key, "autocapitalize")) p.cap = oneOf(key, v, &.{ "none", "sentences", "words", "characters" }) //
@@ -1455,6 +1480,7 @@ const coverage = .{
     .{ "op", "<view opacity=\"0.5\" />", "<view />" },
     .{ "sh", "<view shadow=\"0,1,2,#000000\" />", "<view />" },
     .{ "ol", "<view outline=\"2,1,#ff0000\" />", "<view />" },
+    .{ "pe", "<view pointer-events=\"none\" />", "<view />" },
     .{ "vis", "<view visible=\"false\" />", "<view />" },
     .{ "click", "<view clickable=\"true\" />", "<view />" },
     .{ "z", "<view z=\"2\" />", "<view />" },
@@ -1478,6 +1504,7 @@ const coverage = .{
     .{ "cols", "<textarea cols=\"20\" />", "<textarea />" },
     .{ "rows", "<textarea rows=\"4\" />", "<textarea />" },
     .{ "options", "<select><option>a</option></select>", "<select />" },
+    .{ "na", "<select no-arrow=\"true\" />", "<select />" },
     .{ "range", "<slider min=\"2\" />", "<slider />" },
     .{ "icon", "<icon viewbox=\"0,0,16,16\" />", "<icon />" },
     .{ "src", "<image src=\"a.png\" />", "<image src=\"b.png\" />" },
@@ -1497,6 +1524,7 @@ const coverage = .{
     .{ "on", "<checkbox checked=\"true\" />", "<checkbox />" },
     .{ "mix", "<checkbox mixed=\"true\" />", "<checkbox />" },
     .{ "acc", "<checkbox accent=\"#ff0000\" />", "<checkbox />" },
+    .{ "phc", "<input placeholder-color=\"#ff0000\" />", "<input />" },
     .{ "tip", "<view tooltip=\"x\" />", "<view />" },
     .{ "ti", "<view tabindex=\"3\" />", "<view />" },
     .{ "none", "<view display=\"none\" />", "<view />" },
@@ -1614,4 +1642,34 @@ test ".oriel icons, rich spans and unset" {
     try std.testing.expectEqual([4]f32{ 0, 4, 0, 4 }, code.ib.?.p);
     try std.testing.expectEqual([4]f32{ 3, 3, 3, 3 }, code.ib.?.br.?);
     try std.testing.expectEqual(@as(f32, 2), code.ol.?.?.w);
+}
+
+test "exported rgba shadows preserve fractional alpha and optional spread" {
+    @setEvalBranchQuota(100000);
+    const a = comptime shadow("0,3,8,0,rgba(0, 0, 0, 0.18)");
+    const b = comptime shadow("1,2,4,rgba(10,20,30,0.5)");
+    try std.testing.expectEqual(@as(f32, 0.18), a.color[3]);
+    try std.testing.expectEqual(@as(f32, 0), a.spread);
+    try std.testing.expectEqual(@as(f32, 0.5), b.color[3]);
+    try std.testing.expectEqual(@as(f32, 30), b.color[2]);
+}
+
+test "icon path currentColor follows its media variant without a text color prop" {
+    @setEvalBranchQuota(100000);
+    const source = "<style>i: icon-color=#112233 @media (prefers-color-scheme: dark) { i: icon-color=#aabbcc }</style><icon class=\"i\" viewbox=\"0,0,24,24\"><path d=\"M0 0L24 24\" stroke=\"currentColor\" fill=\"none\" /></icon>";
+    const light = comptime parseVariant(source, 0);
+    const dark = comptime parseVariant(source, 1);
+    try std.testing.expectEqual(@as(f32, 17), light.nodes[0].props.icon.?.shapes[0].stroke.?[0]);
+    try std.testing.expectEqual(@as(f32, 170), dark.nodes[0].props.icon.?.shapes[0].stroke.?[0]);
+    try std.testing.expectEqual(light.nodes[0].props.col, dark.nodes[0].props.col);
+}
+
+test ".oriel distinguishes clearing an inset override from clearing individual sides" {
+    const absent = comptime parse("<view unset=\"inset\" />");
+    try std.testing.expect(absent.nodes[0].props.ins == null);
+    const reset = comptime parse("<view top=\"4\" left=\"8\" unset=\"inset\" />");
+    try std.testing.expect(reset.nodes[0].props.ins == null);
+    const partial = comptime parse("<view top=\"4\" left=\"8\" unset=\"left\" />");
+    try std.testing.expectEqual(tree.Dim{ .px = 4 }, partial.nodes[0].props.ins.?[0].?);
+    try std.testing.expect(partial.nodes[0].props.ins.?[3] == null);
 }

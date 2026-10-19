@@ -752,13 +752,13 @@ pub fn addPackageSteps(
     // one, else the production build; `desktop-entry-release`: the production
     // build (`<id>`, `oriel build` / `oriel run`).
     const has_dev = dev_exe != null;
-    addDesktopEntryStep(b, package_tool, metadata, icons_dir, "desktop-entry", "Install the desktop entry and icons of the dev build (or the production build) into $XDG_DATA_HOME", if (has_dev) .{
+    addDesktopEntryStep(b, package_tool, metadata, icons_dir, payload.files, "desktop-entry", "Install the desktop entry and icons of the dev build (or the production build) into $XDG_DATA_HOME", if (has_dev) .{
         .id = b.fmt("{s}.Dev", .{metadata.id}),
         .name = b.fmt("{s} (Dev)", .{metadata.name}),
         .bin_name = b.fmt("{s}-dev", .{metadata.exe_name}),
         .compile = dev_exe.?,
     } else .{ .id = metadata.id, .name = metadata.name, .bin_name = metadata.exe_name, .compile = exe });
-    addDesktopEntryStep(b, package_tool, metadata, icons_dir, "desktop-entry-release", "Install the desktop entry and icons of the production build into $XDG_DATA_HOME", .{
+    addDesktopEntryStep(b, package_tool, metadata, icons_dir, payload.files, "desktop-entry-release", "Install the desktop entry and icons of the production build into $XDG_DATA_HOME", .{
         .id = metadata.id,
         .name = metadata.name,
         .bin_name = metadata.exe_name,
@@ -778,6 +778,7 @@ fn addDesktopEntryStep(
     package_tool: *std.Build.Step.Compile,
     metadata: Metadata,
     icons_dir: std.Build.LazyPath,
+    files: []const File,
     step_name: []const u8,
     description: []const u8,
     t: DesktopTarget,
@@ -814,6 +815,10 @@ fn addDesktopEntryStep(
 
     const step = getOrCreateStep(b, step_name, description);
     step.dependOn(&b.addInstallArtifact(t.compile, .{}).step);
+    // What the packages put next to the executable (libggml-cuda.so,
+    // libggml-vulkan.so, `contents.files`): the installed app loads them
+    // from its own directory, so a desktop entry install has them too.
+    for (files) |f| step.dependOn(&b.addInstallFileWithDir(f.source, .bin, f.path).step);
     step.dependOn(&run_install_desktop.step);
 }
 

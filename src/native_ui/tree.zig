@@ -846,6 +846,8 @@ pub const Props = struct {
     ol: ?Outline = null,
     vis: ?bool = null,
     click: bool = false,
+    /// CSS pointer-events, inherited for hit testing; an explicit auto restores a child.
+    pe: ?[]const u8 = null,
     z: ?i32 = null,
     // Text
     col: ?Color = null,
@@ -869,6 +871,8 @@ pub const Props = struct {
     // Fields
     val: ?[]const u8 = null,
     ph: ?[]const u8 = null,
+    /// The placeholder's color (::placeholder).
+    phc: ?Color = null,
     dis: bool = false,
     pw: bool = false,
     /// box-sizing: content-box (CSS's default) for a box with a size and
@@ -900,6 +904,8 @@ pub const Props = struct {
     /// go, next, previous, search, send), autocapitalize (none, sentences,
     /// words, characters), autocorrect and spellcheck.
     itype: ?[]const u8 = null,
+    /// A <select> with appearance: none: no native arrow (the page draws one).
+    na: bool = false,
     im: ?[]const u8 = null,
     ek: ?[]const u8 = null,
     cap: ?[]const u8 = null,
@@ -929,7 +935,9 @@ pub const Props = struct {
 };
 
 /// Bounds for the typed UI API, independent of the JSON/DOM renderer.
-pub const max_ui_string_bytes = 8192;
+pub const max_ui_string_bytes = 32 * 1024;
+/// Binary pictures live outside the bounded property buffers.
+pub const max_ui_image_bytes = 16 * 1024 * 1024;
 pub const max_ui_slice_elements = 256;
 pub const max_ui_props_bytes = 64 * 1024;
 pub const default_ui_props_bytes = 4096;
@@ -1425,6 +1433,9 @@ pub const Node = struct {
     props: Props = .{},
     /// Reserved during mounting; updates swap buffers, never grow them.
     ui_props_storage: ?UiPropsStorage = null,
+    /// A typed image's bytes, released with the node; props.src is only a key.
+    ui_image_data: ?[]u8 = null,
+    ui_image_generation: u64 = 0,
     ui_template: ?[]const u8 = null,
     ui_mounted: bool = false,
     ui_base: i64 = 0,
@@ -1850,6 +1861,7 @@ pub const Tree = struct {
             t.gpa.destroy(ar);
         }
         t.dropTextOverride(n);
+        if (n.ui_image_data) |bytes| t.gpa.free(bytes);
         if (n.ui_value) |value| t.gpa.free(value);
         if (n.bound_tip) |value| t.gpa.free(value);
         if (n.bound_label) |value| t.gpa.free(value);
@@ -2899,6 +2911,46 @@ pub const Tree = struct {
         cb(t.measure_ctx, n, value);
     }
 
+    /// Supply a picture without putting its data URI in UI properties. A
+    /// short, versioned asset key lets every platform use its normal decoder.
+    /// The node owns a copy; replacement failure preserves the old picture.
+    pub fn setImageData(t: *Tree, id: i64, bytes: ?[]const u8) !void {
+        const n = t.get(id) orelse return error.UnknownNode;
+        if (n.kind != .image) return error.NotImage;
+        if (bytes) |data| if (data.len > max_ui_image_bytes) return error.UiImageTooLarge;
+        const generation = std.math.add(u64, n.ui_image_generation, 1) catch return error.ImageGenerationExhausted;
+        const owned = if (bytes) |data| try t.gpa.dupe(u8, data) else null;
+        errdefer if (owned) |data| t.gpa.free(data);
+        var key: [96]u8 = undefined;
+        var props = n.props;
+        props.src = if (bytes != null) try std.fmt.bufPrint(&key, "__oriel_image/{d}/{d}", .{ id, generation }) else null;
+        const old_data = n.ui_image_data;
+        const old_generation = n.ui_image_generation;
+        // The synchronous backend callback must see the new bytes.
+        n.ui_image_data = owned;
+        n.ui_image_generation = generation;
+        errdefer {
+            n.ui_image_data = old_data;
+            n.ui_image_generation = old_generation;
+        }
+        try t.updateUiProps(id, props);
+        if (old_data) |data| t.gpa.free(data);
+    }
+
+    /// Resolve only this node's current key; old keys cannot serve a newer
+    /// picture after asynchronous loading or a backend cache lookup.
+    pub fn imageData(t: *Tree, path: []const u8) ?[]const u8 {
+        const prefix = "__oriel_image/";
+        if (!std.mem.startsWith(u8, path, prefix)) return null;
+        var parts = std.mem.splitScalar(u8, path[prefix.len..], '/');
+        const id = std.fmt.parseInt(i64, parts.next() orelse return null, 10) catch return null;
+        const generation = std.fmt.parseInt(u64, parts.next() orelse return null, 10) catch return null;
+        if (parts.next() != null) return null;
+        const n = t.get(id) orelse return null;
+        if (n.ui_image_generation != generation) return null;
+        return n.ui_image_data;
+    }
+
     /// Scalar patches retain current slices. New slices are copied into
     /// reserved scratch, then committed; failure leaves the old node intact.
     pub fn updateUiProps(t: *Tree, id: i64, props: Props) !void {
@@ -3643,16 +3695,17 @@ pub const Tree = struct {
     /// The deepest node under a point (later siblings on top).
     pub fn hit(t: *Tree, x: f32, y: f32) ?*Node {
         const root = t.root orelse return null;
-        return hitIn(root, x, y);
+        return hitIn(root, x, y, true);
     }
 
-    fn hitIn(n: *Node, x: f32, y: f32) ?*Node {
+    fn hitIn(n: *Node, x: f32, y: f32, inherited: bool) ?*Node {
+        const receives = if (n.props.pe) |pe| !std.mem.eql(u8, pe, "none") else inherited;
         if (n.props.vis == false) return null;
         if (!n.clip.contains(x, y)) return null;
         // Topmost first: the paint order backwards.
         var it: PaintIter = .{ .kids = n.kids.items, .reverse = true };
-        while (it.next()) |k| if (hitIn(k, x, y)) |h| return h;
-        return if (n.frame.contains(x, y) and n.props.root == false) n else null;
+        while (it.next()) |k| if (hitIn(k, x, y, receives)) |h| return h;
+        return if (receives and n.frame.contains(x, y) and n.props.root == false) n else null;
     }
 
     /// Each scroller's scrollbar room as its overflow now asks: true when
@@ -5464,4 +5517,59 @@ test "mirroring scratch survives callbacks and rejects reentrant updates" {
     try t.reserveUiProps(1, default_ui_props_bytes);
     try t.updateUiProps(1, .{ .options = &.{.{ "label", "value" }} });
     try std.testing.expect(!t.ui_wire_busy);
+}
+
+fn typedImageAllocationCheck(a: std.mem.Allocator) !void {
+    const Host = struct {
+        fn measure(_: *anyopaque, _: *Node, _: f32, out: *[2]f32) void {
+            out.* = .{ 40, 18 };
+        }
+        fn props(ctx: *anyopaque, n: *Node, _: std.json.Value) void {
+            const tree: *Tree = @ptrCast(@alignCast(ctx));
+            if (n.props.src) |key| std.debug.assert(tree.imageData(key) != null);
+        }
+    };
+    var t: Tree = undefined;
+    t = Tree.init(a, &t, Host.measure);
+    defer t.deinit();
+    t.on_props = Host.props;
+    try t.create(1, .image);
+    try t.reserveUiProps(1, default_ui_props_bytes);
+    var data: [64 * 1024]u8 = @splat(17);
+    try t.setImageData(1, &data);
+    const old_key = try a.dupe(u8, t.get(1).?.props.src.?);
+    defer a.free(old_key);
+    @memset(&data, 99);
+    try std.testing.expectEqual(@as(u8, 17), t.imageData(old_key).?[0]);
+    var props = t.get(1).?.props;
+    props.none = true;
+    try t.updateUiProps(1, props);
+    try t.setImageData(1, "replacement");
+    try std.testing.expect(t.imageData(old_key) == null);
+    try std.testing.expectEqualStrings("replacement", t.imageData(t.get(1).?.props.src.?).?);
+    try t.setImageData(1, null);
+    try std.testing.expect(t.get(1).?.ui_image_data == null);
+    try std.testing.expect(t.get(1).?.props.src == null);
+}
+
+test "typed images own binary payloads outside bounded props, with allocation failure cleanup" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, typedImageAllocationCheck, .{});
+}
+
+test "pointer-events overlays pass hits through and children can restore auto" {
+    if (!@import("build_options").native_ui) return error.SkipZigTest;
+    var ctx: u8 = 0;
+    var t = Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer t.deinit();
+    try t.apply(
+        \\[["c",1,"view"],["p",1,{"root":true,"w":200,"h":200}],["c",2,"view"],["p",2,{"w":200,"h":200}],["c",3,"view"],["p",3,{"pos":"absolute","w":200,"h":200,"pe":"none"}],["c",4,"view"],["p",4,{"w":100,"h":100}],["k",3,[4]],["k",1,[2,3]],["r",1]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(i64, 2), t.hit(10, 10).?.id);
+    try t.apply(
+        \\[["p",4,{"w":100,"h":100,"pe":"auto"}]]
+    );
+    t.layout();
+    try std.testing.expectEqual(@as(i64, 4), t.hit(10, 10).?.id);
+    try std.testing.expectEqual(@as(i64, 2), t.hit(150, 150).?.id);
 }

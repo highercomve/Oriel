@@ -18,6 +18,8 @@ import android.view.WindowInsetsController
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.widget.FrameLayout
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 
 /**
  * Shows one Oriel window. The launcher ([OrielMainActivity], `singleTask`)
@@ -32,6 +34,7 @@ open class OrielActivity : Activity() {
     private lateinit var root: FrameLayout
     private var closingByRuntime = false
     private var started = false
+    private var backCallback: OnBackInvokedCallback? = null
     private var chooserCallback: ValueCallback<Array<Uri>>? = null
 
     internal val orielWindow: OrielWindow?
@@ -40,6 +43,11 @@ open class OrielActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         showInRecents()
+        if (Build.VERSION.SDK_INT >= 33) {
+            val callback = OnBackInvokedCallback { handleBack() }
+            backCallback = callback
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
+        }
         root = FrameLayout(this)
         // Android 15 draws apps targeting API 35 edge to edge: keep the page
         // clear of the status and navigation bars, the display cutout and the
@@ -116,6 +124,10 @@ open class OrielActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            backCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
+            backCallback = null
+        }
         val w = orielWindow
         w?.detachFrom(this)
         // Finished by the user (the caption's close button, swiped away from
@@ -133,7 +145,11 @@ open class OrielActivity : Activity() {
     }
 
     @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    override fun onBackPressed() = handleBack()
+
+    // Both legacy Back and Android 13+ gestures use the same navigation path.
+    // Default priority lets the IME dismiss itself before navigating the page.
+    private fun handleBack() {
         val w = orielWindow
         when {
             w != null && w.goBack() -> {}

@@ -1,6 +1,8 @@
 package dev.oriel
 
 import android.annotation.SuppressLint
+import android.app.DatePickerDialog
+import android.content.DialogInterface
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
@@ -58,6 +60,8 @@ import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.ByteBuffer
+import java.util.Calendar
+import java.util.Locale
 import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -417,7 +421,9 @@ internal class NuiNode(val id: Int, var kind: String) {
         val t = text ?: return null
         val tp = paint ?: return null
         val nowrap = p.optBoolean("nowrap")
-        val w = if (width < 0 || nowrap) desired(t, tp) else max(1, width)
+        // A single nowrap line needs the available width to ellipsize.
+        // Preformatted multi-line text keeps its unbounded lines.
+        val w = if (width < 0 || (nowrap && t.contains('\n'))) desired(t, tp) else max(1, width)
         if (layout != null && layoutWidth == w) return layout
         val align = when (p.optString("ta")) {
             "center" -> Layout.Alignment.ALIGN_CENTER
@@ -1012,6 +1018,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         // Only paint ('X': opacity, scale, rotation) and text: the paint order stands.
         var reorder = false
+        // A box fading in from or out to transparent covers fields, or stops covering them.
+        var shown = false
         while (b.remaining() >= 9) {
             val tag = b.get().toInt().toChar()
             val id = b.int
@@ -1045,7 +1053,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                     val op = b.float
                     val sc = b.float
                     val rot = b.float
-                    nodes[id]?.let { it.op = op; it.sc = sc; it.rot = rot }
+                    nodes[id]?.let { if ((it.op <= 0f) != (op <= 0f)) shown = true; it.op = op; it.sc = sc; it.rot = rot }
                 }
                 'C' -> {
                     val ops = CanvasProgram.unpack(b, b.int) ?: return
@@ -1055,6 +1063,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             }
         }
         if (reorder) orderDirty = true
+        if (shown && fields.isNotEmpty()) syncFields()
         invalidate()
     }
 
@@ -1167,10 +1176,17 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         try {
             when (f) {
                 is SeekBar -> rangeOf(nodes[id])?.let { f.progress = it.progress(v) }
-                is EditText -> {
-                    if (f.text.toString() != v) { f.setText(v); f.setSelection(v.length) }
-                    (f as? Field)?.sent = v
+                is Field -> if (f.date) {
+                    // The page's YYYY-MM-DD, shown in the user's date format.
+                    f.iso = v
+                    val shown = dateText(v)
+                    if (f.text.toString() != shown) f.setText(shown)
+                    f.sent = shown
+                } else {
+                    if (f.text.toString() != v) { f.setText(v); f.setSelection(caretFor(f, v)) }
+                    f.sent = v
                 }
+                is EditText -> if (f.text.toString() != v) { f.setText(v); f.setSelection(caretFor(f, v)) }
                 is Spinner -> {
                     selectValues[id] = v
                     options(nodes[id])?.indexOfFirst { it.first == v }?.let { if (it >= 0) f.setSelection(it) }
@@ -1210,6 +1226,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     /** Out of its window: the canvases' bitmaps go (the next paint makes new ones). */
     override fun onDetachedFromWindow() {
+        stopFling()
         if (displayPosted) Choreographer.getInstance().removeFrameCallback(displayCallback)
         displayPosted = false
         super.onDetachedFromWindow()
@@ -1259,29 +1276,58 @@ internal class NuiView(context: Context, val window: Int, private val transparen
 
     // --- Fields ---------------------------------------------------------------
 
+    /**
+     * A field something painted later covers (a modal's backdrop over it):
+     * its widget is hidden (syncFields), so it's drawn here at its content
+     * box, under what covers it, as a browser shows a field there.
+     */
+    private fun coveredField(canvas: Canvas, id: Int, cx: Float, cy: Float) {
+        val v = fields[id] ?: return
+        if (v.visibility != INVISIBLE || v.width == 0 || v.height == 0) return
+        canvas.save()
+        canvas.translate(cx, cy)
+        canvas.scale(1 / density, 1 / density)
+        canvas.translate(-v.scrollX.toFloat(), -v.scrollY.toFloat())
+        v.draw(canvas)
+        canvas.restore()
+    }
+
     private fun isField(kind: String) = kind == "input" || kind == "textarea" || kind == "select"
 
     private fun syncFields() {
-        // What's drawn over the page: the root's children after the scroll
-        // view (fixed elements), in a page's tree (its window scroller, id
-        // -1, first). An .oriel view's root holds the view's own parts: none
-        // of them is drawn over the rest.
-        val fixed = ArrayList<RectF>()
+        // What's drawn over a field: the root's children (in a page's tree,
+        // its window scroller, id -1, then the fixed layers: a bar, a modal
+        // dialog in the top layer) painted after the one the field is in. An
+        // .oriel view's root holds the view's own parts: none of them is
+        // drawn over the rest.
+        val tops = ArrayList<Int>()
         if (frames.size >= REC * 2 && ids[REC] == -1) {
-            var k = REC + REC * (1 + frames[REC + 13].toInt())
+            var k = REC
             val end = REC * (1 + frames[13].toInt())
             while (k < end) {
-                fixed += RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
+                tops += k
                 k += REC * (1 + frames[k + 13].toInt())
             }
+        }
+        val topOrder = ordered(tops)
+        fun coveringTops(r: Int): List<RectF> {
+            val top = tops.lastOrNull { it <= r } ?: return emptyList()
+            val at = topOrder.indexOf(top)
+            if (at < 0) return emptyList()
+            return (at + 1 until topOrder.size).map { i -> val k = topOrder[i]; RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4]) }
         }
         // A snapshot: making or hiding a field can run callbacks that change `nodes`.
         for (n in nodes.values.toList()) {
             if (!isField(n.kind)) continue
             val f = fields[n.id] ?: makeField(n.id) ?: continue
             val r = index[n.id]
-            val vis = if (r != null && frames[r + 3] > 1) visibleRect(r, fixed + paintedOver(r)) else null
-            if (vis == null) { f.visibility = INVISIBLE; continue }
+            val vis = if (r != null && frames[r + 3] > 1) visibleRect(r, coveringTops(r) + paintedOver(r)) else null
+            if (vis == null) {
+                // Hidden: drawn into the page under what covers it (onDraw).
+                if (f.visibility != INVISIBLE) { f.visibility = INVISIBLE; invalidate() }
+                continue
+            }
+            if (f.visibility != VISIBLE) invalidate()
             f.visibility = VISIBLE
             // The widget sits at the content box: clip it to the visible part.
             val cx = frames[r!! + 9]; val cy = frames[r + 10]
@@ -1296,18 +1342,25 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      * The visible boxes with a background painted after the field at record
      * `r` (in paint order, after its subtree): a sticky footer, a z-index bar. The
      * canvas draws them over the field, but its widget sits above the canvas.
+     * A transparent subtree (opacity: 0, a hidden progress toast) paints nothing.
      */
     private fun paintedOver(r: Int): List<RectF> {
         val out = ArrayList<RectF>()
         ensurePaintOrder()
-        val from = paintEnd[r] ?: return out
-        for (pos in from until paintOrder.size) {
+        var pos = paintEnd[r] ?: return out
+        while (pos < paintOrder.size) {
             val k = paintOrder[pos]
             val n = nodes[ids[k]]
+            if (n != null && n.op <= 0f) {
+                // Its subtree follows it in paint order, up to its paintEnd.
+                pos = max(pos + 1, paintEnd[k] ?: (pos + 1))
+                continue
+            }
             if (n != null && (n.bg?.let { Color.alpha(it) > 0 } == true || n.gradient != null)) {
                 val v = RectF(frames[k + 1], frames[k + 2], frames[k + 1] + frames[k + 3], frames[k + 2] + frames[k + 4])
                 if (v.intersect(frames[k + 5], frames[k + 6], frames[k + 5] + frames[k + 7], frames[k + 6] + frames[k + 8])) out += v
             }
+            pos++
         }
         return out
     }
@@ -1334,6 +1387,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     private class Field(ctx: Context) : EditText(ctx) {
         /** readonly (ro): focusable and selectable, no edits from the user. */
         var readOnly = false
+        /** <input type=date>: no typing; a tap opens the date picker. Its value is
+         *  iso (YYYY-MM-DD or ""), its text that date in the user's format. */
+        var date = false
+        var iso = ""
         var editType: String? = null
         var editData: String? = null
         var sent = ""
@@ -1388,6 +1445,42 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return null
     }
 
+    /** A date field's tap: Android's date picker on its date (today when it
+     *  has none); a pick is the page's input and change, Clear its "". */
+    private fun pickDate(f: Field, id: Int) {
+        if (!f.isEnabled || f.readOnly) return
+        val c = Calendar.getInstance()
+        isoDate(f.iso)?.let { (y, m, d) -> c.set(y, m - 1, d) }
+        val dialog = DatePickerDialog(context, { _, y, m, d ->
+            setDate(f, id, String.format(Locale.ROOT, "%04d-%02d-%02d", y, m + 1, d))
+        }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH))
+        dialog.setButton(DialogInterface.BUTTON_NEUTRAL, "Clear") { _, _ -> setDate(f, id, "") }
+        dialog.show()
+    }
+
+    private fun setDate(f: Field, id: Int, iso: String) {
+        f.iso = iso
+        updating = true
+        try { f.setText(dateText(iso)); f.sent = f.text.toString() } finally { updating = false }
+        NuiNative.event(window, id, "input".bytes(), iso.bytes())
+        NuiNative.event(window, id, "change".bytes(), iso.bytes())
+    }
+
+    /** YYYY-MM-DD in the user's date format, the year in full as Chrome
+     *  shows it ("" for none or a bad date). */
+    private fun dateText(iso: String): String {
+        val (y, m, d) = isoDate(iso) ?: return ""
+        val c = Calendar.getInstance().apply { clear(); set(y, m - 1, d) }
+        val locale = java.util.Locale.getDefault()
+        val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "yyyyMMdd")
+        return java.text.SimpleDateFormat(pattern, locale).format(c.time)
+    }
+
+    private fun isoDate(s: String): Triple<Int, Int, Int>? {
+        val m = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$").matchEntire(s) ?: return null
+        return Triple(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
+    }
+
     /** A text field's selection, start and end in UTF-16 units (packed), or -1 (android.zig selection). */
     fun selection(id: Int): Long {
         val f = fields[id] as? EditText ?: return -1
@@ -1395,6 +1488,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         if (a < 0 || b < 0) return -1
         return (min(a, b).toLong() shl 32) or max(a, b).toLong()
     }
+
+    /** Where a new value's caret goes: its end in the field being typed in;
+     *  else its start, so a one-line field too narrow for it shows its
+     *  beginning, as Chrome shows an unfocused field. */
+    private fun caretFor(f: EditText, v: String): Int =
+        if (f.hasFocus() || (f.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0) v.length else 0
 
     /** Select start..end of a text field (el.setSelectionRange). */
     fun setSelection(id: Int, start: Int, end: Int) {
@@ -1422,6 +1521,23 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 if (!multi) { isSingleLine = true; imeOptions = EditorInfo.IME_ACTION_DONE }
                 sent = n.p.optString("val")
                 val field = this
+                if (n.p.optString("itype") == "date") {
+                    date = true
+                    iso = sent
+                    setText(dateText(iso))
+                    sent = text.toString()
+                    isCursorVisible = false
+                    isLongClickable = false
+                    isFocusableInTouchMode = false
+                    showSoftInputOnFocus = false
+                    setOnClickListener { pickDate(field, id) }
+                } else {
+                    // Initialize before installing listeners. Applying keyboard
+                    // styles can notify TextWatchers even before a hidden field
+                    // receives its first value() call; its empty initial text
+                    // must never be reported as an edit to the page's value.
+                    setText(sent)
+                }
                 // Every edit (keys, the soft keyboard's commits, paste, cut,
                 // undo) asks the page first: beforeinput, as Chromium names it.
                 filters = arrayOf(InputFilter { source, start, end, dest, dstart, dend ->
@@ -1494,6 +1610,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         // destroyed, hidden while the frames are applied), and the page's
         // handler could then render and free nodes in the middle of that.
         v.setOnFocusChangeListener { _, has ->
+            // A one-line field left shows its start again, as Chrome's does.
+            if (!has && v is EditText && (v.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0) v.setSelection(0)
             val kind = if (has) "focus" else "blur"
             post { if (Nui.views[window] === this) NuiNative.event(window, id, kind.bytes(), ByteArray(0)) }
         }
@@ -1597,6 +1715,8 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             v.setTextColor(p?.optJSONArray("col")?.let { NuiNode.color(it) } ?: Color.BLACK)
             v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, p?.optDouble("fz", 16.0)?.toFloat() ?: 16f)
             if (p != null) v.typeface = NuiNode.typeface(p.optDouble("fwt", 400.0).toInt(), p.optBoolean("it"), NuiNode.family(p.optString("ff"), p.optBoolean("mono")))
+            // The measured CSS spacing, not the device theme's Spinner style.
+            v.letterSpacing = (p?.optDouble("ls", 0.0)?.toFloat() ?: 0f) / (p?.optDouble("fz", 16.0)?.toFloat() ?: 16f)
             v.setPadding(0, 0, 0, 0)
             v.includeFontPadding = false
             v.gravity = Gravity.CENTER_VERTICAL or Gravity.START
@@ -1624,6 +1744,12 @@ internal class NuiView(context: Context, val window: Int, private val transparen
      */
     private fun keyboard(n: NuiNode, v: Field) {
         val p = n.p
+        // A date field takes no typing: the picker sets it.
+        if (v.date) {
+            if (v.inputType != InputType.TYPE_NULL) v.inputType = InputType.TYPE_NULL
+            v.readOnly = p.optBoolean("ro")
+            return
+        }
         val multi = n.kind == "textarea"
         val type = if (p.optBoolean("pw")) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else {
             val mode = p.optString("im").ifEmpty {
@@ -1717,6 +1843,10 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         // The page's font, as its text runs have it (not the system theme's).
         val face = NuiNode.typeface(n.p.optDouble("fwt", 400.0).toInt(), n.p.optBoolean("it"), NuiNode.family(n.p.optString("ff"), n.p.optBoolean("mono")))
         if (v is Spinner) {
+            // appearance: none (na): the page draws its own arrow; no caret, no room for it.
+            val bare = n.p.optBoolean("na")
+            if (bare && v.background != null) { v.background = null; v.setPadding(0, 0, 0, 0) }
+            else if (!bare && v.background == null) { v.background = Caret(); v.setPadding(0, 0, (20 * density).toInt(), 0) }
             (v.background as? Caret)?.let { it.color = color; it.invalidateSelf() }
             // Its popup follows the field's color-scheme (dk), not the system's.
             v.setPopupBackgroundDrawable(android.graphics.drawable.ColorDrawable(if (n.p.optBoolean("dk")) Color.rgb(43, 43, 43) else Color.WHITE))
@@ -1735,7 +1865,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         if (v is EditText) {
             v.typeface = face
             v.setTextColor(color)
-            v.setHintTextColor((color and 0x00ffffff) or 0x80000000.toInt())
+            v.setHintTextColor(n.p.optJSONArray("phc")?.let { NuiNode.color(it) } ?: ((color and 0x00ffffff) or 0x80000000.toInt()))
             v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, fz)
             v.hint = n.p.optString("ph", "")
         }
@@ -1798,7 +1928,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 if (abs(dy) <= slop || abs(dy) < abs(e.x - downX)) return false
                 val under = fields.values.firstOrNull { it.visibility == VISIBLE && downX >= it.left && downX < it.right && downY >= it.top && downY < it.bottom }
                 if (under != null && under.canScrollVertically(if (dy < 0) 1 else -1)) return false
-                scroller.forceFinished(true)
+                stopFling()
                 removeCallbacks(longPress)
                 dragging = true; sideways = false; longPressed = false; lastY = e.y; lastX = e.x
                 velocity?.recycle()
@@ -1836,7 +1966,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
     override fun onTouchEvent(e: MotionEvent): Boolean {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                scroller.forceFinished(true)
+                stopFling()
                 downX = e.x; downY = e.y; lastY = e.y
                 dragging = false; longPressed = false
                 mouseTouch = e.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE
@@ -1908,6 +2038,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
                 velocity?.recycle(); velocity = null
             }
             MotionEvent.ACTION_CANCEL -> {
+                stopFling()
                 removeCallbacks(longPress)
                 NuiNative.press(window, 0f, 0f, false)
                 endPointer(3, e)
@@ -2184,7 +2315,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             if (e.metaState and KeyEvent.META_SHIFT_ON != 0 && h == 0f) { h = -v; v = 0f }
             var moved = false
             if (v != 0f) {
-                scroller.forceFinished(true)
+                stopFling()
                 moved = NuiNative.scroll(window, e.x / density, e.y / density, -v * vc.scaledVerticalScrollFactor / density)
             }
             if (h != 0f) moved = NuiNative.scrollX(window, e.x / density, e.y / density, h * vc.scaledHorizontalScrollFactor / density) || moved
@@ -2240,21 +2371,39 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         return super.onHoverEvent(e)
     }
 
-    private fun fling(vy: Float) {
-        scroller.fling(0, 0, 0, vy.toInt(), 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
-        var last = 0
-        val x = downX / density
-        val y = downY / density
-        val step = object : Runnable {
-            override fun run() {
-                if (!scroller.computeScrollOffset()) return
-                val cur = scroller.currY
-                val moved = NuiNative.scroll(window, x, y, (cur - last) / density)
-                last = cur
-                if (moved) postOnAnimation(this) else scroller.forceFinished(true)
+    private var flingLastY = 0
+    private var flingX = 0f
+    private var flingY = 0f
+    private val flingStep = object : Runnable {
+        override fun run() {
+            if (!scroller.computeScrollOffset()) return
+            val cur = scroller.currY
+            val delta = cur - flingLastY
+            flingLastY = cur
+            // OverScroller uses the frame clock: the first callback can have
+            // the same timestamp as fling(), and rounded positions can repeat.
+            // No delta is not an edge; keep waiting for the next frame.
+            if (delta != 0 && !NuiNative.scroll(window, flingX, flingY, delta / density)) {
+                stopFling()
+                return
             }
+            if (!scroller.isFinished) postOnAnimation(this)
         }
-        postOnAnimation(step)
+    }
+
+    private fun stopFling() {
+        removeCallbacks(flingStep)
+        scroller.forceFinished(true)
+    }
+
+    private fun fling(vy: Float) {
+        stopFling()
+        flingLastY = 0
+        flingX = downX / density
+        flingY = downY / density
+        val maxVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat()
+        scroller.fling(0, 0, 0, vy.coerceIn(-maxVelocity, maxVelocity).toInt(), 0, 0, Int.MIN_VALUE / 2, Int.MAX_VALUE / 2)
+        postOnAnimation(flingStep)
     }
 
     private fun hideKeyboard() {
@@ -2380,6 +2529,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
             }
             n.bw?.let { border(canvas, n, it, x, y, w, h, radii) }
             if (n.kind == "view" && n.p.has("ctl")) control(canvas, n, x, y, w, h)
+            if (isField(n.kind)) coveredField(canvas, n.id, f[r + 9], f[r + 10])
             when (n.kind) {
                 "text" -> n.textLayout(ceil(f[r + 11]).toInt() + 1)?.let {
                     canvas.save()
@@ -3013,9 +3163,19 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         // Inner corners: each outer ellipse less the borders on its two sides.
         val innerRadii = inset(r, bw[3], bw[0], bw[1], bw[2]) ?: FloatArray(8)
         ring.reset()
-        ring.fillType = Path.FillType.EVEN_ODD
         ring.addRoundRect(RectF(x, y, x + w, y + h), r, Path.Direction.CW)
-        ring.addRoundRect(RectF(ix, iy, ix + iw, iy + ih), innerRadii, Path.Direction.CW)
+        // The padding box taken out: on a side with no border, past the
+        // border box (square corners), so the two edges don't coincide; a
+        // shared edge left an antialiased hairline there (a rotated chevron
+        // of two sides showed all four).
+        val square = r.all { it == 0f }
+        val out = 1f
+        wedge.reset()
+        wedge.addRoundRect(RectF(
+            if (square && bw[3] <= 0f) ix - out else ix, if (square && bw[0] <= 0f) iy - out else iy,
+            if (square && bw[1] <= 0f) ix + iw + out else ix + iw, if (square && bw[2] <= 0f) iy + ih + out else iy + ih,
+        ), innerRadii, Path.Direction.CW)
+        ring.op(wedge, Path.Op.DIFFERENCE)
         if (oneColor) {
             fill.color = colors[(0 until 4).first { bw[it] > 0 }]
             canvas.drawPath(ring, fill)
@@ -3098,7 +3258,7 @@ internal class NuiView(context: Context, val window: Int, private val transparen
         /** Floats per node in the frames from Zig (android.zig `record_len`). */
         const val REC = 14
         /** android.zig's prop_keys, index for index (append only). */
-        val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy","ff","ol")
+        val PROP_KEYS = arrayOf("fd","w","h","fs","ai","runs","t","c","sz","wt","dis","click","cg","rg","ar","val","maxw","maxh","minw","minh","fw","fg","fb","as","ac","jc","acc","src","range","pw","pos","ph","pad","m","options","on","icon","fit","cw","ch","cv","ctl","cols","trow","tcell","table","bc","bg","br","bw","clip","col","fwt","fz","ins","it","lh","ls","mono","nowrap","op","rel","rot","sc","scroll","scrollx","sh","sticky","ta","tx","ty","vis","z","root","color","gradient","angle","stops","radial","spread","blur","x","y","vb","shapes","d","fill","stroke","sw","cap","join","evenodd","u","i","label","href","hover","radius","cx","cy","ff","ol","phc")
         /** The largest side an <img> is decoded at (px); larger pictures are downsampled. */
         const val MAX_IMAGE_SIDE = 4096
         /** radial-gradient sizes (tree.zig Gradient.RadialExtent); another is farthest-corner. */

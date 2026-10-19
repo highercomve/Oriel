@@ -160,6 +160,7 @@ const Exporter = struct {
     rules: std.ArrayList(*Rule) = .empty,
     body: Writer.Allocating,
     nodes: usize = 0,
+    icon_tint: bool = false,
 
     fn nameOf(x: *Exporter, id: i64) !?[]const u8 {
         const name = x.names.get(id) orelse return null;
@@ -192,6 +193,15 @@ const Exporter = struct {
             if (!same(?[]const u8, sn.props.fd, first.props.fd)) fd_same = false;
         };
         const tag = tagOf(m.kind, first.props, fd_same);
+        var icon_tint = false;
+        if (m.kind == .icon) for (m.in[0..nv]) |sn| if (sn) |value| {
+            if (!same(?tree.Icon, first.props.icon, value.props.icon)) {
+                if (!tintCompatible(first.props.icon orelse return error.IconRemoved, value.props.icon orelse return error.IconRemoved)) return error.IconStyleVariantUnsupported;
+                icon_tint = true;
+            }
+        };
+        x.icon_tint = icon_tint;
+
         const spec = defaults(tag);
         const o = &x.body.writer;
 
@@ -236,7 +246,10 @@ const Exporter = struct {
                     try x.fieldAttrs(f.name, base_value.?, &own, &own_unset);
                 } else {
                     const r = try x.ruleFor(&rule, id_name);
-                    const b = m.in[0] orelse return error.VariantOnlyStyle;
+                    // A responsive grid may introduce this node only in a later
+                    // variant. Its first appearance supplies the base props;
+                    // the visibility rule below hides it in earlier variants.
+                    const b = m.in[0] orelse first;
                     try x.fieldAttrs(f.name, @field(b.props, f.name), &r.base, &r.base_unset);
                     // Each block: what differs from the view and the blocks
                     // before it that it includes.
@@ -258,6 +271,12 @@ const Exporter = struct {
         }
         // Shown in some variants only: display=none where it isn't (on
         // the outermost such element: what's in it goes with it).
+        // A later-only node starts hidden even if another field (for
+        // example its light/dark color) already created its base rule.
+        if (m.in[0] == null) {
+            const r = try x.ruleFor(&rule, id_name);
+            try r.base.append(x.arena, .{ .key = "display", .value = "none" });
+        }
         var shown_by: [max_variants]?bool = @splat(null);
         for (1..nv) |i| if (from[i].shown) {
             var before = m.in[0] != null;
@@ -267,7 +286,6 @@ const Exporter = struct {
             const here = m.in[i] != null;
             if (here != before) {
                 const r = try x.ruleFor(&rule, id_name);
-                if (m.in[0] == null and r.base.items.len == 0) try r.base.append(x.arena, .{ .key = "display", .value = "none" });
                 try r.media[i].append(x.arena, .{ .key = "display", .value = if (here) "flex" else "none" });
                 shown_by[i] = here;
             }
@@ -323,7 +341,7 @@ const Exporter = struct {
                 try o.writeAll(">\n");
                 for (shapes) |s| {
                     try o.splatByteAll(' ', (depth + 1) * 2);
-                    try shape(o, s);
+                    try shape(o, s, icon_tint);
                 }
                 try o.splatByteAll(' ', depth * 2);
                 try o.writeAll("</icon>\n");
@@ -359,7 +377,7 @@ const Exporter = struct {
         if (comptime std.mem.eql(u8, field, "ins")) {
             const sides = [_][]const u8{ "top", "right", "bottom", "left" };
             const ins = v orelse {
-                for (sides) |s| try unset.append(a, s);
+                try unset.append(a, "inset");
                 return;
             };
             for (ins, sides) |side, name| {
@@ -375,6 +393,7 @@ const Exporter = struct {
         }
         if (comptime std.mem.eql(u8, field, "icon")) {
             const icon = v orelse return error.IconRemoved;
+            if (x.icon_tint) try attrs.append(a, .{ .key = "icon-color", .value = try fmtColor(a, monoColor(icon) orelse return error.IconStyleVariantUnsupported) });
             try attrs.append(a, .{ .key = "viewbox", .value = try std.fmt.allocPrint(a, "{d},{d},{d},{d}", .{ icon.vb[0], icon.vb[1], icon.vb[2], icon.vb[3] }) });
             return;
         }
@@ -424,7 +443,7 @@ const Exporter = struct {
                     try writeDim(o, c.y);
                 }
             }
-        } else if (comptime std.mem.eql(u8, field, "col") or std.mem.eql(u8, field, "acc")) {
+        } else if (comptime std.mem.eql(u8, field, "col") or std.mem.eql(u8, field, "acc") or std.mem.eql(u8, field, "phc")) {
             // tree.Color is a [4]f32 too: by the field.
             try writeColor(o, v);
         } else if (T == [4]tree.Dim) {
@@ -760,29 +779,30 @@ fn validName(name: []const u8) bool {
 fn attrName(comptime field: []const u8) []const u8 {
     @setEvalBranchQuota(20000);
     const names = .{
-        .{ "root", "root" },           .{ "fd", "direction" },     .{ "fw", "wrap" },               .{ "jc", "justify" },
-        .{ "ai", "align" },            .{ "as", "align-self" },    .{ "ac", "align-content" },      .{ "fg", "grow" },
-        .{ "fs", "shrink" },           .{ "fb", "basis" },         .{ "w", "width" },               .{ "h", "height" },
-        .{ "minw", "min-width" },      .{ "minh", "min-height" },  .{ "maxw", "max-width" },        .{ "maxh", "max-height" },
-        .{ "m", "margin" },            .{ "pad", "padding" },      .{ "bw", "border-width" },       .{ "bc", "border-color" },
-        .{ "bs", "border-style" },     .{ "rg", "row-gap" },       .{ "cg", "column-gap" },         .{ "pos", "position" },
-        .{ "rel", "relative" },        .{ "scroll", "scroll" },    .{ "scrollx", "scroll-x" },      .{ "sbs", "scrollbar" },
-        .{ "sbw", "scrollbar-width" }, .{ "dk", "color-scheme" },  .{ "sbc", "scrollbar-color" },   .{ "table", "table" },
-        .{ "trow", "table-row" },      .{ "tcell", "table-cell" }, .{ "sticky", "sticky" },         .{ "clip", "clip" },
-        .{ "ar", "aspect-ratio" },     .{ "tx", "translate-x" },   .{ "sc", "scale" },              .{ "rot", "rotate" },
-        .{ "ty", "translate-y" },      .{ "bg", "background" },    .{ "br", "radius" },             .{ "op", "opacity" },
-        .{ "sh", "shadow" },           .{ "ol", "outline" },       .{ "vis", "visible" },           .{ "click", "clickable" },
-        .{ "z", "z" },                 .{ "col", "color" },        .{ "fz", "font-size" },          .{ "fwt", "font-weight" },
-        .{ "it", "italic" },           .{ "mono", "mono" },        .{ "ff", "font-family" },        .{ "lh", "line-height" },
-        .{ "ta", "text-align" },       .{ "nowrap", "nowrap" },    .{ "mc", "max-content" },        .{ "fc", "fit-content" },
-        .{ "ls", "letter-spacing" },   .{ "val", "value" },        .{ "ph", "placeholder" },        .{ "dis", "disabled" },
-        .{ "pw", "password" },         .{ "cb", "box-sizing" },    .{ "cols", "cols" },             .{ "rows", "rows" },
-        .{ "src", "src" },             .{ "fit", "fit" },          .{ "cw", "pixel-width" },        .{ "ch", "pixel-height" },
-        .{ "ro", "readonly" },         .{ "itype", "type" },       .{ "im", "inputmode" },          .{ "ek", "enterkey" },
-        .{ "cap", "autocapitalize" },  .{ "cor", "autocorrect" },  .{ "spellcheck", "spellcheck" }, .{ "al", "label" },
-        .{ "ctl", "control" },         .{ "blb", "baseline" },     .{ "on", "checked" },            .{ "mix", "mixed" },
-        .{ "acc", "accent" },          .{ "tip", "tooltip" },      .{ "ti", "tabindex" },           .{ "none", "display" },
-        .{ "ins", "top" },             .{ "range", "min" },        .{ "icon", "viewbox" },
+        .{ "root", "root" },             .{ "fd", "direction" },      .{ "fw", "wrap" },             .{ "jc", "justify" },
+        .{ "ai", "align" },              .{ "as", "align-self" },     .{ "ac", "align-content" },    .{ "fg", "grow" },
+        .{ "fs", "shrink" },             .{ "fb", "basis" },          .{ "w", "width" },             .{ "h", "height" },
+        .{ "minw", "min-width" },        .{ "minh", "min-height" },   .{ "maxw", "max-width" },      .{ "maxh", "max-height" },
+        .{ "m", "margin" },              .{ "pad", "padding" },       .{ "bw", "border-width" },     .{ "bc", "border-color" },
+        .{ "bs", "border-style" },       .{ "rg", "row-gap" },        .{ "cg", "column-gap" },       .{ "pos", "position" },
+        .{ "rel", "relative" },          .{ "scroll", "scroll" },     .{ "scrollx", "scroll-x" },    .{ "sbs", "scrollbar" },
+        .{ "sbw", "scrollbar-width" },   .{ "dk", "color-scheme" },   .{ "sbc", "scrollbar-color" }, .{ "table", "table" },
+        .{ "trow", "table-row" },        .{ "tcell", "table-cell" },  .{ "sticky", "sticky" },       .{ "clip", "clip" },
+        .{ "ar", "aspect-ratio" },       .{ "tx", "translate-x" },    .{ "sc", "scale" },            .{ "rot", "rotate" },
+        .{ "ty", "translate-y" },        .{ "bg", "background" },     .{ "br", "radius" },           .{ "op", "opacity" },
+        .{ "sh", "shadow" },             .{ "ol", "outline" },        .{ "pe", "pointer-events" },   .{ "vis", "visible" },
+        .{ "click", "clickable" },       .{ "z", "z" },               .{ "col", "color" },           .{ "fz", "font-size" },
+        .{ "fwt", "font-weight" },       .{ "it", "italic" },         .{ "mono", "mono" },           .{ "ff", "font-family" },
+        .{ "lh", "line-height" },        .{ "ta", "text-align" },     .{ "nowrap", "nowrap" },       .{ "mc", "max-content" },
+        .{ "fc", "fit-content" },        .{ "ls", "letter-spacing" }, .{ "val", "value" },           .{ "ph", "placeholder" },
+        .{ "dis", "disabled" },          .{ "pw", "password" },       .{ "cb", "box-sizing" },       .{ "cols", "cols" },
+        .{ "rows", "rows" },             .{ "src", "src" },           .{ "fit", "fit" },             .{ "cw", "pixel-width" },
+        .{ "ch", "pixel-height" },       .{ "na", "no-arrow" },       .{ "ro", "readonly" },         .{ "itype", "type" },
+        .{ "im", "inputmode" },          .{ "ek", "enterkey" },       .{ "cap", "autocapitalize" },  .{ "cor", "autocorrect" },
+        .{ "spellcheck", "spellcheck" }, .{ "al", "label" },          .{ "ctl", "control" },         .{ "blb", "baseline" },
+        .{ "on", "checked" },            .{ "mix", "mixed" },         .{ "acc", "accent" },          .{ "phc", "placeholder-color" },
+        .{ "tip", "tooltip" },           .{ "ti", "tabindex" },       .{ "none", "display" },        .{ "ins", "top" },
+        .{ "range", "min" },             .{ "icon", "viewbox" },
     };
     for (names) |e| if (std.mem.eql(u8, e[0], field)) return e[1];
     @compileError("No .oriel attribute name for Props." ++ field);
@@ -822,15 +842,40 @@ fn outlineAttrs(a: std.mem.Allocator, ol: tree.Outline, attrs: *std.ArrayList(At
     if (ol.r != 0) try attrs.append(a, .{ .key = "outline-radius", .value = try std.fmt.allocPrint(a, "{d}", .{ol.r}) });
 }
 
-fn shape(o: *Writer, s: tree.Shape) !void {
+fn monoColor(icon: tree.Icon) ?tree.Color {
+    var result: ?tree.Color = null;
+    for (icon.shapes) |s| for ([_]?tree.Color{ s.fill, s.stroke }) |paint| if (paint) |c| {
+        if (result) |previous| {
+            if (!same(tree.Color, previous, c)) return null;
+        } else result = c;
+    };
+    return result;
+}
+fn tintCompatible(a: tree.Icon, b: tree.Icon) bool {
+    if (a.shapes.len != b.shapes.len or monoColor(a) == null or monoColor(b) == null) return false;
+    for (a.shapes, b.shapes) |x, y| {
+        var left = x;
+        var right = y;
+        if (left.fill != null) left.fill = .{ 0, 0, 0, 1 };
+        if (right.fill != null) right.fill = .{ 0, 0, 0, 1 };
+        if (left.stroke != null) left.stroke = .{ 0, 0, 0, 1 };
+        if (right.stroke != null) right.stroke = .{ 0, 0, 0, 1 };
+        if (!same(tree.Shape, left, right)) return false;
+    }
+    return true;
+}
+
+fn shape(o: *Writer, s: tree.Shape, tint: bool) !void {
     try o.writeAll("<path d=\"");
     try escapeAttr(o, s.d);
     try o.writeAll("\" fill=\"");
-    if (s.fill) |c| try writeColor(o, c) else try o.writeAll("none");
+    if (s.fill) |c| {
+        if (tint) try o.writeAll("currentColor") else try writeColor(o, c);
+    } else try o.writeAll("none");
     try o.writeAll("\"");
     if (s.stroke) |c| {
         try o.writeAll(" stroke=\"");
-        try writeColor(o, c);
+        if (tint) try o.writeAll("currentColor") else try writeColor(o, c);
         try o.writeAll("\"");
     }
     if (s.sw != 1) try o.print(" stroke-width=\"{d}\"", .{s.sw});
@@ -1151,4 +1196,56 @@ test "variants become the elements' styles and media blocks" {
         \\</column>
         \\
     , buf.written());
+}
+
+test "variant-only nodes can change style in a subsequent theme variant" {
+    var ctx: u8 = 0;
+    var base = tree.Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer base.deinit();
+    var phone = tree.Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer phone.deinit();
+    var dark = tree.Tree.init(std.testing.allocator, &ctx, testMeasure);
+    defer dark.deinit();
+    const b = try testTree(&base, "<column><text>Base</text></column>");
+    const p = try testTree(&phone, "<column><text>Base</text><text color=\"#111111\">Phone</text></column>");
+    const d = try testTree(&dark, "<column><text>Base</text><text color=\"#eeeeee\">Phone</text></column>");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const variants = [_]Variant{
+        .{ .root = try snapshot(arena.allocator(), b, &.{}) },
+        .{ .root = try snapshot(arena.allocator(), p, &.{}), .media = "max-width: 839px" },
+        .{ .root = try snapshot(arena.allocator(), d, &.{}), .media = "max-width: 839px and prefers-color-scheme: dark" },
+    };
+    var names: Names = .empty;
+    var out: Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectEqual(@as(usize, 3), try view(std.testing.allocator, &variants, &names, &out.writer));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "display=none") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "color=#eeeeee") != null);
+}
+
+fn exportTintVariants(gpa: std.mem.Allocator) !void {
+    const light_shapes = [_]tree.Shape{.{ .d = "M0 0L24 24", .stroke = .{ 17, 34, 51, 1 }, .fill = null }};
+    const dark_shapes = [_]tree.Shape{.{ .d = "M0 0L24 24", .stroke = .{ 170, 187, 204, 1 }, .fill = null }};
+    var phone = [_]Snap{.{ .id = 2, .kind = .icon, .props = .{ .icon = .{ .shapes = &light_shapes } }, .kids = &.{} }};
+    var dark = [_]Snap{.{ .id = 2, .kind = .icon, .props = .{ .icon = .{ .shapes = &dark_shapes } }, .kids = &.{} }};
+    const variants = [_]Variant{
+        .{ .root = .{ .id = 1, .kind = .view, .props = .{ .fd = "column" }, .kids = &.{} } },
+        .{ .root = .{ .id = 1, .kind = .view, .props = .{ .fd = "column" }, .kids = &phone }, .media = "max-width: 839px" },
+        .{ .root = .{ .id = 1, .kind = .view, .props = .{ .fd = "column" }, .kids = &dark }, .media = "max-width: 839px and prefers-color-scheme: dark" },
+    };
+    var names: Names = .empty;
+    var out: Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    _ = view(gpa, &variants, &names, &out.writer) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+        else => return err,
+    };
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "icon-color=#aabbcc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "stroke=\"currentColor\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "display=none") != null);
+}
+
+test "later-only themed icons export safely at every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, exportTintVariants, .{});
 }

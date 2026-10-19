@@ -115,6 +115,18 @@ const Field = struct {
     button: bool = false,
     /// A push button's look as last set (buttonLook's hash of it).
     look: u64 = 0,
+    /// <input type=date>: a non-editable text field showing the date; its
+    /// value (YYYY-MM-DD, empty for none), and once first opened its
+    /// popover (+1) with the calendar and Clear button it holds.
+    date: bool = false,
+    iso: [10]u8 = undefined,
+    iso_len: u8 = 0,
+    popover: Object = apple.nil,
+    picker: Object = apple.nil,
+    clear: Object = apple.nil,
+    /// The calendar's date as last seen (year, month, day): tells a pick
+    /// from browsing months (datePicked).
+    shown: [3]c_long = .{ 0, 0, 0 },
 };
 
 /// Live surfaces by token, and which surface and node a view or control
@@ -209,6 +221,15 @@ fn classes() void {
         .{ "becomeFirstResponder", textFieldBecomeFirst },
         .{ "textView:shouldChangeTextInRange:replacementString:", textFieldShouldChange },
     });
+    // A date field: not edited (no field editor), it takes the keyboard
+    // itself, and a click, Return or Space opens its calendar.
+    date_field_class = apple.defineSubclass("OrielNuiDateField", "NSTextField", &.{}, .{
+        .{ "acceptsFirstResponder", dateFieldAccepts },
+        .{ "becomeFirstResponder", dateFieldBecomeFirst },
+        .{ "resignFirstResponder", dateFieldResignFirst },
+        .{ "mouseDown:", dateFieldMouseDown },
+        .{ "keyDown:", dateFieldKeyDown },
+    });
     // A native checkbox, radio or push button: it tells the page when it
     // takes the keyboard (with Full Keyboard Access; without it NSButton doesn't).
     check_class = apple.defineSubclass("OrielNuiCheck", "NSButton", &.{}, .{
@@ -242,6 +263,8 @@ fn classes() void {
         .{ "checkResync:", checkResync },
         .{ "buttonClicked:", buttonClicked },
         .{ "sliderChanged:", sliderChanged },
+        .{ "datePicked:", datePicked },
+        .{ "dateCleared:", dateCleared },
     }));
 }
 
@@ -368,7 +391,8 @@ pub fn create(gpa: std.mem.Allocator, assets: []const engine_mod.Asset, platform
     s.engine.tree.inline_end_padding = false;
     // Fields sized as WKWebView's (draw.fieldSizeMac): a textarea's cols too.
     s.engine.tree.fields_sized = true;
-    s.engine.boot(s.dark, false);
+    // After the app's setup, as a web view page starts (Engine.bootSoon).
+    s.engine.bootSoon(s.dark, false);
     return s;
 }
 
@@ -416,6 +440,16 @@ fn dropField(f: Field) void {
     if (pending_control == f.outer.value or pending_control == f.inner.value) {
         pending_control = null;
         pending_type = null;
+    }
+    // A date field's popover: closed, its controls no longer the node's
+    // nor targeting the delegate (they may outlive it in a pool).
+    if (f.popover.value != null) {
+        _ = date_controls.remove(key(f.picker.value));
+        _ = date_controls.remove(key(f.clear.value));
+        f.picker.msgSend(void, "setTarget:", .{apple.nil});
+        f.clear.msgSend(void, "setTarget:", .{apple.nil});
+        f.popover.msgSend(void, "close", .{});
+        releaseLater(f.popover);
     }
     // A delegate outlives nothing: clear it before the control goes.
     if (f.inner.getClass()) |cls| if (cls.respondsToSelector(apple.objc.sel("setDelegate:"))) f.inner.msgSend(void, "setDelegate:", .{apple.nil});
@@ -801,7 +835,9 @@ fn syncFields(s: *Surface) void {
         defer s.updating = false;
         if (n.pending_value) |v| {
             n.pending_value = null;
-            setValue(n, f, v);
+            if (f.date) {
+                if (s.fields.getPtr(n.id)) |fp| showDate(fp, v);
+            } else setValue(n, f, v);
         }
         style(n, f);
         if (f.check) checkState(n, f.inner);
@@ -827,6 +863,8 @@ fn syncFields(s: *Surface) void {
             // (A check sized to its box: small under 14px, mini under 12.)
             if (f.check) f.inner.msgSend(void, "setControlSize:", .{@as(c_ulong, if (r.h >= 14) 0 else if (r.h >= 12) 1 else 2)});
             f.inner.msgSend(void, "setEnabled:", .{apple.boolean(!n.props.dis)});
+            // A date field gone disabled, readonly or out of sight: its calendar too.
+            if (f.popover.value != null and (n.props.dis or n.props.ro or !visible)) f.popover.msgSend(void, "close", .{});
         } else {
             // A disabled text area: neither edited nor selected (nor focused,
             // as a browser's); a readonly one selected only.
@@ -861,9 +899,14 @@ fn makeField(s: *Surface, n: *Node) ?Field {
             sl.msgSend(void, "setAction:", .{apple.objc.sel("sliderChanged:").value});
             break :blk .{ .holder = apple.nil, .outer = sl, .inner = sl, .slider = true };
         } else blk: {
-            const cls = (if (n.props.pw) secure_field_class else text_field_class).?;
+            const date = isDateField(n);
+            const cls = (if (date) date_field_class else if (n.props.pw) secure_field_class else text_field_class).?;
             const tf = cls.msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
             if (tf.value == null) return null;
+            if (date) {
+                tf.msgSend(void, "setEditable:", .{apple.boolean(false)});
+                tf.msgSend(void, "setSelectable:", .{apple.boolean(false)});
+            }
             tf.msgSend(void, "setBezeled:", .{apple.boolean(false)});
             tf.msgSend(void, "setBordered:", .{apple.boolean(false)});
             tf.msgSend(void, "setDrawsBackground:", .{apple.boolean(false)});
@@ -874,7 +917,7 @@ fn makeField(s: *Surface, n: *Node) ?Field {
                 tf.msgSend(void, "setPlaceholderString:", .{str});
             };
             tf.msgSend(void, "setDelegate:", .{field_delegate});
-            break :blk .{ .holder = apple.nil, .outer = tf, .inner = tf };
+            break :blk .{ .holder = apple.nil, .outer = tf, .inner = tf, .date = date };
         },
         .textarea => blk: {
             const sv = apple.class("NSScrollView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
@@ -1535,6 +1578,248 @@ fn sliderChanged(_: id, _: SEL, sender: id) callconv(.c) void {
     // The page may have closed the window or rebuilt the node.
     const again = ownerOf(sender) orelse return;
     sendValue(again.s, again.n, "change", text);
+}
+
+// ---------------------------------------------------------------------------
+// <input type=date> (as gtk.zig's): a non-editable text field showing the
+// date in the locale's format; a click, Return or Space opens an NSPopover
+// under it with a calendar NSDatePicker and a Clear button. The page's value
+// is YYYY-MM-DD, read and written as Gregorian year/month/day at noon in the
+// local time zone, so neither the user's calendar nor a zone shift changes
+// the day.
+
+var date_field_class: ?apple.objc.Class = null;
+/// A date popover's picker and Clear button by address: their field's node.
+/// Apart from by_control, so keys in the popover aren't the field's.
+var date_controls: std.AutoHashMapUnmanaged(usize, Owner) = .empty;
+
+fn isDateField(n: *const Node) bool {
+    return n.kind == .input and n.props.range == null and if (n.props.itype) |t| std.mem.eql(u8, t, "date") else false;
+}
+
+fn localZone() Object {
+    return apple.class("NSTimeZone").msgSend(Object, "localTimeZone", .{});
+}
+
+/// The Gregorian calendar in the local zone (autoreleased).
+fn gregorian() ?Object {
+    const name = apple.nsString("gregorian") orelse return null; // NSCalendarIdentifierGregorian
+    defer name.release();
+    const cal = apple.class("NSCalendar").msgSend(Object, "calendarWithIdentifier:", .{name});
+    if (cal.value == null) return null;
+    cal.msgSend(void, "setTimeZone:", .{localZone()});
+    return cal;
+}
+
+fn ymdOf(cal: Object, date: Object) [3]c_long {
+    const units: c_ulong = 4 | 8 | 16; // NSCalendarUnitYear, Month, Day
+    const c = cal.msgSend(Object, "components:fromDate:", .{ units, date });
+    return .{ c.msgSend(c_long, "year", .{}), c.msgSend(c_long, "month", .{}), c.msgSend(c_long, "day", .{}) };
+}
+
+/// The NSDate (autoreleased) of an ISO date, or null when it's not one (a
+/// day the month doesn't have, as a browser's sanitizer).
+fn isoDate(cal: Object, iso: []const u8) ?Object {
+    if (iso.len != 10 or iso[4] != '-' or iso[7] != '-') return null;
+    for (iso, 0..) |ch, i| if (i != 4 and i != 7 and !std.ascii.isDigit(ch)) return null;
+    const ymd: [3]c_long = .{
+        std.fmt.parseInt(c_long, iso[0..4], 10) catch return null,
+        std.fmt.parseInt(c_long, iso[5..7], 10) catch return null,
+        std.fmt.parseInt(c_long, iso[8..10], 10) catch return null,
+    };
+    if (ymd[0] < 1) return null;
+    const comps = apple.new(apple.class("NSDateComponents"));
+    if (comps.value == null) return null;
+    defer comps.release();
+    comps.msgSend(void, "setYear:", .{ymd[0]});
+    comps.msgSend(void, "setMonth:", .{ymd[1]});
+    comps.msgSend(void, "setDay:", .{ymd[2]});
+    comps.msgSend(void, "setHour:", .{@as(c_long, 12)});
+    const date = cal.msgSend(Object, "dateFromComponents:", .{comps});
+    if (date.value == null) return null;
+    // dateFromComponents: rolls Feb 30 over into March: not a date.
+    if (!std.mem.eql(c_long, &ymdOf(cal, date), &ymd)) return null;
+    return date;
+}
+
+/// The ISO date `iso` ("" for none) on a date field: kept, shown in the
+/// locale's medium style.
+fn showDate(f: *Field, iso: []const u8) void {
+    const cal = gregorian();
+    const date = if (cal) |c| isoDate(c, iso) else null;
+    f.iso_len = 0;
+    var shown: Object = apple.nil;
+    if (date) |d| {
+        @memcpy(&f.iso, iso[0..10]);
+        f.iso_len = 10;
+        const fmt = apple.new(apple.class("NSDateFormatter"));
+        if (fmt.value != null) {
+            defer fmt.release();
+            fmt.msgSend(void, "setDateStyle:", .{@as(c_ulong, 2)}); // NSDateFormatterMediumStyle
+            fmt.msgSend(void, "setTimeStyle:", .{@as(c_ulong, 0)}); // none
+            fmt.msgSend(void, "setTimeZone:", .{localZone()});
+            shown = fmt.msgSend(Object, "stringFromDate:", .{d});
+        }
+    }
+    const empty = apple.nsString("") orelse return;
+    defer empty.release();
+    f.inner.msgSend(void, "setStringValue:", .{if (shown.value != null) shown else empty});
+}
+
+fn dateFieldAccepts(self: id, _: SEL) callconv(.c) BOOL {
+    return (Object{ .value = self }).msgSend(BOOL, "isEnabled", .{});
+}
+
+fn dateFieldBecomeFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSTextField"), BOOL, "becomeFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+fn dateFieldResignFirst(self: id, _: SEL) callconv(.c) BOOL {
+    const ok = (Object{ .value = self }).msgSendSuper(apple.class("NSTextField"), BOOL, "resignFirstResponder", .{});
+    focusChangedNear(self);
+    return ok;
+}
+
+/// A click: the field takes the keyboard (as a browser's) and opens.
+fn dateFieldMouseDown(self: id, _: SEL, _: id) callconv(.c) void {
+    const field: Object = .{ .value = self };
+    if (!apple.isTrue(field.msgSend(BOOL, "isEnabled", .{}))) return;
+    const win = field.msgSend(Object, "window", .{});
+    if (win.value != null) _ = win.msgSend(BOOL, "makeFirstResponder:", .{field});
+    openDatePicker(self);
+}
+
+/// Return, Enter or Space (the page heard it first, onKeyEvent, and let
+/// it through): open; other keys as a text field's.
+fn dateFieldKeyDown(self: id, _: SEL, event: id) callconv(.c) void {
+    switch ((Object{ .value = event }).msgSend(c_ushort, "keyCode", .{})) {
+        36, 76, 49 => openDatePicker(self),
+        else => (Object{ .value = self }).msgSendSuper(apple.class("NSTextField"), void, "keyDown:", .{event}),
+    }
+}
+
+fn openDatePicker(field: id) void {
+    const o = ownerOf(field) orelse return;
+    if (o.n.props.dis or o.n.props.ro) return;
+    const f = o.s.fields.getPtr(o.n.id) orelse return;
+    if (!f.date) return;
+    if (f.popover.value == null and !makeDatePopover(o.s, o.n.id, f)) return;
+    if (apple.isTrue(f.popover.msgSend(BOOL, "isShown", .{}))) return;
+    const cal = gregorian() orelse return;
+    // The field's date selected (today when empty); setDateValue: sends
+    // no action, so nothing goes back to the page.
+    const date = isoDate(cal, f.iso[0..f.iso_len]) orelse apple.class("NSDate").msgSend(Object, "date", .{});
+    f.picker.msgSend(void, "setDateValue:", .{date});
+    f.shown = ymdOf(cal, date);
+    const view: Object = .{ .value = field };
+    // Under the field: NSMaxYEdge in a flipped view, NSMinYEdge otherwise.
+    const edge: c_ulong = if (apple.isTrue(view.msgSend(BOOL, "isFlipped", .{}))) 3 else 1;
+    f.popover.msgSend(void, "showRelativeToRect:ofView:preferredEdge:", .{ view.msgSend(NSRect, "bounds", .{}), view, edge });
+}
+
+/// The popover (+1, in `f`) with its calendar and Clear button, targeting
+/// the field delegate.
+fn makeDatePopover(s: *Surface, nid: i64, f: *Field) bool {
+    // Both controls' owners are registered without allocating, below.
+    date_controls.ensureUnusedCapacity(std.heap.smp_allocator, 2) catch return false;
+    const zero: NSRect = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 10, .height = 10 } };
+    const picker = apple.class("NSDatePicker").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{zero});
+    if (picker.value == null) return false;
+    picker.msgSend(void, "setDatePickerStyle:", .{@as(c_ulong, 1)}); // NSDatePickerStyleClockAndCalendar
+    picker.msgSend(void, "setDatePickerElements:", .{@as(c_ulong, 0x00e0)}); // NSDatePickerElementFlagYearMonthDay
+    picker.msgSend(void, "setBezeled:", .{apple.boolean(false)});
+    picker.msgSend(void, "setBordered:", .{apple.boolean(false)});
+    picker.msgSend(void, "setDrawsBackground:", .{apple.boolean(false)});
+    picker.msgSend(void, "setTimeZone:", .{localZone()});
+    picker.msgSend(void, "setTarget:", .{field_delegate});
+    picker.msgSend(void, "setAction:", .{apple.objc.sel("datePicked:").value});
+    picker.msgSend(void, "sizeToFit", .{});
+    const title = apple.nsString("Clear") orelse {
+        picker.release();
+        return false;
+    };
+    // Autoreleased, sized to its title; the container holds it.
+    const clear = apple.class("NSButton").msgSend(Object, "buttonWithTitle:target:action:", .{ title, field_delegate, apple.objc.sel("dateCleared:").value });
+    title.release();
+    const ps = picker.msgSend(NSRect, "frame", .{}).size;
+    const bs = clear.msgSend(NSRect, "frame", .{}).size;
+    const pad: f64 = 8;
+    const size: NSSize = .{ .width = @max(ps.width, bs.width) + 2 * pad, .height = ps.height + bs.height + 3 * pad };
+    // Not flipped: y goes up, the button under the calendar.
+    const box = apple.class("NSView").msgSend(Object, "alloc", .{}).msgSend(Object, "initWithFrame:", .{NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = size }});
+    const vc = apple.new(apple.class("NSViewController"));
+    const pop = apple.new(apple.class("NSPopover"));
+    if (box.value == null or vc.value == null or pop.value == null or clear.value == null) {
+        for ([_]Object{ picker, box, vc, pop }) |x| if (x.value != null) x.release();
+        return false;
+    }
+    picker.msgSend(void, "setFrameOrigin:", .{NSPoint{ .x = (size.width - ps.width) / 2, .y = 2 * pad + bs.height }});
+    clear.msgSend(void, "setFrameOrigin:", .{NSPoint{ .x = size.width - pad - bs.width, .y = pad }});
+    box.msgSend(void, "addSubview:", .{picker});
+    box.msgSend(void, "addSubview:", .{clear});
+    picker.release(); // the container holds it
+    vc.msgSend(void, "setView:", .{box});
+    box.release();
+    pop.msgSend(void, "setContentViewController:", .{vc});
+    vc.release();
+    pop.msgSend(void, "setContentSize:", .{size});
+    pop.msgSend(void, "setBehavior:", .{@as(c_long, 1)}); // NSPopoverBehaviorTransient: a click outside closes it
+    f.popover = pop;
+    f.picker = picker;
+    f.clear = clear;
+    date_controls.putAssumeCapacity(key(picker.value), .{ .token = s.token, .node = nid });
+    date_controls.putAssumeCapacity(key(clear.value), .{ .token = s.token, .node = nid });
+    return true;
+}
+
+fn dateOwner(control: id) ?struct { s: *Surface, n: *Node } {
+    const o = date_controls.get(key(control)) orelse return null;
+    const s = surfaces.get(o.token) orelse return null;
+    const n = s.engine.tree.get(o.node) orelse return null;
+    return .{ .s = s, .n = n };
+}
+
+/// A day clicked in the calendar: the page's value, "input" then "change",
+/// as a browser's picker. Its arrows move the date a month, same day:
+/// browsing, not a pick (the popover stays).
+fn datePicked(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = dateOwner(sender) orelse return;
+    if (o.s.updating) return;
+    const f = o.s.fields.getPtr(o.n.id) orelse return;
+    const cal = gregorian() orelse return;
+    const ymd = ymdOf(cal, (Object{ .value = sender }).msgSend(Object, "dateValue", .{}));
+    const prev = f.shown;
+    f.shown = ymd;
+    if (ymd[2] == prev[2] and (ymd[0] != prev[0] or ymd[1] != prev[1])) return;
+    if (ymd[0] < 1 or ymd[0] > 9999) return;
+    var buf: [16]u8 = undefined;
+    const iso = std.fmt.bufPrint(&buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u32, @intCast(ymd[0])), @as(u32, @intCast(ymd[1])), @as(u32, @intCast(ymd[2])) }) catch return;
+    pickDate(o.s, o.n, iso);
+}
+
+fn dateCleared(_: id, _: SEL, sender: id) callconv(.c) void {
+    const o = dateOwner(sender) orelse return;
+    if (o.s.updating) return;
+    pickDate(o.s, o.n, "");
+}
+
+/// `iso` (the caller's, not the field's) shown, the popover closed, and the
+/// page told.
+fn pickDate(s: *Surface, n: *Node, iso: []const u8) void {
+    const f = s.fields.getPtr(n.id) orelse return;
+    s.updating = true;
+    showDate(f, iso);
+    s.updating = false;
+    f.popover.msgSend(void, "performClose:", .{apple.nil});
+    const token = s.token;
+    const nid = n.id;
+    sendValue(s, n, "input", iso);
+    // The page may have closed the window or removed the field.
+    const again = surfaces.get(token) orelse return;
+    const n2 = again.engine.tree.get(nid) orelse return;
+    sendValue(again, n2, "change", iso);
 }
 
 // ---------------------------------------------------------------------------

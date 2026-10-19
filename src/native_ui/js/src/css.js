@@ -114,12 +114,12 @@ export function parseSheet(css, orderBase = 0) {
           if (!sel) continue;
           let pseudo = null;
           if (sel.includes(":")) {
-            const pm = /::?(before|after)\s*$/.exec(sel);
-            if (pm) { pseudo = pm[1]; sel = sel.slice(0, pm.index).trim() || "*"; }
+            const pm = /::?(before|after)\s*$|::(backdrop|placeholder|-webkit-input-placeholder)\s*$/.exec(sel);
+            if (pm) { pseudo = pm[1] || (pm[2] === "backdrop" ? "backdrop" : pm[2] && "placeholder"); sel = sel.slice(0, pm.index).trim() || "*"; }
             // :focus, :hover and :active are attributes the runtime moves
             // with the focus, the pointer and the press (main.js).
-            sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
-            if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue; // states we don't track yet
+            sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]").replace(/:modal(?![-\w])/g, "[data-nui-modal]").replace(/:popover-open(?![-\w])/g, "[data-nui-popover-open]");
+            if (/::|:hover|:focus|:active|:visited/.test(sel)) continue; // states we don't track yet
           }
           rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
         }
@@ -633,7 +633,7 @@ export class StyleEngine {
     if (el.id) add(this.index.id.get(el.id));
     const cl = el.getAttribute("class");
     if (cl) for (const c of cl.split(/\s+/)) if (c) add(this.index.cls.get(c));
-    const out = { normal: [], before: [], after: [] };
+    const out = { normal: [], before: [], after: [], backdrop: [], placeholder: [] };
     for (const r of cand) {
       if (!mediaMatches(r.media)) continue;
       let m = r.match;
@@ -699,9 +699,11 @@ export function sheetData(css) {
 }
 
 // A rule's index key: the rightmost compound selector's id, class or tag.
-// (Ignoring pseudo-class arguments: section:not(.active) is about sections.)
+// (Ignoring pseudo-class arguments: section:not(.active) is about sections,
+// and details > :not(summary) about any element: the pseudo-class keeps its
+// place, so the rightmost compound isn't dropped as empty.)
 function indexKey(sel) {
-  const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+  const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, ":_") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
   const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
   if (id) return ["id", id[1]];
   if (cls) return ["cls", cls[1]];
@@ -798,6 +800,9 @@ function relativeLength(v, fs) {
 }
 
 export function substitute(v, cs, depth = 0) {
+  // env(safe-area-inset-*, fallback): the native window already sits inside
+  // the system bars and cutouts, so the insets are 0 (or the fallback).
+  if (v.includes("env(")) v = v.replace(/env\(\s*[\w-]+\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, fb) => (fb !== undefined ? fb.trim() : "0px"));
   if (depth > 8 || !v.includes("var(")) return v;
   return substitute(v.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, name, fb) =>
     cs[name] !== undefined ? cs[name] : (fb !== undefined ? fb.trim() : "")), cs, depth + 1);
@@ -883,11 +888,41 @@ export function pctString(l) {
   return l.px ? `${l.pct}%${l.px >= 0 ? "+" : ""}${l.px}px` : `${l.pct}%`;
 }
 
-const NAMED = {
-  transparent: [0, 0, 0, 0], white: [255, 255, 255, 1], black: [0, 0, 0, 1], red: [255, 0, 0, 1],
-  green: [0, 128, 0, 1], blue: [0, 0, 255, 1], gray: [128, 128, 128, 1], grey: [128, 128, 128, 1],
-  orange: [255, 165, 0, 1], yellow: [255, 255, 0, 1], purple: [128, 0, 128, 1], none: [0, 0, 0, 0],
-};
+const NAMED = { transparent: [0, 0, 0, 0], none: [0, 0, 0, 0] };
+// CSS's named colors (CSS Color 4).
+for (const kv of (
+  "aliceblue:f0f8ff antiquewhite:faebd7 aqua:00ffff aquamarine:7fffd4 azure:f0ffff beige:f5f5dc " +
+  "bisque:ffe4c4 black:000000 blanchedalmond:ffebcd blue:0000ff blueviolet:8a2be2 brown:a52a2a " +
+  "burlywood:deb887 cadetblue:5f9ea0 chartreuse:7fff00 chocolate:d2691e coral:ff7f50 " +
+  "cornflowerblue:6495ed cornsilk:fff8dc crimson:dc143c cyan:00ffff darkblue:00008b darkcyan:008b8b " +
+  "darkgoldenrod:b8860b darkgray:a9a9a9 darkgreen:006400 darkgrey:a9a9a9 darkkhaki:bdb76b " +
+  "darkmagenta:8b008b darkolivegreen:556b2f darkorange:ff8c00 darkorchid:9932cc darkred:8b0000 " +
+  "darksalmon:e9967a darkseagreen:8fbc8f darkslateblue:483d8b darkslategray:2f4f4f darkslategrey:2f4f4f " +
+  "darkturquoise:00ced1 darkviolet:9400d3 deeppink:ff1493 deepskyblue:00bfff dimgray:696969 " +
+  "dimgrey:696969 dodgerblue:1e90ff firebrick:b22222 floralwhite:fffaf0 forestgreen:228b22 " +
+  "fuchsia:ff00ff gainsboro:dcdcdc ghostwhite:f8f8ff gold:ffd700 goldenrod:daa520 gray:808080 " +
+  "green:008000 greenyellow:adff2f grey:808080 honeydew:f0fff0 hotpink:ff69b4 indianred:cd5c5c " +
+  "indigo:4b0082 ivory:fffff0 khaki:f0e68c lavender:e6e6fa lavenderblush:fff0f5 lawngreen:7cfc00 " +
+  "lemonchiffon:fffacd lightblue:add8e6 lightcoral:f08080 lightcyan:e0ffff lightgoldenrodyellow:fafad2 " +
+  "lightgray:d3d3d3 lightgreen:90ee90 lightgrey:d3d3d3 lightpink:ffb6c1 lightsalmon:ffa07a " +
+  "lightseagreen:20b2aa lightskyblue:87cefa lightslategray:778899 lightslategrey:778899 " +
+  "lightsteelblue:b0c4de lightyellow:ffffe0 lime:00ff00 limegreen:32cd32 linen:faf0e6 magenta:ff00ff " +
+  "maroon:800000 mediumaquamarine:66cdaa mediumblue:0000cd mediumorchid:ba55d3 mediumpurple:9370db " +
+  "mediumseagreen:3cb371 mediumslateblue:7b68ee mediumspringgreen:00fa9a mediumturquoise:48d1cc " +
+  "mediumvioletred:c71585 midnightblue:191970 mintcream:f5fffa mistyrose:ffe4e1 moccasin:ffe4b5 " +
+  "navajowhite:ffdead navy:000080 oldlace:fdf5e6 olive:808000 olivedrab:6b8e23 orange:ffa500 " +
+  "orangered:ff4500 orchid:da70d6 palegoldenrod:eee8aa palegreen:98fb98 paleturquoise:afeeee " +
+  "palevioletred:db7093 papayawhip:ffefd5 peachpuff:ffdab9 peru:cd853f pink:ffc0cb plum:dda0dd " +
+  "powderblue:b0e0e6 purple:800080 rebeccapurple:663399 red:ff0000 rosybrown:bc8f8f royalblue:4169e1 " +
+  "saddlebrown:8b4513 salmon:fa8072 sandybrown:f4a460 seagreen:2e8b57 seashell:fff5ee sienna:a0522d " +
+  "silver:c0c0c0 skyblue:87ceeb slateblue:6a5acd slategray:708090 slategrey:708090 snow:fffafa " +
+  "springgreen:00ff7f steelblue:4682b4 tan:d2b48c teal:008080 thistle:d8bfd8 tomato:ff6347 " +
+  "turquoise:40e0d0 violet:ee82ee wheat:f5deb3 white:ffffff whitesmoke:f5f5f5 yellow:ffff00 " +
+  "yellowgreen:9acd32 "
+).trim().split(" ")) {
+  const [name, hex] = kv.split(":");
+  NAMED[name] = [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16), 1];
+}
 
 // A color → [r, g, b, a] (0-255, alpha 0-1), or null.
 export function color(v, current) {
@@ -990,6 +1025,46 @@ function stopAt(v) {
   return { px: 0 };
 }
 
+// conic-gradient([from <angle>]? [at <position>]?, stops): the stops' colors
+// and positions as fractions of a turn from the top, clockwise (`from`
+// added), as the backends draw it: wedges (render.js conicIcon). The
+// position is the box's centre.
+export function conic(args, current) {
+  const parts = splitTop(args, ",").map((s) => s.trim());
+  let from = 0;
+  if (/^(from|at)\s/.test(parts[0])) {
+    const m = /from\s+(-?[\d.]+)(deg|turn|rad|grad)?/.exec(parts.shift());
+    if (m) from = turns(m[1], m[2] || "deg");
+  }
+  const raw = [];
+  for (const p of parts) {
+    const t = splitSpaces(p);
+    const c = color(t[0], current);
+    if (!c) continue;
+    const at = t.slice(1, 3).map((v) => { const m = /^(-?[\d.]+)(%|deg|turn|rad|grad)?$/.exec(v); return m ? turns(m[1], m[2] || "deg") : null; });
+    if (!at.length) raw.push({ c, at: null });
+    for (const a of at) raw.push({ c: c.slice(), at: a });
+  }
+  if (!raw.length) return null;
+  // Unpositioned stops: the first at 0, the last at a full turn, the rest
+  // spread evenly between their neighbours; none before the one ahead.
+  const pos = raw.map((s) => s.at);
+  if (pos[0] == null) pos[0] = 0;
+  if (pos[pos.length - 1] == null) pos[pos.length - 1] = 1;
+  for (let i = 1; i < pos.length; i++) {
+    if (pos[i] != null) { pos[i] = Math.max(pos[i], pos[i - 1]); continue; }
+    let j = i;
+    while (pos[j] == null) j++;
+    for (let k = i; k < j; k++) pos[k] = pos[i - 1] + (pos[j] - pos[i - 1]) * (k - i + 1) / (j - i + 1);
+  }
+  return { from, stops: raw.map((s, i) => [...s.c, pos[i]]) };
+}
+
+function turns(n, unit) {
+  const v = parseFloat(n);
+  return unit === "%" ? v / 100 : unit === "turn" ? v : unit === "rad" ? v / (2 * Math.PI) : unit === "grad" ? v / 400 : v / 360;
+}
+
 // radial-gradient([<shape> || <size>]? [at <position>]?, stops):
 // { radial: [cx, cy, rx, ry], stops }, each length a number (px) or "50%"
 // (of the box's width for x, of its height for y). A size keyword
@@ -1067,7 +1142,14 @@ export function background(v, current) {
       if (gr) (out ||= {}).gradient = gr;
       continue;
     }
-    if (/gradient\(/.test(layer)) continue; // conic: not yet
+    const k = /^(?:repeating-)?conic-gradient\((.*)\)/.exec(layer);
+    if (k) {
+      if (out?.gradient || out?.conic) continue;
+      const cg = conic(k[1], current);
+      if (cg) (out ||= {}).conic = cg;
+      continue;
+    }
+    if (/gradient\(/.test(layer)) continue;
     const c = color(splitSpaces(layer).find((t) => color(t, current)) || "", current);
     if (c) (out ||= {}).color = c;
   }

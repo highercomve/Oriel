@@ -402,6 +402,10 @@ object OrielRuntime {
     @JvmStatic
     fun nuiViewport(id: Int): Long = Nui.viewport(id)
 
+    /** The user's language ("es-CL"): the page's navigator.language and Intl's default (android.zig withDensity). */
+    @JvmStatic
+    fun nuiLocale(): ByteArray = java.util.Locale.getDefault().toLanguageTag().toByteArray()
+
     /** The display's density in thousandths: the page's devicePixelRatio (android.zig withDensity). */
     @JvmStatic
     fun nuiDensity(id: Int): Int = Math.round(((Nui.views[id]?.context ?: windows[id]?.activity ?: app).resources.displayMetrics.density) * 1000)
@@ -424,10 +428,11 @@ object OrielRuntime {
     /** A string's width in 1/64 dp in a font (`ff`, the CSS family list) at
      *  `size64` / 64 px: a select's options (android.zig longestOption). */
     @JvmStatic
-    fun nuiTextWidth(text: ByteArray, size64: Int, ff: ByteArray, mono: Boolean): Int {
+    fun nuiTextWidth(text: ByteArray, size64: Int, ff: ByteArray, mono: Boolean, weight: Int, italic: Boolean, spacing64: Int): Int {
         val p = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.SUBPIXEL_TEXT_FLAG or android.graphics.Paint.LINEAR_TEXT_FLAG)
         p.textSize = size64 / 64f
-        p.typeface = NuiNode.family(ff.utf8(), mono)
+        p.typeface = NuiNode.typeface(weight, italic, NuiNode.family(ff.utf8(), mono))
+        p.letterSpacing = spacing64 / 64f / p.textSize
         return Math.round(p.measureText(text.utf8()) * 64)
     }
 

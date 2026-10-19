@@ -94,6 +94,18 @@ export function utf8Decode(b) {
 const isArrayBuffer = (v) => Object.prototype.toString.call(v) === "[object ArrayBuffer]";
 
 const B64 ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+// A base64 string's bytes (a camera photo's data: URL).
+function fromBase64(s) {
+  const clean = String(s).replace(/[^A-Za-z0-9+/]/g, "");
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let n = 0, bits = 0, len = 0;
+  for (const ch of clean) {
+    n = (n << 6) | B64.indexOf(ch);
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[len++] = (n >> bits) & 255; }
+  }
+  return out.subarray(0, len);
+}
 function base64(b) {
   let out = "";
   let chunk = [];
@@ -377,5 +389,5 @@ export function installBlob(g, host) {
   g.File ??= File;
   g.FileList ??= FileList;
   g.FileReader ??= FileReader;
-  return { fileData, droppedFile, fileList, isBlob: (b) => state.has(b) };
+  return { fileData, droppedFile, fileList, fromBase64, isBlob: (b) => state.has(b) };
 }

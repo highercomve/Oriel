@@ -164,12 +164,28 @@ fn withDensity(gpa: std.mem.Allocator, window: u32, platform_json: [:0]const u8)
     const body = trimmed[0 .. trimmed.len - 1];
     const sep: []const u8 = if (std.mem.trimEnd(u8, body, " \n").len > 1) "," else "";
     const dpr = @as(f64, @floatFromInt(milli)) / 1000;
+    // The user's language (navigator.language, Intl's default).
+    var locale_buf: [48]u8 = undefined;
+    const locale = localeTag(gpa, &locale_buf);
     // The system's accent (Material You's dynamic colour on Android 12+):
     // platform.accent, the focus ring's and accent-coloured controls', as
     // macOS and GTK send theirs; 0 when the theme has none.
     const argb: u32 = @bitCast(runtime.call(.int, "nuiAccent", "(I)I", .{wid(window)}) orelse 0);
-    if (argb >> 24 == 0) return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d}}}", .{ body, sep, dpr }, 0) catch null;
-    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"accent\":[{d},{d},{d}]}}", .{ body, sep, dpr, (argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff }, 0) catch null;
+    if (argb >> 24 == 0) return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"locale\":\"{s}\"}}", .{ body, sep, dpr, locale }, 0) catch null;
+    return std.fmt.allocPrintSentinel(gpa, "{s}{s}\"dpr\":{d},\"locale\":\"{s}\",\"accent\":[{d},{d},{d}]}}", .{ body, sep, dpr, locale, (argb >> 16) & 0xff, (argb >> 8) & 0xff, argb & 0xff }, 0) catch null;
+}
+
+/// Java's default locale as a BCP 47 tag ("es-CL"), in `buf`; "en-US" when
+/// it can't be read or isn't a plain tag (letters, digits and dashes).
+fn localeTag(gpa: std.mem.Allocator, buf: []u8) []const u8 {
+    const env = runtime.mainEnv() orelse return "en-US";
+    const arr = runtime.call(.object, "nuiLocale", "()[B", .{}) orelse return "en-US";
+    const bytes = runtime.takeBytes(env, gpa, arr) orelse return "en-US";
+    defer gpa.free(bytes);
+    if (bytes.len == 0 or bytes.len > buf.len) return "en-US";
+    for (bytes) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return "en-US";
+    @memcpy(buf[0..bytes.len], bytes);
+    return buf[0..bytes.len];
 }
 
 /// Tear a window's surface down. From inside the page's call or a frame
@@ -331,7 +347,7 @@ pub const prop_keys = [_][]const u8{
     "ty",   "vis",     "z",    "root", "color",   "gradient", "angle", "stops",  "radial", "spread",
     "blur", "x",       "y",    "vb",   "shapes",  "d",        "fill",  "stroke", "sw",     "cap",
     "join", "evenodd", "u",    "i",    "label",   "href",     "hover", "radius", "cx",     "cy",
-    "ff",   "ol",
+    "ff",   "ol",      "phc",
 };
 
 const prop_key_ids = blk: {
@@ -595,7 +611,7 @@ fn longestOption(n: *const Node, fz: f32) f32 {
     var widest: f32 = 0;
     const size64: i32 = @intFromFloat(@round(std.math.clamp(fz, 1, 512) * 64));
     for (opts) |o| {
-        const w = runtime.call(.int, "nuiTextWidth", "([BI[BZ)I", .{ @as([]const u8, o[1]), size64, @as([]const u8, n.props.ff orelse ""), n.props.mono }) orelse continue;
+        const w = runtime.call(.int, "nuiTextWidth", "([BI[BZIZI)I", .{ @as([]const u8, o[1]), size64, @as([]const u8, n.props.ff orelse ""), n.props.mono, @as(i32, @intFromFloat(std.math.clamp(n.props.fwt orelse 400, 1, 1000))), n.props.it, @as(i32, @intFromFloat(@round(std.math.clamp(n.props.ls orelse 0, -32768, 32767) * 64))) }) orelse continue;
         widest = @max(widest, @as(f32, @floatFromInt(w)) / 64);
     }
     return @ceil(widest);
@@ -630,7 +646,7 @@ fn measure(ctx: *anyopaque, n: *Node, max_width: f32, out: *[2]f32) void {
         // (0.5716 em each, 2.37 em), a select its longest option and 20 px
         // for its arrow.
         .input => out.* = .{ @min(max_width, ((n.props.cols orelse 20) * 0.5716 + 2.37) * fz), fieldLine(s, n, fz) },
-        .select => out.* = .{ @min(max_width, longestOption(n, fz) + 20), fieldLine(s, n, fz) },
+        .select => out.* = .{ @min(max_width, longestOption(n, fz) + @as(f32, if (n.props.na) 0 else 20)), fieldLine(s, n, fz) },
         // `rows` lines (2 by default), as browsers size a textarea.
         .textarea => out.* = .{ if (std.math.isInf(max_width)) 200 else max_width, fieldLine(s, n, fz) * (n.props.rows orelse 2) },
         else => out.* = .{ 0, 0 },

@@ -38,6 +38,10 @@ function iconOf(svg, cs, doc, files) {
   // Paint set on <svg> (Feather/Lucide icons: fill="none" stroke="currentColor"
   // stroke-width="2" on the root) and on the <symbol>, inherited by the shapes.
   let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter", op: 1, fo: 1, so: 1 }, sheet);
+  // The page's CSS on the <svg> itself (svg { fill: none; stroke:
+  // currentColor; stroke-width: 2 }) beats its attributes, as in a browser.
+  for (const [prop, key] of [["fill", "fill"], ["stroke", "stroke"], ["stroke-linecap", "cap"], ["stroke-linejoin", "join"]]) if (cs[prop] !== undefined) paint[key] = cs[prop];
+  if (cs["stroke-width"] !== undefined && Number.isFinite(parseFloat(cs["stroke-width"]))) paint.sw = parseFloat(cs["stroke-width"]);
   if (root !== svg) paint = paintOf(root, paint, sheet);
   collect(root, paint, current, doc, shapes, sheet);
   if (!shapes.length) return null;

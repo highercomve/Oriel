@@ -150,7 +150,10 @@ with no restyling or flattening.
 
 | Element | Drawn as |
 |---|---|
-| `div`, `section`, `main`, `header`, `footer`, `nav`, `article`, `aside`, `form`, `p`, `h1`–`h6`, `ul`, `ol`, `li`, `dl`, `dt`, `dd`, `pre`, `blockquote`, `figure`, `figcaption`, `address`, `details`, `summary`, `fieldset`, `legend`, `hr` | Block boxes with the browsers' user-agent styles (margins, heading sizes, list indents, the fieldset's groove border with its legend in it) |
+| `div`, `section`, `main`, `header`, `footer`, `nav`, `article`, `aside`, `form`, `p`, `h1`–`h6`, `ul`, `ol`, `li`, `dl`, `dt`, `dd`, `pre`, `blockquote`, `figure`, `figcaption`, `address`, `fieldset`, `legend`, `hr` | Block boxes with the browsers' user-agent styles (margins, heading sizes, list indents, the fieldset's groove border with its legend in it) |
+| `details`, `summary` | A disclosure: closed, only the first `summary` shows (whatever the page's CSS sets on the rest), with its triangle (`list-style`); a click, Enter or `open` toggles it and fires `toggle` |
+| `dialog` | Hidden until open. `showModal()` puts it in the top layer over every `z-index`, with its `::backdrop` (`:modal` matches); the page outside it is inert (Tab stays inside), Escape and the platform's back fire `cancel`, `close()` (or a `method=dialog` form, its `returnValue` the submitter's value) restores the focus and fires `close`. `show()` opens it in place |
+| `[popover]` | The Popover API: `showPopover()`, `hidePopover()`, `togglePopover()`, `popovertarget` buttons, `:popover-open`, `beforetoggle` and `toggle`; in the top layer in the order shown; an auto popover closes with Escape, a press outside it or another auto popover |
 | `span`, `a`, `b`, `strong`, `i`, `em`, `cite`, `var`, `dfn`, `small`, `mark`, `code`, `kbd`, `samp`, `tt`, `label`, `br` | Runs inside their block's text node; a padded, bordered or rounded inline element (a `<code>` chip) keeps its box across line fragments |
 | `ul`/`ol` > `li` | List items with `disc`, `circle`, `square` or `decimal` markers, inside or outside |
 | `table`, `thead`, `tbody`, `tfoot`, `tr`, `td`, `th`, `caption` | Tables with automatic column widths, `colspan` and `border-spacing` |
@@ -172,9 +175,11 @@ A `<meta name="theme-color">` is read and followed when it changes.
 |---|---|---|
 | `input` (text, search, email, url, tel, number, password, and every other type) | One-line text field | `placeholder`, `value`, `disabled`, `readonly` (selectable, not editable), `size` (default 20), password masking; on iOS the `type`, `inputmode`, `enterkeyhint`, `autocapitalize`, `autocorrect` and `spellcheck` attributes choose the keyboard and typing aids (keyboard type, return key, capitalization, correction, AutoFill), and on macOS `spellcheck` turns spell checking off |
 | `textarea` | Multi-line text field | `rows` (default 2), `cols` (default 20); undo on Windows and macOS |
-| `select` | Drop-down: `GtkDropDown`, `COMBOBOX`, `NSPopUpButton`, a `UIButton` menu, `Spinner` | Its `option`s; `change` on a pick |
-| `input type=checkbox`, `radio` | See [Availability]($link.ref('availability')) | `checked`, `indeterminate` (drawn mixed), `disabled`, `accent-color`; `appearance: none` hands drawing to the page |
+| `select` | Drop-down: `GtkDropDown`, `COMBOBOX`, `NSPopUpButton`, a `UIButton` menu, `Spinner` | Its `option`s (new ones replace the list); `change` on a pick; with `appearance: none` no platform arrow (the page draws one, a label's `::after`) unless its arrow is its own `background-image` |
+| `input type=checkbox`, `radio` | See [Availability]($link.ref('availability')) | `checked`, `indeterminate` (drawn mixed), `disabled`, `accent-color`; `appearance: none` hands drawing to the page, its `::before` and `::after` too (a switch's knob) |
 | `input type=range` | `GtkScale`, trackbar, `NSSlider`, `UISlider`, `SeekBar` | `min`, `max`, `step` (`any`); `input` while dragging, `change` on release; `accent-color` |
+| `input type=date` | The platform's date picker: a `GtkCalendar` popover, the Date and Time Picker control, an `NSDatePicker` popover, a `UIDatePicker` keyboard, `DatePickerDialog` | The date shown in the user's format, the value `YYYY-MM-DD` (anything else is `""`); `input` then `change` on a pick; a Clear button empties it |
+| `input type=file` | A drawn button ("Choose File" and the file's name) | Its click (or its label's, or Enter) opens the platform's file dialog (the [dialog]($link.page('docs/dialogs')) module); with `capture` and an `image/*` `accept` on a phone, the camera (the [camera]($link.page('docs/camera')) module). The pick is `files[0]` (a `File` read lazily, as a dropped one), then `input` and `change`; a cancel fires `cancel`. `accept` narrows the desktops' dialogs. One file: `multiple` is ignored |
 
 - **Values.** The page's `value` reaches the field only when the page
   changes it, never over what the user is typing.
@@ -204,14 +209,14 @@ A `<meta name="theme-color">` is read and followed when it changes.
 | Attributes | `[a]`, `[a=v]`, `~=`, the dash match, `^=`, `$=`, `*=`, with the `i` flag |
 | Combinators | Descendant, `>`, `+`, `~` |
 | Logical | `:not()`, `:is()`, `:where()`, `:matches()`, `:has()` |
-| Structural | `:first-child`, `:last-child`, `:only-child`, `:nth-child()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`, `:nth-last-of-type()`, `:root`, `:empty` (in `querySelector`) |
-| State | `:hover` (mouse, trackpad, pen), `:active` (while pressed), `:focus`, `:focus-visible` (keyboard focus, or any text field), `:focus-within`, `:checked`, `:disabled`, `:enabled`, `:link`, `:any-link` |
+| Structural | `:first-child`, `:last-child`, `:only-child`, `:nth-child()`, `:nth-last-child()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:nth-of-type()`, `:nth-last-of-type()`, `:root`, `:empty` |
+| State | `:hover` (mouse, trackpad, pen), `:active` (while pressed), `:focus`, `:focus-visible` (keyboard focus, or any text field), `:focus-within`, `:checked`, `:disabled`, `:enabled`, `:link`, `:any-link`, `:modal`, `:popover-open` (these two in `matches()` and `querySelector` too) |
 | Pseudo-elements | `::before`, `::after` with `content` |
 
 The same selectors work in style sheets and in `querySelector`,
 `querySelectorAll`, `matches` and `closest`. A style rule with any other
 pseudo-element (`::placeholder`, `::selection`, `::-webkit-scrollbar`) or
-with `:visited` or `:empty` is skipped.
+with `:visited` is skipped.
 
 ## [At-rules and media queries]($heading.id('media'))
 
@@ -231,10 +236,10 @@ with `:visited` or `:empty` is skipped.
 
 | Kind | Supported |
 |---|---|
-| Lengths | `px`, `em`, `rem` (always 16 px), `%`, `vw`, `vh` (and their `s`/`d`/`l` forms), `vmin`, `vmax`, `pt`, `ch` and `ex` (half an em) |
+| Lengths | `px`, `em`, `rem` (always 16 px), `%`, `vw`, `vh` (and their `s`/`d`/`l` forms), `vmin`, `vmax`, `pt`, `ch` and `ex` (half an em); `env(safe-area-inset-*)` is 0 (the window sits inside the system bars) or its fallback |
 | Functions | `calc()` (mixing percentages and lengths), `min()`, `max()`, `clamp()`, `var()` with fallbacks, `minmax()` and `repeat()` in grid templates |
 | Colors | `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()`, `hsl()`/`hsla()` (comma or space syntax, `/` alpha), `color-mix(in srgb, …)`, `currentColor`, `transparent`, the system colors (`Canvas`, `CanvasText`, `Field`, `ButtonFace`, ...), and the names `white`, `black`, `red`, `green`, `blue`, `gray`/`grey`, `orange`, `yellow`, `purple` |
-| Gradients | `linear-gradient()`, `radial-gradient()`, `repeating-linear-gradient()`, `repeating-radial-gradient()`, stops in `%`, `px` or `calc()` |
+| Gradients | `linear-gradient()`, `radial-gradient()`, `repeating-linear-gradient()`, `repeating-radial-gradient()`, stops in `%`, `px` or `calc()`; `conic-gradient()` (`from`, stops in `%`, `deg`, `turn`; around the box's centre: a pie or donut chart) |
 | Keywords | `inherit`, `initial`, `unset`; `!important` |
 
 ## [CSS properties]($heading.id('properties'))
@@ -243,18 +248,18 @@ with `:visited` or `:empty` is skipped.
 |---|---|
 | Display | `display`: `block`, `flex`, `inline-flex`, `inline`, `inline-block`, `flow-root`, `list-item`, `none`, the table values, and `grid`/`inline-grid` as rows (below); `visibility` |
 | Flexbox | `flex`, `flex-direction`, `flex-wrap`, `flex-flow`, `flex-grow`, `flex-shrink`, `flex-basis`, `justify-content`, `align-items`, `align-self`, `align-content`, `order`, `gap`, `row-gap`, `column-gap`, `place-items`, `place-content`, `place-self` |
-| Grid | `grid-template-columns` (a track list, `repeat(n, …)`, `repeat(auto-fit, minmax(…))` (or `auto-fill`), `fr`, `auto`, lengths): each row of items laid out as a flex row with the grid's gaps and `align-items`. areas and spans aren't placed |
+| Grid | `grid-template-columns` (a track list, `repeat(n, …)`, `repeat(auto-fit, minmax(…))` (or `auto-fill`), `fr`, `auto`, lengths): each row of items laid out as a flex row with the grid's gaps and `align-items`; `grid-column` (`1 / -1`, `span N`, a start line) places items row by row. Areas and `grid-row` aren't placed |
 | Size | `width`, `height`, `min-width`, `max-width`, `min-height`, `max-height` (`max-content`, `fit-content` too), `aspect-ratio`, `box-sizing` |
 | Spacing | `margin` (with `auto`), `padding`, and their sides; vertical margins collapse as in block flow |
 | Position | `position`: `static`, `relative`, `absolute`, `fixed`, `sticky`; `top`, `right`, `bottom`, `left`, `inset`, `inset-inline`, `inset-block`, `z-index` |
 | Overflow | `overflow`, `overflow-x`, `overflow-y` (`visible`, `hidden`, `clip`, `scroll`, `auto`; clipped to rounded corners), `scrollbar-width`, `scrollbar-color`, `scrollbar-gutter` |
 | Borders | `border` and its sides, `border-width`, `border-style` (`solid`, `dashed`, `dotted`; `double`, `groove`, `ridge`, `inset`, `outset` drawn as browsers shade them), `border-color`, `border-radius` (elliptical and percentage corners), `border-spacing` |
-| Background | `background`, `background-color`, colors and gradients (several layers) |
+| Background | `background`, `background-color`, colors and gradients (several layers); `background-image` gradients with `background-size`, `background-position` (keywords, `%`, lengths, `calc(% ± px)`) and `background-repeat: no-repeat` (a drawn arrow or mark), not on form fields |
 | Effects | `box-shadow` (blurred like CSS, inset, several), `opacity`, `outline`, `outline-offset` (solid, dashed, dotted), `transform` (`translate`, `scale`, `rotate`; drawn around the center, the layout keeps the box), the `translate`, `scale` and `rotate` properties |
 | Text | `color`, `font`, `font-family`, `font-size`, `font-weight`, `font-style`, `line-height` (`normal` from the font's metrics), `letter-spacing`, `text-align`, `text-transform`, `text-decoration` (`underline`, `line-through`), `white-space`, `vertical-align` (`baseline`, `middle`, `top`, `bottom`), `word-break`, `overflow-wrap` |
 | Lists | `list-style`, `list-style-type`, `list-style-position` |
 | Replaced | `object-fit` |
-| Controls | `appearance` / `-webkit-appearance` (`none`), `accent-color`, `color-scheme` |
+| Controls | `appearance` / `-webkit-appearance` (`none`), `accent-color`, `color-scheme`; `::placeholder`'s `color` |
 | Interaction | `cursor` (`pointer` shows the hand), `touch-action` (`none` and `pinch-zoom` let the page take a touch drag) |
 | Accessibility | `forced-color-adjust` |
 | Transitions | `transition`, `transition-property`, `-duration`, `-delay`, `-timing-function` |
@@ -401,10 +406,13 @@ scale. Other context types return `null`.
 | Layout reads | `getBoundingClientRect()`, `getClientRects()` (line fragments of inline elements), `offset*`, `client*`, `scroll*` (read and set), `scrollTo`, `scrollBy`, `scrollIntoView`, `getComputedStyle()`, `innerWidth`, `innerHeight`, `devicePixelRatio` |
 | Events | `EventTarget`, `Event`, `UIEvent`, `MouseEvent`, `PointerEvent`, `TouchEvent`, `KeyboardEvent`, `FocusEvent`, `InputEvent`, `DragEvent` |
 | Timers | `setTimeout`, `setInterval` (4 ms minimum; no string callbacks under the default CSP), `requestAnimationFrame` (the display's rate), `queueMicrotask`, `performance.now()` |
-| Location | `location.hash` (set it to navigate), `search`, `href` (`app://localhost/index.html…`), `reload()`; `history.back()` and `length` over hash changes |
+| Location and history | `location.hash` (set it to navigate), `search`, `pathname`, `href` (`app://localhost/index.html…`), `reload()`; the session history: `history.pushState`, `replaceState`, `state`, `back`, `forward`, `go`, `length`, `popstate` and `hashchange` (same-origin URLs; the platform's back walks it after closing a modal dialog) |
 | Storage | `localStorage`, `sessionStorage` ([Web storage]($link.ref('web-storage'))) |
 | Files | `Blob`, `File`, `FileList`, `FileReader`, `DataTransfer` |
-| Other | `URL`, `URLSearchParams`, `matchMedia`, `navigator` (`userAgent` `Oriel native (<os>)`, `platform`, `language` `en-US`, `maxTouchPoints`), `getSelection()` (always empty), `DOMException`, `window.oriel` |
+| Images | `new Image()` and `<img>`: `naturalWidth`/`naturalHeight` from the file's header (PNG, JPEG, GIF, WebP, BMP; a `data:` URL or an app asset), `complete`, `decode()`, `load` or `error` after `src` is set |
+| Forms | `form.elements` (by index, name or id, `namedItem`, radio groups' `value`), `requestSubmit(submitter)`, `submit` events' `submitter`, `datalist.options` |
+| Intl | `Intl.NumberFormat` (decimal, percent, currency), `Intl.DateTimeFormat` (components, `dateStyle`/`timeStyle`, UTC or local time), `Intl.Collator`, `Intl.PluralRules`, and `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`, `localeCompare` over them: English, Spanish, Portuguese, French, German and Italian data (others format as English), matching the browsers' output for common options |
+| Other | `URL`, `URLSearchParams`, `matchMedia`, `navigator` (`userAgent` `Oriel native (<os>)`, `platform`, `language`: the user's on Linux and Android, else `en-US`, `maxTouchPoints`), `getSelection()` (always empty), `DOMException`, `window.oriel`; events the runtime fires are `isTrusted`; a promise rejected with no handler is logged |
 
 Frameworks that render through the DOM work: plain JavaScript, React 19
 (controlled inputs, selects, checkboxes and sliders reach `onChange`), Vue
@@ -450,19 +458,17 @@ iPad it gets a scene of its own.
 
 - `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`: call a Zig
   command.
-- `history.pushState`, `replaceState`, `go`, `forward` do nothing: routers
-  must use hash mode.
 - Loading another page or URL in a window; `iframe`, `object`, `embed`.
 - A dev server: the renderer runs built assets only.
 
 **Elements**
 
-- `video`, `audio`, `picture`, `dialog` (`showModal`), `progress` and
-  `meter` (laid out, not drawn as bars).
-- `<details>` doesn't collapse: its content always shows.
-- `<input type=file>` has no file picker, and `date`, `time`, `color` have
-  no pickers: they're plain text fields. `<input type=hidden>` is drawn as
-  a text field: leave it out of native pages.
+- `video`, `audio`, `picture`, `progress` and `meter` (laid out, not drawn
+  as bars).
+- `time`, `datetime-local`, `month`, `week` and `color` inputs have no
+  pickers: they're plain text fields. `<input type=hidden>` is drawn as a
+  text field: leave it out of native pages. A date field ignores `min` and
+  `max` in its picker.
 - `contenteditable` content isn't editable (only focusable).
 - Shadow DOM and web components (Lit), `adoptedStyleSheets`.
 
@@ -480,8 +486,11 @@ iPad it gets a scene of its own.
 - `filter`, `backdrop-filter` (a blurred background is drawn opaque),
   `mix-blend-mode`, `clip-path`, `mask`, skew and 3D transforms,
   `transform-origin`.
-- `background-image: url()`, `background-size`, `background-position`,
-  `background-repeat`; animating `background-position`.
+- `background-image: url()`; repeated sized layers (`background-repeat`
+  other than `no-repeat` with a `background-size`); animating
+  `background-position`. A form field's own `background-image` isn't
+  drawn (a field is a platform widget): a select keeps its platform arrow
+  then.
 - `text-overflow`, `text-shadow`, `text-indent`, `-webkit-line-clamp`,
   `writing-mode`, `direction` (right-to-left).
 - `pointer-events`, `user-select`, `scroll-behavior`, scroll snapping,
@@ -495,10 +504,13 @@ iPad it gets a scene of its own.
 - `ResizeObserver` and `IntersectionObserver` exist and never call back.
 - Canvas `drawImage`, `getImageData`, `putImageData`, `createPattern`,
   `setLineDash`, `setTransform`, `roundRect`, shadows, `toDataURL`, WebGL.
-- `TextEncoder`, `TextDecoder`, `crypto`, Web Workers, `alert`, `confirm`,
-  `prompt`, the Clipboard API (`navigator.clipboard`): use the
-  [clipboard]($link.page('docs/clipboard')) and
-  [dialogs]($link.page('docs/dialogs')) modules.
+- `TextEncoder`, `TextDecoder`, `crypto`, Web Workers, the Clipboard API
+  (`navigator.clipboard`): use the [clipboard]($link.page('docs/clipboard'))
+  module.
+- `alert`, `confirm` and `prompt` would block the UI thread the page runs
+  on: they answer as a browser with its dialogs suppressed does (no
+  dialog, `confirm` false, `prompt` null) and log a warning. Use a
+  `<dialog>`.
 - Blob URLs (`URL.createObjectURL`), the page's text selection
   (`getSelection()` is always empty).
 

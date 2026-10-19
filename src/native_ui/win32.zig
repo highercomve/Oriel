@@ -206,6 +206,12 @@ const Field = struct {
     slider: bool = false,
     /// The position last sent as `input` (a drag sends it once per step).
     sent_pos: isize = -1,
+    /// <input type=date>: a date and time picker (makeDate), not an edit.
+    date: bool = false,
+    /// Its value as last set or sent, "YYYY-MM-DD" (date_len 0: no date):
+    /// a picker may notify DTN_DATETIMECHANGE twice for one pick.
+    date_iso: [10]u8 = undefined,
+    date_len: u8 = 0,
 };
 
 /// A trackbar's positions are LONGs: 0…maxInt(i32) (Range.track maps a
@@ -225,6 +231,7 @@ fn sliderSteps(r: tree_mod.Range) isize {
 }
 
 var common_controls = false;
+var date_controls = false;
 
 /// A combobox's closed height in pixels: its drop button's rect and the same
 /// inset below it (the window's own rect includes the list).
@@ -455,7 +462,8 @@ pub const Surface = struct {
         _ = c.SetWindowLongPtrW(s.hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(s)));
         // Drops into the page (OLE: its fields' own targets are revoked).
         s.drop_target = registerDropTarget(s.hwnd);
-        s.engine.boot(s.dark, false);
+        // After the app's setup, as a web view page starts (Engine.bootSoon).
+        s.engine.bootSoon(s.dark, false);
         return s;
     }
 
@@ -983,7 +991,7 @@ fn focus(ctx: *anyopaque, node: *Node) void {
 fn selection(ctx: *anyopaque, node: *Node, out: *[2]u32) bool {
     const s = surfaceOf(ctx);
     const f = s.fields.get(node.id) orelse return false;
-    if (f.kind != .input and f.kind != .textarea) return false;
+    if ((f.kind != .input and f.kind != .textarea) or f.date) return false;
     var a: c.DWORD = 0;
     var b: c.DWORD = 0;
     _ = c.SendMessageW(f.hwnd, c.EM_GETSEL, @intFromPtr(&a), @bitCast(@intFromPtr(&b)));
@@ -1002,7 +1010,7 @@ fn selection(ctx: *anyopaque, node: *Node, out: *[2]u32) bool {
 fn setSelection(ctx: *anyopaque, node: *Node, start: u32, end: u32) void {
     const s = surfaceOf(ctx);
     const f = s.fields.get(node.id) orelse return;
-    if (f.kind != .input and f.kind != .textarea) return;
+    if ((f.kind != .input and f.kind != .textarea) or f.date) return;
     var a = start;
     var b = end;
     if (f.kind == .textarea and !f.rich) {
@@ -1187,14 +1195,17 @@ const PaintOrder = struct {
         po.fields.deinit(gpa);
     }
 
-    fn walk(po: *PaintOrder, gpa: std.mem.Allocator, n: *Node) void {
+    /// `clear`: inside a transparent box (opacity: 0, a faded-out toast),
+    /// which paints nothing over the fields under it.
+    fn walk(po: *PaintOrder, gpa: std.mem.Allocator, n: *Node, clear: bool) void {
         if (n.props.vis == false) return;
         po.next += 1;
         const order = po.next;
+        const transparent = clear or (n.props.op orelse 1) <= 0;
         if (n.kind == .input or n.kind == .textarea or n.kind == .select or n.kind == .check or n.kind == .button) po.fields.put(gpa, n.id, order) catch {};
-        if (paintsOpaque(n)) po.occluders.append(gpa, .{ .order = order, .rect = n.clip.intersect(n.frame) }) catch {};
+        if (!transparent and paintsOpaque(n)) po.occluders.append(gpa, .{ .order = order, .rect = n.clip.intersect(n.frame) }) catch {};
         var it: tree_mod.PaintIter = .{ .kids = n.kids.items };
-        while (it.next()) |k| po.walk(gpa, k);
+        while (it.next()) |k| po.walk(gpa, k, transparent);
     }
 
     fn paintsOpaque(n: *Node) bool {
@@ -1246,7 +1257,7 @@ fn paddingBox(n: *Node) Rect {
 fn syncFields(s: *Surface) void {
     var po: PaintOrder = .{};
     defer po.deinit(s.gpa);
-    if (s.engine.tree.root) |root| po.walk(s.gpa, root);
+    if (s.engine.tree.root) |root| po.walk(s.gpa, root, false);
     var it = s.engine.tree.nodes.valueIterator();
     while (it.next()) |np| {
         const n = np.*;
@@ -1619,10 +1630,136 @@ fn buttonDraw(s: *Surface, cd: *c.NMCUSTOMDRAW) ?c.LRESULT {
     return c.CDRF_SKIPDEFAULT;
 }
 
+/// <input type=date> (Props.itype "date"): its value is "YYYY-MM-DD", or ""
+/// for no date.
+fn isDateField(n: *const Node) bool {
+    return n.kind == .input and n.props.range == null and if (n.props.itype) |t| std.mem.eql(u8, t, "date") else false;
+}
+
+/// A date field: the Date and Time Picker, the date in the user's short
+/// format and its month calendar to pick from. Its check box (DTS_SHOWNONE)
+/// is "no date", the value "". Its DTN_DATETIMECHANGE goes to the canvas
+/// (onDateChange); keys go to the page first (dateProc).
+fn makeDate(s: *Surface, n: *Node) !Field {
+    if (!date_controls) {
+        const icc: c.INITCOMMONCONTROLSEX = .{ .dwSize = @sizeOf(c.INITCOMMONCONTROLSEX), .dwICC = c.ICC_DATE_CLASSES };
+        _ = c.InitCommonControlsEx(&icc);
+        date_controls = true;
+    }
+    const cls = std.unicode.utf8ToUtf16LeStringLiteral("SysDateTimePick32");
+    const style: c.DWORD = c.WS_CHILD | c.WS_TABSTOP | c.DTS_SHORTDATEFORMAT | c.DTS_SHOWNONE;
+    // In its clip window, as the other fields (makeField).
+    const clip = try makeClip(s);
+    errdefer _ = c.DestroyWindow(clip);
+    const hwnd = c.CreateWindowExW(0, cls, null, style, 0, 0, 1, 1, clip, null, c.GetModuleHandleW(null), null) orelse return error.CreateWindowFailed;
+    _ = c.SetPropW(hwnd, prop_node, @ptrFromInt(@as(usize, @intCast(n.id))));
+    subclass(hwnd, &dateProc);
+    var f: Field = .{ .hwnd = hwnd, .clip = clip, .kind = n.kind, .date = true };
+    // A new picker shows today, checked: the field has no date until the
+    // page gives it one.
+    setDate(&f, "");
+    return f;
+}
+
+/// The picker's date from the page's "YYYY-MM-DD"; anything else (""), or a
+/// date it can't show (before 1601), is no date.
+fn setDate(f: *Field, v: []const u8) void {
+    if (isoDate(v)) |st| {
+        // Remembered first: a picker that notifies its own change sees it
+        // as no change (onDateChange).
+        @memcpy(f.date_iso[0..10], v[0..10]);
+        f.date_len = 10;
+        if (c.SendMessageW(f.hwnd, c.DTM_SETSYSTEMTIME, c.GDT_VALID, @bitCast(@intFromPtr(&st))) != 0) return;
+    }
+    f.date_len = 0;
+    _ = c.SendMessageW(f.hwnd, c.DTM_SETSYSTEMTIME, c.GDT_NONE, 0);
+}
+
+fn isoDate(v: []const u8) ?c.SYSTEMTIME {
+    if (v.len != 10 or v[4] != '-' or v[7] != '-') return null;
+    const y = std.fmt.parseInt(u16, v[0..4], 10) catch return null;
+    const m = std.fmt.parseInt(u16, v[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(u16, v[8..10], 10) catch return null;
+    // The day against its month is the picker's (DTM_SETSYSTEMTIME fails).
+    if (m < 1 or m > 12 or d < 1 or d > 31) return null;
+    var st = std.mem.zeroes(c.SYSTEMTIME);
+    st.wYear = y;
+    st.wMonth = m;
+    st.wDay = d;
+    return st;
+}
+
+/// A picked date (DTN_DATETIMECHANGE): `input` then `change` with its
+/// "YYYY-MM-DD", or "" when its check box was cleared, as a browser's
+/// picker sends them.
+fn onDateChange(s: *Surface, nm: *const c.NMDATETIMECHANGE) void {
+    if (s.updating) return;
+    const hwnd = nm.nmhdr.hwndFrom;
+    const fx = fieldOf(s, hwnd) orelse return;
+    if (!fx.field.date) return;
+    // Readonly or disabled: the page's date back (dateProc keeps the user
+    // out; this is what got past it).
+    if (fx.node.props.ro or fx.node.props.dis) {
+        var keep: [10]u8 = undefined;
+        const len = fx.field.date_len;
+        @memcpy(keep[0..len], fx.field.date_iso[0..len]);
+        s.updating = true;
+        defer s.updating = false;
+        setDate(fx.field, keep[0..len]);
+        return;
+    }
+    var buf: [10]u8 = undefined;
+    const iso: []const u8 = if (nm.dwFlags == c.GDT_VALID)
+        std.fmt.bufPrint(&buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{ nm.st.wYear, nm.st.wMonth, nm.st.wDay }) catch return
+    else
+        "";
+    if (std.mem.eql(u8, iso, fx.field.date_iso[0..fx.field.date_len])) return;
+    @memcpy(fx.field.date_iso[0..iso.len], iso);
+    fx.field.date_len = @intCast(iso.len);
+    sendValue(s, fx.node, "input", iso);
+    // The page may have closed the window or rebuilt the node.
+    if (c.IsWindow(hwnd) == 0) return;
+    const again = fieldOf(s, hwnd) orelse return;
+    sendValue(s, again.node, "change", iso);
+}
+
+/// A readonly date field (Props.ro): focusable, but neither opened nor changed.
+fn dateReadonly(hwnd: c.HWND) bool {
+    const p: ?*anyopaque = @ptrFromInt(@as(usize, @bitCast(c.GetWindowLongPtrW(c.GetParent(hwnd), c.GWLP_USERDATA))));
+    const s = surfaceOf(p orelse return false);
+    const fx = fieldOf(s, hwnd) orelse return false;
+    return fx.node.props.ro;
+}
+
+/// A date picker's window procedure: keys go to the page first; a readonly
+/// one takes the focus from a click but not the click (its calendar or a
+/// part of the date) nor a key that changes it.
+fn dateProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const old: c.WNDPROC = @ptrCast(c.GetPropW(hwnd, prop_old_proc) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam));
+    if (fieldKey(hwnd, msg, wparam, lparam)) return 0;
+    switch (msg) {
+        c.WM_NCDESTROY => {
+            _ = c.SetWindowLongPtrW(hwnd, c.GWLP_WNDPROC, @bitCast(@intFromPtr(old)));
+            _ = c.RemovePropW(hwnd, prop_old_proc);
+        },
+        c.WM_LBUTTONDOWN, c.WM_LBUTTONDBLCLK => if (dateReadonly(hwnd)) {
+            _ = c.SetFocus(hwnd);
+            return 0;
+        },
+        c.WM_KEYDOWN, c.WM_CHAR => if (dateReadonly(hwnd)) return 0,
+        // Alt+Down / Alt+Up open its calendar; other system keys (Alt+F4)
+        // go on to the window.
+        c.WM_SYSKEYDOWN => if ((wparam == c.VK_DOWN or wparam == c.VK_UP) and dateReadonly(hwnd)) return 0,
+        else => {},
+    }
+    return callControl(old, hwnd, msg, wparam, lparam);
+}
+
 fn makeField(s: *Surface, n: *Node) !Field {
     if (n.kind == .check) return makeCheck(s, n);
     if (n.kind == .button) return makeButton(s, n);
     if (n.kind == .input and n.props.range != null) return makeSlider(s, n);
+    if (isDateField(n)) return makeDate(s, n);
     // Text fields: RichEdit 5 when it loads (colour emoji, many undo
     // steps), else EDIT.
     const rich = rich_edit and (n.kind == .input or n.kind == .textarea) and loadRichEdit();
@@ -1694,6 +1831,7 @@ fn makeClip(s: *Surface) !c.HWND {
 }
 
 fn setFieldValue(s: *Surface, f: *Field, n: *Node, v: []const u8) void {
+    if (f.date) return setDate(f, v);
     if (f.slider) {
         const r = tree_mod.Range.of(n);
         const pos = sliderPos(r, r.parse(v));
@@ -1780,7 +1918,8 @@ fn accessibleName(s: *Surface, hwnd: c.HWND, name: ?[]const u8) void {
 
 fn styleField(s: *Surface, f: *Field, n: *Node) void {
     // readonly: still focusable and selectable, not editable.
-    if ((f.kind == .input or f.kind == .textarea) and !f.slider and n.props.ro != f.ro) {
+    // (A date picker has no readonly mode: dateProc keeps it unchanged.)
+    if ((f.kind == .input or f.kind == .textarea) and !f.slider and !f.date and n.props.ro != f.ro) {
         f.ro = n.props.ro;
         _ = c.SendMessageW(f.hwnd, c.EM_SETREADONLY, @intFromBool(f.ro), 0);
     }
@@ -2003,7 +2142,8 @@ fn fieldKey(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool 
     // submitted form re-rendered), destroying this very window.
     const id = fx.node.id;
     const single_line = fx.field.kind == .input;
-    const edit = fx.field.kind == .input or fx.field.kind == .textarea;
+    // A date picker takes keys, but makes no text edits.
+    const edit = (fx.field.kind == .input or fx.field.kind == .textarea) and !fx.field.date;
     const rich = fx.field.rich;
     s.in_control += 1;
     defer s.in_control -= 1;
@@ -3254,7 +3394,16 @@ fn onCanvasCommand(s: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) void {
 /// A control's notification (lparam non-zero); null: DefWindowProc's.
 fn onCanvasNotify(s: *Surface, lparam: c.LPARAM) ?c.LRESULT {
     const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
-    // NM_SETFOCUS / NM_KILLFOCUS (NM_FIRST - 7, - 8): a trackbar's focus.
+    // DTN_DATETIMECHANGE (DTN_FIRST2 - 6; the header's macro doesn't
+    // translate): a date picked.
+    if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -759)))) {
+        s.in_control += 1;
+        defer s.in_control -= 1;
+        onDateChange(s, @ptrFromInt(@as(usize, @bitCast(lparam))));
+        return 0;
+    }
+    // NM_SETFOCUS / NM_KILLFOCUS (NM_FIRST - 7, - 8): a trackbar's and a
+    // date picker's focus.
     if (hdr.code == @as(c.UINT, @bitCast(@as(i32, -7))) or hdr.code == @as(c.UINT, @bitCast(@as(i32, -8)))) {
         queueFocusCheck(s);
         return 0;

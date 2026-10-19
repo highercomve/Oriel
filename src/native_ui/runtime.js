@@ -51,11 +51,11 @@ globalThis.btoa ??= (s) => {
     const q = rest.indexOf("?"), h = rest.indexOf("#");
     const pathEnd = q >= 0 ? q : h >= 0 ? h : rest.length;
     let pathname = rest.slice(0, pathEnd);
-    let search2 = "", hash2 = "";
-    if (h >= 0) hash2 = rest.slice(h);
-    if (q >= 0) search2 = rest.slice(q, h >= 0 && h > q ? h : rest.length);
+    let search = "", hash = "";
+    if (h >= 0) hash = rest.slice(h);
+    if (q >= 0) search = rest.slice(q, h >= 0 && h > q ? h : rest.length);
     if (hasAuthority || protocol in SPECIAL) pathname = normalize(pathname || "/");
-    return { protocol, username, password, hostname, port, pathname, search: search2 === "?" ? "" : search2, hash: hash2 === "#" ? "" : hash2, hasAuthority };
+    return { protocol, username, password, hostname, port, pathname, search: search === "?" ? "" : search, hash: hash === "#" ? "" : hash, hasAuthority };
   }
   function normalize(path) {
     const out = [];
@@ -72,11 +72,11 @@ globalThis.btoa ??= (s) => {
     const p = out.join("/");
     return p.startsWith("/") ? p : "/" + p;
   }
-  function resolve(input, base) {
+  function resolve(input, base2) {
     const abs = parseAbsolute(input);
     if (abs) return abs;
-    if (!base) return null;
-    const b = typeof base === "string" ? parseAbsolute(base) : base;
+    if (!base2) return null;
+    const b = typeof base2 === "string" ? parseAbsolute(base2) : base2;
     if (!b) return null;
     const r = { ...b, search: "", hash: "" };
     if (input.startsWith("//")) return parseAbsolute(b.protocol + input);
@@ -186,24 +186,24 @@ globalThis.btoa ??= (s) => {
     }
   };
   var URL = class _URL {
-    constructor(input, base) {
-      const b = base === void 0 ? null : base instanceof _URL ? base._u : String(base);
+    constructor(input, base2) {
+      const b = base2 === void 0 ? null : base2 instanceof _URL ? base2._u : String(base2);
       const u = resolve(String(input).trim(), b);
       if (!u) throw new TypeError("Invalid URL: " + input);
       this._u = u;
       this._sp = null;
     }
-    static canParse(input, base) {
+    static canParse(input, base2) {
       try {
-        new _URL(input, base);
+        new _URL(input, base2);
         return true;
       } catch {
         return false;
       }
     }
-    static parse(input, base) {
+    static parse(input, base2) {
       try {
-        return new _URL(input, base);
+        return new _URL(input, base2);
       } catch {
         return null;
       }
@@ -292,6 +292,506 @@ globalThis.btoa ??= (s) => {
   function installURL(g2) {
     if (typeof g2.URL !== "function") g2.URL = URL;
     if (typeof g2.URLSearchParams !== "function" || !g2.URLSearchParams.prototype.getAll) g2.URLSearchParams = URLSearchParams;
+  }
+
+  // src/intl.js
+  var MONTHS = {
+    en: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+    es: ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"],
+    pt: ["janeiro", "fevereiro", "mar\xE7o", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"],
+    fr: ["janvier", "f\xE9vrier", "mars", "avril", "mai", "juin", "juillet", "ao\xFBt", "septembre", "octobre", "novembre", "d\xE9cembre"],
+    de: ["Januar", "Februar", "M\xE4rz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"],
+    it: ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+  };
+  var MONTHS_SHORT = {
+    en: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    es: ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"],
+    pt: ["jan.", "fev.", "mar.", "abr.", "mai.", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."],
+    fr: ["janv.", "f\xE9vr.", "mars", "avr.", "mai", "juin", "juil.", "ao\xFBt", "sept.", "oct.", "nov.", "d\xE9c."],
+    de: ["Jan.", "Feb.", "M\xE4rz", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."],
+    it: ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"]
+  };
+  var WEEKDAYS = {
+    en: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+    es: ["domingo", "lunes", "martes", "mi\xE9rcoles", "jueves", "viernes", "s\xE1bado"],
+    pt: ["domingo", "segunda-feira", "ter\xE7a-feira", "quarta-feira", "quinta-feira", "sexta-feira", "s\xE1bado"],
+    fr: ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"],
+    de: ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"],
+    it: ["domenica", "luned\xEC", "marted\xEC", "mercoled\xEC", "gioved\xEC", "venerd\xEC", "sabato"]
+  };
+  var WEEKDAYS_SHORT = {
+    en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    es: ["dom", "lun", "mar", "mi\xE9", "jue", "vie", "s\xE1b"],
+    pt: ["dom.", "seg.", "ter.", "qua.", "qui.", "sex.", "s\xE1b."],
+    fr: ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."],
+    de: ["So.", "Mo.", "Di.", "Mi.", "Do.", "Fr.", "Sa."],
+    it: ["dom", "lun", "mar", "mer", "gio", "ven", "sab"]
+  };
+  var NBSP = "\xA0";
+  var NNBSP = "\u202F";
+  var SEPARATORS = { en: [",", "."], es: [".", ","], pt: [".", ","], fr: [NNBSP, ","], de: [".", ","], it: [".", ","] };
+  var REGION_SEPARATORS = { "es-MX": [",", "."], "es-US": [",", "."], "es-PE": [",", "."], "pt-PT": [NNBSP, ","], "de-CH": ["\u2019", "."], "fr-CH": [NNBSP, "."] };
+  var usEnglish = (loc) => loc.lang === "en" && (!loc.region || ["US", "CA", "PH"].includes(loc.region));
+  var latinAmerican = (loc) => loc.lang === "es" && !!loc.region && loc.region !== "ES";
+  var groupsFromFive = (loc) => loc.lang === "es" && !latinAmerican(loc) || loc.lang === "pt" && loc.region === "PT" || loc.lang === "it";
+  var CURRENCY_SYMBOLS = { USD: "US$", EUR: "\u20AC", GBP: "\xA3", JPY: "\xA5", CLP: "CLP", MXN: "MX$", BRL: "R$", ARS: "ARS", COP: "COP", PEN: "PEN", CAD: "CA$", AUD: "A$", CHF: "CHF" };
+  var DOLLAR_REGIONS = { CLP: "CL", MXN: "MX", ARS: "AR", COP: "CO", USD: "US", CAD: "CA", AUD: "AU" };
+  var ZERO_DECIMALS = /* @__PURE__ */ new Set(["CLP", "JPY", "KRW", "COP", "PYG", "ISK", "VND"]);
+  function parseLocale(locales, fallback) {
+    const list = locales === void 0 ? [] : Array.isArray(locales) ? locales : [locales];
+    for (const raw of [...list, fallback, "en-US"]) {
+      if (typeof raw !== "string" || !raw) continue;
+      const parts = raw.replace(/_/g, "-").split("-");
+      const lang = parts[0].toLowerCase();
+      const region = parts.slice(1).find((p) => /^[A-Za-z]{2}$|^\d{3}$/.test(p))?.toUpperCase() || "";
+      if (MONTHS[lang]) return { lang, region, tag: region ? `${lang}-${region}` : lang };
+    }
+    return { lang: "en", region: "US", tag: "en-US" };
+  }
+  function separators(loc) {
+    return REGION_SEPARATORS[loc.tag] || SEPARATORS[loc.lang];
+  }
+  function group(digits, sep, loc) {
+    if (groupsFromFive(loc) && digits.length <= 4) return digits;
+    let out = "";
+    for (let i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 === 0) out += sep;
+      out += digits[i];
+    }
+    return out;
+  }
+  var NumberFormat = class {
+    constructor(locales, options = {}) {
+      this._loc = parseLocale(locales, defaultLocale());
+      const o = options || {};
+      this._style = o.style || "decimal";
+      this._currency = o.currency ? String(o.currency).toUpperCase() : void 0;
+      if (this._style === "currency" && !this._currency) throw new TypeError("Currency code is required with currency style.");
+      this._display = o.currencyDisplay || "symbol";
+      const curDigits = this._style === "currency" ? ZERO_DECIMALS.has(this._currency) ? 0 : 2 : 0;
+      const min = o.minimumFractionDigits ?? (this._style === "currency" ? curDigits : 0);
+      let max = o.maximumFractionDigits ?? Math.max(min, this._style === "currency" ? curDigits : this._style === "percent" ? 0 : 3);
+      if (max < min) max = min;
+      this._min = min;
+      this._max = max;
+      this._grouping = o.useGrouping !== false;
+      this._sign = o.signDisplay || "auto";
+    }
+    resolvedOptions() {
+      return { locale: this._loc.tag, numberingSystem: "latn", style: this._style, currency: this._currency, minimumFractionDigits: this._min, maximumFractionDigits: this._max, useGrouping: this._grouping, signDisplay: this._sign };
+    }
+    format(value) {
+      return this.formatToParts(value).map((p) => p.value).join("");
+    }
+    formatToParts(value) {
+      let n2 = typeof value === "bigint" ? Number(value) : Number(value);
+      const parts = [];
+      if (Number.isNaN(n2)) return [{ type: "nan", value: "NaN" }];
+      const negative = n2 < 0 || Object.is(n2, -0);
+      if (this._style === "percent") n2 *= 100;
+      const abs = Math.abs(n2);
+      const [g2, d] = separators(this._loc);
+      let numberParts;
+      if (!Number.isFinite(abs)) numberParts = [{ type: "infinity", value: "\u221E" }];
+      else {
+        let [int, frac = ""] = abs.toFixed(this._max).split(".");
+        frac = frac.replace(/0+$/, "");
+        while (frac.length < this._min) frac += "0";
+        numberParts = [{ type: "integer", value: this._grouping ? group(int, g2, this._loc) : int }];
+        if (frac) numberParts.push({ type: "decimal", value: d }, { type: "fraction", value: frac });
+      }
+      const isZero = !numberParts.some((p) => (p.type === "integer" || p.type === "fraction") && /[1-9]/.test(p.value));
+      const sign = this._sign === "never" ? "" : this._sign === "always" ? negative ? "-" : "+" : this._sign === "exceptZero" ? isZero ? "" : negative ? "-" : "+" : this._sign === "negative" ? negative && !isZero ? "-" : "" : negative ? "-" : "";
+      if (this._style === "currency") {
+        const symbol = this._symbol();
+        const before = this._loc.lang === "en" || latinAmerican(this._loc) || this._loc.tag === "pt-BR" || this._loc.lang === "pt" && !this._loc.region;
+        const space = this._loc.tag === "pt-BR" || this._loc.lang === "pt" ? NBSP : symbol.length > 1 && /^[A-Z]+$/.test(symbol) && this._loc.lang !== "en" ? NBSP : "";
+        const signPart = sign ? [{ type: sign === "-" ? "minusSign" : "plusSign", value: sign }] : [];
+        if (before && this._loc.tag === "es-CL") {
+          parts.push({ type: "currency", value: symbol }, ...signPart, ...numberParts);
+        } else if (before) {
+          parts.push(...signPart, { type: "currency", value: symbol });
+          if (space) parts.push({ type: "literal", value: space });
+          parts.push(...numberParts);
+        } else parts.push(...signPart, ...numberParts, { type: "literal", value: NBSP }, { type: "currency", value: symbol });
+        return parts;
+      }
+      if (sign) parts.push({ type: sign === "-" ? "minusSign" : "plusSign", value: sign });
+      parts.push(...numberParts);
+      if (this._style === "percent") {
+        if (this._loc.lang === "es" && !latinAmerican(this._loc) || this._loc.lang === "fr" || this._loc.lang === "de") parts.push({ type: "literal", value: NBSP });
+        parts.push({ type: "percentSign", value: "%" });
+      }
+      return parts;
+    }
+    _symbol() {
+      const c = this._currency;
+      if (this._display === "code") return c;
+      if (this._display === "narrowSymbol") return { EUR: "\u20AC", GBP: "\xA3", JPY: "\xA5", BRL: "R$" }[c] || (DOLLAR_REGIONS[c] ? "$" : c);
+      if (DOLLAR_REGIONS[c] && DOLLAR_REGIONS[c] === (this._loc.region || (c === "USD" && this._loc.lang === "en" ? "US" : ""))) return "$";
+      if (c === "USD" && this._loc.lang === "en" && (!this._loc.region || this._loc.region === "US")) return "$";
+      return CURRENCY_SYMBOLS[c] || c;
+    }
+    static supportedLocalesOf(locales) {
+      return supported(locales);
+    }
+  };
+  var twelveHour = (loc) => loc.lang === "en" && (!loc.region || ["US", "CA", "AU", "PH", "IN"].includes(loc.region)) || latinAmerican(loc);
+  var DateTimeFormat = class {
+    constructor(locales, options = {}) {
+      this._loc = parseLocale(locales, defaultLocale());
+      const o = { ...options || {} };
+      this._utc = typeof o.timeZone === "string" && /^(utc|etc\/utc|gmt)$/i.test(o.timeZone);
+      const components = ["weekday", "era", "year", "month", "day", "hour", "minute", "second"];
+      if (!o.dateStyle && !o.timeStyle && !components.some((k) => o[k] !== void 0)) Object.assign(o, { year: "numeric", month: "numeric", day: "numeric" });
+      this._o = o;
+      this._h12 = o.hour12 ?? (o.hourCycle ? o.hourCycle === "h12" || o.hourCycle === "h11" : twelveHour(this._loc));
+    }
+    resolvedOptions() {
+      return { locale: this._loc.tag, calendar: "gregory", numberingSystem: "latn", timeZone: this._utc ? "UTC" : localZone(), hour12: this._h12, ...this._o };
+    }
+    format(date) {
+      return this.formatToParts(date).map((p) => p.value).join("");
+    }
+    formatToParts(date) {
+      const d = date === void 0 ? /* @__PURE__ */ new Date() : new Date(typeof date === "number" ? date : +date);
+      if (Number.isNaN(+d)) throw new RangeError("Invalid time value");
+      const f = this._fields(d);
+      const o = this._o;
+      if (o.dateStyle || o.timeStyle) {
+        const out = [];
+        if (o.dateStyle) {
+          const numericMedium = o.dateStyle === "medium" && (this._loc.lang === "de" || this._loc.tag === "es-CL" || this._loc.tag === "pt-PT");
+          const so = numericMedium ? { year: "numeric", month: "2-digit", day: "2-digit" } : styleOptions(o.dateStyle);
+          if (o.dateStyle === "short" && fullShortYear(this._loc)) so.year = "numeric";
+          out.push(...this._date(f, so));
+        }
+        if (o.dateStyle && o.timeStyle) out.push({ type: "literal", value: this._loc.lang === "fr" ? " " : ", " });
+        if (o.timeStyle) out.push(...this._time(f, { hour: "numeric", minute: "2-digit", second: o.timeStyle === "short" ? void 0 : "2-digit" }));
+        return out;
+      }
+      const date_ = o.year || o.month || o.day || o.weekday ? this._date(f, o) : [];
+      const time = o.hour || o.minute || o.second ? this._time(f, o) : [];
+      if (date_.length && time.length) return [...date_, { type: "literal", value: ", " }, ...time];
+      return date_.length ? date_ : time;
+    }
+    _fields(d) {
+      const u = this._utc;
+      return {
+        year: u ? d.getUTCFullYear() : d.getFullYear(),
+        month: u ? d.getUTCMonth() : d.getMonth(),
+        day: u ? d.getUTCDate() : d.getDate(),
+        weekday: u ? d.getUTCDay() : d.getDay(),
+        hour: u ? d.getUTCHours() : d.getHours(),
+        minute: u ? d.getUTCMinutes() : d.getMinutes(),
+        second: u ? d.getUTCSeconds() : d.getSeconds()
+      };
+    }
+    _date(f, o) {
+      const L = this._loc.lang;
+      const two = (n2) => String(n2).padStart(2, "0");
+      const out = [];
+      const lit = (v) => out.push({ type: "literal", value: v });
+      const year = o.year ? { type: "year", value: o.year === "2-digit" ? two(f.year % 100) : String(f.year) } : null;
+      const day = o.day ? { type: "day", value: o.day === "2-digit" ? two(f.day) : String(f.day) } : null;
+      const textMonth = o.month === "long" || o.month === "short" || o.month === "narrow";
+      const monthName = (o.month === "long" ? MONTHS : MONTHS_SHORT)[L][f.month];
+      const month = o.month ? { type: "month", value: textMonth ? o.month === "narrow" ? MONTHS[L][f.month][0].toUpperCase() : monthName : o.month === "2-digit" ? two(f.month + 1) : String(f.month + 1) } : null;
+      const weekday = o.weekday ? { type: "weekday", value: (o.weekday === "long" ? WEEKDAYS : WEEKDAYS_SHORT)[L][f.weekday] } : null;
+      if (weekday) {
+        out.push(weekday);
+        if (month || day || year) lit(L === "de" ? ", " : ", ");
+      }
+      if (!textMonth && month) {
+        const sep = L === "de" ? "." : this._loc.tag === "es-CL" ? "-" : "/";
+        const order = usEnglish(this._loc) ? [month, day, year] : [day, month, year];
+        const pad = this._loc.tag === "es-CL" || L === "fr" || L === "pt" || L === "it" || L === "en" && !usEnglish(this._loc);
+        order.filter(Boolean).forEach((p, i) => {
+          if (i) lit(sep);
+          out.push(pad && p.type !== "year" && !o[p.type]?.includes?.("2") ? { ...p, value: two(p.value) } : p);
+        });
+        return out;
+      }
+      if (usEnglish(this._loc)) {
+        if (month) out.push(month);
+        if (day) {
+          if (month) lit(" ");
+          out.push(day);
+        }
+        if (year) {
+          if (day) lit(", ");
+          else if (month) lit(" ");
+          out.push(year);
+        }
+        return out;
+      }
+      const de_ = L === "es" && o.month === "long" || L === "pt" ? " de " : " ";
+      if (day) {
+        out.push(day);
+        if (L === "de") lit(".");
+        if (month) lit(L === "de" ? " " : de_);
+      }
+      if (month) out.push(month);
+      if (year) {
+        if (month) lit(de_);
+        else if (day) lit(" ");
+        out.push(year);
+      }
+      return out;
+    }
+    _time(f, o) {
+      const out = [];
+      const two = (n2) => String(n2).padStart(2, "0");
+      let h = f.hour;
+      let period = null;
+      if (this._h12) {
+        period = h < 12 ? "AM" : "PM";
+        h = h % 12 || 12;
+      }
+      if (o.hour) out.push({ type: "hour", value: o.hour === "2-digit" || !this._h12 && o.minute ? two(h) : String(h) });
+      if (o.minute) {
+        if (o.hour) out.push({ type: "literal", value: ":" });
+        out.push({ type: "minute", value: two(f.minute) });
+      }
+      if (o.second) {
+        out.push({ type: "literal", value: ":" }, { type: "second", value: two(f.second) });
+      }
+      if (period && o.hour) {
+        const es = this._loc.region === "MX" || this._loc.region === "US" ? ["a.m.", "p.m."] : ["a. m.", "p. m."];
+        out.push({ type: "literal", value: " " }, { type: "dayPeriod", value: this._loc.lang === "es" ? es[period === "AM" ? 0 : 1] : period });
+      }
+      return out;
+    }
+    static supportedLocalesOf(locales) {
+      return supported(locales);
+    }
+  };
+  function styleOptions(style) {
+    switch (style) {
+      case "full":
+        return { weekday: "long", year: "numeric", month: "long", day: "numeric" };
+      case "long":
+        return { year: "numeric", month: "long", day: "numeric" };
+      case "medium":
+        return { year: "numeric", month: "short", day: "numeric" };
+      default:
+        return { year: "2-digit", month: "numeric", day: "numeric" };
+    }
+  }
+  var fullShortYear = (loc) => loc.tag === "pt-BR" || loc.tag === "en-GB";
+  var Collator = class {
+    constructor(locales, options = {}) {
+      this._loc = parseLocale(locales, defaultLocale());
+      this._sens = options?.sensitivity || "variant";
+      this._numeric = !!options?.numeric;
+      this.compare = this.compare.bind(this);
+    }
+    resolvedOptions() {
+      return { locale: this._loc.tag, usage: "sort", sensitivity: this._sens, numeric: this._numeric };
+    }
+    compare(a, b) {
+      const key = (s) => {
+        let k = String(s);
+        if (this._sens === "base" || this._sens === "case") k = k.normalize("NFD").replace(/[̀-ͯ]/g, "");
+        if (this._sens === "base" || this._sens === "accent") k = k.toLowerCase();
+        return k;
+      };
+      const x = key(a), y = key(b);
+      if (this._numeric) {
+        const re = /(\d+)|(\D+)/g;
+        const xs = x.match(re) || [], ys = y.match(re) || [];
+        for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
+          if (xs[i] === ys[i]) continue;
+          if (/^\d/.test(xs[i]) && /^\d/.test(ys[i])) return Math.sign(+xs[i] - +ys[i]) || (xs[i] < ys[i] ? -1 : 1);
+          return base(xs[i], ys[i]);
+        }
+        return Math.sign(xs.length - ys.length);
+      }
+      return base(x, y);
+    }
+    static supportedLocalesOf(locales) {
+      return supported(locales);
+    }
+  };
+  function base(x, y) {
+    const fold = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+    const fx = fold(x), fy = fold(y);
+    if (fx !== fy) return fx < fy ? -1 : 1;
+    const ax = x.normalize("NFD").toLowerCase(), ay = y.normalize("NFD").toLowerCase();
+    if (ax !== ay) return ax < ay ? -1 : 1;
+    return x === y ? 0 : x < y ? 1 : -1;
+  }
+  var PluralRules = class {
+    constructor(locales, options = {}) {
+      this._loc = parseLocale(locales, defaultLocale());
+      this._type = options?.type || "cardinal";
+    }
+    resolvedOptions() {
+      return { locale: this._loc.tag, type: this._type };
+    }
+    select(n2) {
+      n2 = Number(n2);
+      if (this._type === "ordinal") {
+        if (this._loc.lang !== "en") return "other";
+        const m10 = n2 % 10, m100 = n2 % 100;
+        return m10 === 1 && m100 !== 11 ? "one" : m10 === 2 && m100 !== 12 ? "two" : m10 === 3 && m100 !== 13 ? "few" : "other";
+      }
+      if (this._loc.lang === "fr" || this._loc.lang === "pt") return n2 >= 0 && n2 < 2 ? "one" : "other";
+      return n2 === 1 ? "one" : "other";
+    }
+    static supportedLocalesOf(locales) {
+      return supported(locales);
+    }
+  };
+  function supported(locales) {
+    const list = locales === void 0 ? [] : Array.isArray(locales) ? locales : [locales];
+    return list.filter((l) => typeof l === "string" && MONTHS[l.split(/[-_]/)[0].toLowerCase()]);
+  }
+  var defaultTag = "en-US";
+  function defaultLocale() {
+    return defaultTag;
+  }
+  function localZone() {
+    const off = -(/* @__PURE__ */ new Date()).getTimezoneOffset();
+    return off === 0 ? "UTC" : `Etc/GMT${off > 0 ? "-" : "+"}${Math.abs(off / 60)}`;
+  }
+  function installIntl(g2, locale) {
+    defaultTag = parseLocale(locale, "en-US").tag;
+    if (typeof g2.Intl === "object" && g2.Intl?.NumberFormat) return;
+    const Intl = {
+      NumberFormat,
+      DateTimeFormat,
+      Collator,
+      PluralRules,
+      getCanonicalLocales: (l) => l === void 0 ? [] : (Array.isArray(l) ? l : [l]).map((x) => parseLocale(x, x).tag)
+    };
+    for (const name of ["NumberFormat", "DateTimeFormat", "Collator", "PluralRules"]) {
+      const C = Intl[name];
+      const callable = function(locales, options) {
+        return new C(locales, options);
+      };
+      callable.prototype = C.prototype;
+      callable.supportedLocalesOf = C.supportedLocalesOf;
+      Object.defineProperty(C.prototype, "constructor", { value: callable, configurable: true, writable: true });
+      Intl[name] = callable;
+    }
+    g2.Intl = Intl;
+    const define = (proto, name, fn) => Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
+    define(Number.prototype, "toLocaleString", function(locales, options) {
+      return new NumberFormat(locales, options).format(this);
+    });
+    if (typeof BigInt === "function") define(BigInt.prototype, "toLocaleString", function(locales, options) {
+      return new NumberFormat(locales, options).format(this);
+    });
+    define(Date.prototype, "toLocaleDateString", function(locales, options) {
+      const o = { ...options || {} };
+      if (!o.dateStyle && !["weekday", "year", "month", "day"].some((k) => o[k] !== void 0)) Object.assign(o, { year: "numeric", month: "numeric", day: "numeric" });
+      return new DateTimeFormat(locales, o).format(this);
+    });
+    define(Date.prototype, "toLocaleTimeString", function(locales, options) {
+      const o = { ...options || {} };
+      if (!o.timeStyle && !["hour", "minute", "second"].some((k) => o[k] !== void 0)) Object.assign(o, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+      return new DateTimeFormat(locales, o).format(this);
+    });
+    define(Date.prototype, "toLocaleString", function(locales, options) {
+      const o = { ...options || {} };
+      if (!o.dateStyle && !o.timeStyle && !["weekday", "year", "month", "day", "hour", "minute", "second"].some((k) => o[k] !== void 0)) {
+        Object.assign(o, { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+      }
+      return new DateTimeFormat(locales, o).format(this);
+    });
+    define(String.prototype, "localeCompare", function(that, locales, options) {
+      return new Collator(locales, options).compare(String(this), String(that));
+    });
+  }
+
+  // src/image.js
+  function imageSize(b) {
+    if (!b || b.length < 24) return null;
+    const u16 = (i) => b[i] << 8 | b[i + 1], u16le = (i) => b[i] | b[i + 1] << 8;
+    const u32 = (i) => (b[i] << 24 >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+    const u32le = (i) => (b[i] | b[i + 1] << 8 | b[i + 2] << 16) + (b[i + 3] << 24 >>> 0);
+    if (b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71) return [u32(16), u32(20)];
+    if (b[0] === 71 && b[1] === 73 && b[2] === 70) return [u16le(6), u16le(8)];
+    if (b[0] === 66 && b[1] === 77) return [Math.abs(u32le(18) | 0), Math.abs(u32le(22) | 0)];
+    if (b[0] === 82 && b[1] === 73 && b[8] === 87 && b[9] === 69 && b.length >= 30) {
+      const kind = String.fromCharCode(b[12], b[13], b[14], b[15]);
+      if (kind === "VP8 ") return [u16le(26) & 16383, u16le(28) & 16383];
+      if (kind === "VP8L") {
+        const v = u32le(21);
+        return [(v & 16383) + 1, (v >> 14 & 16383) + 1];
+      }
+      if (kind === "VP8X") return [1 + (b[24] | b[25] << 8 | b[26] << 16), 1 + (b[27] | b[28] << 8 | b[29] << 16)];
+      return null;
+    }
+    if (b[0] === 255 && b[1] === 216) {
+      for (let i = 2; i + 9 < b.length; ) {
+        if (b[i] !== 255) {
+          i++;
+          continue;
+        }
+        const m = b[i + 1];
+        if (m === 216 || m === 1 || m >= 208 && m <= 215 || m === 255) {
+          i += m === 255 ? 1 : 2;
+          continue;
+        }
+        if (m >= 192 && m <= 207 && m !== 196 && m !== 200 && m !== 204) return [u16(i + 7), u16(i + 5)];
+        i += 2 + u16(i + 2);
+      }
+    }
+    return null;
+  }
+  function installImages(g2, document2, { bytesOf, later, fire }) {
+    const proto = Object.getPrototypeOf(document2.createElement("img"));
+    const sizes = /* @__PURE__ */ new Map();
+    const sizeOf = (src) => {
+      if (!src) return null;
+      if (sizes.has(src)) return sizes.get(src);
+      let size = null;
+      try {
+        size = imageSize(bytesOf(src));
+      } catch {
+      }
+      if (sizes.size >= 32) sizes.delete(sizes.keys().next().value);
+      sizes.set(src, size);
+      return size;
+    };
+    const isImg = (el) => el.localName === "img";
+    const srcDesc = Object.getOwnPropertyDescriptor(proto, "src");
+    const def = (name, desc) => Object.defineProperty(proto, name, { ...desc, configurable: true });
+    def("naturalWidth", { get() {
+      return isImg(this) ? sizeOf(this.getAttribute("src"))?.[0] ?? 0 : void 0;
+    } });
+    def("naturalHeight", { get() {
+      return isImg(this) ? sizeOf(this.getAttribute("src"))?.[1] ?? 0 : void 0;
+    } });
+    def("complete", { get() {
+      return isImg(this) ? !this.getAttribute("src") || sizes.has(this.getAttribute("src")) : void 0;
+    } });
+    def("src", {
+      get() {
+        return srcDesc?.get ? srcDesc.get.call(this) : this.getAttribute("src") || "";
+      },
+      set(v) {
+        this.setAttribute("src", String(v));
+        if (!isImg(this)) return;
+        const el = this, src = String(v);
+        later(() => {
+          if (el.getAttribute("src") === src) fire(el, sizeOf(src) ? "load" : "error");
+        });
+      }
+    });
+    def("decode", { value: function decode() {
+      return new Promise((resolve2, reject) => later(() => sizeOf(this.getAttribute("src")) ? resolve2() : reject(new Error("EncodingError"))));
+    }, writable: true });
+    function Image(width, height) {
+      const img = document2.createElement("img");
+      if (width !== void 0) img.setAttribute("width", String(width));
+      if (height !== void 0) img.setAttribute("height", String(height));
+      return img;
+    }
+    Image.prototype = proto;
+    g2.Image = Image;
   }
 
   // src/dom/native.js
@@ -1013,14 +1513,9 @@ globalThis.btoa ??= (s) => {
       HTMLCanvasElement: [["canvas"]],
       HTMLDataElement: [["data"]],
       HTMLDataListElement: [["datalist"]],
-      HTMLDetailsElement: [["details"], { open: boolAttr("open") }],
-      HTMLDialogElement: [["dialog"], { open: boolAttr("open"), show() {
-        this.setAttribute("open", "");
-      }, showModal() {
-        this.setAttribute("open", "");
-      }, close() {
-        this.removeAttribute("open");
-      } }],
+      // open, show(), showModal(), close(): main.js (toggle events, the top layer).
+      HTMLDetailsElement: [["details"]],
+      HTMLDialogElement: [["dialog"]],
       HTMLDivElement: [["div"]],
       HTMLDListElement: [["dl"]],
       HTMLEmbedElement: [["embed"]],
@@ -1702,13 +2197,13 @@ globalThis.btoa ??= (s) => {
             if (!sel) continue;
             let pseudo = null;
             if (sel.includes(":")) {
-              const pm = /::?(before|after)\s*$/.exec(sel);
+              const pm = /::?(before|after)\s*$|::(backdrop|placeholder|-webkit-input-placeholder)\s*$/.exec(sel);
               if (pm) {
-                pseudo = pm[1];
+                pseudo = pm[1] || (pm[2] === "backdrop" ? "backdrop" : pm[2] && "placeholder");
                 sel = sel.slice(0, pm.index).trim() || "*";
               }
-              sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]");
-              if (/::|:hover|:focus|:active|:visited|:empty\b/.test(sel)) continue;
+              sel = sel.replace(/:focus-visible(?![-\w])/g, "[data-nui-focus-visible]").replace(/:focus(?![-\w])/g, "[data-nui-focus]").replace(/:hover(?![-\w])/g, "[data-nui-hover]").replace(/:active(?![-\w])/g, "[data-nui-active]").replace(/:modal(?![-\w])/g, "[data-nui-modal]").replace(/:popover-open(?![-\w])/g, "[data-nui-popover-open]");
+              if (/::|:hover|:focus|:active|:visited/.test(sel)) continue;
             }
             rules.push({ sel, pseudo, spec: specificity(sel), decls, media, order: order++, match: null });
           }
@@ -2298,7 +2793,7 @@ globalThis.btoa ??= (s) => {
       if (cl) {
         for (const c of cl.split(/\s+/)) if (c) add(this.index.cls.get(c));
       }
-      const out = { normal: [], before: [], after: [] };
+      const out = { normal: [], before: [], after: [], backdrop: [], placeholder: [] };
       for (const r of cand) {
         if (!mediaMatches(r.media)) continue;
         let m = r.match;
@@ -2368,7 +2863,7 @@ globalThis.btoa ??= (s) => {
     return { rules: rules.map((r) => [r.sel, r.pseudo, r.spec, r.decls, r.media, indexKey(r.sel)]), keyframes: rules.keyframes };
   }
   function indexKey(sel) {
-    const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, "") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
+    const last = (sel.includes("(") ? sel.replace(/:[\w-]+\((?:[^()]|\([^()]*\))*\)/g, ":_") : sel).split(/[\s>+~]+/).filter(Boolean).pop() || "*";
     const id = /#([\w-]+)/.exec(last), cls = /\.([\w-]+)/.exec(last), tag = /^([a-zA-Z][\w-]*)/.exec(last);
     if (id) return ["id", id[1]];
     if (cls) return ["cls", cls[1]];
@@ -2444,6 +2939,7 @@ globalThis.btoa ??= (s) => {
     return n2 * fs;
   }
   function substitute(v, cs, depth = 0) {
+    if (v.includes("env(")) v = v.replace(/env\(\s*[\w-]+\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, fb) => fb !== void 0 ? fb.trim() : "0px");
     if (depth > 8 || !v.includes("var(")) return v;
     return substitute(v.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*((?:[^()]|\([^()]*\))*))?\)/g, (_, name, fb) => cs[name] !== void 0 ? cs[name] : fb !== void 0 ? fb.trim() : ""), cs, depth + 1);
   }
@@ -2542,24 +3038,15 @@ globalThis.btoa ??= (s) => {
   function pctString(l) {
     return l.px ? `${l.pct}%${l.px >= 0 ? "+" : ""}${l.px}px` : `${l.pct}%`;
   }
-  var NAMED = {
-    transparent: [0, 0, 0, 0],
-    white: [255, 255, 255, 1],
-    black: [0, 0, 0, 1],
-    red: [255, 0, 0, 1],
-    green: [0, 128, 0, 1],
-    blue: [0, 0, 255, 1],
-    gray: [128, 128, 128, 1],
-    grey: [128, 128, 128, 1],
-    orange: [255, 165, 0, 1],
-    yellow: [255, 255, 0, 1],
-    purple: [128, 0, 128, 1],
-    none: [0, 0, 0, 0]
-  };
-  function color(v, current) {
+  var NAMED = { transparent: [0, 0, 0, 0], none: [0, 0, 0, 0] };
+  for (const kv of "aliceblue:f0f8ff antiquewhite:faebd7 aqua:00ffff aquamarine:7fffd4 azure:f0ffff beige:f5f5dc bisque:ffe4c4 black:000000 blanchedalmond:ffebcd blue:0000ff blueviolet:8a2be2 brown:a52a2a burlywood:deb887 cadetblue:5f9ea0 chartreuse:7fff00 chocolate:d2691e coral:ff7f50 cornflowerblue:6495ed cornsilk:fff8dc crimson:dc143c cyan:00ffff darkblue:00008b darkcyan:008b8b darkgoldenrod:b8860b darkgray:a9a9a9 darkgreen:006400 darkgrey:a9a9a9 darkkhaki:bdb76b darkmagenta:8b008b darkolivegreen:556b2f darkorange:ff8c00 darkorchid:9932cc darkred:8b0000 darksalmon:e9967a darkseagreen:8fbc8f darkslateblue:483d8b darkslategray:2f4f4f darkslategrey:2f4f4f darkturquoise:00ced1 darkviolet:9400d3 deeppink:ff1493 deepskyblue:00bfff dimgray:696969 dimgrey:696969 dodgerblue:1e90ff firebrick:b22222 floralwhite:fffaf0 forestgreen:228b22 fuchsia:ff00ff gainsboro:dcdcdc ghostwhite:f8f8ff gold:ffd700 goldenrod:daa520 gray:808080 green:008000 greenyellow:adff2f grey:808080 honeydew:f0fff0 hotpink:ff69b4 indianred:cd5c5c indigo:4b0082 ivory:fffff0 khaki:f0e68c lavender:e6e6fa lavenderblush:fff0f5 lawngreen:7cfc00 lemonchiffon:fffacd lightblue:add8e6 lightcoral:f08080 lightcyan:e0ffff lightgoldenrodyellow:fafad2 lightgray:d3d3d3 lightgreen:90ee90 lightgrey:d3d3d3 lightpink:ffb6c1 lightsalmon:ffa07a lightseagreen:20b2aa lightskyblue:87cefa lightslategray:778899 lightslategrey:778899 lightsteelblue:b0c4de lightyellow:ffffe0 lime:00ff00 limegreen:32cd32 linen:faf0e6 magenta:ff00ff maroon:800000 mediumaquamarine:66cdaa mediumblue:0000cd mediumorchid:ba55d3 mediumpurple:9370db mediumseagreen:3cb371 mediumslateblue:7b68ee mediumspringgreen:00fa9a mediumturquoise:48d1cc mediumvioletred:c71585 midnightblue:191970 mintcream:f5fffa mistyrose:ffe4e1 moccasin:ffe4b5 navajowhite:ffdead navy:000080 oldlace:fdf5e6 olive:808000 olivedrab:6b8e23 orange:ffa500 orangered:ff4500 orchid:da70d6 palegoldenrod:eee8aa palegreen:98fb98 paleturquoise:afeeee palevioletred:db7093 papayawhip:ffefd5 peachpuff:ffdab9 peru:cd853f pink:ffc0cb plum:dda0dd powderblue:b0e0e6 purple:800080 rebeccapurple:663399 red:ff0000 rosybrown:bc8f8f royalblue:4169e1 saddlebrown:8b4513 salmon:fa8072 sandybrown:f4a460 seagreen:2e8b57 seashell:fff5ee sienna:a0522d silver:c0c0c0 skyblue:87ceeb slateblue:6a5acd slategray:708090 slategrey:708090 snow:fffafa springgreen:00ff7f steelblue:4682b4 tan:d2b48c teal:008080 thistle:d8bfd8 tomato:ff6347 turquoise:40e0d0 violet:ee82ee wheat:f5deb3 white:ffffff whitesmoke:f5f5f5 yellow:ffff00 yellowgreen:9acd32 ".trim().split(" ")) {
+    const [name, hex] = kv.split(":");
+    NAMED[name] = [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16), 1];
+  }
+  function color(v, current2) {
     if (!v) return null;
     v = v.trim().toLowerCase();
-    if (v === "currentcolor") return current || [0, 0, 0, 1];
+    if (v === "currentcolor") return current2 || [0, 0, 0, 1];
     if (NAMED[v]) return NAMED[v].slice();
     let m = /^#([0-9a-f]{3,8})$/.exec(v);
     if (m) {
@@ -2582,7 +3069,7 @@ globalThis.btoa ??= (s) => {
     if (m) {
       const [a, b] = splitTop(m[1], ",").map((s) => s.trim());
       const pa = /\s([\d.]+)%$/.exec(a), pb = /\s([\d.]+)%$/.exec(b);
-      const ca = color(pa ? a.slice(0, pa.index) : a, current), cb = color(pb ? b.slice(0, pb.index) : b, current);
+      const ca = color(pa ? a.slice(0, pa.index) : a, current2), cb = color(pb ? b.slice(0, pb.index) : b, current2);
       if (!ca || !cb) return ca || cb;
       const wa = pa ? parseFloat(pa[1]) / 100 : pb ? 1 - parseFloat(pb[1]) / 100 : 0.5;
       const alpha = ca[3] * wa + cb[3] * (1 - wa);
@@ -2597,11 +3084,11 @@ globalThis.btoa ??= (s) => {
     const f = (n2) => l - a * Math.max(-1, Math.min(k(n2) - 3, Math.min(9 - k(n2), 1)));
     return [f(0) * 255, f(8) * 255, f(4) * 255];
   }
-  function stopsOf(parts, current, out = {}, rep = false) {
+  function stopsOf(parts, current2, out = {}, rep = false) {
     const raw = [];
     for (const p of parts) {
       const t = splitSpaces(p);
-      const c = color(t[0], current);
+      const c = color(t[0], current2);
       if (!c) continue;
       const at = t.slice(1, 3).map(stopAt);
       if (!at.length) raw.push({ c, at: null });
@@ -2645,10 +3132,48 @@ globalThis.btoa ??= (s) => {
     if (l && typeof l === "object") return l.px ? { f: l.pct / 100, px: l.px } : { f: l.pct / 100 };
     return { px: 0 };
   }
-  function radial(args, current, rep = false) {
+  function conic(args, current2) {
+    const parts = splitTop(args, ",").map((s) => s.trim());
+    let from = 0;
+    if (/^(from|at)\s/.test(parts[0])) {
+      const m = /from\s+(-?[\d.]+)(deg|turn|rad|grad)?/.exec(parts.shift());
+      if (m) from = turns(m[1], m[2] || "deg");
+    }
+    const raw = [];
+    for (const p of parts) {
+      const t = splitSpaces(p);
+      const c = color(t[0], current2);
+      if (!c) continue;
+      const at = t.slice(1, 3).map((v) => {
+        const m = /^(-?[\d.]+)(%|deg|turn|rad|grad)?$/.exec(v);
+        return m ? turns(m[1], m[2] || "deg") : null;
+      });
+      if (!at.length) raw.push({ c, at: null });
+      for (const a of at) raw.push({ c: c.slice(), at: a });
+    }
+    if (!raw.length) return null;
+    const pos = raw.map((s) => s.at);
+    if (pos[0] == null) pos[0] = 0;
+    if (pos[pos.length - 1] == null) pos[pos.length - 1] = 1;
+    for (let i = 1; i < pos.length; i++) {
+      if (pos[i] != null) {
+        pos[i] = Math.max(pos[i], pos[i - 1]);
+        continue;
+      }
+      let j = i;
+      while (pos[j] == null) j++;
+      for (let k = i; k < j; k++) pos[k] = pos[i - 1] + (pos[j] - pos[i - 1]) * (k - i + 1) / (j - i + 1);
+    }
+    return { from, stops: raw.map((s, i) => [...s.c, pos[i]]) };
+  }
+  function turns(n2, unit) {
+    const v = parseFloat(n2);
+    return unit === "%" ? v / 100 : unit === "turn" ? v : unit === "rad" ? v / (2 * Math.PI) : unit === "grad" ? v / 400 : v / 360;
+  }
+  function radial(args, current2, rep = false) {
     const parts = splitTop(args, ",").map((s) => s.trim());
     let cx = "50%", cy = "50%", rx = "71%", ry = "71%", ext = "farthest-corner", circle = false;
-    if (!color(splitSpaces(parts[0])[0], current)) {
+    if (!color(splitSpaces(parts[0])[0], current2)) {
       const [size, at] = parts.shift().split(/\bat\b/).map((x) => (x || "").trim());
       const len = (v) => /%$/.test(v) ? v : length(v, 16, false);
       const words = splitSpaces(size);
@@ -2676,7 +3201,7 @@ globalThis.btoa ??= (s) => {
       }
     }
     const extra = {};
-    const stops = stopsOf(parts, current, extra, rep);
+    const stops = stopsOf(parts, current2, extra, rep);
     if (!stops.length) return null;
     const g2 = { radial: [cx, cy, rx, ry], stops, ...extra };
     if (rep) g2.rep = true;
@@ -2684,7 +3209,7 @@ globalThis.btoa ??= (s) => {
     if (circle) g2.circle = true;
     return g2;
   }
-  function background(v, current) {
+  function background(v, current2) {
     if (!v || v === "none" || v === "transparent") return null;
     let out = null;
     for (const layer of splitTop(v, ",").map((s) => s.trim())) {
@@ -2699,30 +3224,37 @@ globalThis.btoa ??= (s) => {
           angle = { "to right": 90, "to left": 270, "to top": 0, "to bottom": 180, "to bottom right": 135, "to top right": 45 }[dir] ?? 180;
         }
         const extra = {};
-        const stops = stopsOf(parts, current, extra, !!g2[1]);
+        const stops = stopsOf(parts, current2, extra, !!g2[1]);
         if (stops.length) (out ||= {}).gradient = { angle, stops, ...extra, ...g2[1] ? { rep: true } : {} };
         continue;
       }
       const r = /^(repeating-)?radial-gradient\((.*)\)/.exec(layer);
       if (r) {
         if (out?.gradient) continue;
-        const gr = radial(r[2], current, !!r[1]);
+        const gr = radial(r[2], current2, !!r[1]);
         if (gr) (out ||= {}).gradient = gr;
         continue;
       }
+      const k = /^(?:repeating-)?conic-gradient\((.*)\)/.exec(layer);
+      if (k) {
+        if (out?.gradient || out?.conic) continue;
+        const cg = conic(k[1], current2);
+        if (cg) (out ||= {}).conic = cg;
+        continue;
+      }
       if (/gradient\(/.test(layer)) continue;
-      const c = color(splitSpaces(layer).find((t) => color(t, current)) || "", current);
+      const c = color(splitSpaces(layer).find((t) => color(t, current2)) || "", current2);
       if (c) (out ||= {}).color = c;
     }
     return out;
   }
-  function shadow(v, current) {
+  function shadow(v, current2) {
     if (!v || v === "none") return null;
     const first = splitTop(v, ",")[0].trim();
     const t = splitSpaces(first);
     const nums = [], rest = [];
     for (const x2 of t) (/^-?[\d.]/.test(x2) ? nums : rest).push(x2);
-    const c = color(rest.find((x2) => x2 !== "inset") || "rgba(0,0,0,.3)", current);
+    const c = color(rest.find((x2) => x2 !== "inset") || "rgba(0,0,0,.3)", current2);
     if (rest.includes("inset") || !c) return null;
     const [x = 0, y = 0, blur = 0, spread = 0] = nums.map((n2) => length(n2, 16, false) ?? 0);
     return { x, y, blur, spread, color: c };
@@ -3039,10 +3571,10 @@ globalThis.btoa ??= (s) => {
     const q = (elapsed - it * a.dur) / a.dur;
     return { p: flip(it) ? 1 - q : q, running: true };
   }
-  function valueAt(key, frames, p, base, ease) {
+  function valueAt(key, frames, p, base2, ease) {
     const pts = frames.filter((f) => key in f.props).map((f) => ({ o: f.offset, v: f.props[key] }));
-    if (!pts.length || pts[0].o > 0) pts.unshift({ o: 0, v: base });
-    if (pts[pts.length - 1].o < 1) pts.push({ o: 1, v: base });
+    if (!pts.length || pts[0].o > 0) pts.unshift({ o: 0, v: base2 });
+    if (pts[pts.length - 1].o < 1) pts.push({ o: 1, v: base2 });
     let i = 0;
     while (i < pts.length - 2 && p > pts[i + 1].o) i++;
     const a = pts[i], b = pts[i + 1];
@@ -3061,12 +3593,12 @@ globalThis.btoa ??= (s) => {
     }
     // The props to show for node `id` now. `spec`: { key, list, frames }
     // from a render (null: no animation), or undefined on a tick (keep).
-    apply(id, base, spec, now) {
+    apply(id, base2, spec, now) {
       let st = this.state.get(id);
       if (spec !== void 0) {
         if (!spec) {
           if (st) this.state.delete(id);
-          return base;
+          return base2;
         }
         if (!st || st.key !== spec.key) {
           st = { key: spec.key, start: now, list: spec.list, frames: spec.frames, running: true };
@@ -3075,8 +3607,8 @@ globalThis.btoa ??= (s) => {
           st.frames = spec.frames;
         }
       }
-      if (!st) return base;
-      let out = base;
+      if (!st) return base2;
+      let out = base2;
       let running = false;
       st.list.forEach((a, i) => {
         const { p, running: r } = progress(a, now - st.start - a.delay);
@@ -3084,9 +3616,9 @@ globalThis.btoa ??= (s) => {
         if (p === null) return;
         const frames = st.frames[i];
         const keys = new Set(frames.flatMap((f) => Object.keys(f.props)));
-        if (out === base) out = { ...base };
+        if (out === base2) out = { ...base2 };
         for (const key of keys) {
-          const v = valueAt(key, frames, p, base[key], a.ease);
+          const v = valueAt(key, frames, p, base2[key], a.ease);
           if (v === void 0) delete out[key];
           else out[key] = v;
         }
@@ -3110,14 +3642,14 @@ globalThis.btoa ??= (s) => {
     }
   }
   function iconOf(svg, cs, doc, files) {
-    const current = color(cs.color) || [0, 0, 0, 1];
+    const current2 = color(cs.color) || [0, 0, 0, 1];
     let root = svg;
     const use = svg.querySelector("use");
     if (use) {
       const href = use.getAttribute("href") || use.getAttribute("xlink:href") || "";
-      const hash2 = href.indexOf("#");
-      const file = hash2 < 0 ? href : href.slice(0, hash2);
-      const id = hash2 < 0 ? "" : href.slice(hash2 + 1);
+      const hash = href.indexOf("#");
+      const file = hash < 0 ? href : href.slice(0, hash);
+      const id = hash < 0 ? "" : href.slice(hash + 1);
       if (file) doc = files?.(file);
       const sym = id && doc?.getElementById(id);
       if (!sym) return null;
@@ -3127,8 +3659,10 @@ globalThis.btoa ??= (s) => {
     const shapes = [];
     const sheet = svgSheet(root === svg ? svg : root.closest?.("svg") || svg);
     let paint = paintOf(svg, { fill: "black", stroke: "none", sw: 1, cap: "butt", join: "miter", op: 1, fo: 1, so: 1 }, sheet);
+    for (const [prop, key] of [["fill", "fill"], ["stroke", "stroke"], ["stroke-linecap", "cap"], ["stroke-linejoin", "join"]]) if (cs[prop] !== void 0) paint[key] = cs[prop];
+    if (cs["stroke-width"] !== void 0 && Number.isFinite(parseFloat(cs["stroke-width"]))) paint.sw = parseFloat(cs["stroke-width"]);
     if (root !== svg) paint = paintOf(root, paint, sheet);
-    collect2(root, paint, current, doc, shapes, sheet);
+    collect2(root, paint, current2, doc, shapes, sheet);
     if (!shapes.length) return null;
     return { vb, shapes };
   }
@@ -3197,7 +3731,7 @@ globalThis.btoa ??= (s) => {
     "marker",
     "text"
   ]);
-  function collect2(el, inherited, current, doc, out, sheet) {
+  function collect2(el, inherited, current2, doc, out, sheet) {
     for (const c of el.children) {
       const tag = c.localName;
       if (SKIP.has(tag)) continue;
@@ -3205,7 +3739,7 @@ globalThis.btoa ??= (s) => {
       const paint = paintOf(c, inherited, sheet);
       if (paint.display === "none") continue;
       if (tag === "g") {
-        collect2(c, paint, current, doc, out, sheet);
+        collect2(c, paint, current2, doc, out, sheet);
         continue;
       }
       if (paint.visibility === "hidden" || paint.visibility === "collapse") continue;
@@ -3213,8 +3747,8 @@ globalThis.btoa ??= (s) => {
       if (!d) continue;
       out.push({
         d,
-        fill: faded(paintColor(paint.fill, current, doc), paint.op * paint.fo),
-        stroke: faded(paintColor(paint.stroke, current, doc), paint.op * paint.so),
+        fill: faded(paintColor(paint.fill, current2, doc), paint.op * paint.fo),
+        stroke: faded(paintColor(paint.stroke, current2, doc), paint.op * paint.so),
         sw: paint.sw,
         cap: paint.cap,
         join: paint.join,
@@ -3277,15 +3811,15 @@ globalThis.btoa ??= (s) => {
     if (!c || alpha >= 1) return c;
     return [c[0], c[1], c[2], c[3] * alpha];
   }
-  function paintColor(p, current, doc) {
+  function paintColor(p, current2, doc) {
     if (!p || p === "none") return null;
     const ref = /^url\(#([^)]+)\)$/.exec(p);
     if (ref) {
       const g2 = doc.getElementById(ref[1]);
       const stop = g2?.querySelector("stop");
-      return color(stop?.getAttribute("stop-color") || "", current) || current;
+      return color(stop?.getAttribute("stop-color") || "", current2) || current2;
     }
-    return color(p, current);
+    return color(p, current2);
   }
   var n = (el, a, d = 0) => parseFloat(el.getAttribute(a) ?? d) || 0;
   function pathData(el) {
@@ -4001,12 +4535,25 @@ html, body, div, section, main, header, footer, nav, article, aside, form, field
 h1, h2, h3, h4, h5, h6, pre, blockquote, figure, figcaption, details, summary, address, hr { display: block; }
 head, script, style, template, title, meta, link, noscript, datalist, option, [hidden] { display: none; }
 li { display: list-item; }
+/* <details>: the summary with its disclosure triangle (the rest of a
+   closed one is hidden by style(), whatever the page's CSS says). */
+details > summary { display: list-item; list-style-type: disclosure-closed; list-style-position: inside; }
+details[open] > summary { list-style-type: disclosure-open; }
+/* <dialog>, as browsers': hidden until open, centered over the page; a
+   modal one in the top layer (render.js) with its ::backdrop. */
+dialog:not([open]) { display: none; }
+dialog { position: absolute; left: 0; right: 0; width: fit-content; height: fit-content; margin: auto; border: 3px solid; padding: 1em; background-color: Canvas; color: CanvasText; }
+dialog[data-nui-modal] { position: fixed; top: 0; bottom: 0; max-width: calc(100% - 6px - 2em); max-height: calc(100% - 6px - 2em); overflow: auto; }
+dialog::backdrop { background-color: rgba(0, 0, 0, 0.1); }
+/* [popover]: hidden until shown (the top layer), centered as browsers'. */
+[popover]:not([data-nui-popover-open]) { display: none; }
+[popover] { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: fit-content; height: fit-content; margin: auto; border: 1px solid; padding: .25em; overflow: auto; color: CanvasText; background-color: Canvas; }
 ul { list-style-type: disc; }
 ol { list-style-type: decimal; }
 ul ul, ol ul { list-style-type: circle; }
 ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
 button, input, textarea, select, img, svg, canvas, progress, meter { display: inline-block; }
-button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; }
+button { padding: 1px 6px; border: 1px solid #767676; border-radius: 3px; background-color: #efefef; color: black; font-size: 13.333px; text-align: center; }
 input, textarea, select { padding: 1px 2px; border: 1px solid #767676; border-radius: 2px; background-color: white; color: black; font-size: 13.333px; }
 html { font-size: 16px; color: CanvasText; }
 body { margin: 8px; }
@@ -4060,6 +4607,7 @@ thead { display: table-header-group; } tbody { display: table-row-group; } tfoot
 tr { display: table-row; } td, th { display: table-cell; padding: 1px; vertical-align: middle; }
 th { text-align: center; } caption { display: table-caption; text-align: center; }
 col, colgroup { display: none; }
+::placeholder { color: #757575; }
 `;
   var UA_CSS_MAC = `
 button { padding: 2px 6px 3px; background: rgba(239, 239, 239, 0.9999); border-color: rgb(192, 192, 192); border-radius: 0; }
@@ -4067,23 +4615,28 @@ input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin:
 `;
   var UA_CSS_WEBKIT = `
 button, input, textarea, select { font-size: 11px; }
+::placeholder { color: rgb(169, 169, 169); }
 textarea { font-family: -webkit-small-control, system-ui; }
 `;
   var UA_CSS_CHROME_ANDROID = `
 input[type=checkbox], input[type=radio] { width: 16px; height: 16px; }
 input[type=radio] { margin: 3px 3px 0 5px; }
 `;
+  var thinUaInputBorder = false;
   function uaCssWebkitGtk(font, accent) {
+    thinUaInputBorder = true;
     const [family, px] = Array.isArray(font) && font.length === 2 ? font : ["system-ui", 14];
     const acc = Array.isArray(accent) && accent.length === 3 ? `input { accent-color: rgb(${accent.map((v) => +v || 0).join(", ")}); }` : "";
     return `${acc}
 button, input, textarea, select { font-size: ${+px || 14}px; font-family: ${JSON.stringify(String(family))}, system-ui; }
-input, textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+input { padding: 1px; border: 2px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
+textarea { padding: 2px; border: 1px solid #cdcdcd; border-radius: 5px; background-color: white; color: black; }
 button, select { border: 1px solid #cdcdcd; border-radius: 5px; background-color: #f4f4f4; color: rgba(0, 0, 0, 0.8); }
 button { padding: 3px 7px 4px; }
 select { padding: 5px 6px; }
 input[type="checkbox"], input[type="radio"] { width: 12px; height: 12px; margin: 3px 2px; }
 input[type="range"] { height: 20px; margin: 2px; }
+::placeholder { color: rgb(169, 169, 169); }
 `;
   }
   var INLINE_DISPLAY = /* @__PURE__ */ new Set(["inline"]);
@@ -4096,7 +4649,38 @@ input[type="range"] { height: 20px; margin: 2px; }
   var INTRINSIC_WIDTHS = /* @__PURE__ */ new Set(["max-content", "fit-content", "-webkit-fit-content", "-moz-fit-content"]);
   var ATOMIC_INLINE = /* @__PURE__ */ new Set(["inline-block", "inline-flex", "inline-grid"]);
   var REPLACED = /* @__PURE__ */ new Set(["img", "svg", "canvas", "video", "iframe", "object", "embed", "picture"]);
-  var TYPED = /* @__PURE__ */ new Set(["email", "url", "tel", "number", "search"]);
+  var FIELD_TAGS = /* @__PURE__ */ new Set(["input", "select", "textarea"]);
+  function backgroundPosition(v) {
+    const parts = splitSpaces(v.trim());
+    const one = (t) => {
+      if (t === "left" || t === "top") return { p: 0, px: 0 };
+      if (t === "center") return { p: 50, px: 0 };
+      if (t === "right" || t === "bottom") return { p: 100, px: 0 };
+      const c = /^calc\(\s*(-?[\d.]+)%\s*([+-])\s*(-?[\d.]+)px\s*\)$/.exec(t);
+      if (c) return { p: +c[1], px: (c[2] === "-" ? -1 : 1) * +c[3] };
+      if (/%$/.test(t)) return { p: parseFloat(t), px: 0 };
+      return { p: 0, px: parseFloat(t) || 0 };
+    };
+    let [x = "50%", y = "50%"] = parts;
+    if (parts.length === 1) y = x === "top" || x === "bottom" ? x : "50%";
+    if (x === "top" || x === "bottom") [x, y] = [y, x];
+    return [one(x), one(y)];
+  }
+  var TOP_LAYER_Z = 2147483647;
+  function closedDetailsContent(el) {
+    const parent = el.parentNode;
+    if (parent?.localName !== "details" || parent.hasAttribute("open")) return false;
+    if (el.localName !== "summary") return true;
+    for (let c = parent.firstElementChild; c; c = c.nextElementSibling) if (c.localName === "summary") return c !== el;
+    return true;
+  }
+  function centeredByMargins(cs) {
+    if (!cs) return false;
+    const set = (v) => v !== void 0 && v !== "auto";
+    const sized = (v) => v !== void 0 && v !== "auto";
+    return cs["margin-left"] === "auto" && cs["margin-right"] === "auto" && cs["margin-top"] === "auto" && cs["margin-bottom"] === "auto" && set(cs.left) && set(cs.right) && set(cs.top) && set(cs.bottom) && sized(cs.width);
+  }
+  var TYPED = /* @__PURE__ */ new Set(["email", "url", "tel", "number", "search", "date"]);
   var INPUT_MODES = /* @__PURE__ */ new Set(["none", "text", "decimal", "numeric", "tel", "search", "email", "url"]);
   var ENTER_HINTS = /* @__PURE__ */ new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
   function keyboardProps(el, tag, type, props) {
@@ -4259,6 +4843,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       this.parentOf = nodeIndex ? NO_PARENTS : internalWeak3(/* @__PURE__ */ new WeakMap());
       this.spans = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.runOwner = internalWeak3(/* @__PURE__ */ new WeakMap());
+      this.autoFit = /* @__PURE__ */ new Map();
       this.volatile = /* @__PURE__ */ new Set();
       this.shared = internalWeak3(/* @__PURE__ */ new WeakMap());
       this.cascades = /* @__PURE__ */ new Map();
@@ -4574,6 +5159,7 @@ input[type="range"] { height: 20px; margin: 2px; }
           if (!k || k.kind !== "text") return false;
           holder = k.props || (k.props = JSON.parse(k.p));
         } else if (fc.root.kind !== "text") return false;
+        else if (cs.__rules?.before?.length || cs.__rules?.after?.length || cs.display === "list-item") return false;
         if (!holder.runs || this.tx.targets.has(tid) || this.anim.state.has(tid)) return false;
         const old = this.prev.get(tid);
         if (!old || old.kind !== "text") return false;
@@ -4822,9 +5408,10 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       nodes.set(-1, { kind: "view", props: winProps, kids: [bodyNode] });
       const rootBg = bgOf(rootCS) || (this.styleOf(body) ? bgOf(this.styleOf(body)) : null) || (usedDark(rootCS) ? { color: [18, 18, 18, 1] } : null);
-      nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: [-1, ...fixed] });
+      nodes.set(0, { kind: "view", props: { root: true, fd: "column", ai: "stretch", bg: rootBg }, kids: this.topLayerOver([-1, ...fixed], nodes) });
       const t1 = P && P();
       this.emit(nodes, full);
+      this.checkAutoFit();
       if (P) {
         const ms = (x) => x.toFixed(2);
         this.host.log(1, `PROF render ${full ? "full" : "incremental"}: ${nodes.size} nodes made, flatten ${ms(t1 - t02)}, emit ${ms(P() - t1 - this.applyMs)}, apply ${ms(this.applyMs)}`);
@@ -4832,6 +5419,68 @@ input[type="range"] { height: 20px; margin: 2px; }
       const scroll = this.pendingScroll;
       this.pendingScroll = null;
       if (scroll && scroll.el.isConnected) this.host.scrollIntoView(this.idOf(scroll.el, "el"), scroll.block);
+    }
+    // The root's children with the top layer last: each modal dialog or open
+    // popover (a fixed node, hoisted like any) moved to the end in the order
+    // they were shown, a modal dialog's ::backdrop just below it. One centered
+    // by CSS (auto margins between set insets, as the UA's dialog and popover
+    // are) goes in a box over the window that centers it: Yoga doesn't center
+    // an absolute node by its margins. Others keep the position they have.
+    topLayerOver(kids, nodes) {
+      const made = /* @__PURE__ */ new Set();
+      for (const el of this.topLayer?.() || []) {
+        const id = this.idOf(el, "el");
+        const at = kids.indexOf(id);
+        if (at < 0) continue;
+        kids.splice(at, 1);
+        if (el.localName === "dialog") {
+          const bid = this.idOf(el, "backdrop");
+          this.own(bid, el);
+          nodes.set(bid, { kind: "view", props: { ...this.backdropProps(el), z: TOP_LAYER_Z }, kids: [] });
+          made.add(bid);
+          kids.push(bid);
+        }
+        const n2 = nodes.get(id);
+        if (!centeredByMargins(this.styleOf(el))) {
+          if (n2) n2.props.z = TOP_LAYER_Z;
+          kids.push(id);
+          continue;
+        }
+        if (n2) {
+          delete n2.props.pos;
+          delete n2.props.ins;
+          delete n2.props.m;
+          const h = this.styleOf(el).height;
+          if (h === void 0 || h === "auto") {
+            n2.props.fg = 1;
+            n2.props.fb = 0;
+            n2.props.minh ??= 0;
+          }
+        }
+        const lid = this.idOf(el, "toplayer");
+        this.own(lid, el);
+        nodes.set(lid, { kind: "view", props: { pos: "absolute", ins: [0, 0, 0, 0], fd: "column", jc: "center", ai: "center", z: TOP_LAYER_Z }, kids: [id] });
+        made.add(lid);
+        kids.push(lid);
+      }
+      for (const id of this.layerIds || []) if (!made.has(id)) this.gone.push(id);
+      this.layerIds = made;
+      return kids;
+    }
+    // A modal dialog's ::backdrop: the window under the dialog, styled by the
+    // ::backdrop rules (inheriting from the dialog).
+    backdropProps(d) {
+      const dcs = this.styleOf(d);
+      const rules = this.sc.get(d)?.m?.backdrop || this.matchOf(d).backdrop || [];
+      const pcs = computeStyle(StyleEngine.cascade(rules, null), dcs);
+      const props = boxProps(pcs, "block", fontSizeOf(pcs, dcs), null);
+      delete props.m;
+      return Object.assign(props, { pos: "absolute", ins: [0, 0, 0, 0] });
+    }
+    // A field's ::placeholder color (inheriting from the field).
+    placeholderColor(el, cs) {
+      const rules = this.sc.get(el)?.m?.placeholder || this.matchOf(el).placeholder || [];
+      return color(computeStyle(StyleEngine.cascade(rules, null), cs).color) || void 0;
     }
     // An element's computed style: the last frame's while neither it nor its
     // parent's style changed. `rematch`: an ancestor's attributes changed (a
@@ -4859,6 +5508,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       if (viewport.forced) cs = forceColors(cs, el, parentCS);
       if (c && c.cs !== cs && sameStyle(c.cs, cs) && c.cs.__fs === fontSizeOf(cs, parentCS)) cs = c.cs;
+      if (closedDetailsContent(el)) cs = Object.assign(/* @__PURE__ */ Object.create(null), cs, { display: "none" });
       cs.__rules = m;
       this.sc.set(el, { parent: parentCS, cs, m, frame: this.frameNo, epoch: this.styleEpoch });
       return cs;
@@ -4888,12 +5538,12 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       let by = this.shared.get(parentCS);
       if (!by) this.shared.set(parentCS, by = /* @__PURE__ */ new Map());
-      let base = by.get(casc.spec);
-      if (!base) {
-        base = computeStyle(casc.spec, parentCS);
-        by.set(casc.spec, base);
+      let base2 = by.get(casc.spec);
+      if (!base2) {
+        base2 = computeStyle(casc.spec, parentCS);
+        by.set(casc.spec, base2);
       }
-      const cs = Object.assign(/* @__PURE__ */ Object.create(null), base);
+      const cs = Object.assign(/* @__PURE__ */ Object.create(null), base2);
       let parts = /* @__PURE__ */ new Set();
       const put = (k, v) => {
         if (parts && PART_OF[k]) parts.add(PART_OF[k]);
@@ -4913,12 +5563,12 @@ input[type="range"] { height: 20px; margin: 2px; }
       for (const k in important) put(k, important[k]);
       const mc = maxContent(cs, parentCS);
       const fc = !mc && fitContent(cs, parentCS);
-      if (mc !== !!base.__maxc || fc !== !!base.__fitc) parts = null;
+      if (mc !== !!base2.__maxc || fc !== !!base2.__fitc) parts = null;
       if (mc) cs.__maxc = true;
       else delete cs.__maxc;
       if (fc) cs.__fitc = true;
       else delete cs.__fitc;
-      derived.set(cs, { base, parts: parts && [...parts] });
+      derived.set(cs, { base: base2, parts: parts && [...parts] });
       return cs;
     }
     // Matched rules, shared within a frame by elements that selectors can't
@@ -5177,9 +5827,9 @@ input[type="range"] { height: 20px; margin: 2px; }
           const key = kind === "text" ? "nativeText" : "nativeView";
           template = entry[key];
           if (!template) {
-            const base = { ...props };
-            if (kind === "text") base.runs = [{ ...runs[0], t: "" }];
-            template = entry[key] = { json: encodeProps(base) };
+            const base2 = { ...props };
+            if (kind === "text") base2.runs = [{ ...runs[0], t: "" }];
+            template = entry[key] = { json: encodeProps(base2) };
           }
         }
         const node = { kind, props, kids: EMPTY, template };
@@ -5239,6 +5889,15 @@ input[type="range"] { height: 20px; margin: 2px; }
       const id = this.idOf(el, "el");
       this.own(id, el);
       const props = boxProps(cs, display, fontSize, el);
+      const bgKids = [];
+      if (props.bg?.conic) {
+        const { conic: cg, ...rest } = props.bg;
+        if (Object.keys(rest).length) props.bg = rest;
+        else delete props.bg;
+        bgKids.push(this.conicNode(el, cg, nodes));
+        if (props.br) props.clip = true;
+      }
+      if (!FIELD_TAGS.has(tag)) bgKids.push(...this.imageLayers(el, cs, fontSize, nodes));
       if (!ctx.blockify) delete props.as;
       if (!ctx.blockify && display === "block" && CONTROLS.has(tag) && (props.w === void 0 || props.w === "auto")) props.as = "flex-start";
       if (isTableDisplay(display) && !tableProps(props, display, cs, fontSize, ctx, el)) return null;
@@ -5319,7 +5978,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         this.putClick(props, el);
         return this.put(nodes, id, "canvas", props, [], fixedNode);
       }
-      if ((tag === "button" || isInputButton(el)) && nativeControls.has("button")) {
+      if ((tag === "button" || isInputButton(el)) && nativeControls.has("button") && parseFloat(cs.opacity ?? "1") !== 0) {
         const label = this.nativeButtonLabel(el, cs);
         if (label !== null) {
           this.volatile.add(el);
@@ -5345,8 +6004,7 @@ input[type="range"] { height: 20px; margin: 2px; }
       }
       if (isInputButton(el)) {
         this.volatile.add(el);
-        const t = el.getAttribute("type").toLowerCase();
-        const label = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+        const label = inputButtonLabel(el);
         props.click = true;
         if (el.hasAttribute("disabled")) props.dis = true;
         const al = accessibleName(el);
@@ -5391,7 +6049,8 @@ input[type="range"] { height: 20px; margin: 2px; }
             delete props.ol;
             return this.put(nodes, id, "check", props, [], fixedNode);
           }
-          return this.put(nodes, id, "view", props, [], fixedNode);
+          const parts = props.ctl ? [] : [this.pseudo(el, cs, "before", nodes), this.pseudo(el, cs, "after", nodes)].filter(Boolean);
+          return this.put(nodes, id, "view", props, parts, fixedNode);
         }
         Object.assign(props, textProps(cs, fontSize));
         darkControl(cs, props, false);
@@ -5399,11 +6058,13 @@ input[type="range"] { height: 20px; margin: 2px; }
           props.options = [...el.querySelectorAll("option")].map((o) => [o.getAttribute("value") ?? o.textContent, o.textContent]);
           props.val = el.value ?? "";
           props.dis = el.hasAttribute("disabled");
+          if ((cs.appearance || cs["-webkit-appearance"]) === "none" && !/gradient\(|url\(/.test(cs["background-image"] || "")) props.na = true;
           return this.put(nodes, id, "select", props, [], fixedNode);
         }
         const value = el.value ?? "";
         if (this.native.get(id) !== value) props.val = value;
         props.ph = el.getAttribute("placeholder") || "";
+        if (props.ph) props.phc = this.placeholderColor(el, cs);
         props.dis = el.hasAttribute("disabled");
         if (el.hasAttribute("readonly") && !props.dis) props.ro = true;
         keyboardProps(el, tag, type, props);
@@ -5433,16 +6094,20 @@ input[type="range"] { height: 20px; margin: 2px; }
           delete props.bg;
           delete props.br;
         }
+        if (tag === "input" && thinUaInputBorder) thinUaBorder(el, cs, props);
         return this.put(nodes, id, tag === "textarea" ? "textarea" : "input", props, [], fixedNode);
       }
       const layoutBox = display === "flex" || display === "grid" || display === "inline-flex" || display === "inline-grid";
+      const inner = display === "inline-flex" ? "flex" : display === "inline-grid" ? "grid" : display;
       const aligns = layoutBox && (["center", "end", "flex-end"].includes(cs["align-items"]) || ["center", "end", "flex-end", "space-around", "space-evenly"].includes(cs["justify-content"])) || // A button centers its label in its height (a row stretches it to
       // its tallest sibling's): a box around the text, not a text view.
       el.localName === "button" && !layoutBox;
       const marker = display === "list-item" ? listMarker(el, cs) : null;
-      const keepsBox = props.scroll || props.scrollx || props.clip || !!marker;
+      const keepsBox = props.scroll || props.scrollx || props.clip || !!marker || bgKids.length > 0;
       if (this.simpleLeaves && !el.firstElementChild && !cs.__rules.before.length && !cs.__rules.after.length && !aligns && !keepsBox && display !== "grid" && !isTableDisplay(display)) {
         const raw = [];
+        const inside2 = display === "list-item" ? insideMarker(el, cs) : null;
+        if (inside2) raw.push({ ...runFor(inside2, cs, fontSize), ws: "pre" });
         for (let child = el.firstChild; child; child = child.nextSibling) {
           this.parentOf.set(child, el);
           if (child.nodeType === 3 && child.data) raw.push(runFor(child.data, cs, fontSize));
@@ -5454,9 +6119,9 @@ input[type="range"] { height: 20px; margin: 2px; }
           props.runs = runs2;
           return this.put(nodes, id, "text", props, [], fixedNode);
         }
-        return this.put(nodes, id, "view", props, [], fixedNode);
+        return this.put(nodes, id, "view", props, bgKids, fixedNode);
       }
-      const shape = display === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
+      const shape = inner === "flex" && !fixedNode ? this.flexShape(el, cs, props) : null;
       if (shape?.plan) {
         const plan = this.host.stamp && !this.noStamp.has(el) && this.stampable(shape) ? this.stampPlanOf(shape.plan) : 0;
         if (plan) {
@@ -5470,23 +6135,27 @@ input[type="range"] { height: 20px; margin: 2px; }
         return this.put(nodes, id, "view", props, kids2);
       }
       const childCtx = {
-        blockify: display === "flex" || display === "grid" || tableHolds(display),
+        blockify: inner === "flex" || inner === "grid" || tableHolds(display),
         parentText: cs["text-align"],
         tableSpacing: tableSpacingFor(display, props, ctx),
         rematch
       };
-      const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, display, childCtx, nodes, id) : null;
+      const listed = this.host.stampList && !viewport.forced ? this.listOf(el, cs, props, inner, childCtx, nodes, id) : null;
       if (listed) {
         this.putClick(props, el);
         return this.put(nodes, id, "view", props, listed, fixedNode);
       }
       const kids = [];
       let orders = null;
-      const before = this.pseudo(el, cs, "before", nodes);
+      const beforeRun = childCtx.blockify ? null : this.pseudoRun(el, cs, "before", fontSize);
+      const afterRun = childCtx.blockify ? null : this.pseudoRun(el, cs, "after", fontSize);
+      const before = beforeRun ? null : this.pseudo(el, cs, "before", nodes);
       if (before) kids.push(before);
       const flow = [];
       const boxed = childCtx.blockify ? null : this.boxedEnds(el, cs, rematch);
-      let runs = [];
+      const inside = display === "list-item" ? insideMarker(el, cs) : null;
+      let runs = inside ? [{ ...runFor(inside, cs, fontSize), ws: "pre" }] : [];
+      if (beforeRun) runs.push(beforeRun);
       const inlineBox2 = (child) => !childCtx.blockify && (ATOMIC_INLINE.has(this.style(child, cs, rematch).display || "inline") || !!boxed?.has(child));
       let afterBox = false;
       const flushRuns = (beforeBox = false) => {
@@ -5517,9 +6186,10 @@ input[type="range"] { height: 20px; margin: 2px; }
         flow.push({ el: child });
         afterBox = box;
       }
+      if (afterRun) runs.push(afterRun);
       flushRuns();
       if (el.localName === "button" && props.fd === "column" && flow.length === 1 && flow[0].text) props.ai = "stretch";
-      if (flow.length === 1 && flow[0].text && !before && !cs.__rules.after.length && !aligns && !(props.scroll || props.scrollx || props.clip || marker)) {
+      if (flow.length === 1 && flow[0].text && !before && (afterRun || !cs.__rules.after.length) && !aligns && !(props.scroll || props.scrollx || props.clip || marker || bgKids.length)) {
         Object.assign(props, textProps(cs, fontSize));
         props.runs = flow[0].text;
         this.ownRuns(id, props.runs);
@@ -5678,7 +6348,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         const ord = parseInt(this.styleOf(item.el)?.order, 10);
         if (ord) (orders ??= /* @__PURE__ */ new Map()).set(cid, ord);
       }
-      const after = this.pseudo(el, cs, "after", nodes);
+      const after = afterRun ? null : this.pseudo(el, cs, "after", nodes);
       if (after) {
         kids.push(after);
         inLine?.add(after);
@@ -5689,10 +6359,10 @@ input[type="range"] { height: 20px; margin: 2px; }
         kids.sort((a, b) => (orders.get(a) || 0) - (orders.get(b) || 0) || pos.get(a) - pos.get(b));
       }
       if (shape) this.saveFlexShape(shape, nodes);
-      if (display === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
+      if (inner === "grid") gridToRows(cs, props, kids, nodes, this, el, fontSize);
       if (marker) kids.push(this.putMarker(nodes, el, cs, fontSize, props, marker));
       this.putClick(props, el);
-      return this.put(nodes, id, "view", props, kids, fixedNode);
+      return this.put(nodes, id, "view", props, bgKids.length ? [...bgKids, ...kids] : kids, fixedNode);
     }
     // A list item's outside marker ("• ", "3. "): a text beside its first
     // line, its end at the item's start edge, in the item's font.
@@ -5703,6 +6373,106 @@ input[type="range"] { height: 20px; margin: 2px; }
       const mp = { ...textProps(cs, fontSize), runs: [{ t: text, ...runStyle(cs, fontSize), ws: "pre" }], pos: "absolute", ins: [top, "100%", null, null] };
       this.put(nodes, mid, "text", mp, []);
       return mid;
+    }
+    // background-image layers that are gradients of a set size, not repeated
+    // (background-size, -position, -repeat: no-repeat): each a box of that
+    // size with the gradient, under the content. CSS puts it at p% of the
+    // room left (box - image) plus px: `ins` at p% less p% of its size (tx, ty).
+    imageLayers(el, cs, fs, nodes) {
+      const images = cs["background-image"];
+      if (!images || !/gradient\(/.test(images)) return [];
+      const list = (v) => v ? splitTop(v, ",").map((x) => x.trim()) : [];
+      const layers = list(images), sizes = list(cs["background-size"]), positions = list(cs["background-position"]), repeats = list(cs["background-repeat"]);
+      const at = (arr, i) => arr.length ? arr[i % arr.length] : void 0;
+      const out = [];
+      const current2 = color(cs.color);
+      layers.forEach((layer, i) => {
+        if (!/gradient\(/.test(layer)) return;
+        const repeat = at(repeats, i) || "repeat";
+        const size = splitSpaces(at(sizes, i) || "auto");
+        const w = num2(size[0], fs), h = num2(size[1] ?? size[0], fs);
+        if (repeat !== "no-repeat" || typeof w !== "number" || typeof h !== "number") return;
+        const bg = background(layer, current2);
+        if (!bg?.gradient) return;
+        const [px, py] = backgroundPosition(at(positions, i) || "0% 0%");
+        const id = this.idOf(el, `bg${i}`);
+        this.own(id, el);
+        const props = { pos: "absolute", w, h, ins: [`${py.p}%`, null, null, `${px.p}%`], bg: { gradient: bg.gradient }, z: -1 };
+        const tx = -px.p / 100 * w + px.px, ty = -py.p / 100 * h + py.px;
+        if (tx) props.tx = tx;
+        if (ty) props.ty = ty;
+        nodes.set(id, { kind: "view", props, kids: [] });
+        out.push(id);
+      });
+      return out.reverse();
+    }
+    // Auto-fit grids made before their width was known: laid out now, one
+    // whose width fits another column count is made again on the next frame.
+    checkAutoFit() {
+      let again = false;
+      for (const [el, a] of this.autoFit) {
+        if (!el.isConnected) {
+          this.autoFit.delete(el);
+          continue;
+        }
+        const frameW = this.host.frame(this.idOf(el, "el"))?.[2];
+        if (!frameW) continue;
+        const width = Math.max(0, frameW - (+a.pad[1] || 0) - (+a.pad[3] || 0) - (+a.bw[1] || 0) - (+a.bw[3] || 0));
+        const n2 = Math.max(1, Math.min(Math.floor((width + a.gap) / (a.minW + a.gap)), Math.max(a.kids, 1)));
+        if (n2 !== a.n) {
+          a.n = n2;
+          this.mark(el, 2);
+          again = true;
+        }
+      }
+      if (again) setTimeout(() => this.render(), 0);
+    }
+    // A conic-gradient background as an icon over the element's padding box,
+    // under its content: wedges from the centre, one per hard stop and short
+    // ones blending a smooth stop, cut to the square the icon fills (a pie or
+    // donut's box; a wider box gets the centred square).
+    conicNode(el, cg, nodes) {
+      const id = this.idOf(el, "conic");
+      this.own(id, el);
+      const shapes = [];
+      const from = Number.isFinite(cg.from) ? cg.from - Math.floor(cg.from) : 0;
+      const at = (t) => {
+        const a = 2 * Math.PI * (t + from);
+        const dx = Math.sin(a), dy = -Math.cos(a), k = 1 / Math.max(Math.abs(dx), Math.abs(dy));
+        return [dx * k, dy * k];
+      };
+      const wedge = (t02, t1, c) => {
+        if (t1 - t02 <= 1e-6 || c[3] <= 0) return;
+        if (t1 < 1) t1 = Math.min(1, t1 + 2e-3);
+        const pts = [at(t02)];
+        for (let k = Math.floor((t02 + from - 1 / 8) * 4); 1 / 8 + k / 4 - from < t1; k++) {
+          const tc = 1 / 8 + k / 4 - from;
+          if (tc > t02) pts.push(at(tc));
+        }
+        pts.push(at(t1));
+        shapes.push({ d: `M0 0 ${pts.map(([x, y]) => `L${x.toFixed(4)} ${y.toFixed(4)}`).join(" ")} Z`, fill: c, stroke: null, sw: 0, cap: "butt", join: "miter" });
+      };
+      const st = cg.stops.map((s) => [s[0], s[1], s[2], s[3], Math.max(-1e9, Math.min(1e9, s[4]))]);
+      const budget = 512;
+      const colorAt = (a, b, t) => {
+        const f = (t - a[4]) / (b[4] - a[4]);
+        return a.slice(0, 4).map((v, k) => k < 3 ? Math.round(v + (b[k] - v) * f) : v + (b[k] - v) * f);
+      };
+      wedge(0, Math.min(1, st[0][4]), st[0].slice(0, 4));
+      for (let i = 0; i + 1 < st.length && shapes.length < budget; i++) {
+        const [a, b] = [st[i], st[i + 1]];
+        const lo = Math.max(0, a[4]), hi = Math.min(1, b[4]);
+        if (!(hi > lo)) continue;
+        const same3 = a.slice(0, 4).every((v, j) => v === b[j]);
+        const n2 = same3 ? 1 : Math.max(1, Math.ceil((hi - lo) * 180));
+        for (let j = 0; j < n2; j++) {
+          const t02 = lo + (hi - lo) * j / n2, t1 = lo + (hi - lo) * (j + 1) / n2;
+          wedge(t02, t1, same3 ? a.slice(0, 4) : colorAt(a, b, (t02 + t1) / 2));
+        }
+      }
+      wedge(Math.max(0, st[st.length - 1][4]), 1, st[st.length - 1].slice(0, 4));
+      nodes.set(id, { kind: "icon", props: { pos: "absolute", ins: [0, 0, 0, 0], z: -1, icon: { vb: [-1, -1, 2, 2], shapes } }, kids: [] });
+      return id;
     }
     // A list of rows the tree stamps (dom_stamp.stampList): every child an
     // element, the first a row the tree stamps (a flex row of leaves) and the
@@ -5836,8 +6606,7 @@ input[type="range"] { height: 20px; margin: 2px; }
         }
       }
       if (isInputButton(el)) {
-        const t = el.getAttribute("type").toLowerCase();
-        const v = el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+        const v = inputButtonLabel(el);
         return v.trim() ? v : null;
       }
       const plain = (n2, ncs) => {
@@ -6053,6 +6822,22 @@ input[type="range"] { height: 20px; margin: 2px; }
         for (let i = first; i < runs.length; i++) if (!runs[i].br && runs[i].k === void 0) runs[i].k = id;
       }
     }
+    // A ::before/::after that is only inline text: its run, for the element's
+    // line; null when it has a box, a position or motion of its own.
+    pseudoRun(el, cs, which, fontSize) {
+      const rules = cs.__rules[which];
+      if (!rules.length) return null;
+      const pcs = computeStyle(StyleEngine.cascade(rules, null), cs);
+      const content = pcs.content;
+      if (!content || content === "none" || content === "normal") return null;
+      const text = /^["'](.*)["']$/.exec(content)?.[1];
+      if (!text || (pcs.display || "inline") !== "inline") return null;
+      if (pcs.position === "absolute" || pcs.position === "fixed" || pcs.float) return null;
+      for (const k in pcs) {
+        if (/^(background|padding|border|margin|transform|transition|animation|outline|box-shadow|width|height)/.test(k) && !/^(0|0px|none|auto|normal|transparent|initial)?$/.test(String(pcs[k]).trim())) return null;
+      }
+      return runFor(text, pcs, fontSizeOf(pcs, cs) || fontSize);
+    }
     pseudo(el, cs, which, nodes) {
       const rules = cs.__rules[which];
       if (!rules.length) return null;
@@ -6081,9 +6866,9 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (!this.host.leafStyle || !this.host.leaf || n2.kind !== "view" && (n2.kind !== "text" || n2.props.runs?.length !== 1 || n2.kids.length) || this.specs.has(id) || this.animSpecs.has(id)) return false;
       let json = n2.template?.json;
       if (json === void 0) {
-        const base = { ...n2.props };
-        if (n2.kind === "text") base.runs = [{ ...n2.props.runs[0], t: "" }];
-        json = encodeProps(base);
+        const base2 = { ...n2.props };
+        if (n2.kind === "text") base2.runs = [{ ...n2.props.runs[0], t: "" }];
+        json = encodeProps(base2);
       }
       let style = n2.template?.style ?? this.leafStyles.get(json);
       const P = this.host.prof ? this.host.now : null;
@@ -6453,6 +7238,14 @@ input[type="range"] { height: 20px; margin: 2px; }
     const l = length(v, pfs, false);
     return typeof l === "number" ? l : pfs;
   }
+  function thinUaBorder(el, cs, props) {
+    if (!props.bw || props.bw.some((w) => w !== 2)) return;
+    const authored = (decls) => decls.some((dc) => /^border(?!-radius)/.test((dc.prop || dc.name || "").toLowerCase()));
+    if (cs.__rules.normal.some((rule) => !rule.ua && authored(rule.decls))) return;
+    if (/(^|;)\s*border(?!-radius)[\w-]*\s*:/i.test(el.getAttribute("style") || "")) return;
+    props.bw = [1, 1, 1, 1];
+    props.pad = (props.pad || [0, 0, 0, 0]).map((v) => (typeof v === "number" ? v : 0) + 1);
+  }
   function touchesBox(decls) {
     return decls.some((dc) => {
       const p = (dc.prop || dc.name || "").toLowerCase();
@@ -6539,7 +7332,12 @@ input[type="range"] { height: 20px; margin: 2px; }
     if (v === void 0) m.set(key, v = make());
     return v;
   }
-  var INPUT_BUTTONS = /* @__PURE__ */ new Set(["button", "submit", "reset"]);
+  var INPUT_BUTTONS = /* @__PURE__ */ new Set(["button", "submit", "reset", "file"]);
+  function inputButtonLabel(el) {
+    const t = el.getAttribute("type").toLowerCase();
+    if (t === "file") return `Choose File  ${el.files?.[0]?.name || "No file chosen"}`;
+    return el.getAttribute("value") ?? (t === "submit" ? "Submit" : t === "reset" ? "Reset" : "");
+  }
   function isInputButton(el) {
     return el?.localName === "input" && INPUT_BUTTONS.has((el.getAttribute("type") || "").toLowerCase());
   }
@@ -6710,9 +7508,9 @@ input[type="range"] { height: 20px; margin: 2px; }
       p.fd = "column";
       p.ai = "stretch";
     }
-    if (cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
-    if (button && display !== "flex" && display !== "grid") {
-      p.ai = "center";
+    const layoutBox = display === "flex" || display === "grid";
+    if (layoutBox && cs["justify-content"] && cs["justify-content"] !== "normal" && !p.jc) p.jc = cs["justify-content"];
+    if (button && !layoutBox) {
       if (!p.jc) p.jc = "center";
     }
     if (cs["align-self"] && cs["align-self"] !== "auto") p.as = cs["align-self"];
@@ -6756,7 +7554,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     contentBox(cs, p, borderBox);
     outlinePart(cs, fs, p);
-    const rg = num2(cs["row-gap"], fs), cg = num2(cs["column-gap"], fs);
+    const rg = layoutBox ? num2(cs["row-gap"], fs) : 0, cg = layoutBox ? num2(cs["column-gap"], fs) : 0;
     if (typeof rg === "number" && rg) p.rg = rg;
     if (typeof cg === "number" && cg) p.cg = cg;
     positionPart(cs, fs, p);
@@ -6789,6 +7587,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     const sh = shadow(cs["box-shadow"], cur);
     if (sh) p.sh = sh;
     if (cs.visibility === "hidden") p.vis = false;
+    if (cs["pointer-events"] === "none" || cs["pointer-events"] === "auto") p.pe = cs["pointer-events"];
     if (cs.cursor === "pointer") p.click = true;
     if (cs["z-index"] && cs["z-index"] !== "auto") p.z = parseInt(cs["z-index"], 10);
     if (button && pushButtons) pushButton(cs, p);
@@ -6901,9 +7700,15 @@ input[type="range"] { height: 20px; margin: 2px; }
     return parseInt(w, 10) || 400;
   }
   function listMarker(el, cs) {
-    const type = cs["list-style-type"], position = cs["list-style-position"];
-    if (!type || type === "none" || position === "inside") return null;
-    const bullet = { disc: "\u2022", circle: "\u25E6", square: "\u25AA" }[type];
+    return cs["list-style-position"] === "inside" ? null : markerText(el, cs);
+  }
+  function insideMarker(el, cs) {
+    return cs["list-style-position"] === "inside" ? markerText(el, cs) : null;
+  }
+  function markerText(el, cs) {
+    const type = cs["list-style-type"];
+    if (!type || type === "none") return null;
+    const bullet = { disc: "\u2022", circle: "\u25E6", square: "\u25AA", "disclosure-closed": "\u25B8", "disclosure-open": "\u25BE" }[type];
     if (bullet) return bullet + " ";
     const list = el.parentNode;
     const items = list ? [...list.children].filter((c) => c.localName === "li") : [el];
@@ -7094,6 +7899,29 @@ input[type="range"] { height: 20px; margin: 2px; }
     }
     return null;
   }
+  function gridColumn(cs, n2) {
+    let [a, b] = String(cs?.["grid-column"] || "").split("/").map((t) => t.trim());
+    a = a || cs?.["grid-column-start"] || "auto";
+    b = b || cs?.["grid-column-end"] || "auto";
+    const line = (t) => {
+      const v = parseInt(t, 10);
+      return !/^-?\d+$/.test(t) || v === 0 ? null : v < 0 ? n2 + 2 + v : v;
+    };
+    const spanOf = (t) => {
+      const m = /^span\s+(\d+)$/.exec(t);
+      return m ? Math.max(1, +m[1]) : null;
+    };
+    const sa = line(a), sb = line(b);
+    let start = sa !== null ? Math.min(sa, n2) - 1 : null;
+    let span = spanOf(a) || spanOf(b) || 1;
+    if (sa !== null && sb !== null) {
+      start = Math.min(sa, sb) - 1;
+      span = Math.max(1, Math.abs(sb - sa));
+    } else if (sa === null && sb !== null && !spanOf(a)) start = Math.max(0, sb - 2);
+    else if (sa === null && sb !== null) start = Math.max(0, sb - 1 - span);
+    span = Math.min(span, n2 - (start ?? 0));
+    return { start, span: Math.max(1, span) };
+  }
   function gridToRows(cs, props, kids, nodes, renderer2, el, fs) {
     const ALIGN = { center: "center", start: "flex-start", "flex-start": "flex-start", "self-start": "flex-start", end: "flex-end", "flex-end": "flex-end", "self-end": "flex-end", baseline: "baseline", "first baseline": "baseline" };
     const rowAlign = props.ai === "center" ? "center" : ALIGN[cs["align-items"]] || "stretch";
@@ -7106,16 +7934,17 @@ input[type="range"] { height: 20px; margin: 2px; }
       if (/^auto-(fit|fill)$/.test(rep[1].trim())) {
         renderer2.volatile.add(el);
         const frameW = renderer2.host.frame(renderer2.idOf(el, "el"))?.[2] || 0;
-        const pad = props.pad || [0, 0, 0, 0], bw = props.bw || [0, 0, 0, 0];
-        const width = frameW ? Math.max(0, frameW - (+pad[1] || 0) - (+pad[3] || 0) - (+bw[1] || 0) - (+bw[3] || 0)) : 0;
+        const pad2 = props.pad || [0, 0, 0, 0], bw = props.bw || [0, 0, 0, 0];
+        const width = frameW ? Math.max(0, frameW - (+pad2[1] || 0) - (+pad2[3] || 0) - (+bw[1] || 0) - (+bw[3] || 0)) : 0;
         const minW = (() => {
           const track = minmaxMin(what) ?? what;
-          const l = length(width ? track.replace(/(-?[\d.]+)%/g, (_, n3) => `${n3 * width / 100}px`) : track, fs, false);
+          const l = length(width ? track.replace(/(-?[\d.]+)%/g, (_, n4) => `${n4 * width / 100}px`) : track, fs, false);
           return typeof l === "number" ? l : 120;
         })();
-        const gap = props.cg || 0;
-        const n2 = width ? Math.max(1, Math.floor((width + gap) / (minW + gap))) : Math.min(kids.length, 3);
-        cols = Array(Math.max(1, Math.min(n2, Math.max(kids.length, 1)))).fill("1fr");
+        const gap2 = props.cg || 0;
+        const n3 = width ? Math.max(1, Math.floor((width + gap2) / (minW + gap2))) : Math.min(kids.length, 3);
+        renderer2.autoFit.set(el, { n: Math.max(1, Math.min(n3, Math.max(kids.length, 1))), minW, gap: gap2, pad: pad2, bw, kids: kids.length });
+        cols = Array(Math.max(1, Math.min(n3, Math.max(kids.length, 1)))).fill("1fr");
       } else {
         cols = Array(parseInt(rep[1], 10) || 1).fill(what);
       }
@@ -7123,41 +7952,83 @@ input[type="range"] { height: 20px; margin: 2px; }
       cols = splitSpaces(tpl);
     }
     if (cols.length <= 1) return;
-    const rows = [];
-    const flat = kids.slice();
-    kids.length = 0;
-    for (let i = 0; i < flat.length; i += cols.length) {
-      const rowId = renderer2.idOf(el, "row" + i);
-      const rowKids = flat.slice(i, i + cols.length);
-      rowKids.forEach((kid, j) => {
-        const n2 = nodes.get(kid);
-        if (!n2) return;
-        const c = cols[j];
-        if (/fr$|minmax/.test(c)) {
-          n2.props.fg = parseFloat(/([\d.]+)fr/.exec(c)?.[1] || "1");
-          n2.props.fb = 0;
-          n2.props.minw ??= 0;
-        } else if (c === "auto" || c === "min-content" || c === "max-content") {
-          n2.props.fs = 0;
-        } else {
-          const l = length(c, fs, false);
-          if (typeof l === "number") {
-            n2.props.w = l;
-            n2.props.fs = 0;
-          }
-        }
-      });
-      for (let j = rowKids.length; j < cols.length && /fr$|minmax/.test(cols[j]); j++) {
-        const filler = renderer2.idOf(el, `fill${i}-${j}`);
-        renderer2.put0(nodes, filler, { kind: "view", props: { fg: 1, fb: 0 }, kids: [] });
-        rowKids.push(filler);
+    const n2 = cols.length, gap = props.cg || 0;
+    const fr = (c) => /fr$|minmax/.test(c);
+    const size = (p, at2, span) => {
+      const cs2 = cols.slice(at2, at2 + span);
+      if (cs2.every(fr)) {
+        p.fg = cs2.reduce((t, c) => t + parseFloat(/([\d.]+)fr/.exec(c)?.[1] || "1"), 0);
+        p.fb = (span - 1) * gap;
+        p.minw ??= 0;
+        return;
       }
-      renderer2.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: rowAlign, cg: props.cg, ...props.cg ? {} : {} }, kids: rowKids });
+      if (cs2.length === 1 && (cs2[0] === "auto" || cs2[0] === "min-content" || cs2[0] === "max-content")) {
+        p.fs = 0;
+        return;
+      }
+      const ls = cs2.map((c) => length(c, fs, false));
+      if (ls.every((l) => typeof l === "number")) {
+        p.w = ls.reduce((t, l) => t + l, 0) + (span - 1) * gap;
+        p.fs = 0;
+      } else {
+        p.fg = span;
+        p.fb = (span - 1) * gap;
+        p.minw ??= 0;
+      }
+    };
+    const rows = [];
+    let row = [], spans = [], at = 0;
+    const pad = (to) => {
+      for (; at < to; at++) {
+        const filler = renderer2.idOf(el, `fill${rows.length}-${at}`);
+        const p = {};
+        size(p, at, 1);
+        renderer2.put0(nodes, filler, { kind: "view", props: p, kids: [] });
+        row.push(filler);
+        spans.push(1);
+      }
+    };
+    const close = () => {
+      pad(n2);
+      const cells = row.map((id) => nodes.get(id)?.props);
+      const across = (p) => [p.pad?.[1], p.pad?.[3], p.bw?.[1], p.bw?.[3]].reduce((t, v) => t + (typeof v === "number" ? v : 0), 0);
+      let share = 0;
+      cells.forEach((p, i) => {
+        if (p?.fg !== void 0) share = Math.max(share, across(p) / spans[i]);
+      });
+      if (share > 0) cells.forEach((p, i) => {
+        if (p?.fg !== void 0) p.fb = (spans[i] - 1) * gap + share * spans[i];
+      });
+      const rowId = renderer2.idOf(el, "row" + rows.length);
+      renderer2.put0(nodes, rowId, { kind: "view", props: { fd: "row", ai: rowAlign, cg: props.cg }, kids: row });
       rows.push(rowId);
+      row = [];
+      spans = [];
+      at = 0;
+    };
+    const outOfFlow = [];
+    for (const kid of kids) {
+      const node = nodes.get(kid);
+      if (!node) continue;
+      if (node.props.pos === "absolute" || node.props.pos === "fixed") {
+        outOfFlow.push(kid);
+        continue;
+      }
+      const { start, span } = gridColumn(renderer2.styleOf(renderer2.elementFor(kid)), n2);
+      if (start !== null && start < at) close();
+      if (start !== null) pad(start);
+      if (at + span > n2 && at > 0) close();
+      size(node.props, at, Math.min(span, n2 - at));
+      row.push(kid);
+      spans.push(Math.min(span, n2 - at));
+      at += span;
+      if (at >= n2) close();
     }
+    if (row.length) close();
+    kids.length = 0;
     props.fd = "column";
     props.ai = "stretch";
-    kids.push(...rows);
+    kids.push(...rows, ...outOfFlow);
   }
   function numberOf(v) {
     if (v === void 0 || v === null) return NaN;
@@ -7447,6 +8318,20 @@ input[type="range"] { height: 20px; margin: 2px; }
   }
   var isArrayBuffer = (v) => Object.prototype.toString.call(v) === "[object ArrayBuffer]";
   var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function fromBase64(s) {
+    const clean2 = String(s).replace(/[^A-Za-z0-9+/]/g, "");
+    const out = new Uint8Array(Math.floor(clean2.length * 3 / 4));
+    let n2 = 0, bits = 0, len = 0;
+    for (const ch of clean2) {
+      n2 = n2 << 6 | B64.indexOf(ch);
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        out[len++] = n2 >> bits & 255;
+      }
+    }
+    return out.subarray(0, len);
+  }
   function base64(b) {
     let out = "";
     let chunk = [];
@@ -7772,7 +8657,7 @@ input[type="range"] { height: 20px; margin: 2px; }
     g2.File ??= File2;
     g2.FileList ??= FileList;
     g2.FileReader ??= FileReader;
-    return { fileData, droppedFile, fileList, isBlob: (b) => state.has(b) };
+    return { fileData, droppedFile, fileList, fromBase64, isBlob: (b) => state.has(b) };
   }
 
   // src/dnd.js
@@ -8735,6 +9620,17 @@ ${a.stack || ""}`;
     }
   });
   var Event = g.Event;
+  var synthetic = 0;
+  if (!("isTrusted" in new Event("probe"))) Object.defineProperty(Event.prototype, "isTrusted", { value: false, writable: true, configurable: true });
+  function trusted(ev) {
+    if (!synthetic && ev && typeof ev === "object") {
+      try {
+        Object.defineProperty(ev, "isTrusted", { value: true, configurable: true });
+      } catch {
+      }
+    }
+    return ev;
+  }
   var KeyboardEvent = class extends Event {
     constructor(type, init = {}) {
       super(type, init);
@@ -9090,10 +9986,84 @@ ${a.stack || ""}`;
       });
     }
   }
+  function urlBytes(src, all) {
+    const s = String(src);
+    if (s.startsWith("data:")) {
+      const comma = s.indexOf(",");
+      if (comma < 0) return null;
+      const meta = s.slice(5, comma), body = s.slice(comma + 1);
+      if (/;base64$/i.test(meta)) return blobs.fromBase64(all ? body : body.slice(0, 262144));
+      const text = decodeURIComponent(body);
+      const out = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 255;
+      return out;
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith("app:")) return null;
+    const buf = host.assetBytes?.(assetName(s.replace(/^app:\/\/[^/]*\//, "")));
+    return buf ? new Uint8Array(buf) : null;
+  }
+  installImages(g, document, {
+    bytesOf: (src) => {
+      const head = urlBytes(src, false);
+      return !head || imageSize(head) || !String(src).startsWith("data:") ? head : urlBytes(src, true);
+    },
+    later: (fn) => setTimeout(fn, 0),
+    fire: (el, type) => el.dispatchEvent(trusted(new Event(type)))
+  });
+  Object.defineProperty(Object.getPrototypeOf(document.createElement("datalist")), "options", {
+    get() {
+      return this.localName === "datalist" ? this.querySelectorAll("option") : void 0;
+    },
+    configurable: true
+  });
   var formProto = Object.getPrototypeOf(document.createElement("form"));
-  formProto.requestSubmit = function() {
-    submit(this);
+  formProto.requestSubmit = function(submitter) {
+    submit(this, submitter || null);
   };
+  var LISTED = "button, fieldset, input, object, output, select, textarea";
+  function formControls(form) {
+    const id = form.getAttribute("id");
+    const els = [...document.querySelectorAll(LISTED)].filter((el) => !(el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "image") && (el.hasAttribute("form") ? id && el.getAttribute("form") === id : el.closest("form") === form));
+    const named = (name) => els.filter((el) => el.getAttribute("id") === name || el.getAttribute("name") === name);
+    const list = {
+      get length() {
+        return els.length;
+      },
+      item(i) {
+        return els[i >>> 0] ?? null;
+      },
+      namedItem(name) {
+        const found = named(String(name));
+        if (found.length < 2) return found[0] ?? null;
+        return Object.assign([...found], {
+          item(i) {
+            return found[i >>> 0] ?? null;
+          },
+          get value() {
+            return found.find((el) => el.type === "radio" && el.checked)?.value ?? "";
+          },
+          set value(v) {
+            const r = found.find((el) => el.type === "radio" && el.value === String(v));
+            if (r) setNative(r, "checked", true);
+          }
+        });
+      },
+      [Symbol.iterator]() {
+        return els[Symbol.iterator]();
+      }
+    };
+    els.forEach((el, i) => {
+      list[i] = el;
+    });
+    for (const el of els) for (const key of [el.getAttribute("id"), el.getAttribute("name")]) if (key && !(key in list)) list[key] = list.namedItem(key);
+    return list;
+  }
+  Object.defineProperty(formProto, "elements", { get() {
+    return formControls(this);
+  }, configurable: true });
+  Object.defineProperty(formProto, "length", { get() {
+    return formControls(this).length;
+  }, configurable: true });
   formProto.submit = function() {
   };
   formProto.reset = function() {
@@ -9243,6 +10213,19 @@ ${a.stack || ""}`;
   elProto.getBoundingClientRect = function() {
     return rectOf(frameOf(this));
   };
+  {
+    const svgProto = Object.getPrototypeOf(document.createElementNS("http://www.w3.org/2000/svg", "svg"));
+    if (svgProto !== elProto && !Object.prototype.hasOwnProperty.call(svgProto, "getBoundingClientRect")) {
+      const own = (el) => el.localName === "svg" ? el : el.closest?.("svg") || el;
+      svgProto.getBoundingClientRect = function() {
+        return rectOf(frameOf(own(this)));
+      };
+      svgProto.getClientRects = function() {
+        const r = rectOf(frameOf(own(this)));
+        return r.width || r.height ? [r] : [];
+      };
+    }
+  }
   elProto.getClientRects = function() {
     if (!renderer) return [];
     if (!renderer.rendering) renderer.render();
@@ -9274,10 +10257,12 @@ ${a.stack || ""}`;
   Object.getPrototypeOf(document.createElement("div")).click = elProto.click = function() {
     if (clicking.has(this)) return;
     clicking.add(this);
+    synthetic++;
     try {
       activate(this, 0);
     } finally {
       clicking.delete(this);
+      synthetic--;
     }
   };
   g.scrollTo = g.scroll = (x, y) => {
@@ -9301,6 +10286,10 @@ ${a.stack || ""}`;
     return this.documentElement;
   }, configurable: true });
   var active = null;
+  var quietBlur = () => {
+    active = null;
+    setFocusVisible(null);
+  };
   var keyboardFocus = true;
   var TEXT_INPUTS2 = /* @__PURE__ */ new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
   var textField = (el) => el?.localName === "textarea" || el?.isContentEditable || el?.localName === "input" && TEXT_INPUTS2.has((el.getAttribute("type") || "").toLowerCase());
@@ -9312,7 +10301,7 @@ ${a.stack || ""}`;
     edited.delete(el);
     if (el.value === changeBase.get(el)) return;
     changeBase.set(el, el.value);
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
   }
   var DROP_INPUTS = /* @__PURE__ */ new Set(["", "text", "search", "url", "tel", "password", "email"]);
   function dropEditable(el) {
@@ -9326,7 +10315,7 @@ ${a.stack || ""}`;
   function dropText(el, text) {
     if (active !== el) el.focus();
     const before = inputEvent("beforeinput", "insertFromDrop", text, true);
-    el.dispatchEvent(before);
+    el.dispatchEvent(trusted(before));
     if (before.defaultPrevented) return false;
     if (el.localName === "input" || el.localName === "textarea") {
       const t = el.localName === "input" ? text.replace(/[\r\n]+/g, "") : text;
@@ -9335,11 +10324,11 @@ ${a.stack || ""}`;
       setNative(el, "value", value.slice(0, start) + t + value.slice(end));
       edited.add(el);
       el.setSelectionRange(start + t.length, start + t.length);
-      el.dispatchEvent(inputEvent("input", "insertFromDrop", t, false));
+      el.dispatchEvent(trusted(inputEvent("input", "insertFromDrop", t, false)));
       return true;
     }
     el.appendChild(document.createTextNode(text));
-    el.dispatchEvent(inputEvent("input", "insertFromDrop", text, false));
+    el.dispatchEvent(trusted(inputEvent("input", "insertFromDrop", text, false)));
     return true;
   }
   var focusEvent = (type, bubbles, relatedTarget) => {
@@ -9362,8 +10351,8 @@ ${a.stack || ""}`;
         active = null;
         setFocusVisible(null);
         if (old.dispatchEvent) {
-          old.dispatchEvent(focusEvent("blur", false, el || null));
-          old.dispatchEvent(focusEvent("focusout", true, el || null));
+          old.dispatchEvent(trusted(focusEvent("blur", false, el || null)));
+          old.dispatchEvent(trusted(focusEvent("focusout", true, el || null)));
         }
         if (active !== null) return;
       }
@@ -9378,8 +10367,8 @@ ${a.stack || ""}`;
       if (visible) el.setAttribute?.("data-nui-focus-visible", "");
       setFocusVisible(visible ? el : null);
       if (el.dispatchEvent) {
-        el.dispatchEvent(focusEvent("focus", false, old));
-        if (active === el) el.dispatchEvent(focusEvent("focusin", true, old));
+        el.dispatchEvent(trusted(focusEvent("focus", false, old)));
+        if (active === el) el.dispatchEvent(trusted(focusEvent("focusin", true, old)));
       }
     },
     configurable: true
@@ -9387,13 +10376,62 @@ ${a.stack || ""}`;
   Object.defineProperty(document, "activeElement", { get() {
     return this.__active || this.body;
   }, configurable: true });
+  var ORIGIN = "app://localhost";
   var startUrl = String(host.url || "");
-  var hashAt = startUrl.indexOf("#");
-  var hash = hashAt >= 0 ? startUrl.slice(hashAt) : "";
-  var beforeHash = hashAt >= 0 ? startUrl.slice(0, hashAt) : startUrl;
-  var search = beforeHash.indexOf("?") >= 0 ? beforeHash.slice(beforeHash.indexOf("?")) : "";
-  if (hash === "#") hash = "";
-  var fireHash = () => setTimeout(() => fireWindow(new Event("hashchange")), 0);
+  var entryOf = (href, state) => {
+    const u = new URL(href, ORIGIN + "/index.html");
+    return { pathname: u.pathname, search: u.search, hash: u.hash === "#" ? "" : u.hash, state };
+  };
+  var sessionEntries = [entryOf(startUrl.replace(/^\/+/, ""), null)];
+  var sessionIndex = 0;
+  var current = () => sessionEntries[sessionIndex];
+  var fireHash = (oldURL, newURL) => setTimeout(() => {
+    const ev = trusted(new Event("hashchange"));
+    ev.oldURL = oldURL;
+    ev.newURL = newURL;
+    fireWindow(ev);
+  }, 0);
+  var firePop = (state) => {
+    const ev = trusted(new Event("popstate"));
+    ev.state = state;
+    fireWindow(ev);
+  };
+  var cloneState = (state) => {
+    if (state === void 0 || state === null) return null;
+    if (typeof g.structuredClone === "function") return g.structuredClone(state);
+    return JSON.parse(JSON.stringify(state));
+  };
+  var sameOrigin = (url) => {
+    const u = new URL(String(url), location.href);
+    if (u.origin !== ORIGIN) throw typeof DOMException === "function" ? new DOMException(`Can't change the URL to ${u.href}`, "SecurityError") : new Error("SecurityError");
+    return u.href;
+  };
+  var hrefOf = (e) => ORIGIN + e.pathname + e.search + e.hash;
+  var navigateHash = (newHash, replace) => {
+    const before = current();
+    if (newHash === before.hash) return;
+    const entry = { ...before, hash: newHash, state: null };
+    if (replace) sessionEntries[sessionIndex] = entry;
+    else {
+      sessionEntries.length = sessionIndex + 1;
+      sessionEntries.push(entry);
+      sessionIndex++;
+    }
+    if (!replace) firePop(null);
+    fireHash(hrefOf(before), hrefOf(entry));
+  };
+  var traverse = (delta) => {
+    const to = sessionIndex + delta;
+    if (!delta || to < 0 || to >= sessionEntries.length) return;
+    setTimeout(() => {
+      if (to < 0 || to >= sessionEntries.length) return;
+      const before = current();
+      sessionIndex = to;
+      const after = current();
+      firePop(after.state);
+      if (after.hash !== before.hash) fireHash(hrefOf(before), hrefOf(after));
+    }, 0);
+  };
   var emptySelection = () => ({
     isCollapsed: true,
     rangeCount: 0,
@@ -9419,35 +10457,39 @@ ${a.stack || ""}`;
     }
   });
   g.getSelection = emptySelection;
+  for (const [name, answer] of [["alert", void 0], ["confirm", false], ["prompt", null]]) {
+    if (typeof g[name] === "function") continue;
+    g[name] = (message) => {
+      console.warn(`${name}() isn't available in the native renderer (it would block): use a <dialog>. Message: ${String(message ?? "").slice(0, 200)}`);
+      return answer;
+    };
+  }
   if (typeof document !== "undefined" && !document.getSelection) document.getSelection = emptySelection;
   g.location = {
     get hash() {
-      return hash;
+      return current().hash;
     },
     set hash(v) {
       v = String(v);
       if (v && !v.startsWith("#")) v = "#" + v;
-      if (v !== hash) {
-        hash = v;
-        history.push(v);
-        fireHash();
-      }
+      if (v === "#") v = "";
+      navigateHash(v, false);
     },
     get search() {
-      return search;
+      return current().search;
     },
     get href() {
-      return `app://localhost/index.html${search}${hash}`;
+      return hrefOf(current());
     },
     set href(v) {
       const i = String(v).indexOf("#");
       if (i >= 0) this.hash = String(v).slice(i);
     },
     get pathname() {
-      return "/index.html";
+      return current().pathname;
     },
     get origin() {
-      return "app://localhost";
+      return ORIGIN;
     },
     get protocol() {
       return "app:";
@@ -9455,15 +10497,15 @@ ${a.stack || ""}`;
     get host() {
       return "localhost";
     },
+    get hostname() {
+      return "localhost";
+    },
+    get port() {
+      return "";
+    },
     replace(v) {
       const i = String(v).indexOf("#");
-      if (i >= 0) {
-        const nv = String(v).slice(i);
-        if (nv !== hash) {
-          hash = nv;
-          fireHash();
-        }
-      }
+      if (i >= 0) navigateHash(String(v).slice(i) === "#" ? "" : String(v).slice(i), true);
     },
     assign(v) {
       this.href = v;
@@ -9476,28 +10518,266 @@ ${a.stack || ""}`;
       return this.href;
     }
   };
-  var history = [];
   g.history = {
     get length() {
-      return history.length + 1;
+      return sessionEntries.length;
+    },
+    get state() {
+      return current().state;
+    },
+    scrollRestoration: "auto",
+    pushState(state, _title, url) {
+      const entry = url == null ? { ...current() } : entryOf(sameOrigin(url), null);
+      entry.state = cloneState(state);
+      sessionEntries.length = sessionIndex + 1;
+      sessionEntries.push(entry);
+      sessionIndex++;
+    },
+    replaceState(state, _title, url) {
+      const entry = url == null ? { ...current() } : entryOf(sameOrigin(url), null);
+      entry.state = cloneState(state);
+      sessionEntries[sessionIndex] = entry;
     },
     back() {
-      history.pop();
-      const v = history[history.length - 1] || "";
-      if (v !== hash) {
-        hash = v;
-        fireHash();
-      }
-    },
-    pushState() {
-    },
-    replaceState() {
-    },
-    go() {
+      traverse(-1);
     },
     forward() {
+      traverse(1);
+    },
+    go(delta = 0) {
+      traverse(Math.trunc(Number(delta)) || 0);
     }
   };
+  var historyBack = () => {
+    const d = topModal();
+    if (d) {
+      cancelDialog(d);
+      return true;
+    }
+    if (sessionIndex === 0) return false;
+    traverse(-1);
+    return true;
+  };
+  function setDetailsOpen(details, v) {
+    if (!!v === details.hasAttribute("open")) return;
+    if (v) details.setAttribute("open", "");
+    else details.removeAttribute("open");
+    const newState = v ? "open" : "closed", oldState = v ? "closed" : "open";
+    setTimeout(() => {
+      const ev = new Event("toggle");
+      ev.oldState = oldState;
+      ev.newState = newState;
+      details.dispatchEvent(trusted(ev));
+    }, 0);
+  }
+  var topLayer = [];
+  var openModals = () => {
+    for (let i = topLayer.length - 1; i >= 0; i--) {
+      const el = topLayer[i];
+      const live = el.isConnected && (el.localName === "dialog" && el.hasAttribute("data-nui-modal") ? el.hasAttribute("open") : el.hasAttribute("data-nui-popover-open"));
+      if (!live) {
+        topLayer.splice(i, 1);
+        el.removeAttribute("data-nui-modal");
+        el.removeAttribute("data-nui-popover-open");
+      }
+    }
+    return topLayer;
+  };
+  var topModal = () => {
+    const l = openModals();
+    for (let i = l.length - 1; i >= 0; i--) if (l[i].hasAttribute("data-nui-modal")) return l[i];
+    return null;
+  };
+  var dialogState = /* @__PURE__ */ new WeakMap();
+  var stateOf = (d) => {
+    let st = dialogState.get(d);
+    if (!st) dialogState.set(d, st = { returnValue: "", focusBack: null });
+    return st;
+  };
+  var invalidState = (msg) => typeof DOMException === "function" ? new DOMException(msg, "InvalidStateError") : new Error(msg);
+  function focusDialog(d) {
+    const auto = d.querySelector("[autofocus]");
+    const target = auto && !disabledControl(auto) && shown(auto) ? auto : tabCandidates(d).els[0];
+    if (target) target.focus();
+    else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  }
+  function closeDialog(d, returnValue) {
+    if (!d.hasAttribute("open")) return;
+    const st = stateOf(d);
+    if (returnValue !== void 0) st.returnValue = String(returnValue);
+    d.removeAttribute("open");
+    d.removeAttribute("data-nui-modal");
+    const at = topLayer.indexOf(d);
+    if (at >= 0) topLayer.splice(at, 1);
+    const back = st.focusBack;
+    st.focusBack = null;
+    if (back && back.isConnected && back !== document.body && typeof back.focus === "function" && (!document.activeElement || d.contains(document.activeElement) || document.activeElement === document.body)) back.focus();
+    setTimeout(() => d.dispatchEvent(trusted(new Event("close"))), 0);
+  }
+  function cancelDialog(d, returnValue) {
+    const ev = new Event("cancel", { cancelable: true });
+    d.dispatchEvent(trusted(ev));
+    if (!ev.defaultPrevented) closeDialog(d, returnValue);
+  }
+  {
+    const detailsProto = Object.getPrototypeOf(document.createElement("details"));
+    const proto = Object.getPrototypeOf(document.createElement("dialog"));
+    const setDialogOpen = (d, v) => {
+      if (v) d.setAttribute("open", "");
+      else closeDialog(d);
+    };
+    const openOf = (set) => ({ get() {
+      return this.hasAttribute("open");
+    }, set(v) {
+      set(this, v);
+    }, configurable: true });
+    if (detailsProto === proto) {
+      Object.defineProperty(proto, "open", openOf((el, v) => (el.localName === "dialog" ? setDialogOpen : setDetailsOpen)(el, v)));
+    } else {
+      Object.defineProperty(detailsProto, "open", openOf(setDetailsOpen));
+      Object.defineProperty(proto, "open", openOf(setDialogOpen));
+    }
+    Object.defineProperties(proto, {
+      returnValue: {
+        get() {
+          return stateOf(this).returnValue;
+        },
+        set(v) {
+          stateOf(this).returnValue = String(v);
+        },
+        configurable: true
+      },
+      show: {
+        value: function show() {
+          if (this.hasAttribute("open")) {
+            if (topLayer.includes(this)) throw invalidState("The dialog is already open as a modal");
+            return;
+          }
+          stateOf(this).focusBack = document.activeElement;
+          this.setAttribute("open", "");
+          focusDialog(this);
+        },
+        writable: true,
+        configurable: true
+      },
+      showModal: {
+        value: function showModal() {
+          if (this.hasAttribute("open")) {
+            if (openModals().includes(this)) return;
+            throw invalidState("The dialog is already open as a non-modal dialog");
+          }
+          if (!this.isConnected) throw invalidState("The dialog isn't in the document");
+          stateOf(this).focusBack = document.activeElement;
+          this.setAttribute("open", "");
+          this.setAttribute("data-nui-modal", "");
+          topLayer.push(this);
+          focusDialog(this);
+        },
+        writable: true,
+        configurable: true
+      },
+      close: { value: function close(returnValue) {
+        closeDialog(this, returnValue);
+      }, writable: true, configurable: true },
+      requestClose: { value: function requestClose(returnValue) {
+        if (this.hasAttribute("open")) cancelDialog(this, returnValue);
+      }, writable: true, configurable: true }
+    });
+    g.HTMLDialogElement ??= proto.constructor;
+  }
+  var popoverState = (el) => {
+    const v = el.getAttribute("popover");
+    if (v === null) return null;
+    return v.toLowerCase() === "manual" ? "manual" : v.toLowerCase() === "hint" ? "hint" : "auto";
+  };
+  var autoPopover = (el) => popoverState(el) === "auto" && el.hasAttribute("data-nui-popover-open");
+  var notSupported = (msg) => typeof DOMException === "function" ? new DOMException(msg, "NotSupportedError") : new Error(msg);
+  function fireToggle(el, oldState, newState, cancelable) {
+    const ev = new Event("beforetoggle", { cancelable });
+    ev.oldState = oldState;
+    ev.newState = newState;
+    el.dispatchEvent(trusted(ev));
+    return !ev.defaultPrevented;
+  }
+  function queueToggle(el, oldState, newState) {
+    setTimeout(() => {
+      const ev = new Event("toggle");
+      ev.oldState = oldState;
+      ev.newState = newState;
+      el.dispatchEvent(trusted(ev));
+    }, 0);
+  }
+  function showPopoverEl(el) {
+    if (!popoverState(el)) throw notSupported("Not a popover");
+    if (el.hasAttribute("data-nui-popover-open")) return;
+    if (!el.isConnected) throw invalidState("The popover isn't in the document");
+    if (!fireToggle(el, "closed", "open", true)) return;
+    if (popoverState(el) === "auto") {
+      for (const other of [...openModals()]) if (other !== el && autoPopover(other) && !other.contains(el)) hidePopoverEl(other);
+    }
+    el.setAttribute("data-nui-popover-open", "");
+    topLayer.push(el);
+    queueToggle(el, "closed", "open");
+  }
+  function hidePopoverEl(el) {
+    if (!el.hasAttribute("data-nui-popover-open")) return;
+    fireToggle(el, "open", "closed", false);
+    el.removeAttribute("data-nui-popover-open");
+    const at = topLayer.indexOf(el);
+    if (at >= 0) topLayer.splice(at, 1);
+    queueToggle(el, "open", "closed");
+  }
+  function lightDismiss(target) {
+    for (const el of [...openModals()].reverse()) {
+      if (!autoPopover(el)) continue;
+      if (target && el.contains(target)) return;
+      hidePopoverEl(el);
+    }
+  }
+  {
+    const proto = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div")));
+    Object.defineProperties(proto, {
+      popover: {
+        get() {
+          return popoverState(this);
+        },
+        set(v) {
+          if (v === null) this.removeAttribute("popover");
+          else this.setAttribute("popover", String(v));
+        },
+        configurable: true
+      },
+      showPopover: { value: function showPopover() {
+        showPopoverEl(this);
+      }, writable: true, configurable: true },
+      hidePopover: { value: function hidePopover() {
+        hidePopoverEl(this);
+      }, writable: true, configurable: true },
+      togglePopover: {
+        value: function togglePopover(force) {
+          const open = this.hasAttribute("data-nui-popover-open");
+          const want = typeof force === "object" && force !== null ? force.force : force;
+          if (want === void 0 ? open : !want) hidePopoverEl(this);
+          else showPopoverEl(this);
+          return this.hasAttribute("data-nui-popover-open");
+        },
+        writable: true,
+        configurable: true
+      }
+    });
+  }
+  var statePseudos = (sel) => typeof sel === "string" && sel.includes(":") ? sel.replace(/(?<!:):(focus-visible|focus|hover|active|popover-open|modal)(?![-\w(])/g, (_, name) => `[data-nui-${name}]`) : sel;
+  for (const proto of /* @__PURE__ */ new Set([Object.getPrototypeOf(Object.getPrototypeOf(document.createElement("div"))), Object.getPrototypeOf(document), Object.getPrototypeOf(document.createDocumentFragment())])) {
+    for (const name of ["matches", "closest", "querySelector", "querySelectorAll", "webkitMatchesSelector"]) {
+      let owner = proto;
+      while (owner && !Object.prototype.hasOwnProperty.call(owner, name)) owner = Object.getPrototypeOf(owner);
+      const original = owner?.[name];
+      if (typeof original !== "function") continue;
+      Object.defineProperty(proto, name, { value: function(sel, ...rest) {
+        return original.call(this, statePseudos(sel), ...rest);
+      }, writable: true, configurable: true });
+    }
+  }
   for (const a of document.querySelectorAll("a[href]")) {
     Object.defineProperty(a, "hash", { get() {
       const h = this.getAttribute("href") || "";
@@ -9608,7 +10888,9 @@ ${a.stack || ""}`;
   viewport.forced = forcedColorsOf(platform.forcedColors);
   setFocusRingOS(platform.os, (kind) => host.focusRing(kind, platform.accent));
   setNativeControls(platform.controls);
-  g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language: "en-US", languages: ["en-US"], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
+  var language = typeof platform.locale === "string" && /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/.test(platform.locale) ? platform.locale : "en-US";
+  installIntl(g, language);
+  g.navigator = { userAgent: `Oriel native (${platform.os || "unknown"})`, platform: platform.os || "", language, languages: [language], clipboard: void 0, maxTouchPoints: viewport.coarse ? 5 : 0 };
   Object.defineProperty(g, "innerWidth", { get: () => viewport.width });
   Object.defineProperty(g, "innerHeight", { get: () => viewport.height });
   viewport.dpr = platform.dpr > 0 ? +platform.dpr : 1;
@@ -9685,6 +10967,13 @@ ${a.stack || ""}`;
     if (el.localName === "input" && /^(button|submit|reset|image)$/.test(el.type)) return el.type === "image" ? "submit" : el.type;
     return null;
   }
+  function focusFixup() {
+    const el = document.__active;
+    if (!el || el.isConnected && !disabledControl(el)) return;
+    el.removeAttribute?.("data-nui-focus");
+    el.removeAttribute?.("data-nui-focus-visible");
+    quietBlur();
+  }
   function disabledControl(el) {
     if (!CONTROLS2.has(el?.localName)) return false;
     if (el.hasAttribute("disabled")) return true;
@@ -9707,18 +10996,22 @@ ${a.stack || ""}`;
     const [clientX, clientY] = lastPointer;
     lastPointer = [0, 0];
     const ev = new MouseEvent("click", { bubbles: true, cancelable: true, clientX, clientY, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2) });
-    el.dispatchEvent(ev);
+    el.dispatchEvent(trusted(ev));
     if (undo) {
       if (ev.defaultPrevented) undo();
       else if (!radioWasOn) {
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(trusted(new Event("input", { bubbles: true })));
+        el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
       }
       return;
     }
     if (ev.defaultPrevented || isCheckable(el)) return;
     for (let n2 = el; n2 && n2.nodeType === 1; n2 = n2.parentNode) {
       const tag = n2.localName;
+      if (isFileInput(n2)) {
+        pickFile(n2);
+        return;
+      }
       if (tag === "a") {
         const href = n2.getAttribute("href") || "";
         if (href.startsWith("#")) location.hash = href;
@@ -9726,22 +11019,142 @@ ${a.stack || ""}`;
         });
         return;
       }
+      if (tag === "summary" && n2.parentElement?.localName === "details") {
+        setDetailsOpen(n2.parentElement, !n2.parentElement.hasAttribute("open"));
+        return;
+      }
       if (tag === "label") {
         const ctl = n2.htmlFor ? document.getElementById(n2.getAttribute("for")) : n2.querySelector("input, textarea, select, button");
         if (ctl && ctl !== el && !ctl.contains?.(el) && !disabledControl(ctl)) {
-          if (isCheckable(ctl)) activate(ctl, flags);
+          if (isCheckable(ctl) || isFileInput(ctl)) activate(ctl, flags);
           else ctl.focus();
         }
         return;
       }
       const type = buttonType(n2);
+      if (type && n2.hasAttribute("popovertarget")) {
+        const target = document.getElementById(n2.getAttribute("popovertarget"));
+        if (target && popoverState(target) && !disabledControl(n2)) {
+          const action = (n2.getAttribute("popovertargetaction") || "toggle").toLowerCase();
+          if (action === "show") showPopoverEl(target);
+          else if (action === "hide") hidePopoverEl(target);
+          else target.togglePopover();
+        }
+        return;
+      }
       if (type) {
         if (disabledControl(n2)) return;
         const form = n2.closest("form");
-        if (type === "submit" && form) submit(form);
+        if (type === "submit" && form) submit(form, n2);
         else if (type === "reset" && form) reset(form);
         return;
       }
+    }
+  }
+  var isFileInput = (el) => el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "file";
+  var pickedFiles = /* @__PURE__ */ new WeakMap();
+  var isDateInput = (el) => el.localName === "input" && (el.getAttribute("type") || "").toLowerCase() === "date";
+  function validDate(s) {
+    const m = /^(\d{4,})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return false;
+    const [y, mo, d] = [+m[1], +m[2], +m[3]];
+    return y > 0 && mo >= 1 && mo <= 12 && d >= 1 && d <= new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  }
+  var picking = /* @__PURE__ */ new WeakSet();
+  var ACCEPT_EXTENSIONS = {
+    "image/*": ["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp"],
+    "image/jpeg": ["jpg", "jpeg"],
+    "image/png": ["png"],
+    "image/gif": ["gif"],
+    "image/webp": ["webp"],
+    "image/heic": ["heic"],
+    "application/pdf": ["pdf"],
+    "application/json": ["json"],
+    "text/plain": ["txt"],
+    "text/csv": ["csv"],
+    "video/*": ["mp4", "mov", "webm", "mkv"],
+    "audio/*": ["mp3", "wav", "ogg", "m4a", "flac"]
+  };
+  function acceptExtensions(accept) {
+    const out = [];
+    for (const raw of String(accept || "").split(",")) {
+      const a = raw.trim().toLowerCase();
+      if (!a) continue;
+      if (a.startsWith(".")) out.push(a.slice(1));
+      else if (ACCEPT_EXTENSIONS[a]) out.push(...ACCEPT_EXTENSIONS[a]);
+      else return [];
+    }
+    return [...new Set(out)];
+  }
+  async function pickFile(input) {
+    if (disabledControl(input) || picking.has(input)) return;
+    picking.add(input);
+    try {
+      const accept = (input.getAttribute("accept") || "").toLowerCase();
+      const camera = input.hasAttribute("capture") && (platform.os === "android" || platform.os === "ios") && (!accept || accept.split(",").some((a) => a.trim().startsWith("image/")));
+      let file = null;
+      if (camera) {
+        let photo = null;
+        try {
+          photo = await invoke("camera:capture", { source: "camera" });
+        } catch (e) {
+          const why = String(e?.message || e);
+          if (why === "PermissionDenied") console.warn("file input: the camera permission was refused");
+          else if (why !== "Cancelled") throw e;
+        }
+        if (photo) {
+          const bytes = blobs.fromBase64(photo.dataUrl.slice(photo.dataUrl.indexOf(",") + 1));
+          file = new g.File([bytes], `photo.${photo.mime === "image/png" ? "png" : "jpg"}`, { type: photo.mime });
+        }
+      } else {
+        const picked = await invoke("nui:pick_file", { extensions: acceptExtensions(accept) });
+        const item = picked && await invoke("nui:picked_file", { token: picked.token });
+        if (item) file = blobs.droppedFile(item[1], item[0], item[2], item[3], item[4]);
+      }
+      if (!file) {
+        input.dispatchEvent(trusted(new Event("cancel", { bubbles: true })));
+        return;
+      }
+      pickedFiles.set(input, blobs.fileList([file]));
+      renderer?.mark(input, 1);
+      input.dispatchEvent(trusted(new Event("input", { bubbles: true })));
+      input.dispatchEvent(trusted(new Event("change", { bubbles: true })));
+    } catch (e) {
+      console.error("file input:", e?.message || e);
+      input.dispatchEvent(trusted(new Event("cancel", { bubbles: true })));
+    } finally {
+      picking.delete(input);
+    }
+  }
+  {
+    const proto = Object.getPrototypeOf(document.createElement("input"));
+    const valueDesc2 = Object.getOwnPropertyDescriptor(proto, "value") || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(proto), "value");
+    Object.defineProperty(proto, "files", {
+      get() {
+        return isFileInput(this) ? pickedFiles.get(this) || blobs.fileList([]) : null;
+      },
+      set(list) {
+        if (isFileInput(this) && list && typeof list.length === "number") {
+          pickedFiles.set(this, list);
+          renderer?.mark(this, 1);
+        }
+      },
+      configurable: true
+    });
+    if (valueDesc2?.get) {
+      Object.defineProperty(proto, "value", {
+        get() {
+          if (!isFileInput(this)) return valueDesc2.get.call(this);
+          const first = pickedFiles.get(this)?.[0];
+          return first ? "C:\\fakepath\\" + first.name : "";
+        },
+        set(v) {
+          if (isDateInput(this)) return valueDesc2.set.call(this, validDate(String(v)) ? String(v) : "");
+          if (!isFileInput(this)) return valueDesc2.set.call(this, v);
+          if (String(v) === "" && pickedFiles.delete(this)) renderer?.mark(this, 1);
+        },
+        configurable: true
+      });
     }
   }
   function check(input) {
@@ -9763,13 +11176,19 @@ ${a.stack || ""}`;
       for (const [n2, v] of before) setNative(n2, "checked", v);
     };
   }
-  function submit(form) {
+  function submit(form, submitter = null) {
     const ev = new Event("submit", { bubbles: true, cancelable: true });
-    form.dispatchEvent(ev);
+    ev.submitter = submitter;
+    form.dispatchEvent(trusted(ev));
+    const method = (submitter?.getAttribute?.("formmethod") || form.getAttribute("method") || "").toLowerCase();
+    if (!ev.defaultPrevented && method === "dialog") {
+      const d = form.closest("dialog");
+      if (d) closeDialog(d, submitter?.hasAttribute?.("value") ? submitter.getAttribute("value") : void 0);
+    }
   }
   function reset(form) {
     const ev = new Event("reset", { bubbles: true, cancelable: true });
-    form.dispatchEvent(ev);
+    form.dispatchEvent(trusted(ev));
     if (ev.defaultPrevented) return;
     for (const c of form.querySelectorAll("input, textarea, select")) {
       if (isCheckable(c)) {
@@ -9799,29 +11218,40 @@ ${a.stack || ""}`;
     const [key, flags, repeat] = data;
     const init = { key, code: key, bubbles: true, cancelable: true, repeat: !!repeat, shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
     const ev = new KeyboardEvent(type, init);
-    (el || document.body).dispatchEvent(ev);
+    (el || document.body).dispatchEvent(trusted(ev));
     if (!ev.defaultPrevented) fireWindow(ev);
     if (type === "keydown" && !ev.defaultPrevented && keypressFor(key, init)) {
       const press = new KeyboardEvent("keypress", init);
-      (el || document.body).dispatchEvent(press);
+      (el || document.body).dispatchEvent(trusted(press));
       if (!press.defaultPrevented) fireWindow(press);
       if (press.defaultPrevented) return true;
     }
     const mods = init.ctrlKey || init.altKey || init.metaKey;
+    if (type === "keydown" && key === "Escape" && !ev.defaultPrevented) {
+      const top = openModals()[openModals().length - 1];
+      if (top && autoPopover(top)) {
+        hidePopoverEl(top);
+        return true;
+      }
+      if (topModal()) {
+        cancelDialog(topModal());
+        return true;
+      }
+    }
     if (el && !mods && !disabledControl(el)) {
       if (type === "keydown" && key === " ") spacePress = ev.defaultPrevented ? null : el;
       if (!ev.defaultPrevented) {
         const link = el.localName === "a" && el.hasAttribute("href") || el.localName === "summary";
-        if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el), link, isCheckable(el))) {
+        if ((key !== " " || spacePress === el) && host.activates(key, type === "keydown", !!repeat, !!buttonType(el) || isFileInput(el), link, isCheckable(el))) {
           if (key === " ") spacePress = null;
           activate(el, flags);
           return true;
         }
         if (type === "keydown" && el.type === "radio" && el.localName === "input" && /^Arrow(Up|Down|Left|Right)$/.test(key)) {
-          const group = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
-          const at = group.indexOf(el);
-          if (group.length > 1 && at >= 0) {
-            const next = group[(at + (key === "ArrowDown" || key === "ArrowRight" ? 1 : -1) + group.length) % group.length];
+          const group2 = radioGroup(el).filter((r) => !disabledControl(r) && shown(r));
+          const at = group2.indexOf(el);
+          if (group2.length > 1 && at >= 0) {
+            const next = group2[(at + (key === "ArrowDown" || key === "ArrowRight" ? 1 : -1) + group2.length) % group2.length];
             keyboardFocus = true;
             next.focus();
             activate(next, flags);
@@ -9836,7 +11266,7 @@ ${a.stack || ""}`;
     }
     if (type === "keydown" && !ev.defaultPrevented && key === "Enter" && el?.localName === "input") {
       if (changeField(el)) {
-        el.dispatchEvent(inputEvent("beforeinput", "insertLineBreak", null, true));
+        el.dispatchEvent(trusted(inputEvent("beforeinput", "insertLineBreak", null, true)));
         fireChange(el);
       }
       const form = el.closest("form");
@@ -9876,25 +11306,25 @@ ${a.stack || ""}`;
   function focusKind(el) {
     return textLike(el) ? 0 : CONTROLS2.has(el.localName) ? 1 : 2;
   }
-  function tabCandidates() {
+  function tabCandidates(scope = topModal() || document) {
     const els = [], spec = [], groups = /* @__PURE__ */ new Map();
     let groupCount = 0;
-    for (const el of document.querySelectorAll(FOCUSABLE2)) {
+    for (const el of scope.querySelectorAll(FOCUSABLE2)) {
       const index = parseInt(el.getAttribute("tabindex"), 10);
       const explicit = Number.isInteger(index) && index >= -2147483648 && index <= 2147483647;
       if (!explicit && !naturallyFocusable(el)) continue;
       if (disabledControl(el) || !shown(el)) continue;
-      let group = 0;
+      let group2 = 0;
       if (el.localName === "input" && el.type === "radio" && el.getAttribute("name")) {
         const owner = el.closest("form") || document;
         if (!groups.has(owner)) groups.set(owner, /* @__PURE__ */ new Map());
         const byName = groups.get(owner);
         const name = el.getAttribute("name");
         if (!byName.has(name)) byName.set(name, ++groupCount);
-        group = byName.get(name);
+        group2 = byName.get(name);
       }
       els.push(el);
-      spec.push([focusKind(el), explicit ? index : null, group, !!el.checked]);
+      spec.push([focusKind(el), explicit ? index : null, group2, !!el.checked]);
     }
     return { els, spec };
   }
@@ -9947,6 +11377,7 @@ ${a.stack || ""}`;
     const next = els[at];
     keyboardFocus = true;
     next.focus();
+    if (textField(next) && next.localName !== "textarea" && !next.isContentEditable && typeof next.select === "function") next.select();
     next.scrollIntoView({ block: "nearest" });
     return true;
   }
@@ -9965,7 +11396,7 @@ ${a.stack || ""}`;
     return 0;
   }
   function fireAt(target, ev) {
-    target.dispatchEvent(ev);
+    target.dispatchEvent(trusted(ev));
     if (!FORWARDED.has(ev.type) && ev.bubbles && !ev.cancelBubble) {
       if (ev.target !== target) Object.defineProperty(ev, "target", { value: target, configurable: true });
       fireWindow(ev);
@@ -9981,6 +11412,7 @@ ${a.stack || ""}`;
     if (phase === "down" || !target?.isConnected) target = el || document.documentElement || document.body;
     if (phase === "down") blankPress.set(pointerId, !el && buttons === 1);
     if (phase === "down") captured.set(pointerId, target);
+    if (phase === "down") lightDismiss(el);
     else if (phase === "up" || phase === "cancel") captured.delete(pointerId);
     const mods = { shiftKey: !!(flags & 1), ctrlKey: !!(flags & 2), altKey: !!(flags & 4), metaKey: !!(flags & 8) };
     const held = heldButtons.get(pointerId) || 0;
@@ -10046,7 +11478,7 @@ ${a.stack || ""}`;
       const ev = new Event(type, { bubbles, cancelable: bubbles });
       Object.defineProperty(ev, "relatedTarget", { value: related, configurable: true });
       for (const k of ["clientX", "clientY", "pageX", "pageY", "screenX", "screenY", "button", "buttons"]) Object.defineProperty(ev, k, { value: 0, configurable: true });
-      target.dispatchEvent(ev);
+      target.dispatchEvent(trusted(ev));
     };
     for (const prefix of ["pointer", "mouse"]) {
       fire(from, prefix + "out", true, to);
@@ -10152,6 +11584,7 @@ ${a.stack || ""}`;
     };
   };
   var sheetOf = ownSlot("sheet");
+  var assetName = (url) => String(url).replace(/[?#].*$/, "").replace(/^\.?\//, "");
   function isSheetLink(el) {
     const rel = el.getAttribute("rel") || "";
     return /(^|\s)stylesheet(\s|$)/i.test(rel) && !/(^|\s)alternate(\s|$)/i.test(rel) && el.hasAttribute("href");
@@ -10161,10 +11594,10 @@ ${a.stack || ""}`;
     const href = el.getAttribute("href");
     let got = linkCss.get(el);
     if (!got || got.href !== href) {
-      const css = host.asset(href.replace(/^\.?\//, "")) ?? null;
+      const css = host.asset(assetName(href)) ?? null;
       linkCss.set(el, got = { href, css });
       if (css === null) console.warn(`stylesheet not found: ${href}`);
-      if (!booting) queueMicrotask(() => el.dispatchEvent(new Event(css === null ? "error" : "load")));
+      if (!booting) queueMicrotask(() => el.dispatchEvent(trusted(new Event(css === null ? "error" : "load"))));
     }
     return got.css;
   }
@@ -10178,7 +11611,7 @@ ${a.stack || ""}`;
       if (text === null) continue;
       const css = sheet ? sheet.__css(text) : text;
       if (!css) continue;
-      const path = el.localName === "link" ? el.getAttribute("href").replace(/^\.?\//, "") : void 0;
+      const path = el.localName === "link" ? assetName(el.getAttribute("href")) : void 0;
       out.push({ owner: el, css, path });
     }
     return out;
@@ -10351,7 +11784,10 @@ ${a.stack || ""}`;
         const b1 = P && P();
         renderer = new Renderer(document, engine, host);
         a11y = new A11y(renderer, host, document);
-        renderer.afterRender = () => a11y.update();
+        renderer.afterRender = () => {
+          focusFixup();
+          a11y.update();
+        };
         renderer.syncSheets = () => engine.syncSheets(pageSheets(false), null);
         renderer.stateEls = () => {
           const out = [];
@@ -10359,6 +11795,7 @@ ${a.stack || ""}`;
           if (active) out.push(active);
           return out;
         };
+        renderer.topLayer = () => openModals();
         renderer.observer = new MutationObserver((records) => renderer.note(records));
         renderer.observer.__nuiConnectedOnly = true;
         renderer.observer.__nuiChild = (node, parent) => renderer.noteChild(node, parent);
@@ -10368,14 +11805,14 @@ ${a.stack || ""}`;
         for (const t of document.querySelectorAll("template")) t.content;
         for (const s of document.querySelectorAll("script")) {
           const src = s.getAttribute("src");
-          const code = src ? host.asset(src.replace(/^\.?\//, "")) : s.textContent;
+          const code = src ? host.asset(assetName(src)) : s.textContent;
           if (!code) {
             if (src) console.warn(`script not found: ${src}`);
             continue;
           }
           if (s.getAttribute("type") === "module") {
             try {
-              Promise.resolve(hostRun.module(src ? src.replace(/^\.?\//, "") : "inline.js", code)).catch((e) => console.error(e));
+              Promise.resolve(hostRun.module(src ? assetName(src) : "inline.js", code)).catch((e) => console.error(e));
             } catch (e) {
               console.error(e);
             }
@@ -10395,7 +11832,7 @@ ${a.stack || ""}`;
           }
         }
         const b3 = P && P();
-        document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
+        document.dispatchEvent(trusted(new Event("DOMContentLoaded", { bubbles: true })));
         fireWindow(new Event("load"));
         watchThemeColor();
         if (P) host.log(1, `PROF boot: styles ${(b1 - b0).toFixed(2)} (${engine.rules.length} rules), renderer ${(b2 - b1).toFixed(2)}, scripts ${(b3 - b2).toFixed(2)}, events ${(P() - b3).toFixed(2)}`);
@@ -10422,7 +11859,7 @@ ${a.stack || ""}`;
             renderer.native.set(id, value);
             setNative(el, "value", value);
             edited.add(el);
-            el.dispatchEvent(inputEvent("input", inputType, text, false));
+            el.dispatchEvent(trusted(inputEvent("input", inputType, text, false)));
             return false;
           }
           // An edit a native field is about to make: data [inputType, data].
@@ -10430,14 +11867,14 @@ ${a.stack || ""}`;
           case "beforeinput": {
             if (!el || !Array.isArray(data)) return false;
             const ev = inputEvent("beforeinput", data[0], data[1], true);
-            el.dispatchEvent(ev);
+            el.dispatchEvent(trusted(ev));
             return ev.defaultPrevented;
           }
           case "change": {
             if (!el) return false;
             renderer.native.set(id, data);
             setNative(el, "value", data);
-            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(trusted(new Event("change", { bubbles: true })));
             return false;
           }
           case "key": {
@@ -10506,7 +11943,7 @@ ${a.stack || ""}`;
             const f = data[4] | 0;
             const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: data[0], clientY: data[1], button, buttons, shiftKey: !!(f & 1), ctrlKey: !!(f & 2), altKey: !!(f & 4), metaKey: !!(f & 8) });
             const on = el || document.body;
-            on.dispatchEvent(ev);
+            on.dispatchEvent(trusted(ev));
             if (ev.target !== on) Object.defineProperty(ev, "target", { value: on, configurable: true });
             if (!ev.defaultPrevented) fireWindow(ev);
             return ev.defaultPrevented;
@@ -10527,9 +11964,7 @@ ${a.stack || ""}`;
             markChain("data-nui-active", null);
             return false;
           case "back":
-            if (!history.length) return false;
-            g.history.back();
-            return true;
+            return historyBack();
           // A drag from the system over the page, or its drop (dnd.js): an
           // effect mask (copy 1, move 2, link 4), not a bool.
           case "drag": {
@@ -10556,12 +11991,12 @@ ${a.stack || ""}`;
         for (const [id, top] of list) {
           if (id === -1) {
             const ev = new Event("scroll", { bubbles: true });
-            document.dispatchEvent(ev);
+            document.dispatchEvent(trusted(ev));
             fireWindow(ev);
             continue;
           }
           const el = renderer?.elementFor(id);
-          if (el) el.dispatchEvent(new Event("scroll", { bubbles: false }));
+          if (el) el.dispatchEvent(trusted(new Event("scroll", { bubbles: false })));
         }
       });
     },
@@ -10596,10 +12031,16 @@ ${a.stack || ""}`;
     resize(w, h, dark) {
       guard(() => {
         const before = mediaSnapshot();
+        const shrank = h < viewport.height;
         Object.assign(viewport, { width: w, height: h, dark: !!dark });
         if (renderer) renderer.markAll();
         fireWindow(new Event("resize"));
         mediaChanged(before);
+        const a = document.__active;
+        if (shrank && renderer && (platform.os === "android" || platform.os === "ios") && (textField(a) || a?.isContentEditable)) {
+          renderer.render();
+          a.scrollIntoView({ block: "nearest" });
+        }
       });
     },
     // A message for the page from a platform that posts JSON (Android's

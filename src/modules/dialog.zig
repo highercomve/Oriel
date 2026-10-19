@@ -97,6 +97,7 @@ pub const impl = switch (target.os) {
 
 test {
     std.testing.refAllDecls(common);
+    std.testing.refAllDecls(@import("dialog/page.zig"));
     if (target.os == .linux or target.os == .windows or target.os == .macos)
         _ = @import("dialog/path_folder.zig");
     std.testing.refAllDecls(@This());
