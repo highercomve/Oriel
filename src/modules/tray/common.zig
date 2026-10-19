@@ -12,6 +12,11 @@ pub const MenuItem = union(enum) {
 pub const Icon = union(enum) {
     /// PNG (or any format zigimg reads), sent as pixels. Works everywhere.
     png: []const u8,
+    /// A monochrome PNG (black + alpha) that follows the chrome's theme:
+    /// macOS shows it as a template image, recoloured by the menu bar
+    /// (black on a light one, white on a dark one, inverted while its menu
+    /// is open). Everywhere else the pixels are sent as for `png`.
+    template_png: []const u8,
     /// Icon theme name, e.g. "mail-unread".
     name: []const u8,
 };

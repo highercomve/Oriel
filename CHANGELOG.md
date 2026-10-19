@@ -2,6 +2,15 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- Tray: `.template_png` icons. A monochrome PNG (the mark in black on
+  transparency) shown as an NSImage template on macOS, so the menu bar
+  recolours it for light and dark mode itself; Linux and Windows draw the
+  pixels like `.png`.
+
 ## [0.18.0] — 2026-10-19
 
 The native renderer (`-Dnative_ui`) runs full apps that were written for a

@@ -265,7 +265,7 @@ fn handleTrayCallback(wParam: win32.WPARAM, lParam: win32.LPARAM) void {
 
 fn createIcon(gpa: std.mem.Allocator, icon: Icon) !win32.HICON {
     switch (icon) {
-        .png => |bytes| {
+        .png, .template_png => |bytes| {
             // Decoded here first. CreateIconFromResourceEx decodes a PNG
             // through WIC, and a tray create/deinit cycle with it grew the
             // process's kernel handles by 3-4 each time (Windows 11).
