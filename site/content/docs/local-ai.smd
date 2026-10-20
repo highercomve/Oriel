@@ -305,6 +305,33 @@ defer c.llama_sampler_free(grammar);
 
 `oriel.chat`'s `.schema` option does this for you.
 
+## [Serve an OpenAI chat request with the model's own template]($heading.id('example-chat-templates'))
+
+`ChatTemplates` does what llama-server does for `/v1/chat/completions`: the
+model's Jinja template (from its GGUF) renders an OpenAI request, its
+messages with tool calls and results, its tools and `response_format`, in
+the format the model was trained on, and the answer is parsed back into
+content, reasoning and tool calls (llama.cpp's `common/chat.cpp`, with the
+template's tool-call grammar, which binds only once the model starts a call):
+
+```zig
+const chat = try oriel.llama.ChatTemplates.init(gpa, model.handle, null, null);
+defer chat.deinit();
+const turn = try chat.begin(gpa, request_json, .{ .think = true, .temperature = 0.6 }, null);
+defer turn.deinit(gpa);
+// Tokenize turn.prompt (add_special, parse_special) and decode it, then:
+while (true) {
+    var tok = turn.sample(ctx);
+    if (c.llama_vocab_is_eog(vocab, tok)) break;
+    const d = try turn.feed(gpa, tok); // what the token added: d.reasoning, d.content
+    defer d.deinit(gpa);
+    if (d.stop) break;
+    _ = c.llama_decode(ctx, c.llama_batch_get_one(&tok, 1));
+}
+const final = try turn.finish(gpa); // final.message: the OpenAI message, tool_calls included
+defer final.deinit(gpa);
+```
+
 ## [Describe an image with a vision model]($heading.id('example-mtmd'))
 
 With `.llama_mtmd = true`, llama.cpp's multimodal library (`mtmd.h`,
@@ -472,6 +499,7 @@ Build requirements:
 | `Model` | `{ handle: *c.llama_model }`, with `deinit()`. |
 | `loadModel(path: [:0]const u8, params) !Model` | Load a GGUF file. `error.ModelLoadFailed` when it is missing or unreadable, `error.CpuUnsupported` when the CPU lacks the `ggml_arm` extensions. |
 | `jsonSchemaToGrammar(gpa, schema: []const u8, diag: ?*?[]u8) ![:0]u8` | The GBNF grammar for a JSON Schema (llama.cpp's own converter), for `c.llama_sampler_init_grammar(vocab, grammar, "root")`. The caller frees it. `error.InvalidSchema` with the reason in `diag` (caller frees). |
+| `ChatTemplates` | A model's own chat template: `init(gpa, model, template: ?[]const u8, diag)` (`template` overrides the GGUF's; `error.TemplateUnsupported`), `begin(gpa, request_json, .{ .think, .temperature, .seed }, diag) !Turn` (`error.BadRequest`), `deinit()`. A `Turn` has the rendered `prompt`, `sample(ctx)`, `feed(gpa, tok) !Delta` (`reasoning`, `content`, `stop`), `finish(gpa) !Final` (the last delta and the OpenAI `message` JSON) and `deinit(gpa)`. |
 | `silenceLogs() void` | Turn off ggml's and llama.cpp's stderr logging, process-wide, for good. |
 | `check(gpa, ctx) !oriel.Check` | The module's self-check (backend init and system info), used by Oriel's checks. |
 
