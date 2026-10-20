@@ -2,6 +2,22 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- `oriel.llama.ChatTemplates`: a model's own Jinja chat template serves an
+  OpenAI chat request the way llama-server does (llama.cpp's
+  `common/chat.cpp`): messages with tool calls and results, tools,
+  `response_format` and the thinking switch render in the model's native
+  format; the answer samples with the template's lazy tool-call grammar and
+  parses back into content, reasoning and tool calls, streamed as it grows.
+
+### Changed
+
+- `.llama` builds llama.cpp's `common` library (its CLI and download parts
+  aside) instead of the JSON-schema converter alone.
+
 ## [0.18.1] — 2026-10-19
 
 ### Added

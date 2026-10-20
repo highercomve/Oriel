@@ -349,6 +349,10 @@ pub fn addGgml(
     if (features.llama) {
         const l = llama_dep.?;
         oriel.addIncludePath(l.path("include"));
+        // `common` before `src`: both have a unicode.h, and common/jinja's
+        // sources reach theirs through the include path (src's own files
+        // find theirs next to them).
+        oriel.addIncludePath(l.path("common"));
         oriel.addIncludePath(l.path("src"));
         oriel.addIncludePath(l.path("src/models"));
 
@@ -359,23 +363,39 @@ pub fn addGgml(
         });
         if (features.llama_mtmd) addMtmd(b, oriel, l, c_flags, cpp_flags);
 
-        // JSON schema → GBNF grammar (llama.JsonSchema): llama.cpp's converter
-        // and its JSON type from `common`, not the whole library. The shim's
-        // common.h comes first: it stands in for common/common.h.
-        oriel.addIncludePath(b.path("src/modules/llama/shim"));
-        oriel.addIncludePath(l.path("common"));
+        // llama.zig's tests: llama.cpp's vocab-only Qwen3.5 model and its
+        // chat template.
+        const test_files = b.addOptions();
+        test_files.addOptionPath("qwen35_vocab", l.path("models/ggml-vocab-qwen35.gguf"));
+        test_files.addOptionPath("qwen35_template", l.path("models/templates/Qwen3.5-4B.jinja"));
+        oriel.addOptions("llama_test_files", test_files);
+
+        // JSON schema → GBNF grammar (llama.jsonSchemaToGrammar) and chat
+        // templates (llama.ChatTemplates): llama.cpp's `common` library
+        // without its CLI and download parts.
         oriel.addIncludePath(l.path("vendor"));
         oriel.addCSourceFiles(.{
             .root = l.path("common"),
-            // json-schema.cpp and trie.cpp/unicode.cpp: what the converter
-            // and its JSON type now reference from `common` (the shim's
-            // common.h stands in for the whole library).
-            .files = &.{ "json-schema-to-grammar.cpp", "json.cpp", "json-schema.cpp", "trie.cpp", "unicode.cpp" },
+            .files = &llama_common_sources,
             .flags = cpp_flags,
         });
+        // common.cpp reports the build (build-info.cpp.in, as CMake fills it in).
+        const build_info = b.addWriteFiles().add("build-info.cpp",
+            \\#include "build-info.h"
+            \\#include <cstdio>
+            \\#include <string>
+            \\int llama_build_number(void) { return 0; }
+            \\const char * llama_commit(void) { return "oriel"; }
+            \\const char * llama_compiler(void) { return "zig"; }
+            \\const char * llama_build_target(void) { return "oriel"; }
+            \\const char * llama_build_info(void) { return "b0-oriel"; }
+            \\void llama_print_build_info(const char * v, FILE * f) { fprintf(f, "version: %s (oriel)\n", v); }
+            \\
+        );
+        oriel.addCSourceFile(.{ .file = build_info, .flags = cpp_flags });
         oriel.addCSourceFiles(.{
             .root = b.path("src/modules/llama"),
-            .files = &.{"json_schema_grammar.cpp"},
+            .files = &.{ "json_schema_grammar.cpp", "chat_templates.cpp" },
             .flags = cpp_flags,
         });
     }
@@ -1017,6 +1037,56 @@ const fattn_defines = blk: {
         out = out ++ [_][]const u8{fattnArg(k ++ "-" ++ v)};
     };
     break :blk out;
+};
+
+/// llama.cpp's `common` (common/CMakeLists.txt) minus arg, console, download,
+/// hf-cache, llguidance and preset: what common.cpp, the samplers and the chat
+/// templates (Jinja, the PEG parsers, each model family's parser) need.
+const llama_common_sources = [_][]const u8{
+    "chat.cpp",
+    "chat-auto-parser-generator.cpp",
+    "chat-auto-parser-helpers.cpp",
+    "chat-diff-analyzer.cpp",
+    "chat-peg-parser.cpp",
+    "common.cpp",
+    "debug.cpp",
+    "fit.cpp",
+    "imatrix-loader.cpp",
+    "jinja/caps.cpp",
+    "jinja/lexer.cpp",
+    "jinja/parser.cpp",
+    "jinja/runtime.cpp",
+    "jinja/string.cpp",
+    "jinja/value.cpp",
+    "json-schema-to-grammar.cpp",
+    "json-schema.cpp",
+    "json.cpp",
+    "log.cpp",
+    "ngram-cache.cpp",
+    "ngram-map.cpp",
+    "ngram-mod.cpp",
+    "parsers/cohere2moe.cpp",
+    "parsers/deepseek.cpp",
+    "parsers/functionary-v3-2.cpp",
+    "parsers/gemma4.cpp",
+    "parsers/gigachat-v3.cpp",
+    "parsers/gpt-oss.cpp",
+    "parsers/kimi-k2.cpp",
+    "parsers/kimi-k3.cpp",
+    "parsers/lfm2.cpp",
+    "parsers/minicpm5.cpp",
+    "parsers/minimax-m3.cpp",
+    "parsers/ministral3.cpp",
+    "parsers/muse-glimmer.cpp",
+    "parsers/parsers.cpp",
+    "parsers/qwen3-coder.cpp",
+    "peg-parser.cpp",
+    "reasoning-budget.cpp",
+    "sampling.cpp",
+    "speculative.cpp",
+    "subproc.cpp",
+    "trie.cpp",
+    "unicode.cpp",
 };
 
 const llama_core_sources = [_][]const u8{
