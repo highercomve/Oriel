@@ -75,4 +75,5 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          preCommands: npx wrangler pages project create ${{ env.PROJECT }} --production-branch=main || true
           command: pages deploy public --project-name=${{ env.PROJECT }} --branch=main --commit-dirty=true
