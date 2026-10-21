@@ -55,5 +55,5 @@ file-picker hooks. Edit your source and build configuration to change behavior.
 `.dependencies` on the hook (or `.android.dependencies`) adds pinned Maven
 SDKs, and `.android.proguard_rules` adds R8 rules for JNI calls.
 
-See [Platform hooks](https://highercomve.github.io/Oriel/docs/platform-hooks/)
+See [Platform hooks](https://oriel.foreachdeveloper.com/docs/platform-hooks/)
 for a complete implementation and request-code allocation.

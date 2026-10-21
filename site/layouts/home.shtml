@@ -183,11 +183,11 @@
 		<section class="section">
 			<div class="section-head">
 				<h2>Built with Oriel</h2>
-				<p><a href="https://highercomve.github.io/GhostPen/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp) on the GPU (Vulkan, CUDA, Metal), and meetings with speakers by voice (<code>oriel.speakers</code>), on Linux, Windows and macOS.</p>
+				<p><a href="https://ghostpen.foreachdeveloper.com/">GhostPen</a>: AI text editing anywhere on the desktop, ported from Tauri. Built-in models (llama.cpp), live captions and dictation (whisper.cpp) on the GPU (Vulkan, CUDA, Metal), and meetings with speakers by voice (<code>oriel.speakers</code>), on Linux, Windows and macOS.</p>
 			</div>
-			<a class="showcase-shot" href="https://highercomve.github.io/GhostPen/"><img src="$site.asset('screenshots/ghostpen.png').link()" alt="GhostPen: the Playground and the menu, running a built-in model" loading="lazy"></a>
+			<a class="showcase-shot" href="https://ghostpen.foreachdeveloper.com/"><img src="$site.asset('screenshots/ghostpen.png').link()" alt="GhostPen: the Playground and the menu, running a built-in model" loading="lazy"></a>
 			<div class="hero-actions" style="justify-content:flex-start;margin-top:20px">
-				<a class="btn btn-primary" href="https://highercomve.github.io/GhostPen/">Get GhostPen</a>
+				<a class="btn btn-primary" href="https://ghostpen.foreachdeveloper.com/">Get GhostPen</a>
 				<a class="btn btn-ghost" href="https://github.com/highercomve/GhostPen#compared-with-the-rust-tauri-ghostpen">Oriel vs Tauri, measured</a>
 			</div>
 		</section>

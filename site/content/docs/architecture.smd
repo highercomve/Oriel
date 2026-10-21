@@ -159,7 +159,7 @@ function. A front end keeps only what belongs to its language.
 
 # [Background]($heading.id('background'))
 
-Oriel started from two apps' needs. [GhostPen](https://highercomve.github.io/GhostPen/),
+Oriel started from two apps' needs. [GhostPen](https://ghostpen.foreachdeveloper.com/),
 AI text editing anywhere on the desktop, needed a tray, global shortcuts,
 typing into other apps, the clipboard, a single instance and network calls.
 GhostReel, local video search and AI-assisted editing, needed media

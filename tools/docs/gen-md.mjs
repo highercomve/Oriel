@@ -116,7 +116,7 @@ function convert(file) {
 
 function readme() {
   let s = `${marker}*.smd by tools/docs/gen-md.mjs (index: site/docs-index.json). -->\n\n# Oriel documentation\n\n`;
-  s += "The same pages as the website, https://highercomve.github.io/Oriel/docs/.\n";
+  s += "The same pages as the website, https://oriel.foreachdeveloper.com/docs/.\n";
   for (const section of index) {
     s += `\n## ${section.section}\n\n`;
     for (const page of section.pages) {

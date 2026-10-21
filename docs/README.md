@@ -2,7 +2,7 @@
 
 # Oriel documentation
 
-The same pages as the website, https://highercomve.github.io/Oriel/docs/.
+The same pages as the website, https://oriel.foreachdeveloper.com/docs/.
 
 ## Start
 

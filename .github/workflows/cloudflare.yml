@@ -1,8 +1,7 @@
 name: Cloudflare Pages
 
-# Publishes the same site as pages.yml to https://oriel.foreachdeveloper.com.
-# Both deploys run for now; pages.yml also runs the docs checks, so they are
-# not repeated here.
+# Checks the docs, builds the site and its search index, and deploys it to
+# Cloudflare Pages at https://oriel.foreachdeveloper.com.
 on:
   push:
     branches: [main]
@@ -13,7 +12,6 @@ on:
       - 'zine.ziggy'
       - 'scripts/site-version.sh'
       - 'scripts/build-site.sh'
-      - 'scripts/site-for-cloudflare.sh'
       - '.github/workflows/cloudflare.yml'
   release:
     types: [published]
@@ -23,8 +21,11 @@ permissions:
   contents: read
   deployments: write
 
-# Same reason as pages.yml: a release's tag push and the dispatch from
-# release.yml must not overlap, or the older build may deploy last.
+# One build/deploy at a time, in order. A release's tag push to main builds
+# the site before the release is published (it still reads the previous
+# version); release.yml then dispatches this workflow again. Without this the
+# two can overlap and the older build may deploy last, putting the previous
+# version back on the site.
 concurrency:
   group: cloudflare-pages
   cancel-in-progress: false
@@ -47,17 +48,18 @@ jobs:
           chmod +x /tmp/zine
           echo "/tmp" >> "$GITHUB_PATH"
 
+      - name: docs/ matches the site's pages
+        run: node tools/docs/gen-md.mjs --check
+
+      - name: The docs' diagram images match their Mermaid text
+        run: node tools/docs/diagrams.mjs --check
+
       - name: Read the version from GitHub's latest release
         run: ./scripts/site-version.sh "${{ github.event.release.tag_name || '' }}"
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      # The committed config targets highercomve.github.io/Oriel/; this copy is
-      # served from the subdomain's root. Only this checkout is rewritten.
-      - name: Serve from oriel.foreachdeveloper.com
-        run: scripts/site-for-cloudflare.sh oriel Oriel
 
       - name: Build site and search index
         run: bash scripts/build-site.sh

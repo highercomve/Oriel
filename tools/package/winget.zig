@@ -287,7 +287,7 @@ test "manifests" {
         .license = "Apache-2.0",
         .summary = "AI text editing anywhere on your desktop",
         .description = "Line one.\nLine two.",
-        .homepage = "https://highercomve.github.io/GhostPen/",
+        .homepage = "https://ghostpen.foreachdeveloper.com/",
         .tags = &.{ "ai", "writing" },
         .product_code = "dev.ghostpen.Oriel",
         .installer_url = "https://github.com/highercomve/GhostPen/releases/download/v0.2.6/ghostpen-0.2.6-setup.exe",

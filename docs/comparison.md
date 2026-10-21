@@ -36,7 +36,7 @@ GhostPen's port from Tauri direct. Its README
 [Vercel Labs' native](https://github.com/vercel-labs/native) (formerly
 zero-native) is the other Zig framework for desktop apps. Both use Zig 0.16
 and target Linux, Windows and macOS, but they aim at different apps. This
-page compares them on what [GhostPen](https://highercomve.github.io/GhostPen/)
+page compares them on what [GhostPen](https://ghostpen.foreachdeveloper.com/)
 needs: a React UI, and deep integration with the rest of the desktop. It
 reflects native v0.10.1 (commit `6b05318`, September 2026). native is
 pre-1.0 and moves fast, so check its

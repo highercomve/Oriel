@@ -62,12 +62,12 @@ oriel android dev --abi arm64          # on a connected phone
 ```
 
 <div class="shots phones">
-<figure><img src="/Oriel/screenshots/showcase-dictate.png" alt="The showcase's Dictate tab on a Pixel" loading="lazy"><figcaption><strong>Dictate</strong> · whisper small on Vulkan, drafted by base on the CPU</figcaption></figure>
-<figure><img src="/Oriel/screenshots/showcase-chat.png" alt="The showcase's Chat tab on a Pixel" loading="lazy"><figcaption><strong>Chat</strong> · Llama 3.2 1B on Vulkan, streamed tokens</figcaption></figure>
-<figure><img src="/Oriel/screenshots/showcase-speak.png" alt="The showcase's Speak tab on a Poco X3" loading="lazy"><figcaption><strong>Speak</strong> · Kokoro 82M on the phone's CPU</figcaption></figure>
-<figure><img src="/Oriel/screenshots/showcase-notes.png" alt="The showcase's Notes tab" loading="lazy"><figcaption><strong>Notes</strong> · SQLite, deep links, read aloud</figcaption></figure>
-<figure><img src="/Oriel/screenshots/showcase-system.png" alt="The showcase's System tab" loading="lazy"><figcaption><strong>System</strong> · dictate anywhere, clipboard, notifications</figcaption></figure>
-<figure><img src="/Oriel/screenshots/showcase-app.png" alt="The showcase's App tab" loading="lazy"><figcaption><strong>App</strong> · windows, IPC, worker events</figcaption></figure>
+<figure><img src="/screenshots/showcase-dictate.png" alt="The showcase's Dictate tab on a Pixel" loading="lazy"><figcaption><strong>Dictate</strong> · whisper small on Vulkan, drafted by base on the CPU</figcaption></figure>
+<figure><img src="/screenshots/showcase-chat.png" alt="The showcase's Chat tab on a Pixel" loading="lazy"><figcaption><strong>Chat</strong> · Llama 3.2 1B on Vulkan, streamed tokens</figcaption></figure>
+<figure><img src="/screenshots/showcase-speak.png" alt="The showcase's Speak tab on a Poco X3" loading="lazy"><figcaption><strong>Speak</strong> · Kokoro 82M on the phone's CPU</figcaption></figure>
+<figure><img src="/screenshots/showcase-notes.png" alt="The showcase's Notes tab" loading="lazy"><figcaption><strong>Notes</strong> · SQLite, deep links, read aloud</figcaption></figure>
+<figure><img src="/screenshots/showcase-system.png" alt="The showcase's System tab" loading="lazy"><figcaption><strong>System</strong> · dictate anywhere, clipboard, notifications</figcaption></figure>
+<figure><img src="/screenshots/showcase-app.png" alt="The showcase's App tab" loading="lazy"><figcaption><strong>App</strong> · windows, IPC, worker events</figcaption></figure>
 </div>
 
 *On Android: Dictate and Chat on a Pixel, the rest on a Poco X3.*
@@ -148,8 +148,8 @@ BREAKOUT_DEMO=500 BREAKOUT_MODE=zig ./zig-out-native/bin/oriel-breakout   # auto
 and logs the frame rate every 2 s; `BREAKOUT_MODE` is `js` or `zig`.
 
 <figure class="smoke-shot breakout-shots doc-shot">
-<img src="/Oriel/screenshots/breakout-desktop.png" alt="Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay" loading="lazy">
-<img class="phone" src="/Oriel/screenshots/breakout-phone.png" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" loading="lazy">
+<img src="/screenshots/breakout-desktop.png" alt="Breakout in the native renderer on Linux, Zig mode: bricks, balls and the stats overlay" loading="lazy">
+<img class="phone" src="/screenshots/breakout-phone.png" alt="Breakout in the native renderer on an Android phone, Zig mode, at 120 fps" loading="lazy">
 <figcaption>The native renderer in Zig mode, on Linux and an Android phone</figcaption>
 </figure>
 
@@ -247,7 +247,7 @@ zig build -Dnative_ui -p zig-out-native && ./zig-out-native/bin/oriel-canvas-dem
 ## Built with Oriel
 
 **[GhostPen](https://github.com/highercomve/GhostPen)**
-([website](https://highercomve.github.io/GhostPen/)): AI text editing
+([website](https://ghostpen.foreachdeveloper.com/)): AI text editing
 anywhere on the desktop. Select text in any app, press a hotkey, pick an
 action; the result is pasted back. It runs AI models itself (llama.cpp
 compiled in, on the GPU with Vulkan or CUDA on Linux and Metal on macOS),

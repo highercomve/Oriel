@@ -76,7 +76,7 @@ Inspired by `native/examples/system-monitor/`, this version takes full advantage
 
 Measured on one Linux machine (Ryzen 7 7800X3D, RTX 4070, Hyprland, 787
 processes), both built `ReleaseFast`; the full method and the CPU, thread
-and size numbers are on the [comparison page](https://highercomve.github.io/Oriel/docs/comparison/).
+and size numbers are on the [comparison page](https://oriel.foreachdeveloper.com/docs/comparison/).
 
 | Metric / Mechanism | Native SDK (`native/examples/system-monitor`) | Oriel (`oriel/examples/system-monitor`) |
 |---|---|---|

@@ -171,19 +171,18 @@ The site uses Zine 0.14.0. [Pagefind](https://pagefind.app/) indexes the rendere
 docs after each build; the resulting search bundle is served with the site.
 Install Zine and Node.js (24 in CI). Run the commands below from the repository root.
 
-The search button, `/`, or Ctrl/Cmd+K opens the dialog. Search assets and
-result links use the configured Zine site prefix, including `/Oriel/` on GitHub
-Pages. Preview the checked-in deployment configuration locally with:
+The search button, `/`, or Ctrl/Cmd+K opens the dialog. The site is served
+from the root of https://oriel.foreachdeveloper.com (Cloudflare Pages, deployed
+by `.github/workflows/cloudflare.yml`), so `zine.ziggy` has no URL path prefix.
+Preview it locally with:
 
 ```sh
-bash scripts/build-site.sh /tmp/oriel-site-preview/Oriel
+bash scripts/build-site.sh /tmp/oriel-site-preview
 python3 -m http.server 8000 --directory /tmp/oriel-site-preview
-# Open http://localhost:8000/Oriel/docs/
+# Open http://localhost:8000/docs/
 ```
 
-Use the prefixed preview for the checked-in `zine.ziggy`. An unprefixed preview
-requires clearing `url_path_prefix` in your local configuration. `zine release`
-on its own renders the pages but does not generate the search index. The build
+`zine release` on its own renders the pages but does not generate the search index. The build
 script pins Pagefind; its first run downloads the npm package. Only documentation
 articles marked with `data-pagefind-body` are indexed, so navigation and the
 home page do not appear as results. CI runs the same script before deployment.

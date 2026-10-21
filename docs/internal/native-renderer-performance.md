@@ -214,7 +214,7 @@ native row construction is about 3.1–3.7 times faster than WebView, and row
 updates about 3.2–4.7 times faster. These are workload-specific observations,
 not a guarantee for every page.
 
-Source: [published native-renderer page](https://highercomve.github.io/Oriel/docs/native-renderer/#speed)
+Source: [published native-renderer page](https://oriel.foreachdeveloper.com/docs/native-renderer/#speed)
 and its [tracked source](../site/content/docs/native-renderer.smd). The site
 publishes rounded values; a matching raw JSON report for this 180 Hz run is
 not tracked under `examples/render-bench/results/`.
@@ -240,7 +240,7 @@ A workload at the display's refresh rate is capped by that display. Drawing
 Keep these canvas results separate from the 500-ball Breakout game, which
 also includes physics and other page work.
 
-Source: [published platform comparison](https://highercomve.github.io/Oriel/docs/native-renderer/#on-every-platform).
+Source: [published platform comparison](https://oriel.foreachdeveloper.com/docs/native-renderer/#on-every-platform).
 
 ## Android hardware comparison
 
@@ -266,7 +266,7 @@ ends when Fabric mounts views on the UI thread. Memory includes all app
 processes, including the WebView renderer. Oriel's row construction is faster
 in this comparison, while plain views and WebView lead its text updates.
 
-Source: [published Android comparison](https://highercomve.github.io/Oriel/docs/native-renderer/#on-android-against-react-native-and-plain-views).
+Source: [published Android comparison](https://oriel.foreachdeveloper.com/docs/native-renderer/#on-android-against-react-native-and-plain-views).
 
 ## Latest recorded desktop diagnostic, 2026-10-04
 
@@ -322,7 +322,7 @@ common rows and lists are stamped from its Zig store. Incremental updates,
 QuickJS changes, build-time bytecode, cached glyph widths, pooled nodes,
 transform-only animation, display-paced frames, and build-time stylesheet
 parsing also changed the path. See the [native DOM implementation notes](../design/native-dom.md)
-and the site's [implementation discussion](https://highercomve.github.io/Oriel/docs/native-renderer/).
+and the site's [implementation discussion](https://oriel.foreachdeveloper.com/docs/native-renderer/).
 
 The old 122.37 ms build, 10.85 ms update, and statements that native row
 construction trails WebView belong to those historical configurations. They

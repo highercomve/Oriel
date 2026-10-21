@@ -1,6 +1,7 @@
 <p align="center"><img src="assets/brand/oriel-banner.png" alt="Oriel: desktop apps with Zig and the web" width="720"></p>
 
 <p align="center">
+  <a href="https://oriel.foreachdeveloper.com"><img alt="Website: oriel.foreachdeveloper.com" src="https://img.shields.io/badge/website-oriel.foreachdeveloper.com-F7A41D?style=flat-square"></a>
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-F7A41D?style=flat-square"></a>
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-F7A41D?style=flat-square&logo=zig&logoColor=white">
   <img alt="Platforms: Linux, Windows, macOS, Android, iOS" src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS%20%C2%B7%20Android%20%C2%B7%20iOS-1B1F2A?style=flat-square">
@@ -18,6 +19,8 @@ updates are signed, and every platform gets its packages. The optional
 [native renderer](docs/native-renderer.md) runs the same frontend without
 a WebView, or compiled `.oriel` views with no JavaScript at all. Coming
 from Electron or Tauri? See [how Oriel compares](docs/comparison.md).
+The website, with the documentation and search, is
+[oriel.foreachdeveloper.com](https://oriel.foreachdeveloper.com).
 
 - **Small:** a release app is a few MB; the build cache is hundreds of MB, not gigabytes.
 - **Typed both ways:** `invoke` and `listen` in TypeScript are generated from your Zig `Commands` and `Events`.
@@ -75,7 +78,7 @@ with Oriel. See [apps and examples](docs/examples.md) for screenshots and detail
 Every feature has one page with the same parts: where it works, a quick
 start, how it works (with a diagram), examples, and the full reference. Start
 with the [documentation index](docs/README.md) (the same pages as the
-[website](https://highercomve.github.io/Oriel/docs/)), or go straight to:
+[website](https://oriel.foreachdeveloper.com/docs/)), or go straight to:
 
 | Guide | Contents |
 |---|---|
