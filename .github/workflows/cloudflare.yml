@@ -1,0 +1,78 @@
+name: Cloudflare Pages
+
+# Publishes the same site as pages.yml to https://oriel.foreachdeveloper.com.
+# Both deploys run for now; pages.yml also runs the docs checks, so they are
+# not repeated here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - 'tools/docs/**'
+      - 'zine.ziggy'
+      - 'scripts/site-version.sh'
+      - 'scripts/build-site.sh'
+      - 'scripts/site-for-cloudflare.sh'
+      - '.github/workflows/cloudflare.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+# Same reason as pages.yml: a release's tag push and the dispatch from
+# release.yml must not overlap, or the older build may deploy last.
+concurrency:
+  group: cloudflare-pages
+  cancel-in-progress: false
+
+env:
+  PROJECT: oriel
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Zine
+        run: |
+          curl -sL -o /tmp/zine.tar.xz https://github.com/kristoff-it/zine/releases/download/v0.14.0/x86_64-linux-musl.tar.xz
+          tar xJf /tmp/zine.tar.xz -C /tmp/
+          chmod +x /tmp/zine
+          echo "/tmp" >> "$GITHUB_PATH"
+
+      - name: Read the version from GitHub's latest release
+        run: ./scripts/site-version.sh "${{ github.event.release.tag_name || '' }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The committed config targets highercomve.github.io/Oriel/; this copy is
+      # served from the subdomain's root. Only this checkout is rewritten.
+      - name: Serve from oriel.foreachdeveloper.com
+        run: scripts/site-for-cloudflare.sh oriel Oriel
+
+      - name: Build site and search index
+        run: bash scripts/build-site.sh
+
+      # Forks and repos without the secrets still build, they just don't deploy.
+      - name: Skip without Cloudflare credentials
+        if: env.HAS_TOKEN != 'true'
+        run: echo "::notice::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set; skipping deploy."
+
+      # The Pages project is created on the first deploy if it doesn't exist.
+      - name: Deploy
+        if: env.HAS_TOKEN == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          command: pages deploy public --project-name=${{ env.PROJECT }} --branch=main --commit-dirty=true
