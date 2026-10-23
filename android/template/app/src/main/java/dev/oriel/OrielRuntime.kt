@@ -302,6 +302,9 @@ object OrielRuntime {
     }
 
     private fun bringToFront(activity: OrielActivity) {
+        // Already the focused window: nothing to do. ChromeOS treats moving the
+        // active task to the front like a click on its shelf icon (it minimizes it).
+        if (activity.hasWindowFocus()) return
         val am = app.getSystemService(ActivityManager::class.java)
         am.appTasks.firstOrNull { it.taskInfo.taskId == activity.taskId }?.moveToFront()
     }
@@ -642,6 +645,30 @@ object OrielRuntime {
         return if (custom != 0) custom else app.applicationInfo.icon
     }
 
+    /** oriel.audio_capture's "system" source: open (the answer comes in NativeLib.onSystemAudio) and close. */
+    @JvmStatic
+    fun systemAudioOpen(id: Long, rate: Int) = OrielSystemAudio.open(app, foreground, id, rate)
+
+    @JvmStatic
+    fun systemAudioClose(id: Long) = OrielSystemAudio.close(id)
+
+    @JvmStatic
+    fun systemAudioSupported(): Boolean = OrielSystemAudio.supported()
+
+    /** oriel.media_scheme (OrielMedia): the folder served at /media/ ("" stops). */
+    @JvmStatic
+    fun setMediaRoot(path: ByteArray, refuseAllLinks: Boolean) = OrielMedia.setRoot(path.utf8(), refuseAllLinks)
+
+    /** oriel.tts's system engine (OrielTts): `rate` in hundredths (100 = normal). */
+    @JvmStatic
+    fun ttsSpeak(id: Long, text: ByteArray, language: ByteArray, rate: Int) = OrielTts.speak(app, id, text.utf8(), language.utf8(), rate / 100f)
+
+    @JvmStatic
+    fun ttsStop() = OrielTts.stop()
+
+    @JvmStatic
+    fun ttsAvailable(): Boolean = OrielTts.available(app)
+
     /** oriel.share's send (src/modules/share/android.zig): the chooser, from the window in front. */
     @JvmStatic
     fun shareSend(request: ByteArray): Boolean = OrielShare.send(app, foreground, request)
@@ -943,7 +970,7 @@ object OrielRuntime {
                 intent.putExtra(OrielAudioService.EXTRA_TITLE, title.utf8()).putExtra(OrielAudioService.EXTRA_TEXT, text.utf8())
                     .putExtra(OrielAudioService.EXTRA_ACTIONS, actions.utf8())
                 app.startForegroundService(intent)
-            } else {
+            } else if (!OrielAudioService.keepForProjection()) {
                 app.stopService(intent)
             }
             true

@@ -77,6 +77,14 @@ pub const requirements = [_]Requirement{
         .{ .name = "android.permission.FOREGROUND_SERVICE" },
         .{ .name = "android.permission.FOREGROUND_SERVICE_MICROPHONE" },
     } },
+    // Other apps' audio (audio_capture's "system" source): AudioRecord needs
+    // RECORD_AUDIO, and the foreground service gets the mediaProjection type.
+    .{ .kind = "system_audio", .permissions = &.{
+        .{ .name = "android.permission.RECORD_AUDIO" },
+        .{ .name = "android.permission.FOREGROUND_SERVICE" },
+        .{ .name = "android.permission.FOREGROUND_SERVICE_MICROPHONE" },
+        .{ .name = "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" },
+    } },
     // CAMERA alone would make Google Play require a camera: oriel.camera
     // falls back to the photo picker without one.
     .{ .kind = "camera", .permissions = &.{

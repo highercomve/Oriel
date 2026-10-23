@@ -2511,7 +2511,15 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         , .{ label, action, data.items })) catch @panic("OOM");
     }
 
-    const audio_service = if (permissions.microphone != null)
+    // The foreground service that keeps capturing in the background, also
+    // the mediaProjection one for other apps' audio (OrielSystemAudio.kt).
+    const audio_service = if (permissions.system_audio != null)
+        \\        <service
+        \\            android:name="dev.oriel.OrielAudioService"
+        \\            android:exported="false"
+        \\            android:foregroundServiceType="microphone|mediaProjection" />
+        \\
+    else if (permissions.microphone != null)
         \\        <service
         \\            android:name="dev.oriel.OrielAudioService"
         \\            android:exported="false"

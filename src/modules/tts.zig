@@ -35,6 +35,11 @@
 //! the system's (Linux packages, Homebrew). Without it `speak` returns
 //! `error.EspeakDataMissing`.
 //!
+//! `Options.engine = .system` reads with the platform's own voices instead,
+//! nothing to download: Android's TextToSpeech (`systemAvailable()` says
+//! whether the device has an engine); elsewhere `error.EngineUnavailable`.
+//! The same "tts:state" phases and `stop`; `voice` and `model` don't apply.
+//!
 //! The building blocks stay public: `oriel.kokoro` (contexts, synthesis),
 //! `oriel.audio_play` (one-shot and streaming playback). Needs `-Dkokoro`.
 
@@ -56,6 +61,7 @@ const lang_guess = @import("tts/lang.zig");
 pub const chunks = @import("tts/chunks.zig");
 
 const log = std.log.scoped(.tts);
+const system_voice = if (builtin.abi.isAndroid()) @import("tts/android.zig") else struct {};
 
 // ---------------------------------------------------------------------------
 // The catalog (simonfxr/kokoro.cpp-GGUF; SHA-256s from its manifest.json)
@@ -130,7 +136,18 @@ pub fn findVoice(id: []const u8) ?*const Voice {
 
 pub const Backend = enum { auto, cpu };
 
+/// Who reads: Kokoro (offline, the voices downloaded here), or the
+/// platform's own voices (Android's TextToSpeech).
+pub const EngineKind = enum { kokoro, system };
+
+/// Whether `.system` works here: Android with a TextToSpeech engine.
+pub fn systemAvailable() bool {
+    if (comptime !builtin.abi.isAndroid()) return false;
+    return system_voice.available();
+}
+
 pub const Options = struct {
+    engine: EngineKind = .kokoro,
     /// A `models` id, or "auto": the default one if downloaded, else any.
     model: []const u8 = "auto",
     /// A `voices` id, or "auto": one for the language on the device.
@@ -822,6 +839,7 @@ pub const Result = struct {
 /// running utterance is stopped first. The strings in the result are
 /// allocated with `a`. Blocks: call it from a worker (an async command).
 pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
+    if (opts.engine == .system) return speakSystem(a, input, opts);
     if (!ever_init.load(.acquire)) return error.NotInitialized;
     const t0 = std.Io.Clock.awake.now(io);
     // Cut the current utterance short now; it returns at its next check.
@@ -953,9 +971,62 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
     return result;
 }
 
+/// `.system`: the platform reads it; blocks until it's done (or stopped).
+fn speakSystem(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
+    if (comptime !builtin.abi.isAndroid()) return error.EngineUnavailable;
+    if (!system_voice.available()) return error.EngineUnavailable;
+    const prepared = if (opts.markdown) try prepareText(a, input) else input;
+    const espeak_lang = if (std.mem.eql(u8, opts.lang, "auto")) guessLanguage(prepared) else opts.lang;
+    const bcp47 = try bcp47Of(a, espeak_lang);
+    _ = generation.fetchAdd(1, .acq_rel);
+    silence(); // a Kokoro utterance stops for this one
+    system_speaking.store(true, .release);
+    defer system_speaking.store(false, .release);
+    setState(null, .generating, "", "system");
+    const t0 = std.Io.Clock.awake.now(io);
+    const id = try system_voice.start(prepared, bcp47, std.math.clamp(opts.speed, 0.25, 4.0));
+    var result: Result = .{ .voice = "system", .lang = espeak_lang, .backend = "system", .chunks = 1, .first_audio_ms = 0, .synth_ms = 0, .load_ms = 0, .audio_s = 0, .stopped = false };
+    var e = system_voice.next(id, -1);
+    if (e == .started) {
+        result.first_audio_ms = msSince(t0);
+        setState(null, .playing, "", "system");
+        e = system_voice.next(id, @intFromEnum(e));
+    }
+    switch (e) {
+        .finished => setState(null, .idle, "Finished", "system"),
+        .failed => {
+            setState(null, .@"error", "SystemVoiceFailed", "system");
+            return error.SystemVoiceFailed;
+        },
+        else => {
+            result.stopped = true;
+            setState(null, .idle, "Stopped", "system");
+        },
+    }
+    return result;
+}
+
+var system_speaking: std.atomic.Value(bool) = .init(false);
+
+/// An espeak-ng language ("en-us", "pt-br", "es") as BCP 47 ("en-US").
+fn bcp47Of(a: std.mem.Allocator, espeak: []const u8) ![]const u8 {
+    const dash = std.mem.indexOfScalar(u8, espeak, '-') orelse return a.dupe(u8, espeak);
+    const out = try a.dupe(u8, espeak);
+    for (out[dash + 1 ..]) |*c| c.* = std.ascii.toUpper(c.*);
+    return out;
+}
+
+test bcp47Of {
+    const a = std.testing.allocator;
+    const x = try bcp47Of(a, "en-us");
+    defer a.free(x);
+    try std.testing.expectEqualStrings("en-US", x);
+}
+
 /// Stop the current utterance: silent at once, `speak` returns with
 /// `stopped`. Any thread (the UI's), returns at once.
 pub fn stop() void {
+    if (comptime builtin.abi.isAndroid()) if (system_speaking.load(.acquire)) system_voice.stop();
     if (!ever_init.load(.acquire)) return;
     _ = generation.fetchAdd(1, .acq_rel);
     silence();

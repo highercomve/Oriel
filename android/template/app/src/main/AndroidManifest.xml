@@ -11,11 +11,15 @@
     <!-- oriel:features begin -->
 @@features@@    <!-- oriel:features end -->
     <!-- oriel:queries begin -->
-    <!-- oriel.dictation's system engine: Android 11+ only lets apps see the
-         speech recognition services they declare. -->
+    <!-- oriel.dictation's and oriel.tts's system engines: Android 11+ only
+         lets apps see the speech recognition and text-to-speech services
+         they declare. -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
     <!-- oriel:queries end -->

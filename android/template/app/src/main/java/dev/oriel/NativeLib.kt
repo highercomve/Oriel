@@ -47,6 +47,10 @@ internal object NativeLib {
     @JvmStatic external fun onShare(share: ByteArray)
     /** OrielShare: the chooser closed; `target` is the chosen app's package. */
     @JvmStatic external fun onShareSent(completed: Boolean, target: ByteArray?)
+    /** OrielSystemAudio: request `id`'s stream, a pipe of mono f32 (fd, or -1 and a status). */
+    @JvmStatic external fun onSystemAudio(id: Long, fd: Int, status: Int)
+    /** OrielTts: utterance `id` started (0), finished (1), failed (2) or was stopped (3). */
+    @JvmStatic external fun onTtsEvent(id: Long, kind: Int)
 }
 
 internal fun ByteArray.utf8(): String = String(this, Charsets.UTF_8)

@@ -252,6 +252,8 @@ internal class OrielWindow(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val u = request.url.toString()
             if (!u.startsWith("$APP_ORIGIN/") && u != APP_ORIGIN && !u.startsWith("$ISOLATION_ORIGIN/") && u != ISOLATION_ORIGIN) return null
+            // oriel.media_scheme: local media, streamed with Range (OrielMedia).
+            if (u.startsWith("$APP_ORIGIN${OrielMedia.PREFIX}")) return OrielMedia.serve(request)
             val encoded = NativeLib.serve(id, u.bytes()) ?: return null
             return decodeResponse(encoded)
         }

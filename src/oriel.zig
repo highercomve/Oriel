@@ -74,6 +74,10 @@ pub const ui = if (options.zig_ui) @import("native_ui/ui.zig") else struct {
 pub const tray = if (options.tray) @import("modules/tray.zig") else unavailable("tray");
 pub const updater = if (options.updater) @import("modules/updater.zig") else unavailable("updater");
 pub const media_server = if (options.media_server) @import("modules/media_server.zig") else unavailable("media_server");
+/// The app's own scheme for local media (`base_url` + a path below the root
+/// set with `setRoot`): desktop WebViews and Android, without a port. Part of
+/// `media_server` on desktop; on Android it's the way (the HTTP server isn't there).
+pub const media_scheme = if (options.media_server or target.is_android) @import("modules/media_scheme.zig") else unavailable("media_server");
 pub const sql = if (options.sql) @import("modules/sql.zig") else unavailable("sql");
 pub const fs_watch = if (options.fs_watch) @import("modules/fs_watch.zig") else unavailable("fs_watch");
 pub const dialog = if (options.dialog) @import("modules/dialog.zig") else unavailable("dialog");
