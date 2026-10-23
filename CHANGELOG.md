@@ -2,6 +2,15 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.1] — 2026-10-23
+
+### Changed
+
+- Publish the documentation site at `https://oriel.foreachdeveloper.com`
+  through Cloudflare Pages, refreshing it after each release.
+- Maintenance release to validate signed CLI updates from the replacement
+  GitHub repository with the existing release-signing key.
+
 ## [0.19.0] — 2026-10-20
 
 ### Added
