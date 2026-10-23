@@ -2,6 +2,30 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.3] — 2026-10-23
+
+### Added
+
+- Android: `audio_capture`'s "system" source (Android 10+): what other apps
+  play, through AudioPlaybackCapture after MediaProjection's consent. With
+  `.permissions.system_audio` the manifest declares
+  `FOREGROUND_SERVICE_MEDIA_PROJECTION` and the foreground service gets the
+  `mediaProjection` type. Apps that opt out of capture, and calls, stay
+  silent.
+- `tts`: `.engine = .system` reads with the platform's own voices
+  (Android's TextToSpeech), nothing to download; `systemAvailable()` says
+  whether the device has an engine. Same `tts:state` events and `stop()`.
+- `media_scheme` on Android: local media at `https://app.localhost/media/`,
+  served from the WebView's request interception with Range requests for
+  seeking (no port, nothing read into memory). `oriel.media_scheme` is
+  available without the HTTP media server, and `media_scheme.base_url` says
+  where pages load the files from.
+
+### Fixed
+
+- ChromeOS: showing a window that already has focus no longer minimizes it
+  (moving the active task to the front is a shelf click there).
+
 ## [0.19.2] — 2026-10-23
 
 ### Added
