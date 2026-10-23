@@ -43,6 +43,10 @@ internal object NativeLib {
     @JvmStatic external fun onMdnsResult(kind: Int, id: Int, ok: Boolean, code: Int, name: ByteArray?)
     /** OrielMdns: a browser's found/lost event, in src/modules/network/mdns.zig's wire format. */
     @JvmStatic external fun onMdnsEvent(id: Int, event: ByteArray)
+    /** OrielShare: a received share, `{ text, subject, url, files: [{ fd, name, mime }] }` (src/modules/share/android.zig). */
+    @JvmStatic external fun onShare(share: ByteArray)
+    /** OrielShare: the chooser closed; `target` is the chosen app's package. */
+    @JvmStatic external fun onShareSent(completed: Boolean, target: ByteArray?)
 }
 
 internal fun ByteArray.utf8(): String = String(this, Charsets.UTF_8)

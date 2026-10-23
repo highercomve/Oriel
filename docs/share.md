@@ -25,7 +25,7 @@ to open a URL in the browser, `window.oriel.openExternal`
 | macOS | `NSSharingServicePicker`, text, URL, files, several | "Open With" and drops on the Dock icon (`CFBundleDocumentTypes`); a Services menu item (`NSServices`) | `open_with` |
 | iOS | `UIActivityViewController`, text, URL, files, several | "Open in" from the share sheet and Files (`CFBundleDocumentTypes`), as copies | `open_with` |
 | Linux | not yet: `error.Unsupported` | not yet | `null` |
-| Android | not yet: `error.Unsupported` | not yet | `null` |
+| Android | The system chooser (`Intent.createChooser`), text, URL, files, several | The share sheet (`ACTION_SEND`, and `ACTION_SEND_MULTIPLE` with `multiple`) | `share` |
 
 The module is the `share` flag, **on by default** on every platform
 (`b.dependency("oriel", .{ .share = false })` leaves it out). Declaring
@@ -33,8 +33,8 @@ The module is the `share` flag, **on by default** on every platform
 a receiver: without it nothing is declared in the packages and nothing is
 received. Sharing needs no permission.
 
-On Linux and Android the module compiles and runs: `send` and `open`
-return `error.Unsupported`, `capabilities()` reports nothing, and nothing
+On Linux the module compiles and runs: `send` and `open` return
+`error.Unsupported`, `capabilities()` reports nothing, and nothing
 arrives. Check `capabilities()` (or `window.oriel.share.capabilities()`)
 before showing a Share button.
 
@@ -121,15 +121,23 @@ entries running `<exe> --oriel-open-with "%1"`; the MSIX package declares
 a Share Target and file type associations (`tools/package/msix.zig`); on
 macOS and iOS the `Info.plist` gets `CFBundleDocumentTypes` (the MIME types
 mapped to UTIs) and, on macOS, an `NSServices` entry titled with the label
-(`tools/package/macos.zig`, `tools/package/ios.zig`). When the system then
-hands the app something, the backend (`src/modules/share/windows.zig`,
+(`tools/package/macos.zig`, `tools/package/ios.zig`); on Android the main
+Activity gets `ACTION_SEND` intent filters for the types (and
+`ACTION_SEND_MULTIPLE` with `multiple`), labelled with the label. When the
+system then hands the app something, the backend (`src/modules/share/windows.zig`,
 `src/modules/share/apple.zig`) opens each file **read-only, in place**, as
 an entry in a handle table (`src/core/file_handles.zig`); files that can't
 be opened (gone, a folder) are left out. On Windows a share that launches a
 second instance is forwarded to the running one (the single-instance
 `WM_COPYDATA` path) and arrives there. On iOS the system's copies in
 `Documents/Inbox` are unlinked once open: the descriptor keeps them
-readable until the share is released.
+readable until the share is released. On Android the Kotlin runtime
+(`OrielShare.kt`) opens each shared stream read-only off the UI thread and
+hands the descriptors to `src/modules/share/android.zig`; a stream that
+isn't a file (a pipe) is copied into the cache first, and unlinked at once.
+A text that is just an `http(s)` link arrives as the share's `url`, the
+subject as `subject`. Each intent is delivered once: a recreated Activity or
+a launch from Recents doesn't deliver it again.
 
 The share then goes through `dispatch` (`src/modules/share/common.zig`)
 into a queue (`src/core/pending_events.zig`) that hands it, on the main
@@ -161,10 +169,12 @@ thread) and opens the sheet from the main window: Windows'
 iOS's `UIActivityViewController` (a popover from `anchor` on iPad). Files
 become paths the sheet can take: a path is passed as is, a received handle
 or bytes are written into a temporary folder (`%TEMP%\oriel-share-out\<pid>`
-on Windows, `NSTemporaryDirectory()/oriel-share` on Apple), cleared on the
-next send. `send` returns once the sheet is showing; `done` runs on the main
-thread when it closes. Windows reports no dismissal: when the window is in
-front again with no target chosen, Oriel reports `completed: false`.
+on Windows, `NSTemporaryDirectory()/oriel-share` on Apple,
+`<cache>/oriel-shared/share-out` on Android, served to the target through
+the app's file provider), cleared on the next send. `send` returns once the sheet is showing; `done` runs on the main
+thread when it closes. Windows and Android report no dismissal: when a
+window is in front again with no target chosen, Oriel reports
+`completed: false` (Android reports the chosen app's package as `target`).
 
 The page's `oriel.share.send` is the built-in `share:send` command
 (`src/core/ipc.zig`): `File`/`Blob` contents travel base64 in the request,
@@ -240,8 +250,8 @@ await window.oriel.share.send({
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `types` | `[]const []const u8` | `&.{"*/*"}` | MIME types the app accepts. `text/plain` also means text and URL shares. Become `CFBundleDocumentTypes` UTIs on macOS and iOS, the MSIX Share Target's data formats, and the macOS Services item's file types (text and URLs when a type takes text: `text/plain`, `text/*`, `*/*`). |
-| `multiple` | `bool` | `false` | Several items at once (meant for Android `ACTION_SEND_MULTIPLE`; Android receiving isn't written yet). |
-| `label` | `?[]const u8` | the app's name | The Send To shortcut's name (Windows), the Share Target's description (MSIX), the Services menu item's title (macOS). |
+| `multiple` | `bool` | `false` | Several items at once (Android: also `ACTION_SEND_MULTIPLE`). |
+| `label` | `?[]const u8` | the app's name | The Send To shortcut's name (Windows), the Share Target's description (MSIX), the Services menu item's title (macOS), the app's line in the share sheet (Android). |
 | `windows_extensions` | `[]const []const u8` | `&.{}` | Windows: also register "Open with" for these file extensions. |
 
 Declaring it turns the `share` module on unless the dependency's options
@@ -266,7 +276,7 @@ pub fn release(id: u32) void;
 | `onReceive(handler)` | any thread; the handler runs on the main thread | Set (or clear, with `null`) the handler for shares. Shares that came before (up to 8) are handed to it when it is set. The page gets every share too, as `share:received`. |
 | `send(item, anchor, done)` | any thread (runs on the main thread) | Open the share sheet. Returns when it shows; `done` runs on the main thread when it closes. `anchor`: where it points from (iPad popover, macOS picker); Windows ignores it. |
 | `capabilities()` | any | What this platform receives and sends. |
-| `open(handle)` | any | A new read-only descriptor for a received file; the caller closes it. `error.InvalidHandle` once released. `error.Unsupported` on Linux and Android. |
+| `open(handle)` | any | A new read-only descriptor for a received file; the caller closes it. `error.InvalidHandle` once released. `error.Unsupported` on Linux. |
 | `release(id)` | main thread | Let a share go: its files' handles close, and iOS Inbox copies with them. Shares not released stay open until the app exits. |
 
 #### Types
@@ -324,7 +334,7 @@ name, the macOS sharing service's title, the iOS activity type.
 
 | `SendError` | When |
 |---|---|
-| `Unsupported` | Linux and Android; an empty item (no text, URL or file); no main window; the sheet couldn't be shown. |
+| `Unsupported` | Linux; an empty item (no text, URL or file); no main window; the sheet couldn't be shown. |
 | `Busy` | A share sheet is already open. |
 | `InvalidHandle` | An `OutFile.handle` that names no received file (any more), or one that changed since it arrived. |
 
@@ -386,7 +396,7 @@ event), `share:read` (`{ handle, offset = 0, length = 4 MiB }`, at most
   `.app` bundle's `Info.plist`; a bare executable is never offered.
 - **The share arrives in Zig but not in the page.** The page must
   `listen("share:received", ...)`; until it does, shares wait in a queue of 8.
-- **`Unsupported` from `send`.** Linux and Android don't send yet; elsewhere
+- **`Unsupported` from `send`.** Linux doesn't send yet; elsewhere
   the item was empty or there was no main window. Check `capabilities()`.
 - **`TooLarge` from the page's `send`.** Over 16 MiB of `File`/`Blob` data:
   send from Zig with `.path`.

@@ -94,10 +94,12 @@ object OrielRuntime {
             }
             else -> Log.e(TAG, "liboriel.so failed to start (see the log above)")
         }
+        OrielShare.receive(activity, intent)
     }
 
     internal fun onActivityNewIntent(activity: OrielActivity, intent: Intent) {
         if (activity is OrielWindowActivity) return
+        if (OrielShare.receive(activity, intent)) return
         NativeLib.onNewIntent(argsOf(intent))
         notificationTap(intent)
     }
@@ -639,6 +641,10 @@ object OrielRuntime {
         val custom = app.resources.getIdentifier("ic_notification", "drawable", app.packageName)
         return if (custom != 0) custom else app.applicationInfo.icon
     }
+
+    /** oriel.share's send (src/modules/share/android.zig): the chooser, from the window in front. */
+    @JvmStatic
+    fun shareSend(request: ByteArray): Boolean = OrielShare.send(app, foreground, request)
 
     internal fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
         app, 0, Intent(app, OrielMainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),

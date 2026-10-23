@@ -518,8 +518,6 @@ from the template instead; save your edits first.
 
 - Size, placement, always-on-top, click-through and window dragging are
   no-ops: the system decides (the caption bar drags in desktop mode).
-- Receiving shares (`.share_target`) and the share sheet aren't implemented
-  on Android yet.
 - No media server, no self-update (Play forbids it), no draw-over-apps
   overlays, no capture of other apps' audio.
 - Hooks, dependencies and native libraries: 64 each.

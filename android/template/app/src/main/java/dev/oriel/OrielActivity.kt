@@ -115,6 +115,7 @@ open class OrielActivity : Activity() {
     override fun onResume() {
         super.onResume()
         OrielRuntime.foreground = this
+        OrielShare.onWindowResumed()
         OrielHooksRegistry.registered.forEach { it.onActivityResumed(this) }
     }
 

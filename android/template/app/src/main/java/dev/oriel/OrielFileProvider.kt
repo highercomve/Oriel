@@ -12,8 +12,9 @@ import java.io.File
 
 /**
  * Read-only access for other apps to files Oriel shares from its cache
- * (`<cacheDir>/oriel-shared/`): the clipboard's images. Not exported; access
- * is granted per URI (the clipboard grants it to the app pasting).
+ * (`<cacheDir>/oriel-shared/`): the clipboard's images and oriel.share's
+ * files (`share-out/`). Not exported; access is granted per URI (the
+ * clipboard to the app pasting, the share sheet to the target).
  */
 class OrielFileProvider : ContentProvider() {
     companion object {
@@ -51,11 +52,9 @@ class OrielFileProvider : ContentProvider() {
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
-    override fun getType(uri: Uri): String? = when (fileFor(uri)?.extension?.lowercase()) {
-        "png" -> "image/png"
-        "txt" -> "text/plain"
-        null -> null
-        else -> "application/octet-stream"
+    override fun getType(uri: Uri): String? {
+        val ext = fileFor(uri)?.extension?.lowercase() ?: return null
+        return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
     }
 
     override fun query(uri: Uri, projection: Array<String>?, selection: String?, selectionArgs: Array<String>?, sortOrder: String?): Cursor? {

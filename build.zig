@@ -2492,6 +2492,24 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\            </intent-filter>
         \\
     , .{scheme})) catch @panic("OOM");
+    // oriel.share: the system share sheet lists the app (ACTION_SEND, and
+    // SEND_MULTIPLE for `multiple`) for these types.
+    if (options.share_target) |st| {
+        var data: std.ArrayList(u8) = .empty;
+        for (st.types) |t| data.appendSlice(b.allocator, b.fmt(
+            \\                <data android:mimeType="{s}" />
+            \\
+        , .{xmlEscape(b, t)})) catch @panic("OOM");
+        const label = if (st.label) |l| b.fmt(" android:label=\"{s}\"", .{xmlEscape(b, l)}) else "";
+        const actions: []const []const u8 = if (st.multiple) &.{ "SEND", "SEND_MULTIPLE" } else &.{"SEND"};
+        for (actions) |action| schemes.appendSlice(b.allocator, b.fmt(
+            \\            <intent-filter{s}>
+            \\                <action android:name="android.intent.action.{s}" />
+            \\                <category android:name="android.intent.category.DEFAULT" />
+            \\{s}            </intent-filter>
+            \\
+        , .{ label, action, data.items })) catch @panic("OOM");
+    }
 
     const audio_service = if (permissions.microphone != null)
         \\        <service
