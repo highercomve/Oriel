@@ -2,6 +2,25 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.2] — 2026-10-23
+
+### Added
+
+- `oriel.share` on Android. Receiving: `.share_target` declares `ACTION_SEND`
+  intent filters on the main Activity (and `ACTION_SEND_MULTIPLE` with
+  `multiple`), labelled in the share sheet with `label`; shared text, links
+  (a text that is just an `http(s)` URL arrives as `url`, with `subject`) and
+  files reach `onReceive` and the page's `share:received`, files as read-only
+  handles (a pipe is copied into the cache first). Sending: `send` opens the
+  system chooser with text, a URL and files (through the app's file
+  provider); `done` hears the chosen app's package, or `completed: false`
+  when the app is in front again without a choice.
+
+### Fixed
+
+- Android: the file provider reports every shared file's MIME type, not only
+  PNG and plain text.
+
 ## [0.19.1] — 2026-10-23
 
 ### Changed
