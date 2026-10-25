@@ -1044,13 +1044,15 @@ fn patchedHttpz(
 /// newer Mac must still run on older ones. Same as package-app's default.
 pub const default_macos_min: std.SemanticVersion = .{ .major = 13, .minor = 0, .patch = 0 };
 
-/// `target` made portable across Macs, for macOS targets only:
-/// - no macOS version given: `default_macos_min` (an explicit
-///   `-Dtarget=aarch64-macos.14.0` wins);
-/// - a native CPU (`-mcpu native`, the default): the baseline for the
-///   architecture (Apple M1 for arm64, x86-64 for Intel), so code built on a
-///   newer Mac or CI runner doesn't use instructions older Macs lack
-///   (an explicit `-Dcpu` wins).
+/// `target` made portable across machines:
+/// - no `-Dtarget` or `-Dcpu` (Zig's default, the host's CPU): the baseline
+///   for the architecture (Apple M1 for arm64 macOS), so code built on a
+///   newer machine or CI runner doesn't use instructions older CPUs lack.
+///   An explicit `-Dcpu`, `-Dcpu=native` included, wins. A Linux release
+///   built on a runner with AVX-VNNI crashed with SIGILL in TLS (ML-KEM) on
+///   a Zen 4 desktop;
+/// - macOS with no version given: `default_macos_min` (an explicit
+///   `-Dtarget=aarch64-macos.14.0` wins).
 /// `addApp` applies it to the executables it builds (Oriel's own module keeps
 /// the target the app passed, so dependencies the app shares with Oriel
 /// stay one module). Use it for an app's other executables too (e.g. a CLI
@@ -1060,15 +1062,17 @@ pub const default_macos_min: std.SemanticVersion = .{ .major = 13, .minor = 0, .
 /// needs the SDK's framework path added itself: Zig only adds it for
 /// native targets, and Oriel adds the SDK's (build/macos.zig) to its module.
 pub fn resolveTarget(b: *std.Build, target: std.Build.ResolvedTarget) std.Build.ResolvedTarget {
-    if (target.result.os.tag != .macos) return target;
+    const macos = target.result.os.tag == .macos;
     var query = target.query;
     var changed = false;
-    if (query.os_version_min == null) {
+    if (macos and query.os_version_min == null) {
         query.os_version_min = .{ .semver = default_macos_min };
         changed = true;
     }
-    if (query.cpu_model == .native) {
-        query.cpu_model = if (target.result.cpu.arch == .aarch64)
+    // `.determined_by_arch_os` with no arch is the host's CPU; `-Dcpu=native`
+    // is `.native`.
+    if (query.isNativeCpu() and query.cpu_model == .determined_by_arch_os) {
+        query.cpu_model = if (macos and target.result.cpu.arch == .aarch64)
             .{ .explicit = &std.Target.aarch64.cpu.apple_m1 }
         else
             .baseline;
