@@ -2,6 +2,19 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.4] — 2026-10-25
+
+### Fixed
+
+- Builds without `-Dtarget` or `-Dcpu` (CI's default) target the
+  architecture's baseline CPU on every OS, not the build machine's
+  (`resolveTarget`; Apple M1 on arm64 macOS). Release binaries built on a
+  newer runner could use instructions older CPUs lack: the Linux system
+  monitor crashed with SIGILL when checking for updates on a Zen 4 desktop.
+  An explicit `-Dcpu`, `-Dcpu=native` included, still wins.
+- The system monitor's update files are attached to the release again (its
+  version had stayed at 0.19.0, failing that job since 0.19.1).
+
 ## [0.19.3] — 2026-10-23
 
 ### Added
