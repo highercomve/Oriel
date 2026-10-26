@@ -2,6 +2,17 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.5] — 2026-10-26
+
+### Added
+
+- `llama.ChatTemplates.Options` takes the rest of llama.cpp's sampler:
+  `top_p`, `top_k`, `min_p`, and the presence, frequency and repeat
+  penalties (with `penalty_last_n`). Their defaults are llama.cpp's, so an
+  answer samples as before unless a field is set. Agents on a small
+  thinking model need them: near-greedy sampling without a penalty makes it
+  repeat itself, calling the same tool turn after turn.
+
 ## [0.19.4] — 2026-10-25
 
 ### Fixed

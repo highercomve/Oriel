@@ -86,7 +86,8 @@ const ChatHandle = opaque {};
 const TurnHandle = opaque {};
 extern fn oriel_llama_chat_init(model: *const c.llama_model, tmpl: ?[*]const u8, tmpl_len: usize, err: ?*?[*:0]u8) ?*ChatHandle;
 extern fn oriel_llama_chat_free(chat: *ChatHandle) void;
-extern fn oriel_llama_chat_begin(chat: *ChatHandle, request: [*]const u8, len: usize, think: bool, temperature: f32, seed: u32, prompt: *?[*:0]u8, err: ?*?[*:0]u8) ?*TurnHandle;
+const Sampling = extern struct { temperature: f32, top_p: f32, top_k: i32, min_p: f32, presence_penalty: f32, frequency_penalty: f32, repeat_penalty: f32, penalty_last_n: i32, seed: u32 };
+extern fn oriel_llama_chat_begin(chat: *ChatHandle, request: [*]const u8, len: usize, think: bool, sampling: *const Sampling, prompt: *?[*:0]u8, err: ?*?[*:0]u8) ?*TurnHandle;
 extern fn oriel_llama_chat_sample(turn: *TurnHandle, ctx: *c.llama_context) c.llama_token;
 extern fn oriel_llama_chat_feed(turn: *TurnHandle, tok: c.llama_token, reasoning: *?[*:0]u8, content: *?[*:0]u8) bool;
 extern fn oriel_llama_chat_finish(turn: *TurnHandle, reasoning: *?[*:0]u8, content: *?[*:0]u8) ?[*:0]u8;
@@ -126,6 +127,20 @@ pub const ChatTemplates = struct {
         /// The model's reasoning phase (templates that have one).
         think: bool = true,
         temperature: f32 = 0.8,
+        /// Nucleus sampling (1: off).
+        top_p: f32 = 0.95,
+        /// The most likely tokens kept (0: all).
+        top_k: i32 = 40,
+        /// Tokens below this share of the likeliest one's probability are
+        /// dropped (0: off).
+        min_p: f32 = 0.05,
+        /// Penalties on tokens already generated (OpenAI's presence and
+        /// frequency, llama.cpp's repeat; 0, 0 and 1: off), over the last
+        /// `penalty_last_n` tokens (-1: the whole context).
+        presence_penalty: f32 = 0,
+        frequency_penalty: f32 = 0,
+        repeat_penalty: f32 = 1,
+        penalty_last_n: i32 = 64,
         seed: u32 = c.LLAMA_DEFAULT_SEED,
     };
 
@@ -138,7 +153,18 @@ pub const ChatTemplates = struct {
         if (diag) |d| d.* = null;
         var err: ?[*:0]u8 = null;
         var prompt: ?[*:0]u8 = null;
-        const handle = oriel_llama_chat_begin(self.handle, request.ptr, request.len, opts.think, opts.temperature, opts.seed, &prompt, &err) orelse {
+        const sampling: Sampling = .{
+            .temperature = opts.temperature,
+            .top_p = opts.top_p,
+            .top_k = opts.top_k,
+            .min_p = opts.min_p,
+            .presence_penalty = opts.presence_penalty,
+            .frequency_penalty = opts.frequency_penalty,
+            .repeat_penalty = opts.repeat_penalty,
+            .penalty_last_n = opts.penalty_last_n,
+            .seed = opts.seed,
+        };
+        const handle = oriel_llama_chat_begin(self.handle, request.ptr, request.len, opts.think, &sampling, &prompt, &err) orelse {
             defer oriel_llama_free_string(err);
             if (diag) |d| if (err) |e| {
                 d.* = try gpa.dupe(u8, std.mem.span(e));

@@ -134,6 +134,20 @@ static common_json message_json(const common_chat_msg & msg) {
     return out;
 }
 
+// The sampler's settings for one answer (llama.zig's Options; a field at
+// its "off" value leaves llama.cpp's sampler step out).
+struct oriel_llama_sampling {
+    float    temperature;
+    float    top_p;            // 1: off
+    int32_t  top_k;            // 0: off
+    float    min_p;            // 0: off
+    float    presence_penalty; // 0: off
+    float    frequency_penalty;
+    float    repeat_penalty;   // 1: off
+    int32_t  penalty_last_n;   // tokens the penalties look back over (-1: the context)
+    uint32_t seed;
+};
+
 extern "C" {
 
 // The model's chat templates (`tmpl` when not null, else its own, else
@@ -156,11 +170,11 @@ void oriel_llama_chat_free(oriel_llama_chat * chat) {
 
 // One answer to the OpenAI chat request `request` (`len` bytes: messages,
 // tools, tool_choice, parallel_tool_calls, response_format,
-// chat_template_kwargs, reasoning_effort), with thinking on or off.
+// chat_template_kwargs, reasoning_effort), with thinking on or off, sampled with `sampling`.
 // `*prompt` gets the rendered prompt (malloc'd; tokenize it with
 // add_special and parse_special). Null with `*err` set on a request the
 // template can't render.
-oriel_llama_chat_turn * oriel_llama_chat_begin(oriel_llama_chat * chat, const char * request, size_t len, bool think, float temperature, uint32_t seed, char ** prompt, char ** err) {
+oriel_llama_chat_turn * oriel_llama_chat_begin(oriel_llama_chat * chat, const char * request, size_t len, bool think, const oriel_llama_sampling * sampling, char ** prompt, char ** err) {
     if (err) *err = nullptr;
     if (prompt) *prompt = nullptr;
     oriel_llama_chat_turn * turn = nullptr;
@@ -200,8 +214,15 @@ oriel_llama_chat_turn * oriel_llama_chat_begin(oriel_llama_chat * chat, const ch
         }
 
         common_params_sampling sp;
-        sp.temp = temperature;
-        sp.seed = seed;
+        sp.temp            = sampling->temperature;
+        sp.top_p           = sampling->top_p;
+        sp.top_k           = sampling->top_k;
+        sp.min_p           = sampling->min_p;
+        sp.penalty_present = sampling->presence_penalty;
+        sp.penalty_freq    = sampling->frequency_penalty;
+        sp.penalty_repeat  = sampling->repeat_penalty;
+        sp.penalty_last_n  = sampling->penalty_last_n;
+        sp.seed            = sampling->seed;
         if (!params.grammar.empty()) sp.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, params.grammar);
         sp.grammar_lazy      = params.grammar_lazy;
         sp.grammar_triggers  = sampler_triggers(turn->vocab, params.grammar_triggers, turn->preserved);
