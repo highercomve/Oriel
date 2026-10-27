@@ -42,7 +42,7 @@ desktop-only parts:
 | Tray icon | A Quick Settings tile (`.android.tile`), and actions on the foreground service's notification |
 | System-wide hotkeys | In-app shortcuts (`global_shortcut`), listed in the system's Meta+/ helper |
 | Typing into other apps (`input`) | The Oriel keyboard (`.android.input_method`) and `oriel.android.commitText` |
-| Running in the background | A foreground service (`oriel.android.setForegroundService`) |
+| Running in the background | A foreground service: `oriel.android.setKeepRunning` (`.android.keep_running`), or `setForegroundService` while capturing audio |
 | Updater | The Play Store |
 
 ## Quick start
@@ -197,6 +197,36 @@ try oriel.android.setForegroundService(true, "Dictation", "Listening…", &.{
 // A tap on "Stop" sends the system event "action" with data "stop";
 // the headset button sends "media-button" while the service runs.
 try oriel.android.setForegroundService(false, "", "", &.{});
+```
+
+### Keep running in the background
+
+An app that serves or syncs (a file server for the user's other devices, a
+sync engine) keeps running with no window in front. Android requires an
+ongoing notification, and Google Play reviews the reason given in
+`keep_running`.
+
+```zig
+// build.zig: declares a foreground service of type specialUse.
+.android = .{ .keep_running = "Serves this device's files to the user's other devices" },
+// Android 13+ shows its notification only with this permission.
+.permissions = .{ .notifications = "Shows that the app is running" },
+// Swiping the app away from Recents hides its window instead of closing
+// the app (the window comes back from the launcher).
+.window = .{ .hide_on_close = true },
+```
+
+```zig
+// Start it while the app is in front: Android refuses from the background.
+try oriel.android.setKeepRunning(true, "My App is running", "Your devices can reach this phone", &.{
+    .{ .id = "stop", .label = "Stop" },
+});
+// "Stop" sends the system event "action" with data "stop".
+try oriel.android.setKeepRunning(false, "", "", &.{});
+
+// Battery optimization can still stop a background app (Xiaomi, Huawei and
+// Samsung phones sooner): show it, and open the app's settings page.
+if (!oriel.android.batteryUnrestricted()) _ = oriel.android.openAppSettings();
 ```
 
 ### Type into any app with the Oriel keyboard
@@ -365,6 +395,19 @@ with `if (oriel.target.is_android)`.
 /// `actions` as buttons. `on = false` stops it. Any thread.
 pub fn setForegroundService(on: bool, title: []const u8, text: []const u8, actions: []const Action) !void; // error.ForegroundServiceFailed
 pub const Action = struct { id: []const u8, label: []const u8 };
+
+/// Keep the app running with no window in front: a foreground service of
+/// type specialUse (needs .android.keep_running), with an ongoing
+/// notification and `actions` as buttons. Start it while the app is in
+/// front. `on = false` stops it. Any thread.
+pub fn setKeepRunning(on: bool, title: []const u8, text: []const u8, actions: []const Action) !void; // error.KeepRunningFailed
+
+/// Whether battery optimization leaves the app alone.
+pub fn batteryUnrestricted() bool;
+
+/// The app's page in the system settings (battery usage; autostart on
+/// some phones). False if it couldn't open.
+pub fn openAppSettings() bool;
 
 /// System events (below), on the main thread. null removes the handler.
 pub fn onSystemEvent(handler: ?SystemEventHandler) void;

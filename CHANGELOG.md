@@ -2,6 +2,22 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.6] — 2026-10-27
+
+### Added
+
+- Android apps can keep running with no window in front, for work that
+  isn't audio (a file server for the user's other devices, a sync engine):
+  `.android.keep_running = "why"` declares a foreground service of type
+  `specialUse` (the text is the subtype Google Play reviews), and
+  `oriel.android.setKeepRunning(on, title, text, actions)` starts and stops
+  it with an ongoing notification and its buttons. With
+  `.window.hide_on_close`, swiping the app away from Recents leaves it
+  running. `oriel.android.batteryUnrestricted()` and
+  `oriel.android.openAppSettings()` help the user exempt it from battery
+  optimization. The microphone service (`setForegroundService`) is
+  unchanged.
+
 ## [0.19.5] — 2026-10-26
 
 ### Added

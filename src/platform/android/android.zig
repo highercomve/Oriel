@@ -99,6 +99,62 @@ pub fn setForegroundService(on: bool, title: []const u8, text: []const u8, actio
     if (!ctx.ok) return error.ForegroundServiceFailed;
 }
 
+/// Keep the app running with no window in front (a sync engine, a server
+/// for the user's other devices): a foreground service of type
+/// `specialUse` with an ongoing notification, `actions` as its buttons
+/// (system event "action"). Needs `.android.keep_running` in build.zig.
+/// Android 13+ shows the notification only with the notifications
+/// permission; the service runs either way. Start it while the app is in
+/// front (Android refuses from the background). `on = false` stops it.
+/// Any thread.
+pub fn setKeepRunning(on: bool, title: []const u8, text: []const u8, actions: []const Action) !void {
+    var lines: std.ArrayList(u8) = .empty;
+    defer lines.deinit(heap.gpa);
+    for (actions) |a| try lines.print(heap.gpa, "{s}\t{s}\n", .{ a.id, a.label });
+    const Ctx = struct {
+        on: bool,
+        title: []const u8,
+        text: []const u8,
+        actions: []const u8,
+        ok: bool = false,
+        fn run(self: *@This()) void {
+            self.ok = runtime.call(.boolean, "setKeepRunning", "(Z[B[B[B)Z", .{ self.on, self.title, self.text, self.actions }) orelse false;
+        }
+    };
+    var ctx: Ctx = .{ .on = on, .title = title, .text = text, .actions = lines.items };
+    try ShellMod.runOnMainThread(Ctx, &ctx, Ctx.run);
+    if (!ctx.ok) return error.KeepRunningFailed;
+}
+
+/// Whether battery optimization leaves the app alone. While it doesn't,
+/// Android (and stricter vendors: Xiaomi, Huawei, Samsung) may still stop
+/// a background app; `openAppSettings` is where the user changes it.
+pub fn batteryUnrestricted() bool {
+    const Ctx = struct {
+        ok: bool = false,
+        fn run(self: *@This()) void {
+            self.ok = runtime.call(.boolean, "batteryUnrestricted", "()Z", .{}) orelse false;
+        }
+    };
+    var ctx: Ctx = .{};
+    ShellMod.runOnMainThread(Ctx, &ctx, Ctx.run) catch return false;
+    return ctx.ok;
+}
+
+/// The app's page in the system settings: battery usage, and on some
+/// phones (MIUI) autostart. False if it couldn't open.
+pub fn openAppSettings() bool {
+    const Ctx = struct {
+        ok: bool = false,
+        fn run(self: *@This()) void {
+            self.ok = runtime.call(.boolean, "openAppSettings", "()Z", .{}) orelse false;
+        }
+    };
+    var ctx: Ctx = .{};
+    ShellMod.runOnMainThread(Ctx, &ctx, Ctx.run) catch return false;
+    return ctx.ok;
+}
+
 /// A system entry point that replaces a desktop hotkey or tray menu (see
 /// OrielSystem.kt): "tile", "action" (data: the action's id),
 /// "media-button" (data: the key code), "ime-mic", "ime-open" (data: the

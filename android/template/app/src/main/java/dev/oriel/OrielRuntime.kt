@@ -980,6 +980,45 @@ object OrielRuntime {
         }
     }
 
+    /**
+     * Keep the app running with no window in front (`.android.keep_running`),
+     * with an ongoing notification: `oriel.android.setKeepRunning(...)`.
+     * `actions`: "id\tlabel\n" lines, buttons on the notification.
+     */
+    @JvmStatic
+    fun setKeepRunning(on: Boolean, title: ByteArray, text: ByteArray, actions: ByteArray): Boolean {
+        val intent = Intent(app, OrielKeepRunningService::class.java)
+        return try {
+            if (on) {
+                intent.putExtra(OrielKeepRunningService.EXTRA_TITLE, title.utf8()).putExtra(OrielKeepRunningService.EXTRA_TEXT, text.utf8())
+                    .putExtra(OrielKeepRunningService.EXTRA_ACTIONS, actions.utf8())
+                app.startForegroundService(intent)
+            } else {
+                app.stopService(intent)
+            }
+            true
+        } catch (e: Exception) {
+            // Not declared (no keep_running), or started from the background.
+            Log.w(TAG, "keep running", e)
+            false
+        }
+    }
+
+    /** Whether battery optimization leaves the app alone (Settings > Apps > the app > Battery). */
+    @JvmStatic
+    fun batteryUnrestricted(): Boolean =
+        app.getSystemService(android.os.PowerManager::class.java)?.isIgnoringBatteryOptimizations(app.packageName) ?: false
+
+    /** The app's page in the system settings (battery, autostart on some phones). */
+    @JvmStatic
+    fun openAppSettings(): Boolean = try {
+        app.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", app.packageName, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (e: Exception) {
+        false
+    }
+
     // ---------------------------------------------------------------------
     // System entry points (src/platform/android/android.zig: system events)
     // ---------------------------------------------------------------------

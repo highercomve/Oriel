@@ -1341,6 +1341,12 @@ pub const AppOptions = struct {
         /// The Oriel keyboard, with this name in the system's keyboard list:
         /// `oriel.android.commitText` types into any app's focused field.
         input_method: ?[]const u8 = null,
+        /// Keep running with no window in front: declares a foreground
+        /// service of type `specialUse` that `oriel.android.setKeepRunning`
+        /// starts and stops. The text says what it is for (Google Play
+        /// reviews it), e.g. "Serves this device's shared folders to the
+        /// user's other devices".
+        keep_running: ?[]const u8 = null,
         /// `<uses-permission>`s no `.permissions` kind declares, e.g.
         /// `.{ .name = "android.permission.BLUETOOTH", .max_sdk = 30 }`. One
         /// entry per name: a name a kind declares keeps that entry, but
@@ -2481,7 +2487,16 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
     // The manifest's generated regions (build/android_manifest.zig), rewritten
     // on every build by the `--runtime-only` sync.
     // The app's own entries are merged in (checked by checkPlatformExtras).
-    const perms = android_manifest.permissionsXmlWithExtras(b.allocator, permissions, options.android.permissions) catch |err|
+    // keep_running's service needs the foreground-service permissions.
+    const keep_running_permissions = [_]android_manifest.Permission{
+        .{ .name = "android.permission.FOREGROUND_SERVICE" },
+        .{ .name = "android.permission.FOREGROUND_SERVICE_SPECIAL_USE" },
+    };
+    const extra_permissions = if (options.android.keep_running != null)
+        std.mem.concat(b.allocator, android_manifest.Permission, &.{ options.android.permissions, &keep_running_permissions }) catch @panic("OOM")
+    else
+        options.android.permissions;
+    const perms = android_manifest.permissionsXmlWithExtras(b.allocator, permissions, extra_permissions) catch |err|
         @panic(b.fmt("AndroidManifest.xml permissions: {s}", .{@errorName(err)}));
     const features = android_manifest.featuresXmlWithExtras(b.allocator, permissions, options.android.features) catch |err|
         @panic(b.fmt("AndroidManifest.xml features: {s}", .{@errorName(err)}));
@@ -2559,6 +2574,16 @@ fn androidProjectVars(b: *std.Build, options: AppOptions, permissions: Permissio
         \\        </service>
         \\
     , .{xmlEscape(b, label)})) catch @panic("OOM");
+
+    if (options.android.keep_running) |reason| components.appendSlice(b.allocator, b.fmt(
+        \\        <service
+        \\            android:name="dev.oriel.OrielKeepRunningService"
+        \\            android:exported="false"
+        \\            android:foregroundServiceType="specialUse">
+        \\            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="{s}" />
+        \\        </service>
+        \\
+    , .{xmlEscape(b, reason)})) catch @panic("OOM");
 
     // oriel.camera: the camera app writes into this provider, and OrielCamera
     // treats its presence as "the module is on".
