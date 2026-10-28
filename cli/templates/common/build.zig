@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .sql = false,
         .fs_watch = false,
         .media_server = false,
+        .video = false,
         .global_shortcut = false,
         .input = false,
         .clipboard = false,

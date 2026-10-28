@@ -179,6 +179,18 @@ function orielApi({ invoke, listeners, pendingEvents, platform, features, label 
         return invoke("bluetooth:stop", { id: typeof id === "object" && id ? id.id : id });
       },
     }),
+    // oriel.video (features.video): a native player over this window.
+    // play({ url, title }) resolves once it shows; then "video:ended",
+    // "video:error" ({ url, message }) and "video:closed" ({ url }).
+    video: Object.freeze({
+      available: !!(features && features.video),
+      play(options = {}) {
+        return invoke("video:play", { url: options.url, title: options.title || "", label: label() || "main" });
+      },
+      close() {
+        return invoke("video:close", {});
+      },
+    }),
     deepLink: Object.freeze({
       current() {
         return invoke("deep_link:current", {});

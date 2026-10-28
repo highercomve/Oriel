@@ -191,10 +191,12 @@ turn on [modules]($link.page('docs/modules')), or build it for
 - **Logging in opens the browser.** The login page is on another origin:
   add it to `allowed_origins`, or rebuild with `--allow-subdomains` if it is
   a subdomain.
-- **High CPU on Linux with NVIDIA's driver.** Every Oriel app sets
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` when `/proc/driver/nvidia` exists, which
-  avoids WebKitGTK's DMABUF busy loop; set it yourself if the driver lives
-  elsewhere.
+- **A blank window on Linux with NVIDIA's driver.** Every Oriel app sets
+  `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` when `/proc/driver/nvidia` or
+  `/sys/module/nvidia` exists (unless that or
+  `WEBKIT_DISABLE_DMABUF_RENDERER` is already set), which avoids the GBM
+  buffers that fail there while keeping GPU rendering; set it yourself if
+  the driver isn't detected.
 - **No tray icon on Linux.** The desktop has no StatusNotifierItem host;
   `oriel doctor` reports it.
 

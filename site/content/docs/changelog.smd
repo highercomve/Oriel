@@ -1,10 +1,181 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.18.0, 0.17.3 and earlier.",
-.date = .date("2026-10-17T00:00:00"),
+.description = "Release notes for Oriel 0.20.0, 0.19.7 and earlier.",
+.date = .date("2026-10-28T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.0 · October 28, 2026]($heading.id('oriel-0-20-0-october-28-2026'))
+
+## [Added]($heading.id('added-0-20-0'))
+
+- Video: `oriel.video`, a native player over the window for what the
+  WebView's `<video>` won't play (camcorder MPEG-TS `.mts`/`.m2ts`,
+  WMV/ASF, ProRes) or plays badly. It fills the window with the
+  platform's controls, a title and a close button; the close button, Esc
+  and Android's back show the page again. Zig: `oriel.video.play(window,
+  .{ .url, .title })` and `close()`; the page: `oriel.video.play({ url,
+  title })` (resolves once it shows), `oriel.video.close()` and
+  `oriel.video.available`, with the events `video:ended`, `video:error`
+  (`{ url, message }`) and `video:closed`. Linux: `GtkVideo` on a
+  `GtkMediaFile` (GStreamer) with graphics offload, for `http(s)://` (the
+  media server's URLs, with Range) and `file://`; web view windows' content
+  is now a `GtkOverlay` holding the WebView while the module is built.
+  Android: `MediaPlayer` on a `SurfaceView` with a `MediaController`
+  (OrielVideo.kt); the app's media URLs (`https://app.localhost/media/...`)
+  are read in-process from the media source or the root, as OrielMedia
+  serves them. The `video` flag is on by default; Windows, macOS, iOS and
+  `native_ui` builds don't have it (`available` is false). See
+  docs/video.md.
+
+## [Changed]($heading.id('changed-0-20-0'))
+
+- Linux on NVIDIA (`/proc/driver/nvidia`, and now `/sys/module/nvidia` for
+  the open kernel modules): Oriel sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`
+  instead of `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and only when neither is
+  already set. Disabling the DMABUF renderer turned GPU compositing off: on
+  an RTX 4070 (driver 615, WebKitGTK 2.54) a 1080p `<video>` presented
+  almost no frames, at 73% of a core. Shared memory buffers avoid the GBM
+  allocation that fails on some NVIDIA setups (a blank window, Wayland
+  protocol error 71; WebKit bug 261874) and keep GPU rendering: 30 fps at
+  61% of a core.
+
+# [Oriel 0.19.7 · October 28, 2026]($heading.id('oriel-0-19-7-october-28-2026'))
+
+## [Added]($heading.id('added-0-19-7'))
+
+- Media sources: an app serves `<video>` and `<audio>` bytes from its own
+  code (blocks fetched from another device, a file decrypted on the fly)
+  instead of files below a folder, with HTTP Range, so playback starts at
+  once and seeks work. A `Source` gives each path's size (`sizeFn`, null
+  for 404) and copies bytes from an offset (`readFn`), thread-safe. On
+  desktop, `media_server.Options.source` serves it on the loopback server
+  in place of `root_dir`, with the same Host check, CORS, Range, HEAD and
+  416, reading up to 256 KiB at a time. On Android,
+  `media_scheme.setSource(source)` serves it at
+  `https://app.localhost/media/` instead of the root until
+  `clearSource()`: OrielMedia's stream reads through
+  `NativeLib.mediaSize`/`mediaRead`, and the WebView's skip to a range's
+  first byte only moves its position. Elsewhere `setSource` returns
+  `error.Unsupported`.
+
+# [Oriel 0.19.6 · October 27, 2026]($heading.id('oriel-0-19-6-october-27-2026'))
+
+## [Added]($heading.id('added-0-19-6'))
+
+- Android apps can keep running with no window in front, for work that
+  isn't audio (a file server for the user's other devices, a sync engine):
+  `.android.keep_running = "why"` declares a foreground service of type
+  `specialUse` (the text is the subtype Google Play reviews), and
+  `oriel.android.setKeepRunning(on, title, text, actions)` starts and stops
+  it with an ongoing notification and its buttons. With
+  `.window.hide_on_close`, swiping the app away from Recents leaves it
+  running. `oriel.android.batteryUnrestricted()` and
+  `oriel.android.openAppSettings()` help the user exempt it from battery
+  optimization. The microphone service (`setForegroundService`) is
+  unchanged.
+
+# [Oriel 0.19.5 · October 26, 2026]($heading.id('oriel-0-19-5-october-26-2026'))
+
+## [Added]($heading.id('added-0-19-5'))
+
+- `llama.ChatTemplates.Options` takes the rest of llama.cpp's sampler:
+  `top_p`, `top_k`, `min_p`, and the presence, frequency and repeat
+  penalties (with `penalty_last_n`). Their defaults are llama.cpp's, so an
+  answer samples as before unless a field is set. Agents on a small
+  thinking model need them: near-greedy sampling without a penalty makes it
+  repeat itself, calling the same tool turn after turn.
+
+# [Oriel 0.19.4 · October 25, 2026]($heading.id('oriel-0-19-4-october-25-2026'))
+
+## [Fixed]($heading.id('fixed-0-19-4'))
+
+- Builds without `-Dtarget` or `-Dcpu` (CI's default) target the
+  architecture's baseline CPU on every OS, not the build machine's
+  (`resolveTarget`; Apple M1 on arm64 macOS). Release binaries built on a
+  newer runner could use instructions older CPUs lack: the Linux system
+  monitor crashed with SIGILL when checking for updates on a Zen 4 desktop.
+  An explicit `-Dcpu`, `-Dcpu=native` included, still wins.
+- The system monitor's update files are attached to the release again (its
+  version had stayed at 0.19.0, failing that job since 0.19.1).
+
+# [Oriel 0.19.3 · October 23, 2026]($heading.id('oriel-0-19-3-october-23-2026'))
+
+## [Added]($heading.id('added-0-19-3'))
+
+- Android: `audio_capture`'s "system" source (Android 10+): what other apps
+  play, through AudioPlaybackCapture after MediaProjection's consent. With
+  `.permissions.system_audio` the manifest declares
+  `FOREGROUND_SERVICE_MEDIA_PROJECTION` and the foreground service gets the
+  `mediaProjection` type. Apps that opt out of capture, and calls, stay
+  silent.
+- `tts`: `.engine = .system` reads with the platform's own voices
+  (Android's TextToSpeech), nothing to download; `systemAvailable()` says
+  whether the device has an engine. Same `tts:state` events and `stop()`.
+- `media_scheme` on Android: local media at `https://app.localhost/media/`,
+  served from the WebView's request interception with Range requests for
+  seeking (no port, nothing read into memory). `oriel.media_scheme` is
+  available without the HTTP media server, and `media_scheme.base_url` says
+  where pages load the files from.
+
+## [Fixed]($heading.id('fixed-0-19-3'))
+
+- ChromeOS: showing a window that already has focus no longer minimizes it
+  (moving the active task to the front is a shelf click there).
+
+# [Oriel 0.19.2 · October 23, 2026]($heading.id('oriel-0-19-2-october-23-2026'))
+
+## [Added]($heading.id('added-0-19-2'))
+
+- `oriel.share` on Android. Receiving: `.share_target` declares `ACTION_SEND`
+  intent filters on the main Activity (and `ACTION_SEND_MULTIPLE` with
+  `multiple`), labelled in the share sheet with `label`; shared text, links
+  (a text that is just an `http(s)` URL arrives as `url`, with `subject`) and
+  files reach `onReceive` and the page's `share:received`, files as read-only
+  handles (a pipe is copied into the cache first). Sending: `send` opens the
+  system chooser with text, a URL and files (through the app's file
+  provider); `done` hears the chosen app's package, or `completed: false`
+  when the app is in front again without a choice.
+
+## [Fixed]($heading.id('fixed-0-19-2'))
+
+- Android: the file provider reports every shared file's MIME type, not only
+  PNG and plain text.
+
+# [Oriel 0.19.1 · October 23, 2026]($heading.id('oriel-0-19-1-october-23-2026'))
+
+## [Changed]($heading.id('changed-0-19-1'))
+
+- Publish the documentation site at `https://oriel.foreachdeveloper.com`
+  through Cloudflare Pages, refreshing it after each release.
+- Maintenance release to validate signed CLI updates from the replacement
+  GitHub repository with the existing release-signing key.
+
+# [Oriel 0.19.0 · October 20, 2026]($heading.id('oriel-0-19-0-october-20-2026'))
+
+## [Added]($heading.id('added-0-19-0'))
+
+- `oriel.llama.ChatTemplates`: a model's own Jinja chat template serves an
+  OpenAI chat request the way llama-server does (llama.cpp's
+  `common/chat.cpp`): messages with tool calls and results, tools,
+  `response_format` and the thinking switch render in the model's native
+  format; the answer samples with the template's lazy tool-call grammar and
+  parses back into content, reasoning and tool calls, streamed as it grows.
+
+## [Changed]($heading.id('changed-0-19-0'))
+
+- `.llama` builds llama.cpp's `common` library (its CLI and download parts
+  aside) instead of the JSON-schema converter alone.
+
+# [Oriel 0.18.1 · October 19, 2026]($heading.id('oriel-0-18-1-october-19-2026'))
+
+## [Added]($heading.id('added-0-18-1'))
+
+- Tray: `.template_png` icons. A monochrome PNG (the mark in black on
+  transparency) shown as an NSImage template on macOS, so the menu bar
+  recolours it for light and dark mode itself; Linux and Windows draw the
+  pixels like `.png`.
 
 # [Oriel 0.18.0 · October 17, 2026]($heading.id('oriel-0-18-0-october-17-2026'))
 

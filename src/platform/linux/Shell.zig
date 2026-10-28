@@ -24,6 +24,35 @@ const log = std.log.scoped(.oriel);
 
 var exit_code: u8 = 0;
 
+/// WebKitGTK on NVIDIA's driver (proprietary or open kernel modules): the
+/// DMABUF renderer's GBM buffers fail to allocate on some setups, leaving a
+/// blank window or Wayland protocol error 71 (WebKit bug 261874). Shared
+/// memory buffers avoid GBM and keep GPU rendering
+/// (`WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`). Disabling the DMABUF renderer
+/// instead (`WEBKIT_DISABLE_DMABUF_RENDERER=1`, Oriel's choice before
+/// 0.20) turns GPU compositing off: a 1080p `<video>` showed almost no
+/// frames, at more CPU. Neither is set when the user or the app set one of
+/// them.
+fn nvidiaWorkaround() void {
+    const nvidia = access("/proc/driver/nvidia", 0) == 0 or access("/sys/module/nvidia", 0) == 0;
+    if (forceShm(nvidia, std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") != null, std.c.getenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM") != null)) {
+        _ = setenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1", 0);
+    }
+}
+
+/// Whether to set `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` (`nvidiaWorkaround`).
+fn forceShm(nvidia: bool, disable_set: bool, force_shm_set: bool) bool {
+    return nvidia and !disable_set and !force_shm_set;
+}
+
+test forceShm {
+    try std.testing.expect(forceShm(true, false, false));
+    try std.testing.expect(!forceShm(false, false, false));
+    // The user's or the app's own choice stays.
+    try std.testing.expect(!forceShm(true, true, false));
+    try std.testing.expect(!forceShm(true, false, true));
+}
+
 pub const Mutex = struct {
     inner: glib.Mutex = undefined,
     initialized: bool = false,
@@ -196,12 +225,7 @@ pub fn Shell(comptime api: App.Api, comptime config: App.Config) type {
             // one cost ~120 ms before the first frame and ~60 MB (render
             // bench). Cairo, unless the user chose one (GSK_RENDERER).
             if (comptime build_opts.native_ui) _ = setenv("GSK_RENDERER", "cairo", 0);
-            // WebKitGTK's DMABUF renderer has a well-known issue on NVIDIA proprietary
-            // drivers where compositing between UI and WebProcess causes high CPU usage.
-            // Disabling the DMABUF renderer avoids busy loops and excessive CPU usage.
-            if (access("/proc/driver/nvidia", 0) == 0) {
-                _ = setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 0);
-            }
+            nvidiaWorkaround();
             const id = if (config.app.dev != null) config.app.id ++ ".Dev" else config.app.id;
             const app_flags = if (uses_command_line)
                 gio.ApplicationFlags{ .handles_command_line = true }

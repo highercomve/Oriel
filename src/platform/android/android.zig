@@ -192,6 +192,11 @@ fn nativeSystemEvent(env: *jni.Env, _: jni.jclass, name_arr: jni.jobject, data_a
         if (@import("build_options").bluetooth) @import("../../modules/bluetooth/android.zig").onSystemEvent(data);
         return;
     }
+    if (std.mem.eql(u8, name, "video")) {
+        // oriel.video: the player closed, ended or failed (OrielVideo).
+        if (@import("build_options").video) @import("../../modules/video/android.zig").onSystemEvent(data);
+        return;
+    }
     if (system_event_handler) |h| h(name, data);
     internal.emit("android:event", .{ .name = name, .data = data });
 }

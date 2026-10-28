@@ -95,6 +95,9 @@ pub const camera = if (options.camera) @import("modules/camera.zig") else unavai
 /// Bluetooth LE advertising (`advertise`, `capabilities`); on when the app
 /// declares `.permissions.bluetooth`.
 pub const bluetooth = if (options.bluetooth) @import("modules/bluetooth.zig") else unavailable("bluetooth");
+/// A native video player over the window (`play`, `close`): Linux and
+/// Android; off with `native_ui`.
+pub const video = if (options.video) @import("modules/video.zig") else unavailable("video");
 pub const sqlite_vec = if (options.sqlite_vec) @import("modules/sqlite_vec.zig") else unavailable("sqlite_vec");
 pub const llama = if (options.llama) @import("modules/llama.zig") else unavailable("llama");
 pub const whisper = if (options.whisper) @import("modules/whisper.zig") else unavailable("whisper");
@@ -336,6 +339,7 @@ test {
     if (options.share) std.testing.refAllDecls(share);
     if (options.camera) std.testing.refAllDecls(camera);
     if (options.bluetooth) std.testing.refAllDecls(bluetooth);
+    if (options.video) std.testing.refAllDecls(video);
     if (options.global_shortcut) std.testing.refAllDecls(global_shortcut);
     if (options.input) std.testing.refAllDecls(input);
     // The native renderer's own tests: its tree everywhere, the GTK backend

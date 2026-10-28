@@ -2,6 +2,41 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.0] — 2026-10-28
+
+### Added
+
+- Video: `oriel.video`, a native player over the window for what the
+  WebView's `<video>` won't play (camcorder MPEG-TS `.mts`/`.m2ts`,
+  WMV/ASF, ProRes) or plays badly. It fills the window with the
+  platform's controls, a title and a close button; the close button, Esc
+  and Android's back show the page again. Zig: `oriel.video.play(window,
+  .{ .url, .title })` and `close()`; the page: `oriel.video.play({ url,
+  title })` (resolves once it shows), `oriel.video.close()` and
+  `oriel.video.available`, with the events `video:ended`, `video:error`
+  (`{ url, message }`) and `video:closed`. Linux: `GtkVideo` on a
+  `GtkMediaFile` (GStreamer) with graphics offload, for `http(s)://` (the
+  media server's URLs, with Range) and `file://`; web view windows' content
+  is now a `GtkOverlay` holding the WebView while the module is built.
+  Android: `MediaPlayer` on a `SurfaceView` with a `MediaController`
+  (OrielVideo.kt); the app's media URLs (`https://app.localhost/media/...`)
+  are read in-process from the media source or the root, as OrielMedia
+  serves them. The `video` flag is on by default; Windows, macOS, iOS and
+  `native_ui` builds don't have it (`available` is false). See
+  docs/video.md.
+
+### Changed
+
+- Linux on NVIDIA (`/proc/driver/nvidia`, and now `/sys/module/nvidia` for
+  the open kernel modules): Oriel sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`
+  instead of `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and only when neither is
+  already set. Disabling the DMABUF renderer turned GPU compositing off: on
+  an RTX 4070 (driver 615, WebKitGTK 2.54) a 1080p `<video>` presented
+  almost no frames, at 73% of a core. Shared memory buffers avoid the GBM
+  allocation that fails on some NVIDIA setups (a blank window, Wayland
+  protocol error 71; WebKit bug 261874) and keep GPU rendering: 30 fps at
+  61% of a core.
+
 ## [0.19.7] — 2026-10-28
 
 ### Added

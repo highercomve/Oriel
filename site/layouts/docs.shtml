@@ -41,6 +41,7 @@
 				<a href="$site.page('docs/bluetooth').link()">Bluetooth</a>
 				<a href="$site.page('docs/share').link()">Share</a>
 				<a href="$site.page('docs/media-server').link()">Media server</a>
+				<a href="$site.page('docs/video').link()">Video</a>
 				<a href="$site.page('docs/camera').link()">Camera</a>
 				<h4>Local AI</h4>
 				<a href="$site.page('docs/local-ai').link()">Local AI</a>

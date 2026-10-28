@@ -57,6 +57,9 @@ const Features = struct {
     /// Bluetooth LE advertising (oriel.bluetooth); on when the app declares
     /// `.permissions.bluetooth`.
     bluetooth: bool,
+    /// A native video player over the window (oriel.video): Linux (GTK's
+    /// GStreamer media) and Android (MediaPlayer). Off with `native_ui`.
+    video: bool,
     // App-specific plugins
     global_shortcut: bool,
     input: bool,
@@ -134,6 +137,9 @@ const Features = struct {
         if (missing.items.len > 0 and b.verbose) std.log.info("oriel: not available on {s}, so oriel.<module>.available = false: {s}", .{ @tagName(platform), missing.items });
 
         f.native_ui = f.native_ui or f.zig_ui;
+        // The player goes over a WebView window (and the page's
+        // oriel.video): the native renderer has neither.
+        if (f.native_ui) f.video = false;
         if (f.native_ui and !(target.result.os.tag == .linux or target.result.os.tag == .windows or target.result.os.tag == .macos or target.result.os.tag == .ios)) {
             fatal("-Dnative_ui is experimental: Linux, Windows, macOS, Android and iOS only so far (docs/native-renderer.md)", .{});
         }

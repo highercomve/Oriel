@@ -1,5 +1,8 @@
 package dev.oriel
 
+import android.media.MediaDataSource
+import android.media.MediaPlayer
+import android.net.Uri
 import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -25,6 +28,9 @@ import java.io.InputStream
  * of the root: its size from `NativeLib.mediaSize`, its bytes from
  * `NativeLib.mediaRead` through [SourceStream], whose skip only moves its
  * position, so a seek reads nothing before the first byte asked for.
+ *
+ * oriel.video's player (OrielVideo) plays the same URLs: [setDataSource]
+ * resolves them as [serve] does and gives MediaPlayer the bytes directly.
  */
 internal object OrielMedia {
     const val PREFIX = "/media/"
@@ -48,29 +54,94 @@ internal object OrielMedia {
         source = active
     }
 
+    /** What a media URL's path names: the source's bytes, or a file below the root. */
+    internal sealed class Target {
+        class FromSource(val path: ByteArray, val size: Long) : Target()
+        class FromRoot(val file: File) : Target()
+    }
+
     /** Background thread (shouldInterceptRequest). */
     fun serve(request: WebResourceRequest): WebResourceResponse {
-        val fromSource = source
-        val base = root
-        if (!fromSource && base == null) return status(404, "Not Found")
+        if (!source && root == null) return status(404, "Not Found")
         if (request.method != "GET" && request.method != "HEAD") return status(405, "Method Not Allowed")
         val rel = request.url.path?.removePrefix(PREFIX) ?: return status(404, "Not Found")
-        if (rel.isEmpty() || rel.split('/').any { it == ".." }) return status(404, "Not Found")
+        return when (val t = resolve(rel)) {
+            null -> status(404, "Not Found")
+            is Target.FromSource -> respond(request, mimeOf(rel.substringAfterLast('/').substringAfterLast('.', "")), t.size) { SourceStream(t.path, t.size) }
+            is Target.FromRoot -> respond(request, mimeOf(t.file.extension), t.file.length()) { FileInputStream(t.file) }
+        }
+    }
 
+    /**
+     * `/media/<rel>`'s target as [serve] answers it: Zig's media source while
+     * it is set, else the file below the root; null for a 404. Any thread.
+     */
+    internal fun resolve(rel: String): Target? {
+        val fromSource = source
+        val base = root
+        if (rel.isEmpty() || rel.split('/').any { it == ".." }) return null
         if (fromSource) {
             // Zig checks the path again (source.zig's validPath) before the source sees it.
             val path = rel.bytes()
             val size = NativeLib.mediaSize(path)
-            if (size < 0) return status(404, "Not Found")
-            return respond(request, mimeOf(rel.substringAfterLast('/').substringAfterLast('.', "")), size) { SourceStream(path, size) }
+            return if (size < 0) null else Target.FromSource(path, size)
+        }
+        val dir = base ?: return null
+        val file = File(dir, rel)
+        if (!insideRoot && hasLink(dir, file)) return null
+        val real = file.canonicalFile
+        if (!real.path.startsWith(dir.path + File.separator) || !real.isFile) return null
+        return Target.FromRoot(real)
+    }
+
+    /**
+     * Point `player` at an app media URL (`https://app.localhost/media/<path>`,
+     * which only the WebView's interception serves): the source's bytes
+     * through [SourceDataSource], or the root's file. False for a 404.
+     */
+    internal fun setDataSource(player: MediaPlayer, url: Uri): Boolean {
+        val path = url.path ?: return false
+        if (!path.startsWith(PREFIX)) return false
+        return when (val t = resolve(path.removePrefix(PREFIX))) {
+            null -> false
+            is Target.FromSource -> { player.setDataSource(SourceDataSource(t.path, t.size)); true }
+            is Target.FromRoot -> { player.setDataSource(t.file.path); true }
+        }
+    }
+
+    /**
+     * A media source's `path` (`size` bytes) for MediaPlayer, which calls
+     * [readAt] on its own thread, at any position. Reads go to
+     * `NativeLib.mediaRead` a chunk at a time and are kept: MediaPlayer
+     * reads small pieces (box headers) next to each other, which the chunk
+     * already holds.
+     */
+    private class SourceDataSource(private val path: ByteArray, private val size: Long) : MediaDataSource() {
+        private val buf = ByteArray(CHUNK)
+        /** `buf` holds the source's bytes [bufStart, bufStart + bufLen). */
+        private var bufStart = 0L
+        private var bufLen = 0
+
+        override fun getSize(): Long = size
+
+        @Synchronized
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+            if (position < 0 || position >= this.size) return -1
+            if (size <= 0) return 0
+            if (position < bufStart || position >= bufStart + bufLen) {
+                val n = NativeLib.mediaRead(path, position, buf)
+                if (n < 0) throw IOException("media source: read failed at $position")
+                if (n == 0) return -1
+                bufStart = position
+                bufLen = n
+            }
+            val at = (position - bufStart).toInt()
+            val count = minOf(size, bufLen - at)
+            System.arraycopy(buf, at, buffer, offset, count)
+            return count
         }
 
-        val dir = base ?: return status(404, "Not Found")
-        val file = File(dir, rel)
-        if (!insideRoot && hasLink(dir, file)) return status(404, "Not Found")
-        val real = file.canonicalFile
-        if (!real.path.startsWith(dir.path + File.separator) || !real.isFile) return status(404, "Not Found")
-        return respond(request, mimeOf(real.extension), real.length()) { FileInputStream(real) }
+        override fun close() {}
     }
 
     /**

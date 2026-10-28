@@ -27,6 +27,7 @@ const extensions = @import("extensions/runtime.zig");
 const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
 const camera_page = @import("../modules/camera/page.zig");
 const dialog_page = @import("../modules/dialog/page.zig");
+const video_page = @import("../modules/video/page.zig");
 
 pub const Request = struct {
     cmd: []const u8,
@@ -306,7 +307,7 @@ test fail {
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "bluetooth:capabilities") or std.mem.eql(u8, cmd, "bluetooth:advertise") or std.mem.eql(u8, cmd, "bluetooth:stop") or
-        std.mem.eql(u8, cmd, "events:ready") or
+        std.mem.eql(u8, cmd, "events:ready") or video_page.isCommand(cmd) or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
@@ -410,6 +411,13 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = std.json.parseFromValueLeaky(StopArgs, arena, request.args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
         bluetooth.stop(args.id);
         return arena.dupe(u8, "null");
+    } else if (video_page.isCommand(request.cmd)) {
+        // The page's oriel.video: the player shows (or closes) now; its
+        // end, errors and close come as "video:*" events. Off, the module
+        // isn't compiled.
+        const build_options = @import("build_options");
+        if (!build_options.video) return error.Unsupported;
+        return video_page.call(@import("../modules/video.zig"), arena, request.cmd, request.args);
     } else if (std.mem.eql(u8, request.cmd, "share:read")) {
         // A received file's bytes, base64, for the page's oriel.share.file
         // (it reads in chunks; the handle came in share:received).
@@ -818,6 +826,28 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  stop(id: number | { id: number }): Promise<void>;
             \\}
             \\
+            \\export interface VideoPlayOptions {
+            \\  /** http(s):// (the media server's URLs) or file://; on Android also content:// and the app's media URLs (https://app.localhost/media/...). */
+            \\  url: string;
+            \\  /** Shown at the top of the player. */
+            \\  title?: string;
+            \\}
+            \\
+            \\/** The payload of "video:closed", "video:ended" and "video:error" (with `message`). */
+            \\export interface VideoEvent {
+            \\  url: string;
+            \\  message?: string;
+            \\}
+            \\
+            \\export interface VideoApi {
+            \\  /** `features.video`: Linux and Android, not with the native renderer. */
+            \\  readonly available: boolean;
+            \\  /** Shows the native player over this window; resolves once it shows. Rejects with "Unsupported", "InvalidUrl", "NoWindow" or "Failed". */
+            \\  play(options: VideoPlayOptions): Promise<void>;
+            \\  /** Closes the player, if one shows ("video:closed"). */
+            \\  close(): Promise<void>;
+            \\}
+            \\
             \\export interface WindowApi {
             \\  open(options: WindowOptions): Promise<WindowHandle>;
             \\  current(): WindowHandle;
@@ -840,6 +870,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      systemAi: SystemAiApi;
             \\      camera: CameraApi;
             \\      bluetooth: BluetoothApi;
+            \\      video: VideoApi;
             \\      permissions: PermissionsApi;
             \\      drop: DropApi;
             \\      openExternal(url: string): Promise<void>;
@@ -876,6 +907,8 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const camera: CameraApi = (globalThis as any).oriel?.camera;
             \\/** Bluetooth LE advertising (oriel.bluetooth; `features.bluetooth`). */
             \\export const bluetooth: BluetoothApi = (globalThis as any).oriel?.bluetooth;
+            \\/** The native video player (oriel.video; `features.video`). */
+            \\export const video: VideoApi = (globalThis as any).oriel?.video;
             \\/** Built-in OS permissions API. */
             \\export const permissions: PermissionsApi = (globalThis as any).oriel?.permissions;
             \\/** Dropped files' paths (oriel.drop.path; native renderer). */
@@ -1106,6 +1139,26 @@ test "builtin open_external dispatch and validation" {
 
     try std.testing.expect(isBuiltinCommand("open_external"));
     try std.testing.expect(!isBuiltinCommand("greet"));
+    try std.testing.expect(isBuiltinCommand("video:play") and isBuiltinCommand("video:close"));
+}
+
+test "dispatchBuiltin: oriel.video without a running app" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const sec: security.Security = .{};
+    const bad = try parseRequest(alloc, "{\"cmd\":\"video:play\",\"args\":{\"url\":\"javascript:alert(1)\"}}");
+    const file = try parseRequest(alloc, "{\"cmd\":\"video:play\",\"args\":{\"url\":\"file:///tmp/a.mts\",\"title\":\"A\",\"label\":\"main\"}}");
+    const no_args = try parseRequest(alloc, "{\"cmd\":\"video:play\",\"args\":{}}");
+    const close = try parseRequest(alloc, "{\"cmd\":\"video:close\",\"args\":{}}");
+    if (!@import("build_options").video) {
+        try std.testing.expectError(error.Unsupported, dispatchBuiltin(sec, alloc, file));
+        return;
+    }
+    try std.testing.expectError(error.InvalidUrl, dispatchBuiltin(sec, alloc, bad));
+    try std.testing.expectError(error.InvalidArgs, dispatchBuiltin(sec, alloc, no_args));
+    try std.testing.expectError(error.AppNotRunning, dispatchBuiltin(sec, alloc, file));
+    try std.testing.expectEqualStrings("null", try dispatchBuiltin(sec, alloc, close));
 }
 
 test "typescript generation with deep_link" {
@@ -1127,6 +1180,8 @@ test "typescript generation with deep_link" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "lifecycle: LifecycleApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "extensions: ExtensionsApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "camera: CameraApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "video: VideoApi;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export const video: VideoApi") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "bluetooth: BluetoothApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:created\": { label: string };\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "  \"window:closed\": { label: string };\n") != null);

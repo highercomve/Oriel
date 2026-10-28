@@ -92,10 +92,14 @@ hands later launches to the running instance over D-Bus (single instance,
 deep links). `window.zig` makes a `GtkApplicationWindow` with a
 `WebKitWebView` and its navigation policy; `scheme.zig` serves `app://`;
 `bridge.zig` uses WebKit's script message handlers; `dev_server.zig` starts
-the dev server as a child that dies with the app. On NVIDIA's proprietary
-driver Oriel sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` (unless already set),
-which avoids WebKitGTK's busy compositing loop there. `overlay.zig` places
-overlay windows (below).
+the dev server as a child that dies with the app. On NVIDIA's driver
+(`/proc/driver/nvidia` or `/sys/module/nvidia`: proprietary or open kernel
+modules) Oriel sets `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`, unless
+`WEBKIT_DMABUF_RENDERER_FORCE_SHM` or `WEBKIT_DISABLE_DMABUF_RENDERER` is
+already set: the DMABUF renderer's GBM buffers fail to allocate on some
+NVIDIA setups (a blank window, or Wayland protocol error 71; WebKit bug
+261874), and shared memory buffers avoid GBM while keeping GPU rendering.
+`overlay.zig` places overlay windows (below).
 
 **Windows** (`src/platform/windows/`). A Win32 message loop and windows
 (`win32.zig`, `window.zig`), with per-monitor DPI awareness (v2). WebView2 is
@@ -314,9 +318,12 @@ See [Lifecycle]($link.page('docs/lifecycle')) and
 
 - **Linux: the build can't find `gtk4` or `webkitgtk-6.0`**: install the
   development packages above; `oriel doctor` names what's missing.
-- **Linux: high CPU on NVIDIA**: Oriel already sets
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` there; if you set it to `0` yourself,
-  remove that.
+- **Linux: a blank window or stuttering video on NVIDIA**: Oriel sets
+  `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` there (GPU rendering, no GBM
+  buffers). Setting `WEBKIT_DISABLE_DMABUF_RENDERER=1` yourself still
+  works around a blank window, but turns GPU compositing off: `<video>`
+  then shows few frames. For formats WebKit won't play, or smoother video,
+  use [`oriel.video`]($link.page('docs/video')).
 - **Linux: `always_on_top/skip_taskbar/placement need layer-shell on
   Wayland`**: build with `-Dlayer_shell=true` and install gtk4-layer-shell, or
   run under X11.

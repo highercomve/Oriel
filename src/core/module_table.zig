@@ -25,15 +25,18 @@ pub fn platformOf(t: *const std.Target) Platform {
 pub fn missingOn(platform: Platform) []const []const u8 {
     return switch (platform) {
         // system_ai is the phone's own model (ML Kit, Foundation Models).
-        .linux, .other => &.{"system_ai"},
+        .linux => &.{"system_ai"},
+        .other => &.{ "system_ai", "video" },
         // global_shortcut (in-app shortcuts), fs_watch (inotify) and updater
         // (checking for a release) have real Android backends. speakers
         // (voice-detect.cpp) isn't built or tested for the phones yet.
         .android => &.{ "tray", "menu", "input", "media_server", "layer_shell", "speakers" },
-        .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch", "speakers" },
+        // video: AVPlayerViewController is later work.
+        .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch", "speakers", "video" },
         // gtk4-layer-shell is a Wayland thing. system_ai: Windows AI and
-        // macOS Foundation Models are later work.
-        .windows, .macos => &.{ "layer_shell", "system_ai" },
+        // macOS Foundation Models are later work, and so is video (Media
+        // Foundation, AVPlayerView).
+        .windows, .macos => &.{ "layer_shell", "system_ai", "video" },
     };
 }
 
@@ -72,6 +75,7 @@ pub const namespaces = [_]Namespace{
     ns("share", "src/modules/share.zig"),
     ns("camera", "src/modules/camera.zig"),
     ns("bluetooth", "src/modules/bluetooth.zig"),
+    ns("video", "src/modules/video.zig"),
     ns("sqlite_vec", "src/modules/sqlite_vec.zig"),
     ns("llama", "src/modules/llama.zig"),
     ns("whisper", "src/modules/whisper.zig"),
@@ -116,6 +120,8 @@ test supported {
     try std.testing.expect(supported("system_ai", .android) and supported("system_ai", .ios));
     try std.testing.expect(!supported("system_ai", .linux) and !supported("system_ai", .macos));
     try std.testing.expect(supported("speakers", .windows) and !supported("speakers", .android));
+    try std.testing.expect(supported("video", .linux) and supported("video", .android));
+    try std.testing.expect(!supported("video", .windows) and !supported("video", .macos) and !supported("video", .ios));
 }
 
 test reason {

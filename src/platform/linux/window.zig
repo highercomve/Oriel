@@ -325,7 +325,15 @@ pub fn WindowCreator(
 
             _ = webkit.WebView.signals.decide_policy.connect(view, ?*anyopaque, &onDecidePolicy, null, .{});
             _ = webkit.WebView.signals.permission_request.connect(view, ?*anyopaque, &onPermissionRequest, null, .{});
-            window.setChild(view.as(gtk.Widget));
+            if (comptime build_opts.video) {
+                // oriel.video shows its player over the page: the window's
+                // content is an overlay holding the web view.
+                const content = gtk.Overlay.new();
+                content.setChild(view.as(gtk.Widget));
+                window.setChild(content.as(gtk.Widget));
+            } else {
+                window.setChild(view.as(gtk.Widget));
+            }
 
             _ = gtk.Window.signals.close_request.connect(window, *App.Window, &onWindowCloseRequest, win_inst, .{});
 

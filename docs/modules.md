@@ -174,6 +174,7 @@ it.
 | `oriel.bluetooth` | Bluetooth LE advertising | `bluetooth` (off; on with `.permissions.bluetooth`) | ✓ BlueZ | no device name | no service data | ✓ | no service data | [Bluetooth](bluetooth.md) |
 | `oriel.share` | The share sheet, and receiving shares | `share` (on; also on with `.share_target`) | not yet (`error.Unsupported`) | ✓ | ✓ | ✓ | ✓ | [Share](share.md) |
 | `oriel.camera` | Photos from the camera or library | `camera` (off; on with `.permissions.camera`) | library only | library only | library only | ✓ | ✓ | [Camera](camera.md) |
+| `oriel.video` | A native video player over the window (formats the WebView won't play) | `video` (on; off with `native_ui`) | ✓ GStreamer | — | — | ✓ MediaPlayer | — | [Video](video.md) |
 | `oriel.media_server` | Streaming large local media with range requests | `media_server` (on) | ✓ | ✓ | ✓ | — | — | [Media server](media-server.md) |
 | `oriel.updater` | Signed self-updates | `updater` (on; off on Android) | ✓ | ✓ | ✓ | check only | — | [Updater](updater.md) |
 | `oriel.global_shortcut` | System-wide hotkeys | `global_shortcut` (on) | ✓ | ✓ | ✓ | in-app shortcuts | — | [Global shortcuts](global-shortcuts.md) |

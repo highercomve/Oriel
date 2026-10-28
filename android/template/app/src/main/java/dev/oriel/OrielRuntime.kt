@@ -1073,6 +1073,23 @@ object OrielRuntime {
     @JvmStatic
     fun mdnsStopBrowse(id: Int) = OrielMdns.stopBrowse(id)
 
+    // oriel.video (src/modules/video/android.zig, OrielVideo)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Show the player over window `window` (-1: the one in front, else the
+     * main one): OrielVideo.SHOWN, -1 without an Activity, NOT_FOUND or FAILED.
+     */
+    @JvmStatic
+    fun videoPlay(window: Int, url: ByteArray, title: ByteArray, kind: Int): Int {
+        val activity = windows[window]?.activity ?: foreground ?: mainActivity ?: return -1
+        return OrielVideo.play(activity, url.utf8(), title.utf8(), kind)
+    }
+
+    /** Close the player (Zig asked): whether one was showing. */
+    @JvmStatic
+    fun videoClose(): Boolean = OrielVideo.close()
+
     // Bluetooth LE advertising (src/modules/bluetooth/android.zig, OrielBluetooth)
     // ---------------------------------------------------------------------
 

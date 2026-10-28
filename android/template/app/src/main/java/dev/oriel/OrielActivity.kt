@@ -136,6 +136,7 @@ open class OrielActivity : Activity() {
         if (w != null && isFinishing && !closingByRuntime && !isChangingConfigurations) NativeLib.onCloseRequested(w.id)
         OrielRuntime.onActivityDestroyed(this)
         OrielCamera.onActivityDestroyed(this)
+        OrielVideo.onActivityDestroyed(this)
         OrielHooksRegistry.registered.forEach { it.onActivityDestroyed(this) }
         super.onDestroy()
     }
@@ -151,6 +152,8 @@ open class OrielActivity : Activity() {
     // Both legacy Back and Android 13+ gestures use the same navigation path.
     // Default priority lets the IME dismiss itself before navigating the page.
     private fun handleBack() {
+        // oriel.video's player closes first.
+        if (OrielVideo.handleBack(this)) return
         val w = orielWindow
         when {
             w != null && w.goBack() -> {}
@@ -164,6 +167,8 @@ open class OrielActivity : Activity() {
 
     /** A registered shortcut goes to Zig before the WebView sees the key. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Esc closes oriel.video's player.
+        if (OrielVideo.onKey(this, event)) return true
         if (event.action == KeyEvent.ACTION_DOWN) {
             val s = OrielRuntime.shortcuts.firstOrNull { it.keyCode == event.keyCode && event.hasModifiers(it.meta) }
             if (s != null) {
@@ -192,6 +197,16 @@ open class OrielActivity : Activity() {
     }
 
     internal fun hasWindowFocusOrVisible(): Boolean = started
+
+    /** A view over the window's content (oriel.video's player), inside the insets. */
+    internal fun addOverlay(view: View) {
+        root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    internal fun removeOverlay(view: View) {
+        root.removeView(view)
+        if (root.childCount > 0) root.getChildAt(0).requestFocus(View.FOCUS_DOWN)
+    }
 
     internal fun setContent(view: View) {
         root.removeAllViews()

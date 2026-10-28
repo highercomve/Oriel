@@ -177,6 +177,7 @@ it.
 | `oriel.bluetooth` | Bluetooth LE advertising | `bluetooth` (off; on with `.permissions.bluetooth`) | ✓ BlueZ | no device name | no service data | ✓ | no service data | [Bluetooth]($link.page('docs/bluetooth')) |
 | `oriel.share` | The share sheet, and receiving shares | `share` (on; also on with `.share_target`) | not yet (`error.Unsupported`) | ✓ | ✓ | ✓ | ✓ | [Share]($link.page('docs/share')) |
 | `oriel.camera` | Photos from the camera or library | `camera` (off; on with `.permissions.camera`) | library only | library only | library only | ✓ | ✓ | [Camera]($link.page('docs/camera')) |
+| `oriel.video` | A native video player over the window (formats the WebView won't play) | `video` (on; off with `native_ui`) | ✓ GStreamer | — | — | ✓ MediaPlayer | — | [Video]($link.page('docs/video')) |
 | `oriel.media_server` | Streaming large local media with range requests | `media_server` (on) | ✓ | ✓ | ✓ | — | — | [Media server]($link.page('docs/media-server')) |
 | `oriel.updater` | Signed self-updates | `updater` (on; off on Android) | ✓ | ✓ | ✓ | check only | — | [Updater]($link.page('docs/updater')) |
 | `oriel.global_shortcut` | System-wide hotkeys | `global_shortcut` (on) | ✓ | ✓ | ✓ | in-app shortcuts | — | [Global shortcuts]($link.page('docs/global-shortcuts')) |

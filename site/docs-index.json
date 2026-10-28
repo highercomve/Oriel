@@ -1,7 +1,7 @@
 [
   { "section": "Start", "pages": ["getting-started", "tutorial", "wrap", "examples"] },
   { "section": "Core", "pages": ["concepts", "architecture", "commands", "windows", "security", "development", "cli"] },
-  { "section": "App and system", "pages": ["lifecycle", "deep-links", "permissions", "tray", "menu", "dialogs", "notifications", "files", "store", "paths", "logging", "sql", "fs-watch", "clipboard", "global-shortcuts", "input", "network", "bluetooth", "share", "media-server", "camera"] },
+  { "section": "App and system", "pages": ["lifecycle", "deep-links", "permissions", "tray", "menu", "dialogs", "notifications", "files", "store", "paths", "logging", "sql", "fs-watch", "clipboard", "global-shortcuts", "input", "network", "bluetooth", "share", "media-server", "video", "camera"] },
   { "section": "Local AI", "pages": ["local-ai", "chat", "dictation", "tts", "speakers", "system-ai"] },
   { "section": "Native code", "pages": ["platform-hooks", "extensions"] },
   { "section": "Platforms", "pages": ["desktop", "android", "ios"] },
