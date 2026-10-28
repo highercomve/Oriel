@@ -51,6 +51,10 @@ internal object NativeLib {
     @JvmStatic external fun onSystemAudio(id: Long, fd: Int, status: Int)
     /** OrielTts: utterance `id` started (0), finished (1), failed (2) or was stopped (3). */
     @JvmStatic external fun onTtsEvent(id: Long, kind: Int)
+    /** OrielMedia: the size of a media source's `path` (src/modules/media_scheme/android.zig), -1 without a source or file. */
+    @JvmStatic external fun mediaSize(path: ByteArray): Long
+    /** OrielMedia: fills `buf` with the source's `path` from `offset`; the count, 0 at the end, -1 on error. */
+    @JvmStatic external fun mediaRead(path: ByteArray, offset: Long, buf: ByteArray): Int
 }
 
 internal fun ByteArray.utf8(): String = String(this, Charsets.UTF_8)

@@ -1,6 +1,6 @@
 .{
     .name = .oriel_system_monitor,
-    .version = "0.19.6",
+    .version = "0.19.7",
     .fingerprint = 0x50183278a3338d82,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

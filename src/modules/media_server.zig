@@ -1,5 +1,6 @@
 //! Local HTTP server (http.zig) for streaming large local media to the
 //! webview with HTTP range requests (RFC 9110 §14). Binds to 127.0.0.1 only.
+//! Serves the files below a root folder, or an app's own `Source`.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;
@@ -15,9 +16,13 @@ const log = std.log.scoped(.media_server);
 
 pub const open = @import("media/open.zig");
 pub const SymlinkPolicy = open.SymlinkPolicy;
+/// Bytes the app serves itself (`Options.source`).
+pub const Source = @import("media/source.zig").Source;
+const source_chunk = @import("media/source.zig").chunk_size;
 
 pub const Options = struct {
     /// Directory whose files are served (`/<path>` maps to `<root_dir>/<path>`).
+    /// Ignored (it may be "") when `source` is set.
     root_dir: []const u8,
     /// TCP port on 127.0.0.1.
     port: u16,
@@ -26,12 +31,17 @@ pub const Options = struct {
     /// embedded assets) or the dev server origin.
     allowed_origin: []const u8 = oriel.security.app_origin,
     symlink_policy: SymlinkPolicy = .inside_root,
+    /// Serve every file route from the app's own code instead of `root_dir`
+    /// (`/<path>` asks the source for the sanitized `<path>`). Its ctx must
+    /// outlive the server.
+    source: ?Source = null,
 };
 
 pub const Handler = struct {
     options: Options,
-    /// Root directory handle; files are opened beneath it.
-    root: open.Root,
+    /// Root directory handle; files are opened beneath it. Null when
+    /// `options.source` serves the files.
+    root: ?open.Root,
     io: std.Io,
 
     pub fn ping(self: *Handler, req: *httpz.Request, res: *httpz.Response) !void {
@@ -87,7 +97,16 @@ pub const Handler = struct {
             },
         };
 
-        const opened = open.openInRoot(self.root, sanitized, self.options.symlink_policy) catch |err| {
+        if (self.options.source) |source| {
+            const size = source.sizeFn(source.ctx, sanitized) orelse {
+                res.status = 404;
+                res.body = "Not Found";
+                return;
+            };
+            return respond(req, res, sanitized, size, .{ .source = .{ .source = source, .path = sanitized } });
+        }
+
+        const opened = open.openInRoot(self.root.?, sanitized, self.options.symlink_policy) catch |err| {
             res.status = switch (err) {
                 error.Forbidden => 403,
                 error.NotFound, error.NotAFile => 404,
@@ -98,52 +117,61 @@ pub const Handler = struct {
         };
         var file: std.Io.File = opened.toFile();
         defer file.close(self.io);
-        const file_size = opened.size;
-
-        const ext = std.fs.path.extension(sanitized);
-        const mime = range.mimeForExtension(ext);
-        res.header("Content-Type", mime);
-        res.header("Accept-Ranges", "bytes");
-
-        const range_hdr = req.header("range");
-        const range_res = if (range_hdr) |hdr|
-            range.parseRange(hdr, file_size)
-        else
-            .full;
-
-        switch (range_res) {
-            .unsatisfiable => {
-                res.status = 416;
-                try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes */{d}", .{file_size}), .{});
-                res.header("Content-Length", "0");
-                try sendHeaders(res);
-                res.written = true;
-                return;
-            },
-            .full => {
-                res.status = 200;
-                try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{file_size}), .{});
-                try sendHeaders(res);
-                if (req.method == .HEAD) {
-                    res.written = true;
-                    return;
-                }
-                try streamFile(self.io, &file, res, 0, file_size);
-            },
-            .range => |r| {
-                res.status = 206;
-                try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{r.length()}), .{});
-                try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes {d}-{d}/{d}", .{ r.start, r.end, file_size }), .{});
-                try sendHeaders(res);
-                if (req.method == .HEAD) {
-                    res.written = true;
-                    return;
-                }
-                try streamFile(self.io, &file, res, r.start, r.length());
-            },
-        }
+        return respond(req, res, sanitized, opened.size, .{ .file = .{ .io = self.io, .file = &file } });
     }
 };
+
+/// Where a response's bytes come from.
+const Body = union(enum) {
+    file: struct { io: std.Io, file: *std.Io.File },
+    source: struct { source: Source, path: []const u8 },
+};
+
+/// Headers, Range (200, 206, 416) and HEAD for a file of `size` bytes, then
+/// the body streamed from `body`.
+fn respond(req: *httpz.Request, res: *httpz.Response, path: []const u8, size: u64, body: Body) !void {
+    const ext = std.fs.path.extension(path);
+    const mime = range.mimeForExtension(ext);
+    res.header("Content-Type", mime);
+    res.header("Accept-Ranges", "bytes");
+
+    const range_hdr = req.header("range");
+    const range_res = if (range_hdr) |hdr|
+        range.parseRange(hdr, size)
+    else
+        .full;
+
+    const start: u64, const length: u64 = switch (range_res) {
+        .unsatisfiable => {
+            res.status = 416;
+            try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes */{d}", .{size}), .{});
+            res.header("Content-Length", "0");
+            try sendHeaders(res);
+            res.written = true;
+            return;
+        },
+        .full => blk: {
+            res.status = 200;
+            try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{size}), .{});
+            break :blk .{ 0, size };
+        },
+        .range => |r| blk: {
+            res.status = 206;
+            try res.headerOpts("Content-Length", try std.fmt.allocPrint(res.arena, "{d}", .{r.length()}), .{});
+            try res.headerOpts("Content-Range", try std.fmt.allocPrint(res.arena, "bytes {d}-{d}/{d}", .{ r.start, r.end, size }), .{});
+            break :blk .{ r.start, r.length() };
+        },
+    };
+    try sendHeaders(res);
+    if (req.method == .HEAD) {
+        res.written = true;
+        return;
+    }
+    switch (body) {
+        .file => |f| try streamFile(f.io, f.file, res, start, length),
+        .source => |src| try streamSource(src.source, src.path, res, start, length),
+    }
+}
 
 /// Reject DNS-rebinding hostnames before exposing any local endpoint.
 fn hostAllowed(host: ?[]const u8, port: u16) bool {
@@ -175,14 +203,15 @@ pub const Server = struct {
     port: u16,
     io: std.Io,
 
-    /// Start serving `options.root_dir` on 127.0.0.1:`options.port` from a
-    /// background thread. `self` must stay at a fixed address until `stop`.
+    /// Start serving `options.root_dir` (or `options.source`) on
+    /// 127.0.0.1:`options.port` from a background thread. `self` must stay
+    /// at a fixed address until `stop`.
     pub fn start(self: *Server, io: std.Io, gpa: std.mem.Allocator, options: Options) !void {
         self.io = io;
         self.port = options.port;
 
-        const root = try open.openRoot(options.root_dir);
-        errdefer open.closeRoot(root);
+        const root: ?open.Root = if (options.source == null) try open.openRoot(options.root_dir) else null;
+        errdefer if (root) |r| open.closeRoot(r);
         self.handler = .{ .options = options, .root = root, .io = io };
 
         self.inner = try httpz.Server(*Handler).init(io, gpa, .{ .address = .localhost(self.port) }, &self.handler);
@@ -201,7 +230,7 @@ pub const Server = struct {
         self.inner.stop();
         self.thread.join();
         self.inner.deinit();
-        open.closeRoot(self.handler.root);
+        if (self.handler.root) |r| open.closeRoot(r);
     }
 };
 
@@ -230,6 +259,39 @@ fn streamFile(io: std.Io, file: *std.Io.File, res: *httpz.Response, start: u64, 
         }
         res.conn.writeAll(buf[0..n]) catch {
             // Client closed connection or broken pipe
+            res.conn.handover = .close;
+            res.written = true;
+            return;
+        };
+        remaining -= n;
+        offset += n;
+    }
+    res.written = true;
+}
+
+/// Stream a source's bytes in chunks of up to 256 KiB (allocated in the
+/// request's arena, not on the worker's stack).
+fn streamSource(source: Source, path: []const u8, res: *httpz.Response, start: u64, length: u64) !void {
+    const buf = try res.arena.alloc(u8, @intCast(@min(@as(u64, source_chunk), @max(length, 1))));
+    var remaining = length;
+    var offset = start;
+
+    while (remaining > 0) {
+        const to_read: usize = @intCast(@min(@as(u64, buf.len), remaining));
+        const n = source.readFn(source.ctx, path, offset, buf[0..to_read]) catch |err| {
+            // Headers are already sent: close short of Content-Length.
+            log.warn("source read of {s} failed at offset {d}: {s}", .{ path, offset, @errorName(err) });
+            res.conn.handover = .close;
+            res.written = true;
+            return;
+        };
+        if (n == 0 or n > to_read) {
+            // Shorter than the size it gave, or a bad count: close early.
+            log.warn("source ended {s} early at offset {d}", .{ path, offset });
+            res.conn.handover = .close;
+            break;
+        }
+        res.conn.writeAll(buf[0..n]) catch {
             res.conn.handover = .close;
             res.written = true;
             return;
@@ -390,5 +452,95 @@ test "media_server: streaming over TCP with std.http.Client" {
             .response_writer = &body_403.writer,
         });
         try std.testing.expectEqual(std.http.Status.forbidden, res_403.status);
+    }
+}
+
+/// A port nothing listens on right now: bind port 0, read it, close.
+fn freePort(io: std.Io) !u16 {
+    const any: std.Io.net.IpAddress = try .parseIp4("127.0.0.1", 0);
+    var probe = try any.listen(io, .{});
+    defer probe.deinit(io);
+    return probe.socket.address.getPort();
+}
+
+test "media_server: a Source over std.http.Client" {
+    const ally = std.testing.allocator;
+    const test_io = std.testing.io;
+
+    // 300 KiB: more than one 256 KiB source read.
+    const test_size: usize = 300 * 1024;
+    const test_data = try ally.alloc(u8, test_size);
+    defer ally.free(test_data);
+    for (test_data, 0..) |*b, i| b.* = @truncate((i *% 31) +% 7);
+    var mem: @import("media/source.zig").TestMemory = .{ .data = test_data };
+
+    const port = try freePort(test_io);
+    var server: Server = undefined;
+    try server.start(test_io, ally, .{ .root_dir = "", .port = port, .source = mem.source() });
+    defer server.stop();
+
+    var client: std.http.Client = .{ .allocator = ally, .io = test_io };
+    defer client.deinit();
+
+    const Case = struct {
+        method: std.http.Method = .GET,
+        path: []const u8 = "/clip.mp4",
+        range: ?[]const u8 = null,
+        status: std.http.Status,
+        body: []const u8 = "",
+        content_range: ?[]const u8 = null,
+    };
+    const content_range_suffix = try std.fmt.allocPrint(ally, "bytes {d}-{d}/{d}", .{ test_size - 50, test_size - 1, test_size });
+    defer ally.free(content_range_suffix);
+    const content_range_416 = try std.fmt.allocPrint(ally, "bytes */{d}", .{test_size});
+    defer ally.free(content_range_416);
+    const content_range_10 = try std.fmt.allocPrint(ally, "bytes 10-19/{d}", .{test_size});
+    defer ally.free(content_range_10);
+
+    for ([_]Case{
+        .{ .status = .ok, .body = test_data },
+        .{ .range = "bytes=10-19", .status = .partial_content, .body = test_data[10..20], .content_range = content_range_10 },
+        .{ .range = "bytes=-50", .status = .partial_content, .body = test_data[test_size - 50 ..], .content_range = content_range_suffix },
+        .{ .method = .HEAD, .status = .ok },
+        .{ .range = "bytes=999999-", .status = .range_not_satisfiable, .content_range = content_range_416 },
+        .{ .path = "/missing.mp4", .status = .not_found, .body = "Not Found" },
+        .{ .path = "/..%2fclip.mp4", .status = .forbidden, .body = "Forbidden" },
+    }) |case| {
+        const url = try std.fmt.allocPrint(ally, "http://127.0.0.1:{d}{s}", .{ port, case.path });
+        defer ally.free(url);
+        var req = try client.request(case.method, try std.Uri.parse(url), .{
+            .extra_headers = if (case.range) |r| &.{.{ .name = "Range", .value = r }} else &.{},
+        });
+        defer req.deinit();
+        try req.sendBodiless();
+        var response = try req.receiveHead(&.{});
+        try std.testing.expectEqual(case.status, response.head.status);
+
+        var content_range: ?[]const u8 = null;
+        var content_type: ?[]const u8 = null;
+        var content_length: ?[]const u8 = null;
+        var it = response.head.iterateHeaders();
+        while (it.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, "content-range")) content_range = h.value;
+            if (std.ascii.eqlIgnoreCase(h.name, "content-type")) content_type = h.value;
+            if (std.ascii.eqlIgnoreCase(h.name, "content-length")) content_length = h.value;
+        }
+        if (case.content_range) |want| try std.testing.expectEqualStrings(want, content_range.?);
+        if (case.status == .ok or case.status == .partial_content) {
+            try std.testing.expectEqualStrings("video/mp4", content_type.?);
+        }
+        if (case.method == .HEAD) {
+            const want = try std.fmt.allocPrint(ally, "{d}", .{test_size});
+            defer ally.free(want);
+            try std.testing.expectEqualStrings(want, content_length.?);
+            continue;
+        }
+
+        var body: std.Io.Writer.Allocating = .init(ally);
+        defer body.deinit();
+        var transfer_buf: [64]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+        _ = try reader.streamRemaining(&body.writer);
+        try std.testing.expectEqualSlices(u8, case.body, body.written());
     }
 }

@@ -2,6 +2,25 @@
 
 Notable changes in Oriel releases.
 
+## [0.19.7] — 2026-10-28
+
+### Added
+
+- Media sources: an app serves `<video>` and `<audio>` bytes from its own
+  code (blocks fetched from another device, a file decrypted on the fly)
+  instead of files below a folder, with HTTP Range, so playback starts at
+  once and seeks work. A `Source` gives each path's size (`sizeFn`, null
+  for 404) and copies bytes from an offset (`readFn`), thread-safe. On
+  desktop, `media_server.Options.source` serves it on the loopback server
+  in place of `root_dir`, with the same Host check, CORS, Range, HEAD and
+  416, reading up to 256 KiB at a time. On Android,
+  `media_scheme.setSource(source)` serves it at
+  `https://app.localhost/media/` instead of the root until
+  `clearSource()`: OrielMedia's stream reads through
+  `NativeLib.mediaSize`/`mediaRead`, and the WebView's skip to a range's
+  first byte only moves its position. Elsewhere `setSource` returns
+  `error.Unsupported`.
+
 ## [0.19.6] — 2026-10-27
 
 ### Added

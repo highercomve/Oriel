@@ -562,7 +562,9 @@ from the template instead; save your edits first.
 - Size, placement, always-on-top, click-through and window dragging are
   no-ops: the system decides (the caption bar drags in desktop mode).
 - No HTTP media server: local media plays through `oriel.media_scheme`
-  (`https://app.localhost/media/`, Range requests for seeking). No
+  (`https://app.localhost/media/`, Range requests for seeking), from a
+  folder or from the app's own code (`media_scheme.setSource`,
+  [Media server](media-server.md#example-source)). No
   self-update (Play forbids it), no draw-over-apps overlays.
 - Other apps' audio: `audio_capture`'s "system" source (Android 10+, with
   `.permissions.system_audio`) asks for MediaProjection consent each

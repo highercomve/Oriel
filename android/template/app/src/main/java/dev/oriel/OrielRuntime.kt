@@ -659,6 +659,10 @@ object OrielRuntime {
     @JvmStatic
     fun setMediaRoot(path: ByteArray, refuseAllLinks: Boolean) = OrielMedia.setRoot(path.utf8(), refuseAllLinks)
 
+    /** oriel.media_scheme.setSource (OrielMedia): Zig's source answers /media/ instead of the root. */
+    @JvmStatic
+    fun setMediaSource(active: Boolean) = OrielMedia.setSource(active)
+
     /** oriel.tts's system engine (OrielTts): `rate` in hundredths (100 = normal). */
     @JvmStatic
     fun ttsSpeak(id: Long, text: ByteArray, language: ByteArray, rate: Int) = OrielTts.speak(app, id, text.utf8(), language.utf8(), rate / 100f)
