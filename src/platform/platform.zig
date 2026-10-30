@@ -128,6 +128,9 @@ pub const destroyWindow = impl.destroyWindow;
 pub const run = impl.run;
 pub const quit = impl.quit;
 pub const openExternal = impl.openExternal;
+/// Optional: open a URI in an app for a MIME type
+/// (`openExternalAs(uri, mime) void`); null where the platform can't.
+pub const openExternalAs: ?*const fn (uri: [*:0]const u8, mime: [*:0]const u8) void = if (@hasDecl(impl, "openExternalAs")) impl.openExternalAs else null;
 pub const evalJs = impl.evalJs;
 pub const evalJsByLabel = impl.evalJsByLabel;
 /// Optional: deliver an event to the page(s) in order with IPC replies

@@ -314,19 +314,37 @@ pub fn isBuiltinCommand(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
+/// `type/subtype` of letters, digits and `.+-*` (and `/` once): what an
+/// intent or a GIO lookup takes.
+fn validMimeType(t: []const u8) bool {
+    if (t.len == 0 or t.len > 127) return false;
+    var slashes: usize = 0;
+    for (t) |c| switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '.', '+', '-', '*' => {},
+        '/' => slashes += 1,
+        else => return false,
+    };
+    return slashes == 1 and t[0] != '/' and t[t.len - 1] != '/';
+}
+
 /// Dispatch a built-in framework command.
 pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request: Request) ![]u8 {
     fail_len = null; // see dispatchRequest
     if (std.mem.eql(u8, request.cmd, "open_external")) {
         const OpenExternalArgs = struct {
             url: []const u8,
+            /// A MIME type: open it in an app for that type.
+            type: ?[]const u8 = null,
         };
         const args = try std.json.parseFromValueLeaky(OpenExternalArgs, arena, request.args, .{
             .ignore_unknown_fields = true,
         });
         try security.validateExternalUrl(sec, args.url);
         const url_z = try arena.dupeZ(u8, args.url);
-        App.openExternal(url_z);
+        if (args.type) |t| {
+            if (!validMimeType(t)) return error.InvalidArgs;
+            App.openExternalAs(url_z, try arena.dupeZ(u8, t));
+        } else App.openExternal(url_z);
         return arena.dupe(u8, "null");
     } else if (std.mem.eql(u8, request.cmd, "deep_link:current")) {
         const build_options = @import("build_options");
@@ -832,7 +850,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  title?: string;
             \\}
             \\
-            \\/** The payload of "video:closed", "video:ended" and "video:error" (with `message`). */
+            \\/** The payload of "video:closed", "video:ended", "video:audio-unsupported" and "video:error" (with `message`). */
             \\export interface VideoEvent {
             \\  url: string;
             \\  message?: string;
@@ -872,7 +890,7 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\      video: VideoApi;
             \\      permissions: PermissionsApi;
             \\      drop: DropApi;
-            \\      openExternal(url: string): Promise<void>;
+            \\      openExternal(url: string, options?: { type?: string }): Promise<void>;
             \\    };
             \\  }
             \\  const oriel: Window["oriel"];
@@ -918,9 +936,9 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export const features: Features = (globalThis as any).oriel?.features;
             \\/** Global Oriel API object. */
             \\export const oriel: Window["oriel"] = (globalThis as any).oriel;
-            \\/** Open a URL in the system's default browser. */
-            \\export function openExternal(url: string): Promise<void> {
-            \\  return window.oriel.openExternal(url);
+            \\/** Open a URL in the system's default browser, or with `type` (a MIME type) in an app for that type. */
+            \\export function openExternal(url: string, options?: { type?: string }): Promise<void> {
+            \\  return window.oriel.openExternal(url, options);
             \\}
             \\
         ;

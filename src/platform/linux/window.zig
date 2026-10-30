@@ -246,6 +246,21 @@ pub fn openExternal(uri: [*:0]const u8) void {
     }
 }
 
+/// The default app for `mime`, given the URI (VLC and the like stream an
+/// http one); the URI's own handler when there is no such app.
+pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
+    const app = gio.AppInfo.getDefaultForType(mime, 1) orelse return openExternal(uri);
+    defer app.unref();
+    var node = glib.List{ .f_data = @ptrCast(@constCast(uri)), .f_next = null, .f_prev = null };
+    var err: ?*glib.Error = null;
+    if (app.launchUris(&node, null, &err) == 0) {
+        if (err) |e| {
+            log.err("could not open {s} as {s}: {s}", .{ uri, mime, e.f_message orelse "unknown error" });
+            e.free();
+        }
+    }
+}
+
 pub fn getWindowByView(view: *webkit.WebView) ?*App.Window {
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();

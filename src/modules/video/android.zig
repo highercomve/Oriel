@@ -69,13 +69,17 @@ pub const Report = union(enum) {
     /// The user closed it (button, back, Esc) or its Activity went away.
     closed,
     ended,
+    /// It plays, but its sound can't be decoded here.
+    audio_unsupported,
     @"error": []const u8,
 };
 
-/// "closed", "ended" or "error\n<message>"; null for anything else.
+/// "closed", "ended", "audio-unsupported" or "error\n<message>"; null for
+/// anything else.
 pub fn parseReport(data: []const u8) ?Report {
     if (std.mem.eql(u8, data, "closed")) return .closed;
     if (std.mem.eql(u8, data, "ended")) return .ended;
+    if (std.mem.eql(u8, data, "audio-unsupported")) return .audio_unsupported;
     if (std.mem.startsWith(u8, data, "error\n")) return .{ .@"error" = data["error\n".len..] };
     if (std.mem.eql(u8, data, "error")) return .{ .@"error" = "playback failed" };
     return null;
@@ -86,6 +90,7 @@ pub fn onSystemEvent(data: []const u8) void {
     switch (parseReport(data) orelse return) {
         .closed => common.closed(),
         .ended => common.ended(),
+        .audio_unsupported => common.audioUnsupported(),
         .@"error" => |m| common.failed(m),
     }
 }
@@ -93,6 +98,7 @@ pub fn onSystemEvent(data: []const u8) void {
 test parseReport {
     try std.testing.expectEqual(Report.closed, parseReport("closed").?);
     try std.testing.expectEqual(Report.ended, parseReport("ended").?);
+    try std.testing.expectEqual(Report.audio_unsupported, parseReport("audio-unsupported").?);
     try std.testing.expectEqualStrings("MEDIA_ERROR_UNSUPPORTED (-1010)", parseReport("error\nMEDIA_ERROR_UNSUPPORTED (-1010)").?.@"error");
     try std.testing.expectEqualStrings("playback failed", parseReport("error").?.@"error");
     try std.testing.expect(parseReport("paused") == null);

@@ -1,4 +1,5 @@
-//! Media file opening facade selecting the Linux, Windows or macOS backend.
+//! Media file opening facade selecting the Linux (and Android), Windows or
+//! macOS backend.
 
 const builtin = @import("builtin");
 const target = @import("../../core/target.zig");
@@ -17,7 +18,8 @@ pub const impl = switch (target.os) {
     .linux => @import("open/linux.zig"),
     .windows => @import("open/windows.zig"),
     .macos => @import("open/macos.zig"),
-    .android => @compileError("media open is not available on Android: the media server is not ported yet (see docs/android.md)"),
+    // Android's kernel is Linux: the same openat-based confinement.
+    .android => @import("open/linux.zig"),
     .ios => @compileError("media open is not available on iOS: the media server is not ported yet (see docs/ios.md)"),
     .other => @compileError("media open is not supported on " ++ target.name),
 };

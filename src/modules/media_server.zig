@@ -224,6 +224,13 @@ pub const Server = struct {
         router.head("/*", Handler.handleFile, .{});
 
         self.thread = try self.inner.listenInNewThread();
+        // httpz binds in that thread and signals even when the bind fails
+        // (the port is taken): without a listener, nothing serves. Say so,
+        // so the caller can try another port.
+        if (self.inner._listener == null) {
+            self.thread.join();
+            return error.AddressInUse;
+        }
     }
 
     pub fn stop(self: *Server) void {

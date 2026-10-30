@@ -1,6 +1,8 @@
 package dev.oriel
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -9,12 +11,15 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.Button
 import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.MediaController
 import android.widget.TextView
 
@@ -22,8 +27,12 @@ import android.widget.TextView
  * oriel.video on Android (src/modules/video/android.zig): a full-window
  * player over an Oriel window's WebView. MediaPlayer draws into a
  * SurfaceView (sized to the video's aspect ratio, black around it), with a
- * MediaController for play, pause and seeking, the title, and a close
- * button. Back, Esc and that button close it.
+ * MediaController for play, pause and seeking, the title, a mute button
+ * and a close button. Back, Esc and the close button close it.
+ *
+ * When the video's sound can't be decoded on this device (AC3 or DTS on
+ * most phones), the picture still plays: the player says so and, for a
+ * URL other apps can open, offers to open it in one (VLC and the like).
  *
  * Plain URLs (http, https, file, content) go to MediaPlayer as they are.
  * The app's media URLs (`https://app.localhost/media/<path>`) exist only in
@@ -32,7 +41,7 @@ import android.widget.TextView
  *
  * Zig hears the end, errors and a close it didn't ask for through
  * `NativeLib.onSystemEvent("video", ...)`: "ended", "error\n<message>",
- * "closed". Main thread only.
+ * "closed", "audio-unsupported". Main thread only.
  */
 internal object OrielVideo {
     private const val TAG = "OrielVideo"
@@ -67,7 +76,9 @@ internal object OrielVideo {
             mp.release()
             return FAILED
         }
-        val p = Player(activity, mp, title)
+        // Another app can open it unless it's an app media URL (only this
+        // process's WebView serves those).
+        val p = Player(activity, mp, title, if (kind == KIND_APP_MEDIA) null else Uri.parse(url))
         player = p
         p.show()
         return SHOWN
@@ -76,6 +87,7 @@ internal object OrielVideo {
     /** Close the player Zig asked to close: true when one was showing. */
     fun close(): Boolean {
         val p = player ?: return false
+        Log.i(TAG, "closed by the app")
         player = null
         p.release(notify = false)
         return true
@@ -85,6 +97,7 @@ internal object OrielVideo {
     fun handleBack(activity: OrielActivity): Boolean {
         val p = player ?: return false
         if (p.activity !== activity) return false
+        Log.i(TAG, "closed by back")
         closeByUser(p)
         return true
     }
@@ -92,14 +105,20 @@ internal object OrielVideo {
     fun onKey(activity: OrielActivity, event: KeyEvent): Boolean {
         val p = player ?: return false
         if (p.activity !== activity || event.keyCode != KeyEvent.KEYCODE_ESCAPE) return false
-        if (event.action == KeyEvent.ACTION_UP) closeByUser(p)
+        if (event.action == KeyEvent.ACTION_UP) {
+            Log.i(TAG, "closed by Esc")
+            closeByUser(p)
+        }
         return true
     }
 
     /** The Activity holding the player is going away: the player too. */
     fun onActivityDestroyed(activity: OrielActivity) {
         val p = player ?: return
-        if (p.activity === activity) closeByUser(p)
+        if (p.activity === activity) {
+            Log.i(TAG, "closed: its Activity went away")
+            closeByUser(p)
+        }
     }
 
     private fun closeByUser(p: Player) {
@@ -111,7 +130,7 @@ internal object OrielVideo {
     private fun report(data: String) = NativeLib.onSystemEvent("video".bytes(), data.bytes())
 
     /** One shown video: its views over the WebView, and its MediaPlayer. */
-    private class Player(val activity: OrielActivity, private val mp: MediaPlayer, title: String) :
+    private class Player(val activity: OrielActivity, private val mp: MediaPlayer, title: String, private val shareable: Uri?) :
         SurfaceHolder.Callback, MediaController.MediaPlayerControl {
         private val root = FitFrame(activity)
         private val surface = SurfaceView(activity)
@@ -121,6 +140,8 @@ internal object OrielVideo {
         /** MediaPlayer reported an error: it's in its Error state. */
         private var failed = false
         private var buffered = 0
+        private var muted = false
+        private var noSoundShown = false
 
         init {
             root.setBackgroundColor(Color.BLACK)
@@ -140,17 +161,34 @@ internal object OrielVideo {
                     setPadding(pad, pad, pad, pad)
                 }
                 root.addView(label, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
-                    marginEnd = dp(56)
+                    marginEnd = dp(112)
                 })
             }
             val close = ImageButton(activity).apply {
                 setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
                 setBackgroundColor(0x66000000)
                 contentDescription = "Close"
-                setOnClickListener { OrielVideo.closeByUser(this@Player) }
+                setOnClickListener {
+                    Log.i(TAG, "closed by its close button")
+                    OrielVideo.closeByUser(this@Player)
+                }
             }
             root.addView(close, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
                 setMargins(pad, pad, pad, pad)
+            })
+            val mute = ImageButton(activity).apply {
+                setImageResource(android.R.drawable.ic_lock_silent_mode_off)
+                setBackgroundColor(0x66000000)
+                contentDescription = "Mute"
+                setOnClickListener {
+                    muted = !muted
+                    if (!released) mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f)
+                    setImageResource(if (muted) android.R.drawable.ic_lock_silent_mode else android.R.drawable.ic_lock_silent_mode_off)
+                    contentDescription = if (muted) "Unmute" else "Mute"
+                }
+            }
+            root.addView(mute, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
+                setMargins(pad, pad, pad + dp(56), pad)
             })
             root.setOnClickListener { if (controller.isShowing) controller.hide() else if (prepared) controller.show() }
             surface.holder.addCallback(this)
@@ -168,6 +206,10 @@ internal object OrielVideo {
                 if (root.isAttachedToWindow) controller.show(0)
                 OrielVideo.report("ended")
             }
+            mp.setOnInfoListener { _, what, _ ->
+                if (what == MediaPlayer.MEDIA_INFO_AUDIO_NOT_PLAYING) showNoSound()
+                false
+            }
             mp.setOnErrorListener { _, what, extra ->
                 failed = true
                 OrielVideo.report("error\n${errorText(what, extra)}")
@@ -175,6 +217,46 @@ internal object OrielVideo {
             }
             controller.setMediaPlayer(this)
             controller.setAnchorView(root)
+        }
+
+        /** The sound can't be decoded here: say so, and offer another app. */
+        private fun showNoSound() {
+            if (noSoundShown || released) return
+            noSoundShown = true
+            OrielVideo.report("audio-unsupported")
+            val bar = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundColor(0xCC000000.toInt())
+                setPadding(dp(12), dp(8), dp(8), dp(8))
+            }
+            val message = TextView(activity).apply {
+                text = "This video's sound isn't supported on this device."
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            }
+            bar.addView(message, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            shareable?.let { uri ->
+                val open = Button(activity).apply {
+                    text = "Open in another app"
+                    setOnClickListener { openElsewhere(uri) }
+                }
+                bar.addView(open, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            root.addView(bar, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP).apply {
+                topMargin = dp(72)
+            })
+        }
+
+        /** Hands the video to another app (it plays what this one can't). */
+        private fun openElsewhere(uri: Uri) {
+            val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "video/*")
+            try {
+                if (ok() && mp.isPlaying) mp.pause()
+                activity.startActivity(Intent.createChooser(intent, "Open with"))
+            } catch (e: ActivityNotFoundException) {
+                Log.w(TAG, "no app opens $uri: $e")
+            }
         }
 
         fun show() {
@@ -191,6 +273,7 @@ internal object OrielVideo {
             activity.removeOverlay(root)
             mp.setOnErrorListener(null)
             mp.setOnCompletionListener(null)
+            mp.setOnInfoListener(null)
             mp.release()
             if (notify) OrielVideo.report("closed")
         }
@@ -241,9 +324,22 @@ internal object OrielVideo {
         return "$w ($e)"
     }
 
-    /** Black, with the surface fitted to the video's aspect ratio and centred. */
+    /**
+     * Black, with the surface fitted to the video's aspect ratio and centred.
+     * It takes every pointer event over it: a mouse's clicks and hovers
+     * arrive as generic motion events, which a FrameLayout hands to the
+     * next view down when nobody here takes them, and the WebView behind
+     * would turn them into clicks on the page (ChromeOS, a mouse on a tablet).
+     */
     private class FitFrame(context: Context) : FrameLayout(context) {
         var surface: View? = null
+
+        override fun onGenericMotionEvent(event: MotionEvent): Boolean = true
+
+        override fun onHoverEvent(event: MotionEvent): Boolean {
+            super.onHoverEvent(event)
+            return true
+        }
         private var videoW = 0
         private var videoH = 0
 

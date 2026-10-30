@@ -30,7 +30,7 @@ pub fn missingOn(platform: Platform) []const []const u8 {
         // global_shortcut (in-app shortcuts), fs_watch (inotify) and updater
         // (checking for a release) have real Android backends. speakers
         // (voice-detect.cpp) isn't built or tested for the phones yet.
-        .android => &.{ "tray", "menu", "input", "media_server", "layer_shell", "speakers" },
+        .android => &.{ "tray", "menu", "input", "layer_shell", "speakers" },
         // video: AVPlayerViewController is later work.
         .ios => &.{ "tray", "updater", "menu", "global_shortcut", "input", "media_server", "layer_shell", "fs_watch", "speakers", "video" },
         // gtk4-layer-shell is a Wayland thing. system_ai: Windows AI and

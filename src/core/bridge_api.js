@@ -78,8 +78,11 @@ function orielApi({ invoke, listeners, pendingEvents, platform, features, label 
     features,
     invoke,
     listen,
-    openExternal(url) {
-      return invoke("open_external", { url });
+    // `type` (a MIME type, e.g. "video/x-matroska") opens it in an app for
+    // that type: Android's app chooser, the desktop's default app; the
+    // browser otherwise.
+    openExternal(url, options = {}) {
+      return invoke("open_external", { url, type: options.type || null });
     },
     permissions: Object.freeze({
       query(name) {
@@ -181,7 +184,8 @@ function orielApi({ invoke, listeners, pendingEvents, platform, features, label 
     }),
     // oriel.video (features.video): a native player over this window.
     // play({ url, title }) resolves once it shows; then "video:ended",
-    // "video:error" ({ url, message }) and "video:closed" ({ url }).
+    // "video:error" ({ url, message }), "video:audio-unsupported" ({ url };
+    // Android: it plays without sound) and "video:closed" ({ url }).
     video: Object.freeze({
       available: !!(features && features.video),
       play(options = {}) {

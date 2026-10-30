@@ -598,3 +598,13 @@ pub fn openExternal(uri: [*:0]const u8) void {
     }
     platform.openExternal(uri);
 }
+
+/// Opens `uri` in an app for the MIME type `mime` (Android's chooser, the
+/// desktop's default app for the type); elsewhere as openExternal does.
+pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
+    if (open_external_hook) |hook| {
+        hook(uri);
+        return;
+    }
+    if (platform.openExternalAs) |f| f(uri, mime) else platform.openExternal(uri);
+}

@@ -21,8 +21,9 @@
 //! `oriel.video.available` is false.
 //!
 //! The page: `oriel.video.play({ url, title })` and `oriel.video.close()`;
-//! the events `video:closed`, `video:ended` and `video:error` (`{ url,
-//! message }`) go to every window.
+//! the events `video:closed`, `video:ended`, `video:error` (`{ url,
+//! message }`) and, on Android, `video:audio-unsupported` (it plays
+//! without sound) go to every window.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;

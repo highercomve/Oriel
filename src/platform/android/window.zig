@@ -274,6 +274,39 @@ pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
     return .unsupported;
 }
 
+/// Android's app chooser for `mime`, given the URI (main thread).
+pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
+    const Pair = struct { uri: [:0]u8, mime: [:0]u8 };
+    if (ShellMod.isMainThread()) {
+        _ = runtime.call(.void, "openExternalAs", "([B[B)V", .{ @as([]const u8, std.mem.span(uri)), @as([]const u8, std.mem.span(mime)) });
+        return;
+    }
+    const pair = heap.gpa.create(Pair) catch return;
+    pair.uri = heap.gpa.dupeZ(u8, std.mem.span(uri)) catch {
+        heap.gpa.destroy(pair);
+        return;
+    };
+    pair.mime = heap.gpa.dupeZ(u8, std.mem.span(mime)) catch {
+        heap.gpa.free(pair.uri);
+        heap.gpa.destroy(pair);
+        return;
+    };
+    const Task = struct {
+        fn run(ctx: ?*anyopaque) void {
+            const p: *Pair = @ptrCast(@alignCast(ctx.?));
+            defer drop(ctx);
+            _ = runtime.call(.void, "openExternalAs", "([B[B)V", .{ @as([]const u8, p.uri), @as([]const u8, p.mime) });
+        }
+        fn drop(ctx: ?*anyopaque) void {
+            const p: *Pair = @ptrCast(@alignCast(ctx.?));
+            heap.gpa.free(p.uri);
+            heap.gpa.free(p.mime);
+            heap.gpa.destroy(p);
+        }
+    };
+    ShellMod.dispatchWithCleanup(&Task.run, pair, &Task.drop);
+}
+
 pub fn openExternal(uri: [*:0]const u8) void {
     const url = std.mem.span(uri);
     if (ShellMod.isMainThread()) {

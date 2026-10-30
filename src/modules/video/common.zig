@@ -130,6 +130,14 @@ pub fn ended() void {
     internal.emit("video:ended", Event{ .url = url });
 }
 
+/// The video plays but its sound can't be decoded on this device (AC3 or
+/// DTS on most phones): `video:audio-unsupported`. The player says so
+/// itself and stays open.
+pub fn audioUnsupported() void {
+    const url = playing orelse return;
+    internal.emit("video:audio-unsupported", Event{ .url = url });
+}
+
 /// Playback failed: `video:error` with the platform's message (the player
 /// stays open until it is closed).
 pub fn failed(message: []const u8) void {

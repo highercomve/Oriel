@@ -533,6 +533,18 @@ object OrielRuntime {
         }
     }
 
+    /** Opens `uri` in an app for `mime`: the system's chooser. */
+    @JvmStatic
+    fun openExternalAs(uri: ByteArray, mime: ByteArray) {
+        val u = Uri.parse(uri.utf8())
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(u, mime.utf8())
+        try {
+            app.startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "no app opens ${uri.utf8()} as ${mime.utf8()}")
+        }
+    }
+
     /** The app's `main` returned: close what is left. */
     @JvmStatic
     fun onExit(code: Int) {
