@@ -261,6 +261,20 @@ pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
     }
 }
 
+/// A file in the default app for `mime`, a folder in the file manager.
+pub fn openPath(path: [*:0]const u8, mime: [*:0]const u8) void {
+    var err: ?*glib.Error = null;
+    const uri = glib.filenameToUri(path, null, &err) orelse {
+        if (err) |e| {
+            log.err("could not open {s}: {s}", .{ path, e.f_message orelse "unknown error" });
+            e.free();
+        }
+        return;
+    };
+    defer glib.free(uri);
+    openExternalAs(uri, mime);
+}
+
 pub fn getWindowByView(view: *webkit.WebView) ?*App.Window {
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();

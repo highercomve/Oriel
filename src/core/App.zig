@@ -599,6 +599,37 @@ pub fn openExternal(uri: [*:0]const u8) void {
     platform.openExternal(uri);
 }
 
+/// Opens a file or folder on this device: a file in an app for `mime`
+/// (Android's chooser, the desktop's default app), a folder (`mime`
+/// "inode/directory") in the file manager. Not callable from the page:
+/// the app decides which paths it opens.
+pub fn openPath(path: [*:0]const u8, mime: [*:0]const u8) void {
+    if (platform.openPath) |f| return f(path, mime);
+    var buf: [4096]u8 = undefined;
+    const uri = fileUri(&buf, std.mem.span(path)) catch return;
+    openExternalAs(uri, mime);
+}
+
+/// `file://` + `path`, percent-encoded (Windows drive paths get a slash).
+fn fileUri(buf: []u8, path: []const u8) ![:0]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    try w.writeAll(if (path.len > 0 and path[0] == '/') "file://" else "file:///");
+    for (path) |c| switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~', '/', ':' => try w.writeByte(c),
+        '\\' => try w.writeByte('/'),
+        else => try w.print("%{X:0>2}", .{c}),
+    };
+    try w.writeByte(0);
+    const out = w.buffered();
+    return out[0 .. out.len - 1 :0];
+}
+
+test fileUri {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("file:///home/a%20b/f.mkv", try fileUri(&buf, "/home/a b/f.mkv"));
+    try std.testing.expectEqualStrings("file:///C:/Users/x", try fileUri(&buf, "C:\\Users\\x"));
+}
+
 /// Opens `uri` in an app for the MIME type `mime` (Android's chooser, the
 /// desktop's default app for the type); elsewhere as openExternal does.
 pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {

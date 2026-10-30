@@ -322,6 +322,8 @@ Oriel's.
 |---|---|
 | `openExternal(url): Promise<void>` (page, from `./oriel` or `window.oriel`) | Open in the default app; the `open_external` built-in. Remote origins need it in their capability. |
 | `App.openExternal(uri: [*:0]const u8) void` (Zig) | The same without the checks. |
+| `App.openExternalAs(uri, mime) void` (Zig) | In an app for the MIME type: Android's chooser, the desktop's default app for the type. On ChromeOS the chooser leaves out ChromeOS's own apps for a `127.0.0.1` URL, which they can't reach. |
+| `App.openPath(path, mime) void` (Zig) | A file or folder on this device. A file opens in an app for `mime`; on Android through a read-only `content://` URI granted to the app picked. A folder (`mime` `inode/directory`) opens in the file manager (Files on Android, which shows folders on shared storage; Downloads otherwise). The page can't call it: `file` URLs never pass `open_external`, so the app's own command decides which paths open. |
 | `security.validateExternalUrl(sec, url) ValidationError!void` | The page's checks. |
 
 The page's URL must be non-empty, have no control characters or spaces,

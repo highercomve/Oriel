@@ -1,10 +1,27 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.2, 0.20.1 and earlier.",
+.description = "Release notes for Oriel 0.20.3, 0.20.2 and earlier.",
 .date = .date("2026-10-30T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.3 · October 30, 2026]($heading.id('oriel-0-20-3-october-30-2026'))
+
+## [Added]($heading.id('added-0-20-3'))
+
+- `App.openPath(path, mime)`: opens a file on this device in an app for its
+  MIME type, or a folder in the file manager. On Android the file goes through
+  the chooser as a read-only `content://` URI (`OrielFileProvider`), so it
+  works with any app, ChromeOS's included; a folder on shared storage opens in
+  Files (DocumentsUI), anything else in Downloads. On Linux it is the default
+  app for the type through GIO; elsewhere a `file://` URI to `openExternal`.
+
+## [Fixed]($heading.id('fixed-0-20-3'))
+
+- Android on ChromeOS: `openExternalAs` with a `127.0.0.1` URL no longer offers
+  ChromeOS's own apps, which run outside the Android container and got
+  "connection refused".
 
 # [Oriel 0.20.2 · October 30, 2026]($heading.id('oriel-0-20-2-october-30-2026'))
 

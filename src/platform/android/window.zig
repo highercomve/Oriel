@@ -276,18 +276,30 @@ pub fn startWindowDrag(handle: WindowHandle) internal.DragMode {
 
 /// Android's app chooser for `mime`, given the URI (main thread).
 pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
-    const Pair = struct { uri: [:0]u8, mime: [:0]u8 };
+    callTwoStrings("openExternalAs", uri, mime);
+}
+
+/// A file through the chooser for `mime`, a folder in the file manager
+/// (OrielRuntime.openPath).
+pub fn openPath(path: [*:0]const u8, mime: [*:0]const u8) void {
+    callTwoStrings("openPath", path, mime);
+}
+
+/// `OrielRuntime.<method>(a, b)` on the main thread, the strings copied
+/// when it has to wait for it.
+fn callTwoStrings(comptime method: [:0]const u8, a: [*:0]const u8, b: [*:0]const u8) void {
+    const Pair = struct { a: [:0]u8, b: [:0]u8 };
     if (ShellMod.isMainThread()) {
-        _ = runtime.call(.void, "openExternalAs", "([B[B)V", .{ @as([]const u8, std.mem.span(uri)), @as([]const u8, std.mem.span(mime)) });
+        _ = runtime.call(.void, method, "([B[B)V", .{ @as([]const u8, std.mem.span(a)), @as([]const u8, std.mem.span(b)) });
         return;
     }
     const pair = heap.gpa.create(Pair) catch return;
-    pair.uri = heap.gpa.dupeZ(u8, std.mem.span(uri)) catch {
+    pair.a = heap.gpa.dupeZ(u8, std.mem.span(a)) catch {
         heap.gpa.destroy(pair);
         return;
     };
-    pair.mime = heap.gpa.dupeZ(u8, std.mem.span(mime)) catch {
-        heap.gpa.free(pair.uri);
+    pair.b = heap.gpa.dupeZ(u8, std.mem.span(b)) catch {
+        heap.gpa.free(pair.a);
         heap.gpa.destroy(pair);
         return;
     };
@@ -295,12 +307,12 @@ pub fn openExternalAs(uri: [*:0]const u8, mime: [*:0]const u8) void {
         fn run(ctx: ?*anyopaque) void {
             const p: *Pair = @ptrCast(@alignCast(ctx.?));
             defer drop(ctx);
-            _ = runtime.call(.void, "openExternalAs", "([B[B)V", .{ @as([]const u8, p.uri), @as([]const u8, p.mime) });
+            _ = runtime.call(.void, method, "([B[B)V", .{ @as([]const u8, p.a), @as([]const u8, p.b) });
         }
         fn drop(ctx: ?*anyopaque) void {
             const p: *Pair = @ptrCast(@alignCast(ctx.?));
-            heap.gpa.free(p.uri);
-            heap.gpa.free(p.mime);
+            heap.gpa.free(p.a);
+            heap.gpa.free(p.b);
             heap.gpa.destroy(p);
         }
     };

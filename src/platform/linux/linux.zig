@@ -37,6 +37,7 @@ pub const dispatchWithCleanup = ShellMod.dispatchWithCleanup;
 pub const drainMainQueue = ShellMod.drainMainQueue;
 pub const openExternal = window.openExternal;
 pub const openExternalAs = window.openExternalAs;
+pub const openPath = window.openPath;
 
 pub const evalJs = bridge.evalJs;
 pub const evalJsByLabel = bridge.evalJsByLabel;

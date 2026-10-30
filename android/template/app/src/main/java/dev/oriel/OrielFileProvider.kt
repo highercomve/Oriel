@@ -13,12 +13,15 @@ import java.io.File
 /**
  * Read-only access for other apps to files Oriel shares from its cache
  * (`<cacheDir>/oriel-shared/`): the clipboard's images and oriel.share's
- * files (`share-out/`). Not exported; access is granted per URI (the
- * clipboard to the app pasting, the share sheet to the target).
+ * files (`share-out/`); and to the files `App.openPath` opens in another
+ * app (`opened/<token>/<name>`, until the process ends). Not exported;
+ * access is granted per URI (the clipboard to the app pasting, the share
+ * sheet or the chooser to the target).
  */
 class OrielFileProvider : ContentProvider() {
     companion object {
         private const val DIR = "oriel-shared"
+        private const val OPENED = "opened"
 
         fun authority(context: Context) = "${context.packageName}.oriel.files"
 
@@ -28,6 +31,18 @@ class OrielFileProvider : ContentProvider() {
             dir.deleteRecursively() // one shared file per group at a time
             dir.mkdirs()
             return File(dir, name)
+        }
+
+        /** Files `App.openPath` handed to another app, by a random token. */
+        private val opened = java.util.concurrent.ConcurrentHashMap<String, File>()
+
+        /** A URI for any file the app opens elsewhere (`App.openPath`). */
+        fun uriForOpened(context: Context, file: File): Uri {
+            val bytes = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+            val token = bytes.joinToString("") { "%02x".format(it) }
+            opened[token] = file.canonicalFile
+            return Uri.Builder().scheme("content").authority(authority(context))
+                .encodedPath("/$OPENED/$token/" + Uri.encode(file.name)).build()
         }
 
         fun uriFor(context: Context, file: File): Uri {
@@ -41,6 +56,8 @@ class OrielFileProvider : ContentProvider() {
 
     private fun fileFor(uri: Uri): File? {
         val context = context ?: return null
+        val segments = uri.pathSegments
+        if (segments.size >= 2 && segments[0] == OPENED) return opened[segments[1]]?.takeIf { it.isFile }
         val base = File(context.cacheDir, DIR).canonicalFile
         val file = File(base, uri.path ?: return null).canonicalFile
         return if (file.path.startsWith(base.path + "/") && file.isFile) file else null

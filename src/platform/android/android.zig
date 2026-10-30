@@ -54,6 +54,7 @@ pub const getWindowWorkArea = window.getWindowWorkArea;
 pub const startWindowDrag = window.startWindowDrag;
 pub const openExternal = window.openExternal;
 pub const openExternalAs = window.openExternalAs;
+pub const openPath = window.openPath;
 pub const dispatchWithCleanup = ShellMod.dispatchWithCleanup;
 
 pub const evalJs = bridge.evalJs;

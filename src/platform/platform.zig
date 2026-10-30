@@ -131,6 +131,10 @@ pub const openExternal = impl.openExternal;
 /// Optional: open a URI in an app for a MIME type
 /// (`openExternalAs(uri, mime) void`); null where the platform can't.
 pub const openExternalAs: ?*const fn (uri: [*:0]const u8, mime: [*:0]const u8) void = if (@hasDecl(impl, "openExternalAs")) impl.openExternalAs else null;
+/// Optional: open a file or folder on this device in another app
+/// (`openPath(path, mime) void`); null where the platform has none
+/// (App.openPath hands a file:// URI to openExternal there).
+pub const openPath: ?*const fn (path: [*:0]const u8, mime: [*:0]const u8) void = if (@hasDecl(impl, "openPath")) impl.openPath else null;
 pub const evalJs = impl.evalJs;
 pub const evalJsByLabel = impl.evalJsByLabel;
 /// Optional: deliver an event to the page(s) in order with IPC replies

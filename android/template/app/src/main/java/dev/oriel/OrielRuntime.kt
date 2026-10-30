@@ -538,12 +538,68 @@ object OrielRuntime {
     fun openExternalAs(uri: ByteArray, mime: ByteArray) {
         val u = Uri.parse(uri.utf8())
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(u, mime.utf8())
+        val chooser = Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Only Android apps can stream this device's loopback URL; ChromeOS's
+        // own (Chrome, Gallery) would get "connection refused".
+        if (chromeOsLoopback(u)) chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(
+            android.content.ComponentName("org.chromium.arc.intent_helper", "org.chromium.arc.intent_helper.ArcIntentHelperActivity"),
+        ))
         try {
-            app.startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            app.startActivity(chooser)
         } catch (e: ActivityNotFoundException) {
             Log.w(TAG, "no app opens ${uri.utf8()} as ${mime.utf8()}")
         }
     }
+
+    /**
+     * Opens a file or folder on this device (`App.openPath`). A file goes
+     * to the chooser for `mime` through OrielFileProvider, readable by the
+     * app picked; a folder on shared storage opens in the system's file
+     * manager (Downloads when it can't show that folder).
+     */
+    @JvmStatic
+    fun openPath(path: ByteArray, mime: ByteArray) {
+        val file = File(path.utf8())
+        try {
+            if (file.isDirectory) openFolder(file) else openFile(file, mime.utf8())
+        } catch (e: Exception) {
+            Log.w(TAG, "can't open $file: $e")
+        }
+    }
+
+    private fun openFile(file: File, mime: String) {
+        val uri = OrielFileProvider.uriForOpened(app, file)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        view.clipData = ClipData.newUri(app.contentResolver, file.name, uri)
+        app.startActivity(Intent.createChooser(view, null)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION))
+    }
+
+    private fun openFolder(dir: File) {
+        val root = android.os.Environment.getExternalStorageDirectory().canonicalPath
+        val path = dir.canonicalPath
+        if (path == root || path.startsWith("$root/")) {
+            val docId = "primary:" + path.removePrefix(root).trimStart('/')
+            val uri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+            val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // The system's file manager shows any folder; other apps that
+            // claim folders may not. Package visibility hides it from
+            // queries, so try it by name.
+            for (pkg in listOf("com.google.android.documentsui", "com.android.documentsui")) {
+                try {
+                    app.startActivity(Intent(view).setPackage(pkg))
+                    return
+                } catch (_: ActivityNotFoundException) {}
+            }
+        }
+        app.startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    /** ChromeOS runs Android apps in a container: its own apps can't reach the container's 127.0.0.1. */
+    private fun chromeOsLoopback(uri: Uri): Boolean =
+        app.packageManager.hasSystemFeature("org.chromium.arc") && (uri.host == "127.0.0.1" || uri.host == "localhost")
 
     /** The app's `main` returned: close what is left. */
     @JvmStatic

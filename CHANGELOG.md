@@ -2,6 +2,23 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.3] — 2026-10-30
+
+### Added
+
+- `App.openPath(path, mime)`: opens a file on this device in an app for its
+  MIME type, or a folder in the file manager. On Android the file goes through
+  the chooser as a read-only `content://` URI (`OrielFileProvider`), so it
+  works with any app, ChromeOS's included; a folder on shared storage opens in
+  Files (DocumentsUI), anything else in Downloads. On Linux it is the default
+  app for the type through GIO; elsewhere a `file://` URI to `openExternal`.
+
+### Fixed
+
+- Android on ChromeOS: `openExternalAs` with a `127.0.0.1` URL no longer offers
+  ChromeOS's own apps, which run outside the Android container and got
+  "connection refused".
+
 ## [0.20.2] — 2026-10-30
 
 ### Added
