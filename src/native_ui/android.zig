@@ -864,11 +864,7 @@ fn pack(s: *Surface, n: *Node) !void {
     @memcpy(s.frames.items[start + (record_len - 1) * 4 ..][0..4], std.mem.asBytes(&after));
 }
 
-fn disabledUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
-    return false;
-}
+const disabledUp = Node.disabledUp;
 
 // ---------------------------------------------------------------------------
 // JNI natives of dev.oriel.NuiNative (OrielNative.kt)

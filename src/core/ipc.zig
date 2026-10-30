@@ -25,9 +25,12 @@ const App = @import("App.zig");
 const internal = @import("internal.zig");
 const extensions = @import("extensions/runtime.zig");
 const system_ai_bridge = @import("../modules/system_ai/bridge.zig");
-const camera_page = @import("../modules/camera/page.zig");
-const dialog_page = @import("../modules/dialog/page.zig");
-const video_page = @import("../modules/video/page.zig");
+pub const DispatchFn = *const fn (io: ?std.Io, arena: std.mem.Allocator, request: Request) anyerror![]u8;
+pub const BuiltinDispatchFn = *const fn (arena: std.mem.Allocator, request: Request) anyerror![]u8;
+
+pub var video_dispatch: ?BuiltinDispatchFn = null;
+pub var camera_dispatch: ?DispatchFn = null;
+pub var dialog_dispatch: ?DispatchFn = null;
 
 pub const Request = struct {
     cmd: []const u8,
@@ -236,9 +239,9 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
     // oriel.systemAi's calls block on the platform too (not its cancel).
     if (system_ai_bridge.isAsyncCommand(cmd)) return true;
     // oriel.camera.capturePhoto waits for the user.
-    if (std.mem.eql(u8, cmd, camera_page.command)) return true;
+    if (std.mem.eql(u8, cmd, "camera:capture")) return true;
     // A native page's <input type=file> waits for the user too.
-    if (std.mem.eql(u8, cmd, dialog_page.pick_command)) return true;
+    if (std.mem.eql(u8, cmd, "nui:pick_file")) return true;
     if (!@hasDecl(Commands, "async_commands")) return false;
     const list = @field(Commands, "async_commands");
     comptime checkAsyncCommands(Commands, list);
@@ -307,7 +310,7 @@ test fail {
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "bluetooth:capabilities") or std.mem.eql(u8, cmd, "bluetooth:advertise") or std.mem.eql(u8, cmd, "bluetooth:stop") or
-        std.mem.eql(u8, cmd, "events:ready") or video_page.isCommand(cmd) or
+        std.mem.eql(u8, cmd, "events:ready") or std.mem.eql(u8, cmd, "video:play") or std.mem.eql(u8, cmd, "video:close") or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
@@ -411,13 +414,12 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = std.json.parseFromValueLeaky(StopArgs, arena, request.args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
         bluetooth.stop(args.id);
         return arena.dupe(u8, "null");
-    } else if (video_page.isCommand(request.cmd)) {
+    } else if (std.mem.eql(u8, request.cmd, "video:play") or std.mem.eql(u8, request.cmd, "video:close")) {
         // The page's oriel.video: the player shows (or closes) now; its
         // end, errors and close come as "video:*" events. Off, the module
         // isn't compiled.
-        const build_options = @import("build_options");
-        if (!build_options.video) return error.Unsupported;
-        return video_page.call(@import("../modules/video.zig"), arena, request.cmd, request.args);
+        if (video_dispatch) |disp| return disp(arena, request);
+        return error.Unsupported;
     } else if (std.mem.eql(u8, request.cmd, "share:read")) {
         // A received file's bytes, base64, for the page's oriel.share.file
         // (it reads in chunks; the handle came in share:received).
@@ -485,16 +487,13 @@ pub fn dispatchRequest(comptime Commands: type, arena: std.mem.Allocator, reques
         if (!@import("build_options").system_ai) return fail("oriel.systemAi isn't in this build (-Dsystem_ai, Android and iOS)", .{});
         return @import("../modules/system_ai.zig").pageCall(arena, request.cmd, request.args);
     }
-    if (std.mem.eql(u8, request.cmd, camera_page.command)) {
-        // Off, the module isn't compiled (comptime branch).
-        if (@import("build_options").camera) {
-            return camera_page.capture(io orelse return error.Unavailable, arena, request.args);
-        } else return error.Unsupported;
+    if (std.mem.eql(u8, request.cmd, "camera:capture")) {
+        if (camera_dispatch) |disp| return disp(io, arena, request);
+        return error.Unsupported;
     }
-    if (std.mem.eql(u8, request.cmd, dialog_page.pick_command)) {
-        // A native page's <input type=file>: the dialog module, when built.
-        const opts = @import("build_options");
-        if (opts.native_ui and opts.dialog) return dialog_page.pick(arena, request.args) else return error.Unsupported;
+    if (std.mem.eql(u8, request.cmd, "nui:pick_file")) {
+        if (dialog_dispatch) |disp| return disp(io, arena, request);
+        return error.Unsupported;
     }
     inline for (@typeInfo(Commands).@"struct".decls) |decl| {
         const field = @field(Commands, decl.name);
@@ -1155,6 +1154,13 @@ test "dispatchBuiltin: oriel.video without a running app" {
         try std.testing.expectError(error.Unsupported, dispatchBuiltin(sec, alloc, file));
         return;
     }
+    const prev_dispatch = video_dispatch;
+    defer video_dispatch = prev_dispatch;
+    video_dispatch = &struct {
+        fn call(a: std.mem.Allocator, req: Request) anyerror![]u8 {
+            return @import("../modules/video/page.zig").call(@import("../modules/video.zig"), a, req.cmd, req.args);
+        }
+    }.call;
     try std.testing.expectError(error.InvalidUrl, dispatchBuiltin(sec, alloc, bad));
     try std.testing.expectError(error.InvalidArgs, dispatchBuiltin(sec, alloc, no_args));
     try std.testing.expectError(error.AppNotRunning, dispatchBuiltin(sec, alloc, file));

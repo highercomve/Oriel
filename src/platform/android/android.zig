@@ -26,6 +26,7 @@ pub const scheme = @import("scheme.zig");
 pub const runtime = @import("runtime.zig");
 pub const jni = @import("jni.zig");
 pub const entry = @import("entry.zig");
+pub const AsyncRequest = @import("async_request.zig").AsyncRequest;
 
 pub const WindowHandle = window.WindowHandle;
 pub const WindowSize = window.WindowSize;

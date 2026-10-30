@@ -79,6 +79,16 @@ pub fn addProtocol(cls: Class, name: [:0]const u8) void {
     if (objc.getProtocol(name)) |proto| _ = c.class_addProtocol(cls.value, proto.value);
 }
 
+/// Whether this process runs from an `.app` bundle with a bundle id (the
+/// UserNotifications framework raises an exception otherwise).
+pub fn bundled() bool {
+    const bundle = class("NSBundle").msgSend(Object, "mainBundle", .{});
+    if (bundle.value == null) return false;
+    if (bundle.msgSend(Object, "bundleIdentifier", .{}).value == null) return false;
+    const path = utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
+    return std.mem.endsWith(u8, path, ".app");
+}
+
 var class_counter: std.atomic.Value(u32) = .init(0);
 
 /// Define and register an NSObject subclass named `<prefix><n>`: the

@@ -12,6 +12,7 @@ const prof = @import("prof.zig");
 const damage_mod = @import("damage.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
 const tree_mod = @import("tree.zig");
+const drop_mod = @import("drop.zig");
 const Engine = engine_mod.Engine;
 const Node = tree_mod.Node;
 const Rect = tree_mod.Rect;
@@ -2161,17 +2162,8 @@ fn onReleased(gesture: *anyopaque, _: c_int, x: f64, y: f64, data: ?*anyopaque) 
     _ = s.engine.event(at.id, "click", flags);
 }
 
-fn disabledUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
-    return false;
-}
-
-fn clickableUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
-    return false;
-}
+const disabledUp = Node.disabledUp;
+const clickableUp = Node.clickableUp;
 
 /// What the pointer is over: the node hit, or a link amid its text (Run.k,
 /// the link's own id: render.js inlineRuns).
@@ -2526,60 +2518,27 @@ fn newDropTarget() *anyopaque {
     return gtk_drop_target_async_new(gdk_content_formats_builder_free_to_formats(b), 1 | 2 | 4);
 }
 
-/// What a drag carries, as the page's DataTransfer types.
-const DragKinds = struct {
-    files: bool = false,
-    plain: bool = false,
-    uri_list: bool = false,
-    html: bool = false,
+const DragKinds = drop_mod.DragKinds;
 
-    fn of(formats: *anyopaque) DragKinds {
-        const has = struct {
-            fn f(fm: *anyopaque, mime: [*:0]const u8) bool {
-                return gdk_content_formats_contain_mime_type(fm, mime) != 0;
-            }
-        }.f;
-        const uri_list = has(formats, "text/uri-list");
-        // A link dragged out of a browser is a text/uri-list too, with
-        // Mozilla's types beside it (Firefox and Chromium both offer them).
-        const link = has(formats, "text/x-moz-url") or has(formats, "_NETSCAPE_URL");
-        return .{
-            .files = gdk_content_formats_contain_gtype(formats, gdk_file_list_get_type()) != 0 or
-                has(formats, "application/vnd.portal.filetransfer") or has(formats, "application/vnd.portal.files") or
-                (uri_list and !link),
-            .plain = has(formats, "text/plain;charset=utf-8") or has(formats, "text/plain"),
-            .uri_list = uri_list,
-            .html = has(formats, "text/html"),
-        };
-    }
-
-    /// The strings the page sees: none with files, as in Chrome, since a
-    /// file manager's text/plain and text/uri-list are the files' paths.
-    fn strings(k: DragKinds) [3]?[]const u8 {
-        if (k.files) return .{ null, null, null };
-        return .{
-            if (k.plain) "text/plain" else null,
-            if (k.uri_list) "text/uri-list" else null,
-            if (k.html) "text/html" else null,
-        };
-    }
-
-    /// enter's items: [[kind, type], ...].
-    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-        try out.append(gpa, '[');
-        var first = true;
-        if (k.files) {
-            try out.appendSlice(gpa, "[\"file\",\"\"]");
-            first = false;
+fn dragKindsOf(formats: *anyopaque) DragKinds {
+    const has = struct {
+        fn f(fm: *anyopaque, mime: [*:0]const u8) bool {
+            return gdk_content_formats_contain_mime_type(fm, mime) != 0;
         }
-        for (k.strings()) |mime| if (mime) |m| {
-            if (!first) try out.append(gpa, ',');
-            first = false;
-            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
-        };
-        try out.append(gpa, ']');
-    }
-};
+    }.f;
+    const uri_list = has(formats, "text/uri-list");
+    // A link dragged out of a browser is a text/uri-list too, with
+    // Mozilla's types beside it (Firefox and Chromium both offer them).
+    const link = has(formats, "text/x-moz-url") or has(formats, "_NETSCAPE_URL");
+    return .{
+        .files = gdk_content_formats_contain_gtype(formats, gdk_file_list_get_type()) != 0 or
+            has(formats, "application/vnd.portal.filetransfer") or has(formats, "application/vnd.portal.files") or
+            (uri_list and !link),
+        .plain = has(formats, "text/plain;charset=utf-8") or has(formats, "text/plain"),
+        .uri_list = uri_list,
+        .html = has(formats, "text/html"),
+    };
+}
 
 /// The drop's allowed actions as the page's mask. GDK reports one action
 /// (the source picked it with the modifiers) unless the source asks.
@@ -2624,7 +2583,7 @@ fn onDragEnter(target: *anyopaque, drop: *anyopaque, x: f64, y: f64, data: ?*any
     const s = surfaceOf(data);
     s.drag_session +%= 1;
     s.drag_inside = true;
-    s.drag_kinds = DragKinds.of(gdk_drop_get_formats(drop));
+    s.drag_kinds = dragKindsOf(gdk_drop_get_formats(drop));
     return dragOver(s, target, drop, x, y, true);
 }
 
@@ -2671,9 +2630,7 @@ fn onDragLeave(_: *anyopaque, _: *anyopaque, data: ?*anyopaque) callconv(.c) voi
 }
 
 fn sendDragLeave(s: *Surface, session: u32) void {
-    var buf: [32]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
-    _ = s.engine.dragEvent(0, json);
+    drop_mod.sendDragLeave(&s.engine, session);
 }
 
 fn onDrop(target: *anyopaque, drop: *anyopaque, x: f64, y: f64, data: ?*anyopaque) callconv(.c) c_int {
@@ -4843,6 +4800,90 @@ const CanvasState = struct {
 /// The largest canvas bitmap: 4096 x 4096 px (64 MB as ARGB).
 const max_canvas_pixels: f64 = 4096 * 4096;
 
+fn canvasTransformCmd(cr: *cairo_t, cmd: tree_mod.CanvasCmd, st: *CanvasState) bool {
+    switch (cmd) {
+        .translate => |t| cairo_translate(cr, t[0], t[1]),
+        .scale => |t| if (t[0] == 0 or t[1] == 0) {
+            st.singular = true;
+        } else cairo_scale(cr, t[0], t[1]),
+        .rotate => |a| cairo_rotate(cr, a),
+        else => return false,
+    }
+    return true;
+}
+
+fn canvasPathCmd(cr: *cairo_t, cmd: tree_mod.CanvasCmd, circle: *?PixelCircle, path_parts: *u32, sf: f64) bool {
+    switch (cmd) {
+        .begin_path => {
+            cairo_new_path(cr);
+            circle.* = null;
+            path_parts.* = 0;
+        },
+        .close_path => {
+            circle.* = null;
+            path_parts.* += 1;
+            cairo_close_path(cr);
+        },
+        .move_to => |p| {
+            circle.* = null;
+            path_parts.* += 1;
+            cairo_move_to(cr, p[0], p[1]);
+        },
+        .line_to => |p| {
+            circle.* = null;
+            path_parts.* += 1;
+            cairo_line_to(cr, p[0], p[1]);
+        },
+        .rect => |r| {
+            circle.* = null;
+            path_parts.* += 1;
+            cairo_rectangle(cr, r[0], r[1], r[2], r[3]);
+        },
+        .bezier_to => |b| {
+            circle.* = null;
+            path_parts.* += 1;
+            cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]);
+        },
+        .arc => |a| {
+            const whole = @abs(a.a1 - a.a0) >= 2 * std.math.pi;
+            circle.* = if (path_parts.* == 0 and whole) pixelCircle(cr, a.x, a.y, a.r, sf) else null;
+            path_parts.* += 1;
+            var a1 = a.a1;
+            const two_pi: f32 = 2.0 * std.math.pi;
+            if (a.ccw) {
+                if (a1 > a.a0) a1 -= two_pi;
+                cairo_arc(cr, a.x, a.y, a.r, a1, a.a0);
+            } else {
+                if (a1 < a.a0) a1 += two_pi;
+                cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
+            }
+        },
+        else => return false,
+    }
+    return true;
+}
+
+fn canvasStyleCmd(cmd: tree_mod.CanvasCmd, st: *CanvasState, grads: *std.AutoHashMap(u16, *cairo_pattern_t)) bool {
+    switch (cmd) {
+        .fill_style => |src| st.fill = src,
+        .stroke_style => |src| st.stroke = src,
+        .line_width => |w| st.lw = @max(0, w),
+        .line_cap => |cap| st.cap = cap,
+        .line_join => |join| st.join = join,
+        .global_alpha => |a| st.alpha = a,
+        .font => |fnt| st.font = fnt,
+        .text_align => |a| st.talign = a,
+        .text_baseline => |b| st.tbase = b,
+        .linear_gradient => |g| canvasPattern(grads, g.id, cairo_pattern_create_linear(g.x0, g.y0, g.x1, g.y1)),
+        .radial_gradient => |g| canvasPattern(grads, g.id, cairo_pattern_create_radial(g.x0, g.y0, @max(0.001, g.r0), g.x1, g.y1, @max(0.001, g.r1))),
+        .color_stop => |c| if (grads.get(c.id)) |pat| {
+            cairo_pattern_add_color_stop_rgba(pat, c.off, c.c[0] / 255, c.c[1] / 255, c.c[2] / 255, c.c[3]);
+        },
+        else => return false,
+    }
+    return true;
+}
+
 fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
     const cmds = n.canvas orelse return;
     const f = n.frame;
@@ -4910,6 +4951,9 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
             .translate, .scale, .rotate, .begin_path, .close_path, .move_to, .line_to, .rect, .arc, .bezier_to, .fill, .stroke, .clip, .fill_rect, .stroke_rect, .clear_rect, .fill_text, .stroke_text => continue,
             else => {},
         };
+        if (canvasTransformCmd(cr, cmd, &st)) continue;
+        if (canvasPathCmd(cr, cmd, &circle, &path_parts, sf)) continue;
+        if (canvasStyleCmd(cmd, &st, &grads)) continue;
         switch (cmd) {
             .save => {
                 // Saved together or not at all, so restore stays balanced.
@@ -4922,45 +4966,6 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
                 if (states.pop()) |prev| {
                     st = prev;
                     cairo_restore(cr);
-                }
-            },
-            .translate => |t| cairo_translate(cr, t[0], t[1]),
-            .scale => |t| if (t[0] == 0 or t[1] == 0) {
-                st.singular = true;
-            } else cairo_scale(cr, t[0], t[1]),
-            .rotate => |a| cairo_rotate(cr, a),
-            .begin_path => {
-                cairo_new_path(cr);
-                circle = null;
-                path_parts = 0;
-            },
-            .close_path, .move_to, .line_to, .rect, .bezier_to => {
-                circle = null;
-                path_parts += 1;
-                switch (cmd) {
-                    .close_path => cairo_close_path(cr),
-                    .move_to => |p| cairo_move_to(cr, p[0], p[1]),
-                    .line_to => |p| cairo_line_to(cr, p[0], p[1]),
-                    .rect => |r| cairo_rectangle(cr, r[0], r[1], r[2], r[3]),
-                    .bezier_to => |b| cairo_curve_to(cr, b[0], b[1], b[2], b[3], b[4], b[5]),
-                    else => unreachable,
-                }
-            },
-            .arc => |a| {
-                const whole = @abs(a.a1 - a.a0) >= 2 * std.math.pi;
-                circle = if (path_parts == 0 and whole) pixelCircle(cr, a.x, a.y, a.r, sf) else null;
-                path_parts += 1;
-                // A sweep from a0 to a1: increasing angles (cairo, in the
-                // y-down user space, draws a canvas's clockwise arc); the
-                // other way round draws the same segment from a1 up to a0.
-                var a1 = a.a1;
-                const two_pi: f32 = 2.0 * std.math.pi;
-                if (a.ccw) {
-                    if (a1 > a.a0) a1 -= two_pi;
-                    cairo_arc(cr, a.x, a.y, a.r, a1, a.a0);
-                } else {
-                    if (a1 < a.a0) a1 += two_pi;
-                    cairo_arc(cr, a.x, a.y, a.r, a.a0, a1);
                 }
             },
             .fill => |even| {
@@ -5001,20 +5006,7 @@ fn paintCanvas(s: *Surface, win_cr: *cairo_t, n: *Node) void {
             },
             .fill_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, false, &grads),
             .stroke_text => |t| canvasShowText(s, cr, t.t, t.x, t.y, st, true, &grads),
-            .fill_style => |src| st.fill = src,
-            .stroke_style => |src| st.stroke = src,
-            .line_width => |w| st.lw = @max(0, w),
-            .line_cap => |cap| st.cap = cap,
-            .line_join => |join| st.join = join,
-            .global_alpha => |a| st.alpha = a,
-            .font => |fnt| st.font = fnt,
-            .text_align => |a| st.talign = a,
-            .text_baseline => |b| st.tbase = b,
-            .linear_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_linear(g.x0, g.y0, g.x1, g.y1)),
-            .radial_gradient => |g| canvasPattern(&grads, g.id, cairo_pattern_create_radial(g.x0, g.y0, @max(0.001, g.r0), g.x1, g.y1, @max(0.001, g.r1))),
-            .color_stop => |c| if (grads.get(c.id)) |pat| {
-                cairo_pattern_add_color_stop_rgba(pat, c.off, c.c[0] / 255, c.c[1] / 255, c.c[2] / 255, c.c[3]);
-            },
+            else => unreachable,
         }
     }
 }

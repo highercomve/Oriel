@@ -312,7 +312,9 @@ fn onKeyPressed(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, _: ?*an
 fn closeLater() void {
     const Gen = struct {
         fn run(data: ?*anyopaque) callconv(.c) c_int {
-            const gen: u32 = @intCast(@intFromPtr(data) - 1);
+            const ptr_val = @intFromPtr(data);
+            if (ptr_val == 0) return 0;
+            const gen: u32 = @truncate(ptr_val - 1);
             if (gen == generation) teardown(.close);
             return 0; // G_SOURCE_REMOVE
         }

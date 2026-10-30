@@ -180,15 +180,7 @@ fn pollAccessibility(done: Done) void {
 
 // --- Notifications ------------------------------------------------------------------
 
-/// Whether this process runs from an `.app` bundle with a bundle id (the
-/// UserNotifications framework raises an exception otherwise).
-fn bundled() bool {
-    const bundle = apple.class("NSBundle").msgSend(Object, "mainBundle", .{});
-    if (bundle.value == null) return false;
-    if (bundle.msgSend(Object, "bundleIdentifier", .{}).value == null) return false;
-    const path = apple.utf8(bundle.msgSend(Object, "bundlePath", .{})) orelse return false;
-    return std.mem.endsWith(u8, path, ".app");
-}
+const bundled = apple.bundled;
 
 fn notificationCenter() ?Object {
     if (!bundled()) return null;

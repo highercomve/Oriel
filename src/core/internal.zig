@@ -6,6 +6,14 @@
 
 const std = @import("std");
 const heap = @import("heap.zig");
+
+pub const ShutdownHook = *const fn () void;
+var shutdown_hooks: std.ArrayListUnmanaged(ShutdownHook) = .empty;
+pub var set_declared_schemes: ?*const fn (schemes: []const []const u8) void = null;
+
+pub fn registerShutdownHook(hook: ShutdownHook) void {
+    shutdown_hooks.append(heap.gpa, hook) catch {};
+}
 const build_opts = @import("build_options");
 const platform = @import("../platform/platform.zig");
 const ipc = @import("ipc.zig");
@@ -248,9 +256,8 @@ pub fn run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8 {
     app_log.init(config.app.id);
     defer app_log.deinit();
 
-    if (build_opts.deep_link) {
-        const deep_link = @import("../modules/deep_link/delivery.zig");
-        deep_link.setDeclaredSchemes(config.app.url_schemes);
+    if (set_declared_schemes) |set_schemes| {
+        set_schemes(config.app.url_schemes);
         if (config.app.url_schemes.len == 0)
             std.log.warn("deep links are enabled but no scheme is accepted: declare `.url_schemes` in addApp (build.zig)", .{});
     }
@@ -276,17 +283,11 @@ pub fn run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8 {
         // The loop has returned: replies and runOnMain tasks the drained
         // jobs queued would never run (and leak) otherwise.
         platform.drainMainQueue();
-        // No queued command can restart playback after the pool drained.
-        if (build_opts.kokoro) {
-            // The Kokoro context, while this run's Io and allocator live.
-            @import("../modules/tts.zig").deinit();
+        for (shutdown_hooks.items) |hook| {
+            hook();
         }
-        // Dictation owns threads outside the command pool. They must finish
-        // while this run's Io and allocator are still alive (Android restarts).
-        if (build_opts.whisper and build_opts.audio_capture)
-            @import("../modules/dictation.zig").deinit();
-        // The chat model, likewise.
-        if (build_opts.llama) @import("../modules/chat.zig").deinit();
+        shutdown_hooks.deinit(heap.gpa);
+        shutdown_hooks = .empty;
         current_app_id = null;
     }
 

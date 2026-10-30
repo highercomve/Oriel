@@ -13,6 +13,7 @@ const std = @import("std");
 const apple = @import("../platform/apple/apple.zig");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const drop_mod = @import("drop.zig");
 const draw = @import("apple_draw.zig");
 const Shell = @import("../platform/macos/Shell.zig");
 const Engine = engine_mod.Engine;
@@ -2017,17 +2018,8 @@ fn underPointer(s: *Surface, p: [2]f32) Under {
     return .{ .node = n, .id = n.id, .link = false };
 }
 
-fn disabledUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
-    return false;
-}
-
-fn clickableUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
-    return false;
-}
+const disabledUp = Node.disabledUp;
+const clickableUp = Node.clickableUp;
 
 fn mouseDragged(self: id, _: SEL, event: id) callconv(.c) void {
     pointerMoved(self, event, pressedButtons());
@@ -2424,49 +2416,16 @@ fn registerDragTypes(view: Object) void {
     view.msgSend(void, "registerForDraggedTypes:", .{array});
 }
 
-/// What a drag carries, as the page's DataTransfer types.
-const DragKinds = struct {
-    files: bool = false,
-    plain: bool = false,
-    uri_list: bool = false,
-    html: bool = false,
+const DragKinds = drop_mod.DragKinds;
 
-    fn of(pb: Object) DragKinds {
-        return .{
-            .files = fileURLs(pb).msgSend(c_ulong, "count", .{}) > 0,
-            .plain = hasType(pb, pb_string),
-            .uri_list = hasType(pb, pb_url),
-            .html = hasType(pb, pb_html),
-        };
-    }
-
-    /// The strings the page sees: none with files, as in Chrome (Finder's
-    /// text and URL are the files' paths).
-    fn strings(k: DragKinds) [3]?[]const u8 {
-        if (k.files) return .{ null, null, null };
-        return .{
-            if (k.plain) "text/plain" else null,
-            if (k.uri_list) "text/uri-list" else null,
-            if (k.html) "text/html" else null,
-        };
-    }
-
-    /// enter's items: [[kind, type], ...].
-    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-        try out.append(gpa, '[');
-        var first = true;
-        if (k.files) {
-            try out.appendSlice(gpa, "[\"file\",\"\"]");
-            first = false;
-        }
-        for (k.strings()) |mime| if (mime) |m| {
-            if (!first) try out.append(gpa, ',');
-            first = false;
-            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
-        };
-        try out.append(gpa, ']');
-    }
-};
+fn dragKindsOf(pb: Object) DragKinds {
+    return .{
+        .files = fileURLs(pb).msgSend(c_ulong, "count", .{}) > 0,
+        .plain = hasType(pb, pb_string),
+        .uri_list = hasType(pb, pb_url),
+        .html = hasType(pb, pb_html),
+    };
+}
 
 fn hasType(pb: Object, comptime t: []const u8) bool {
     const str = apple.nsString(t) orelse unreachable; // ASCII
@@ -2543,7 +2502,7 @@ fn draggingEntered(self: id, _: SEL, info_id: id) callconv(.c) c_ulong {
     const info: Object = .{ .value = info_id };
     s.drag_session +%= 1;
     s.drag_inside = true;
-    s.drag_kinds = DragKinds.of(info.msgSend(Object, "draggingPasteboard", .{}));
+    s.drag_kinds = dragKindsOf(info.msgSend(Object, "draggingPasteboard", .{}));
     return dragOver(s, self, info, true);
 }
 
@@ -2588,9 +2547,7 @@ fn draggingExited(self: id, _: SEL, _: id) callconv(.c) void {
 }
 
 fn sendDragLeave(s: *Surface, session: u32) void {
-    var buf: [32]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
-    _ = s.engine.dragEvent(0, json);
+    drop_mod.sendDragLeave(s.engine, session);
 }
 
 fn prepareForDragOperation(self: id, _: SEL, _: id) callconv(.c) apple.c.BOOL {

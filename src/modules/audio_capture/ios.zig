@@ -22,45 +22,28 @@ const Object = apple.Object;
 const c = std.c;
 const log = std.log.scoped(.oriel);
 
-// --- AudioToolbox -------------------------------------------------------------------
-
-const OSStatus = i32;
-const AudioStreamBasicDescription = extern struct {
-    sample_rate: f64,
-    format_id: u32,
-    format_flags: u32,
-    bytes_per_packet: u32,
-    frames_per_packet: u32,
-    bytes_per_frame: u32,
-    channels_per_frame: u32,
-    bits_per_channel: u32,
-    reserved: u32 = 0,
-};
-const AudioQueueRef = *opaque {};
-const AudioQueueBuffer = extern struct {
-    capacity: u32,
-    data: *anyopaque,
-    byte_size: u32,
-    user_data: ?*anyopaque,
-    packet_desc_capacity: u32,
-    packet_descs: ?*anyopaque,
-    packet_desc_count: u32,
-};
-const InputCallback = *const fn (user: ?*anyopaque, queue: AudioQueueRef, buffer: *AudioQueueBuffer, start: *const anyopaque, packets: u32, descs: ?*const anyopaque) callconv(.c) void;
-
-extern "c" fn AudioQueueNewInput(format: *const AudioStreamBasicDescription, cb: InputCallback, user: ?*anyopaque, run_loop: ?*anyopaque, mode: ?*anyopaque, flags: u32, out: *?AudioQueueRef) OSStatus;
-extern "c" fn AudioQueueAllocateBuffer(queue: AudioQueueRef, size: u32, out: *?*AudioQueueBuffer) OSStatus;
-extern "c" fn AudioQueueEnqueueBuffer(queue: AudioQueueRef, buffer: *AudioQueueBuffer, n: u32, descs: ?*const anyopaque) OSStatus;
-extern "c" fn AudioQueueStart(queue: AudioQueueRef, start: ?*const anyopaque) OSStatus;
-extern "c" fn AudioQueueStop(queue: AudioQueueRef, immediate: u8) OSStatus;
-extern "c" fn AudioQueueDispose(queue: AudioQueueRef, immediate: u8) OSStatus;
+const apple_audio = @import("apple.zig");
+const OSStatus = apple_audio.OSStatus;
+const AudioStreamBasicDescription = apple_audio.AudioStreamBasicDescription;
+const AudioQueueRef = apple_audio.AudioQueueRef;
+const AudioQueueBuffer = apple_audio.AudioQueueBuffer;
+const InputCallback = apple_audio.InputCallback;
+const AudioQueueNewInput = apple_audio.AudioQueueNewInput;
+const AudioQueueAllocateBuffer = apple_audio.AudioQueueAllocateBuffer;
+const AudioQueueEnqueueBuffer = apple_audio.AudioQueueEnqueueBuffer;
+const AudioQueueStart = apple_audio.AudioQueueStart;
+const AudioQueueStop = apple_audio.AudioQueueStop;
+const AudioQueueDispose = apple_audio.AudioQueueDispose;
+const kAudioFormatLinearPCM = apple_audio.kAudioFormatLinearPCM;
+const kAudioFormatFlagIsFloat = apple_audio.kAudioFormatFlagIsFloat;
+const kAudioFormatFlagIsPacked = apple_audio.kAudioFormatFlagIsPacked;
+const buffer_count = apple_audio.buffer_count;
+const appendSource = apple_audio.appendSource;
+const State = apple_audio.State;
+const onInput = apple_audio.onInput;
 
 extern const AVMediaTypeAudio: apple.id;
 extern const AVAudioSessionCategoryPlayAndRecord: apple.id;
-
-const kAudioFormatLinearPCM: u32 = 0x6C70_636D; // 'lpcm'
-const kAudioFormatFlagIsFloat: u32 = 1 << 0;
-const kAudioFormatFlagIsPacked: u32 = 1 << 3;
 
 // AVAudioSessionCategoryOptions
 const option_mix_with_others: c_ulong = 0x1;
@@ -69,14 +52,6 @@ const option_default_to_speaker: c_ulong = 0x8;
 
 fn session() Object {
     return apple.class("AVAudioSession").msgSend(Object, "sharedInstance", .{});
-}
-
-fn appendSource(gpa: std.mem.Allocator, list: *std.ArrayList(common.Source), name: []const u8, description: []const u8) !void {
-    const n = try gpa.dupeZ(u8, name);
-    errdefer gpa.free(n);
-    const d = try gpa.dupe(u8, description);
-    errdefer gpa.free(d);
-    try list.append(gpa, .{ .name = n, .description = d, .monitor = false });
 }
 
 /// "default", then the session's inputs. Free with `freeSources`.
@@ -145,42 +120,6 @@ fn activateSession(uid: ?[]const u8) !void {
 
 // --- Stream -------------------------------------------------------------------------------
 
-const buffer_count = 3;
-
-/// Shared with the AudioQueue callback thread (heap, stable address).
-const State = struct {
-    mutex: c.pthread_mutex_t = .{},
-    cond: c.pthread_cond_t = .{},
-    ring: []f32,
-    head: usize = 0, // next sample to read
-    len: usize = 0, // samples available
-    running: bool = true,
-
-    fn push(self: *State, samples: []const f32) void {
-        _ = c.pthread_mutex_lock(&self.mutex);
-        defer _ = c.pthread_mutex_unlock(&self.mutex);
-        for (samples) |s| {
-            if (self.len == self.ring.len) { // full: drop the oldest sample
-                self.head = (self.head + 1) % self.ring.len;
-                self.len -= 1;
-            }
-            self.ring[(self.head + self.len) % self.ring.len] = s;
-            self.len += 1;
-        }
-        _ = c.pthread_cond_signal(&self.cond);
-    }
-};
-
-fn onInput(user: ?*anyopaque, queue: AudioQueueRef, buffer: *AudioQueueBuffer, _: *const anyopaque, _: u32, _: ?*const anyopaque) callconv(.c) void {
-    const state: *State = @ptrCast(@alignCast(user.?));
-    const samples: [*]const f32 = @ptrCast(@alignCast(buffer.data));
-    state.push(samples[0 .. buffer.byte_size / @sizeOf(f32)]);
-    _ = c.pthread_mutex_lock(&state.mutex);
-    const running = state.running;
-    _ = c.pthread_mutex_unlock(&state.mutex);
-    if (running) _ = AudioQueueEnqueueBuffer(queue, buffer, 0, null);
-}
-
 /// A capture stream delivering mono f32 samples at the requested rate.
 /// `read` blocks until the buffer is full; `read` and `close` must be
 /// called from the same thread.
@@ -237,21 +176,7 @@ pub const Stream = struct {
 
     /// Fill `samples` completely (blocks).
     pub fn read(self: *Stream, samples: []f32) !void {
-        const st = self.state;
-        var filled: usize = 0;
-        _ = c.pthread_mutex_lock(&st.mutex);
-        defer _ = c.pthread_mutex_unlock(&st.mutex);
-        while (filled < samples.len) {
-            while (st.len == 0) {
-                if (!st.running) return error.ReadFailed;
-                _ = c.pthread_cond_wait(&st.cond, &st.mutex);
-            }
-            const n = @min(st.len, samples.len - filled);
-            for (0..n) |i| samples[filled + i] = st.ring[(st.head + i) % st.ring.len];
-            st.head = (st.head + n) % st.ring.len;
-            st.len -= n;
-            filled += n;
-        }
+        return apple_audio.readStream(self.state, samples);
     }
 
     pub fn close(self: *Stream) void {

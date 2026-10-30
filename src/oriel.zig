@@ -153,6 +153,43 @@ const internal = @import("core/internal.zig");
 /// then runs the app on the calling (main) thread until it quits. An app
 /// that parses its own arguments does so before calling it; any config
 /// chosen at runtime is a `comptime` choice between two calls.
+pub fn initModuleHooks() void {
+    if (options.store) {
+        App.geometry_storage = .{
+            .save = &store.saveWindowGeometry,
+            .restore = &store.restoreWindowGeometry,
+        };
+    }
+    if (options.video) {
+        ipc.video_dispatch = &struct {
+            fn call(arena: std.mem.Allocator, request: ipc.Request) anyerror![]u8 {
+                const vp = @import("modules/video/page.zig");
+                return vp.call(@import("modules/video.zig"), arena, request.cmd, request.args);
+            }
+        }.call;
+    }
+    if (options.camera and options.native_ui) {
+        ipc.camera_dispatch = &struct {
+            fn call(io: ?std.Io, arena: std.mem.Allocator, request: ipc.Request) anyerror![]u8 {
+                return @import("modules/camera/page.zig").capture(io orelse return error.Unavailable, arena, request.args);
+            }
+        }.call;
+    }
+    if (options.dialog and options.native_ui) {
+        ipc.dialog_dispatch = &struct {
+            fn call(_: ?std.Io, arena: std.mem.Allocator, request: ipc.Request) anyerror![]u8 {
+                return @import("modules/dialog/page.zig").pick(arena, request.args);
+            }
+        }.call;
+    }
+    if (options.deep_link) {
+        internal.set_declared_schemes = &@import("modules/deep_link/delivery.zig").setDeclaredSchemes;
+    }
+    if (options.kokoro) internal.registerShutdownHook(&tts.deinit);
+    if (options.whisper and options.audio_capture) internal.registerShutdownHook(&dictation.deinit);
+    if (options.llama) internal.registerShutdownHook(&chat.deinit);
+}
+
 pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.Config) !u8 {
     // The updater captures $APPIMAGE / $APPDIR here, on the main thread
     // (worker threads never read the environment), and on Windows deletes
@@ -188,7 +225,7 @@ pub fn main(init: std.process.Init, comptime api: App.Api, comptime config: App.
         try args_list.append(init.gpa, dup);
     }
     internal.process_args = args_list.items;
-
+    initModuleHooks();
     return internal.run(init.io, api, config);
 }
 

@@ -285,53 +285,28 @@ pub const Window = struct {
         return platform.getWindowSize(self.handle);
     }
 
+    pub const GeometryStorage = struct {
+        save: ?*const fn (window: *Window) void = null,
+        restore: ?*const fn (window: *Window) void = null,
+    };
+
     pub fn saveGeometry(self: *Window) void {
-        if (!build_opts.store) return;
         if (!self.options.remember_geometry) return;
-        const size = self.getSize();
-        const store_mod = @import("../modules/store.zig");
-        var store = store_mod.Store.open(heap.gpa, self.app_id, "window_geometry") catch return;
-        defer store.deinit();
-
-        var key_w_buf: [128]u8 = undefined;
-        const key_w = std.fmt.bufPrint(&key_w_buf, "{s}_width", .{self.label}) catch return;
-        store.set(key_w, size.width) catch |err| log.warn("saving {s}: {s}", .{ key_w, @errorName(err) });
-
-        var key_h_buf: [128]u8 = undefined;
-        const key_h = std.fmt.bufPrint(&key_h_buf, "{s}_height", .{self.label}) catch return;
-        store.set(key_h, size.height) catch |err| log.warn("saving {s}: {s}", .{ key_h, @errorName(err) });
-
-        var key_m_buf: [128]u8 = undefined;
-        const key_m = std.fmt.bufPrint(&key_m_buf, "{s}_maximized", .{self.label}) catch return;
-        store.set(key_m, self.isMaximized()) catch |err| log.warn("saving {s}: {s}", .{ key_m, @errorName(err) });
+        if (geometry_storage.save) |save_fn| {
+            save_fn(self);
+        }
     }
 
     pub fn restoreGeometry(self: *Window) void {
-        if (!build_opts.store) return;
         if (!self.options.remember_geometry) return;
-        const store_mod = @import("../modules/store.zig");
-        var store = store_mod.Store.open(heap.gpa, self.app_id, "window_geometry") catch return;
-        defer store.deinit();
-
-        var key_w_buf: [128]u8 = undefined;
-        const key_w = std.fmt.bufPrint(&key_w_buf, "{s}_width", .{self.label}) catch return;
-        const saved_w = store.getInt(key_w, c_int);
-
-        var key_h_buf: [128]u8 = undefined;
-        const key_h = std.fmt.bufPrint(&key_h_buf, "{s}_height", .{self.label}) catch return;
-        const saved_h = store.getInt(key_h, c_int);
-
-        if (saved_w != null and saved_h != null and saved_w.? > 0 and saved_h.? > 0) {
-            self.setSize(saved_w.?, saved_h.?);
-        }
-
-        var key_m_buf: [128]u8 = undefined;
-        const key_m = std.fmt.bufPrint(&key_m_buf, "{s}_maximized", .{self.label}) catch return;
-        if (store.getBool(key_m)) |max| {
-            if (max) self.setMaximized(true);
+        if (geometry_storage.restore) |restore_fn| {
+            restore_fn(self);
         }
     }
 };
+
+pub const GeometryStorage = Window.GeometryStorage;
+pub var geometry_storage: GeometryStorage = .{};
 
 pub const Dev = struct {
     url: []const u8,

@@ -14,6 +14,7 @@ const std = @import("std");
 const apple = @import("../platform/apple/apple.zig");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const drop_mod = @import("drop.zig");
 const draw = @import("apple_draw.zig");
 const Shell = @import("../platform/ios/Shell.zig");
 const Engine = engine_mod.Engine;
@@ -2085,11 +2086,7 @@ fn gestureAlongside(_: id, _: SEL, recognizer: id, other: id) callconv(.c) BOOL 
     return theirs.msgSend(BOOL, "isDescendantOfView:", .{mine});
 }
 
-fn disabledUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
-    return false;
-}
+const disabledUp = Node.disabledUp;
 
 const state_began: isize = 1;
 const state_changed: isize = 2;
@@ -2681,9 +2678,7 @@ fn dropExited(_: id, _: SEL, interaction: id, _: id) callconv(.c) void {
 }
 
 fn sendDragLeave(s: *Surface, session: u32) void {
-    var buf: [32]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
-    _ = s.engine.dragEvent(0, json);
+    drop_mod.sendDragLeave(s.engine, session);
 }
 
 /// One item being loaded (its completion handler fills it, on any thread).

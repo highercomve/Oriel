@@ -1514,6 +1514,20 @@ pub const Node = struct {
         return p.bg != null or p.bw != null or p.sh != null or p.scroll or p.clip or p.root;
     }
 
+    /// Whether this node or any ancestor has props.dis set.
+    pub fn disabledUp(start: ?*const Node) bool {
+        var n: ?*const Node = start;
+        while (n) |x| : (n = x.parent) if (x.props.dis) return true;
+        return false;
+    }
+
+    /// Whether this node or any ancestor has props.click set and is not disabled.
+    pub fn clickableUp(start: ?*const Node) bool {
+        var n: ?*const Node = start;
+        while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
+        return false;
+    }
+
     /// The frame minus border and padding: where text and fields go.
     /// The padding box (the frame less its borders and a scrollbar's
     /// room): where a scroller's or clipping box's content shows.

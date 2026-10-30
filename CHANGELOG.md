@@ -2,6 +2,24 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.1] — 2026-10-30
+
+### Fixed
+
+- CoreAudio: deduplicate AudioQueue and capture stream logic between macOS and
+  iOS into `src/modules/audio_capture/apple.zig`.
+- Android: deduplicate asynchronous request synchronization in `camera` and
+  `dialog` modules using a reusable `AsyncRequest(T)` helper in
+  `src/platform/android/async_request.zig`.
+- Architecture: break circular imports between `src/core/` and concrete modules
+  (`store`, `video`, `dialog`, `camera`, `tts`, `dictation`, `chat`), decoupling
+  window geometry persistence and page IPC commands via runtime hooks.
+- Native UI: decompose `paintCanvas` drawing dispatch in GTK native UI into
+  specialized transform, path, and style command handlers, reducing cyclomatic
+  complexity.
+- Cross-platform native UI: deduplicate drag leave event dispatch and disabled
+  state tree lookups across GTK, AppKit, Win32, Android, and UIKit.
+
 ## [0.20.0] — 2026-10-28
 
 ### Added

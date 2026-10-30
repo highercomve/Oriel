@@ -15,6 +15,7 @@ const std = @import("std");
 const heap = @import("../../core/heap.zig");
 const oriel = @import("../../oriel.zig");
 const common = @import("common.zig");
+const android = @import("../../platform/android/android.zig");
 const runtime = @import("../../platform/android/runtime.zig");
 const ShellMod = @import("../../platform/android/Shell.zig");
 const jni = @import("../../platform/android/jni.zig");
@@ -22,31 +23,20 @@ const jni = @import("../../platform/android/jni.zig");
 /// One capture at a time (the camera and the picker are modal anyway).
 var busy: std.atomic.Value(bool) = .init(false);
 
-/// One capturePhoto call, answered once from any thread. `request` (its
-/// address) lives on the waiting caller's stack.
-const Request = struct {
-    mutex: std.c.pthread_mutex_t = .{},
-    cond: std.c.pthread_cond_t = .{},
-    done: bool = false,
+/// OrielCamera.STATUS_*.
+pub const Status = enum(i32) { ok = 0, cancelled = 1, unsupported = 2, permission_denied = 3, failed = 4, too_large = 5, _ };
+
+const Result = struct {
     status: Status = .failed,
     width: u32 = 0,
     height: u32 = 0,
     /// heap.gpa
     data: ?[]u8 = null,
-
-    fn handle(self: *Request) i64 {
-        return @intCast(@intFromPtr(self));
-    }
-
-    fn wait(self: *Request) void {
-        _ = std.c.pthread_mutex_lock(&self.mutex);
-        while (!self.done) _ = std.c.pthread_cond_wait(&self.cond, &self.mutex);
-        _ = std.c.pthread_mutex_unlock(&self.mutex);
-    }
 };
 
-/// OrielCamera.STATUS_*.
-pub const Status = enum(i32) { ok = 0, cancelled = 1, unsupported = 2, permission_denied = 3, failed = 4, too_large = 5, _ };
+/// One capturePhoto call, answered once from any thread. `request` (its
+/// address) lives on the waiting caller's stack.
+const Request = android.AsyncRequest(Result);
 
 /// The error for a status other than ok.
 pub fn statusError(status: Status) common.Error {
@@ -65,7 +55,7 @@ pub fn capturePhoto(io: std.Io, arena: std.mem.Allocator, options: common.Option
     if (busy.swap(true, .acq_rel)) return error.Busy;
     defer busy.store(false, .release);
 
-    var req: Request = .{};
+    var req: Request = .init(.{});
     const Ctx = struct {
         req: *Request,
         options: common.Options,
@@ -85,14 +75,14 @@ pub fn capturePhoto(io: std.Io, arena: std.mem.Allocator, options: common.Option
     if (!ctx.ok) return error.Unsupported; // no Activity, or the module's Kotlin is missing
     req.wait();
 
-    const data = req.data;
+    const data = req.result.data;
     defer if (data) |d| heap.gpa.free(d);
-    if (req.status != .ok) return statusError(req.status);
+    if (req.result.status != .ok) return statusError(req.result.status);
     const bytes = data orelse return error.CaptureFailed;
     return .{
         .bytes = try arena.dupe(u8, bytes),
-        .width = req.width,
-        .height = req.height,
+        .width = req.result.width,
+        .height = req.result.height,
         .mime = options.format.mime(),
     };
 }
@@ -100,7 +90,7 @@ pub fn capturePhoto(io: std.Io, arena: std.mem.Allocator, options: common.Option
 /// `NativeLib.onCameraResult(request, status, width, height, bytes)`: any
 /// thread, once per request.
 fn onCameraResult(env: *jni.Env, _: jni.jclass, request: jni.jlong, status: jni.jint, width: jni.jint, height: jni.jint, data: jni.jobject) callconv(.c) void {
-    const req: *Request = @ptrFromInt(@as(usize, @intCast(request)));
+    const req = Request.fromHandle(request);
     var st: Status = @enumFromInt(status);
     var copy: ?[]u8 = null;
     if (st == .ok) {
@@ -114,14 +104,12 @@ fn onCameraResult(env: *jni.Env, _: jni.jclass, request: jni.jlong, status: jni.
             copy = buf;
         } else |_| st = .failed;
     }
-    _ = std.c.pthread_mutex_lock(&req.mutex);
-    req.status = st;
-    req.width = @intCast(@max(width, 0));
-    req.height = @intCast(@max(height, 0));
-    req.data = copy;
-    req.done = true;
-    _ = std.c.pthread_cond_broadcast(&req.cond);
-    _ = std.c.pthread_mutex_unlock(&req.mutex);
+    req.complete(.{
+        .status = st,
+        .width = @intCast(@max(width, 0)),
+        .height = @intCast(@max(height, 0)),
+        .data = copy,
+    });
 }
 
 comptime {

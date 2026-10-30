@@ -15,6 +15,7 @@
 const std = @import("std");
 const engine_mod = @import("engine.zig");
 const tree_mod = @import("tree.zig");
+const drop_mod = @import("drop.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
 const prof = @import("prof.zig");
 const svg_path = @import("svg_path.zig");
@@ -2381,17 +2382,8 @@ fn repeated(lparam: c.LPARAM) bool {
     return (@as(usize, @bitCast(lparam)) >> 30) & 1 != 0;
 }
 
-fn disabledUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.dis) return true;
-    return false;
-}
-
-fn clickableUp(start: *Node) bool {
-    var n: ?*Node = start;
-    while (n) |x| : (n = x.parent) if (x.props.click) return !x.props.dis;
-    return false;
-}
+const disabledUp = Node.disabledUp;
+const clickableUp = Node.clickableUp;
 
 fn pointOf(s: *Surface, lparam: c.LPARAM) [2]f32 {
     const x: i16 = @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)))));
@@ -6892,7 +6884,7 @@ const DropTarget = extern struct {
         if (s) |ls| {
             ls.drag_session +%= 1;
             ls.drag_inside = true;
-            ls.drag_kinds = DragKinds.of(data);
+            ls.drag_kinds = dragKindsOf(data);
         }
         effect.* = if (s) |ls| dragAnswer(ls, true, keys, pt, allowed) else 0;
         var sp: c.POINT = .{ .x = pt.x, .y = pt.y };
@@ -6953,49 +6945,16 @@ fn registerDropTarget(hwnd: c.HWND) ?*DropTarget {
     return t;
 }
 
-/// What a drag carries, as the page's DataTransfer types.
-const DragKinds = struct {
-    files: bool = false,
-    plain: bool = false,
-    uri_list: bool = false,
-    html: bool = false,
+const DragKinds = drop_mod.DragKinds;
 
-    fn of(d: *IDataObject) DragKinds {
-        return .{
-            .files = d.has(CF_HDROP),
-            .plain = d.has(CF_UNICODETEXT),
-            .uri_list = d.has(cf_url),
-            .html = d.has(cf_html),
-        };
-    }
-
-    /// The strings the page sees: none with files, as in Chrome (Explorer
-    /// offers the files' paths as text beside them).
-    fn strings(k: DragKinds) [3]?[]const u8 {
-        if (k.files) return .{ null, null, null };
-        return .{
-            if (k.plain) "text/plain" else null,
-            if (k.uri_list) "text/uri-list" else null,
-            if (k.html) "text/html" else null,
-        };
-    }
-
-    /// enter's items: [[kind, type], ...].
-    fn writeItems(k: DragKinds, gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-        try out.append(gpa, '[');
-        var first = true;
-        if (k.files) {
-            try out.appendSlice(gpa, "[\"file\",\"\"]");
-            first = false;
-        }
-        for (k.strings()) |mime| if (mime) |m| {
-            if (!first) try out.append(gpa, ',');
-            first = false;
-            try out.print(gpa, "[\"string\",\"{s}\"]", .{m});
-        };
-        try out.append(gpa, ']');
-    }
-};
+fn dragKindsOf(d: *IDataObject) DragKinds {
+    return .{
+        .files = d.has(CF_HDROP),
+        .plain = d.has(CF_UNICODETEXT),
+        .uri_list = d.has(cf_url),
+        .html = d.has(cf_html),
+    };
+}
 
 /// grfKeyState as the pointer flags (shift 1, ctrl 2, alt 4).
 fn dragMods(keys: u32) u32 {
@@ -7062,9 +7021,7 @@ fn dragAnswer(s: *Surface, enter: bool, keys: u32, pt: POINTL, allowed_in: u32) 
 }
 
 fn sendDragLeave(s: *Surface, session: u32) void {
-    var buf: [32]u8 = undefined;
-    const json = std.fmt.bufPrint(&buf, "[\"leave\",{d}]", .{session}) catch return;
-    _ = s.engine.dragEvent(0, json);
+    drop_mod.sendDragLeave(s.engine, session);
 }
 
 /// The drop: its files opened into the engine's table, or its strings,
