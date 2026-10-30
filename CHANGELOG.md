@@ -2,6 +2,18 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.6] — 2026-10-30
+
+### Fixed
+
+- Video on Linux: an embedded player took the video's own size, spilling
+  past its rectangle; the window's overlay now gives it exactly the page's
+  rectangle (`get-child-position`).
+- Video on Linux with NVIDIA's driver: GtkVideo's frames made GTK's Vulkan
+  renderer run out of device memory and the app crash in the driver. Apps
+  with the video module use the GL renderer there (`GSK_RENDERER=gl`,
+  unless the user set one).
+
 ## [0.20.5] — 2026-10-30
 
 ### Added

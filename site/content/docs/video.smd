@@ -31,7 +31,10 @@ WebView window. The page sees `window.oriel.features.video` and
 `oriel.video.available`.
 
 - **Linux** plays what the installed GStreamer plugins decode (`gst-libav`
-  for most codecs, `gst-plugins-good` for http). GtkVideo's graphics
+  for most codecs, `gst-plugins-good` for http). On NVIDIA's driver an app
+  built with the module uses GTK's GL renderer (`GSK_RENDERER=gl`, unless
+  the user set one): drawing video frames, the default Vulkan renderer ran
+  out of device memory and the app died in the driver. GtkVideo's graphics
   offload lets the compositor show frames without a copy, where the
   compositor and driver can.
 - **Android** plays what `MediaPlayer` decodes (the device's codecs).

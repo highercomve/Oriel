@@ -62,8 +62,8 @@ extern fn gtk_widget_add_controller(widget: *anyopaque, controller: *anyopaque) 
 extern fn gtk_widget_remove_controller(widget: *anyopaque, controller: *anyopaque) void;
 extern fn gtk_event_controller_key_new() *anyopaque;
 extern fn gtk_event_controller_set_propagation_phase(controller: *anyopaque, phase: c_int) void;
+extern fn gtk_widget_queue_resize(widget: *anyopaque) void;
 extern fn gtk_widget_set_visible(widget: *anyopaque, visible: c_int) void;
-extern fn gtk_widget_set_size_request(widget: *anyopaque, width: c_int, height: c_int) void;
 extern fn gtk_window_fullscreen(window: *gtk.Window) void;
 extern fn gtk_window_unfullscreen(window: *gtk.Window) void;
 extern fn gtk_window_is_fullscreen(window: *gtk.Window) c_int;
@@ -107,6 +107,8 @@ const Player = struct {
     ended_id: c_ulong,
     error_id: c_ulong,
     destroy_id: c_ulong,
+    /// The window overlay's get-child-position: the embedded rectangle.
+    position_id: c_ulong,
 };
 
 var current: ?Player = null;
@@ -281,6 +283,7 @@ fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8, rect: ?common.Rect)
         .ended_id = g_signal_connect_data(stream, "notify::ended", @ptrCast(&onEnded), null, null, 0),
         .error_id = g_signal_connect_data(stream, "notify::error", @ptrCast(&onError), null, null, 0),
         .destroy_id = g_signal_connect_data(root, "destroy", @ptrCast(&onRootDestroyed), null, null, 0),
+        .position_id = g_signal_connect_data(overlay, "get-child-position", @ptrCast(&onChildPosition), null, null, 0),
     };
     place(current.?);
     common.adopt(url);
@@ -289,22 +292,31 @@ fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8, rect: ?common.Rect)
     if (!embedded and gtk_widget_grab_focus(video) == 0) _ = gtk_widget_grab_focus(close_button);
 }
 
-/// Over the page's rectangle (embedded), else over the whole window.
+/// Over the page's rectangle (embedded), else over the whole window: the
+/// window overlay asks `onChildPosition` again. (A size request is only a
+/// minimum: GtkVideo would grow to the video's own size.)
 fn place(p: Player) void {
-    const r = if (p.fullscreen) null else p.rect;
-    if (r) |rect| {
-        gtk_widget_set_halign(p.root, align_start);
-        gtk_widget_set_valign(p.root, align_start);
-        gtk_widget_set_margin_start(p.root, @intFromFloat(@round(@max(rect.x, 0))));
-        gtk_widget_set_margin_top(p.root, @intFromFloat(@round(@max(rect.y, 0))));
-        gtk_widget_set_size_request(p.root, @intFromFloat(@round(rect.width)), @intFromFloat(@round(rect.height)));
-    } else {
-        gtk_widget_set_halign(p.root, align_fill);
-        gtk_widget_set_valign(p.root, align_fill);
-        gtk_widget_set_margin_start(p.root, 0);
-        gtk_widget_set_margin_top(p.root, 0);
-        gtk_widget_set_size_request(p.root, -1, -1);
-    }
+    gtk_widget_set_halign(p.root, align_fill);
+    gtk_widget_set_valign(p.root, align_fill);
+    gtk_widget_queue_resize(p.root);
+}
+
+const GdkRectangle = extern struct { x: c_int, y: c_int, width: c_int, height: c_int };
+
+/// The window overlay places its children: the embedded player gets
+/// exactly the page's rectangle; covering the window (or fullscreen), the
+/// overlay's own fill.
+fn onChildPosition(_: *anyopaque, widget: *anyopaque, allocation: *GdkRectangle, _: ?*anyopaque) callconv(.c) c_int {
+    const p = current orelse return 0;
+    if (widget != p.root or p.fullscreen) return 0;
+    const r = p.rect orelse return 0;
+    allocation.* = .{
+        .x = @intFromFloat(@round(@max(r.x, 0))),
+        .y = @intFromFloat(@round(@max(r.y, 0))),
+        .width = @intFromFloat(@round(r.width)),
+        .height = @intFromFloat(@round(r.height)),
+    };
+    return 1;
 }
 
 /// The player over the whole screen (the window fullscreen too), or back.
@@ -338,6 +350,7 @@ fn teardown(how: Teardown) void {
     g_signal_handler_disconnect(p.stream, p.ended_id);
     g_signal_handler_disconnect(p.stream, p.error_id);
     g_signal_handler_disconnect(p.root, p.destroy_id);
+    g_signal_handler_disconnect(p.overlay, p.position_id);
     if (how != .destroyed) {
         if (p.fullscreen and !p.window_was_fullscreen) gtk_window_unfullscreen(p.window);
         gtk_widget_remove_controller(@ptrCast(p.window), p.keys);

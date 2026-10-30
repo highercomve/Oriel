@@ -33,11 +33,18 @@ var exit_code: u8 = 0;
 /// 0.20) turns GPU compositing off: a 1080p `<video>` showed almost no
 /// frames, at more CPU. Neither is set when the user or the app set one of
 /// them.
+///
+/// With the video module, GTK's GL renderer too (`GSK_RENDERER=gl`, unless
+/// the user chose one): drawing GtkVideo's frames, the default Vulkan
+/// renderer runs out of device memory on NVIDIA (VK_ERROR_OUT_OF_DEVICE_MEMORY)
+/// and the process dies in the driver, on a 12 GB card with 10 GB free
+/// (GTK 4.24, driver 615); the GL renderer plays them.
 fn nvidiaWorkaround() void {
     const nvidia = access("/proc/driver/nvidia", 0) == 0 or access("/sys/module/nvidia", 0) == 0;
     if (forceShm(nvidia, std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") != null, std.c.getenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM") != null)) {
         _ = setenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1", 0);
     }
+    if (nvidia and build_opts.video) _ = setenv("GSK_RENDERER", "gl", 0);
 }
 
 /// Whether to set `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` (`nvidiaWorkaround`).
