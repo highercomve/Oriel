@@ -2,6 +2,15 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.4] — 2026-10-30
+
+### Added
+
+- The `oriel_updater` module: the self-updater's engine alone (standard
+  library only), for an app's own command line tool to update itself from a
+  signed manifest without linking GTK or a WebView
+  ([Updater](https://oriel.foreachdeveloper.com/docs/updater/#cli-tools)).
+
 ## [0.20.3] — 2026-10-30
 
 ### Added

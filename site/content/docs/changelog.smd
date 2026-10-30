@@ -1,10 +1,19 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.3, 0.20.2 and earlier.",
+.description = "Release notes for Oriel 0.20.4, 0.20.3 and earlier.",
 .date = .date("2026-10-30T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.4 · October 30, 2026]($heading.id('oriel-0-20-4-october-30-2026'))
+
+## [Added]($heading.id('added-0-20-4'))
+
+- The `oriel_updater` module: the self-updater's engine alone (standard
+  library only), for an app's own command line tool to update itself from a
+  signed manifest without linking GTK or a WebView
+  ([Updater]($link.page('docs/updater').ref('cli-tools'))).
 
 # [Oriel 0.20.3 · October 30, 2026]($heading.id('oriel-0-20-3-october-30-2026'))
 

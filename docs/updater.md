@@ -446,6 +446,36 @@ verifies it against the key the CLI was built with (Oriel's
 `ORIEL_RELEASES_URL` points it at another releases URL (`<url>/latest/download/latest.json`),
 and `ORIEL_UPDATE_TARGET` installs to another path; both exist for tests.
 
+### Your command line tool's updates
+
+An app's own command line tool (one without a window) updates itself with
+the same engine: Oriel's package exports it alone as the `oriel_updater`
+module, standard library only, so the tool links no GTK or WebView.
+
+```zig
+// build.zig
+const oriel = b.dependency("oriel", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("oriel_updater", oriel.module("oriel_updater"));
+```
+
+```zig
+const core = @import("oriel_updater");
+
+var update = try core.checkForUpdate(io, gpa, .{
+    .app_id = "com.example.app.cli", // not the app's: both may be x86_64-linux
+    .manifest_url = "https://github.com/me/app/releases/latest/download/latest-cli.json",
+    .current_version = version,
+    .public_key_b64 = public_key,
+}) orelse return; // up to date
+defer update.deinit();
+const path = try core.download(io, gpa, update, .{}); // replaces the running binary
+```
+
+Sign the tool's binaries into their own manifest (`sign-update --format raw`,
+then `combine-manifests`) under an app id of their own, so the app's
+manifest, which names its AppImage for the same target, can never replace
+the tool.
+
 ### Limits
 
 | What | Limit |

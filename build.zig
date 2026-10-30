@@ -167,6 +167,15 @@ pub fn build(b: *std.Build) void {
 
     const oriel = addOrielModule(b, target, optimize, features);
 
+    // The self-updater's engine alone (std only, no GTK or WebView): what a
+    // command line tool imports to update itself from the app's signed
+    // manifest (`oriel update` does the same).
+    _ = b.addModule("oriel_updater", .{
+        .root_source_file = b.path("src/updater_core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // -Dkokoro: espeak-ng's compiled runtime data (build/espeak_data.zig),
     // shipped by `addApp`; `zig build espeak-data` installs it alone.
     const tts_languages = b.option([]const u8, "tts_languages", "-Dkokoro: espeak-ng dictionaries compiled into the shipped espeak-ng-data, comma-separated (default: " ++ espeak_data.default_languages ++ ")") orelse espeak_data.default_languages;
