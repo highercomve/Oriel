@@ -46,6 +46,7 @@ if (oriel.video.available) {
 }
 oriel.listen("video:ended", ({ url }) => { /* played to the end; still showing */ });
 oriel.listen("video:error", ({ url, message }) => { /* the platform's message */ });
+oriel.listen("video:audio-unsupported", ({ url }) => { /* Android: plays without sound */ });
 oriel.listen("video:closed", ({ url }) => { /* the page shows again */ });
 oriel.video.close(); // closes it from the page, if one shows
 ```
@@ -55,7 +56,11 @@ platform), `"InvalidUrl"` (a scheme the player can't open), `"NoWindow"`
 or `"Failed"` (Android: the app media path isn't there). A file that
 can't be decoded, or a server that answers 404, shows the player and then
 sends `video:error`: the player stays until it is closed, by the user or
-by `oriel.video.close()`. The events go to every window; each carries the
+by `oriel.video.close()`. On Android a video whose sound the device can't
+decode (AC3 or DTS on most phones) still plays: the player says the sound
+isn't supported, offers **Open in another app** (for URLs other apps can
+open: not the app's media URLs), and sends `video:audio-unsupported`. The
+player has a mute button. The events go to every window; each carries the
 URL it is about.
 
 `play` covers the window that called it. The types are in the generated
