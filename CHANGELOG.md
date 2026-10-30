@@ -2,6 +2,20 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.5] — 2026-10-30
+
+### Added
+
+- Video: the player can be embedded in the page. `play({ url, rect })` puts
+  it over that rectangle (CSS pixels), under the page's own bar and menus,
+  with a fullscreen button; `setRect` follows the layout, `setFullscreen`
+  covers the screen (window fullscreen on Linux; on Android the system bars
+  hide and a landscape video turns the phone sideways), and Esc or Back come
+  back. `video:fullscreen` (`{ url, fullscreen }`) reports the changes.
+  `setVisible` hides the player while the page shows a menu or dialog over
+  it, since native views draw above the page.
+- Android: `runtime.call` passes `f32` and `f64` arguments.
+
 ## [0.20.4] — 2026-10-30
 
 ### Added

@@ -11,8 +11,28 @@ pub const Options = struct {
     /// on Android also `content://` and the app's media URLs
     /// (`https://app.localhost/media/<path>`).
     url: []const u8,
-    /// Shown at the top of the player ("" for none).
+    /// Shown at the top of the player ("" for none; an embedded player
+    /// shows none: the page around it has the title).
     title: []const u8 = "",
+    /// Embedded: the player sits over this rectangle of the page, in CSS
+    /// pixels of the window's viewport, under the page's own bar and
+    /// buttons; `setRect` follows the page's layout. Null covers the window.
+    rect: ?Rect = null,
+};
+
+/// A rectangle of the page, in CSS pixels from the viewport's top left.
+pub const Rect = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+
+    /// Finite, inside a sane range, and not empty.
+    pub fn valid(r: Rect) bool {
+        const limit = 1_000_000.0;
+        inline for (.{ r.x, r.y, r.width, r.height }) |v| if (!std.math.isFinite(v) or @abs(v) > limit) return false;
+        return r.width >= 1 and r.height >= 1;
+    }
 };
 
 pub const Error = error{
@@ -27,6 +47,8 @@ pub const Error = error{
     AppNotRunning,
     /// The platform refused (Android: the media file isn't there).
     Failed,
+    /// An embedded player's rectangle isn't finite, or is empty.
+    InvalidRect,
     OutOfMemory,
 };
 
@@ -101,6 +123,7 @@ pub fn classify(url: []const u8, rules: Rules) error{InvalidUrl}!UrlKind {
 /// Check `options` for `rules`: the URL's kind.
 pub fn validate(options: Options, rules: Rules) Error!UrlKind {
     if (options.title.len > max_title_len) return error.InvalidUrl;
+    if (options.rect) |r| if (!r.valid()) return error.InvalidRect;
     return classify(options.url, rules);
 }
 
@@ -108,18 +131,31 @@ pub fn validate(options: Options, rules: Rules) Error!UrlKind {
 
 /// The URL the player shows (owned, `heap.gpa`), for the events' payloads.
 var playing: ?[:0]u8 = null;
+/// Whether the player shows fullscreen (`video:fullscreen` on a change).
+var is_fullscreen = false;
 
 /// `url` as the URL playing (the player was just shown), replacing any.
 /// Takes ownership of `url`.
 pub fn adopt(url: [:0]u8) void {
     if (playing) |old| heap.gpa.free(old);
     playing = url;
+    is_fullscreen = false;
+}
+
+/// The player went fullscreen or came back (its button, Esc, Back,
+/// `setFullscreen`): `video:fullscreen` when that changed.
+pub fn fullscreenChanged(on: bool) void {
+    const url = playing orelse return;
+    if (on == is_fullscreen) return;
+    is_fullscreen = on;
+    internal.emit("video:fullscreen", Event{ .url = url, .fullscreen = on });
 }
 
 /// The player was closed: `video:closed`, and nothing plays any more.
 pub fn closed() void {
     const url = playing orelse return;
     playing = null;
+    is_fullscreen = false;
     defer heap.gpa.free(url);
     internal.emit("video:closed", Event{ .url = url });
 }
@@ -145,10 +181,12 @@ pub fn failed(message: []const u8) void {
     internal.emit("video:error", Event{ .url = url, .message = message });
 }
 
-/// The events' payload: `{ url }`, and `message` on `video:error`.
+/// The events' payload: `{ url }`, `message` on `video:error`,
+/// `fullscreen` on `video:fullscreen`.
 pub const Event = struct {
     url: []const u8,
     message: ?[]const u8 = null,
+    fullscreen: ?bool = null,
 
     pub fn jsonStringify(self: Event, jw: anytype) !void {
         try jw.beginObject();
@@ -157,6 +195,10 @@ pub const Event = struct {
         if (self.message) |m| {
             try jw.objectField("message");
             try jw.write(m);
+        }
+        if (self.fullscreen) |f| {
+            try jw.objectField("fullscreen");
+            try jw.write(f);
         }
         try jw.endObject();
     }
@@ -203,6 +245,14 @@ test "classify: Android's app media URLs" {
     try t.expectError(error.InvalidUrl, classify("https://app.localhost/Media/a.mp4", r));
 }
 
+test Rect {
+    try std.testing.expect((Rect{ .x = 0, .y = 64, .width = 412, .height = 700 }).valid());
+    try std.testing.expect(!(Rect{ .x = 0, .y = 0, .width = 0, .height = 10 }).valid());
+    try std.testing.expect(!(Rect{ .x = std.math.nan(f64), .y = 0, .width = 1, .height = 1 }).valid());
+    try std.testing.expect(!(Rect{ .x = 0, .y = 0, .width = std.math.inf(f64), .height = 1 }).valid());
+    try std.testing.expectError(error.InvalidRect, validate(.{ .url = "file:///a.mp4", .rect = .{ .x = 0, .y = 0, .width = -5, .height = 1 } }, linux_rules));
+}
+
 test validate {
     try std.testing.expectEqual(UrlKind.file, try validate(.{ .url = "file:///a.mp4", .title = "A" }, linux_rules));
     const long = [_]u8{'t'} ** (max_title_len + 1);
@@ -217,4 +267,7 @@ test Event {
     const b = try std.json.Stringify.valueAlloc(t.allocator, Event{ .url = "u", .message = "no \"decoder\"" }, .{});
     defer t.allocator.free(b);
     try t.expectEqualStrings("{\"url\":\"u\",\"message\":\"no \\\"decoder\\\"\"}", b);
+    const c = try std.json.Stringify.valueAlloc(t.allocator, Event{ .url = "u", .fullscreen = true }, .{});
+    defer t.allocator.free(c);
+    try t.expectEqualStrings("{\"url\":\"u\",\"fullscreen\":true}", c);
 }

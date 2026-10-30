@@ -310,7 +310,7 @@ test fail {
 pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "bluetooth:capabilities") or std.mem.eql(u8, cmd, "bluetooth:advertise") or std.mem.eql(u8, cmd, "bluetooth:stop") or
-        std.mem.eql(u8, cmd, "events:ready") or std.mem.eql(u8, cmd, "video:play") or std.mem.eql(u8, cmd, "video:close") or
+        std.mem.eql(u8, cmd, "events:ready") or @import("../modules/video/page.zig").isCommand(cmd) or
         std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
 }
 
@@ -432,7 +432,7 @@ pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request
         const args = std.json.parseFromValueLeaky(StopArgs, arena, request.args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
         bluetooth.stop(args.id);
         return arena.dupe(u8, "null");
-    } else if (std.mem.eql(u8, request.cmd, "video:play") or std.mem.eql(u8, request.cmd, "video:close")) {
+    } else if (@import("../modules/video/page.zig").isCommand(request.cmd)) {
         // The page's oriel.video: the player shows (or closes) now; its
         // end, errors and close come as "video:*" events. Off, the module
         // isn't compiled.
@@ -846,14 +846,24 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\export interface VideoPlayOptions {
             \\  /** http(s):// (the media server's URLs) or file://; on Android also content:// and the app's media URLs (https://app.localhost/media/...). */
             \\  url: string;
-            \\  /** Shown at the top of the player. */
+            \\  /** Shown at the top of the player (not when embedded: the page has it). */
             \\  title?: string;
+            \\  /** Embedded over this rectangle of the page (CSS pixels from the viewport's top left), with a fullscreen button; omitted, it covers the window. */
+            \\  rect?: VideoRect;
             \\}
             \\
-            \\/** The payload of "video:closed", "video:ended", "video:audio-unsupported" and "video:error" (with `message`). */
+            \\export interface VideoRect {
+            \\  x: number;
+            \\  y: number;
+            \\  width: number;
+            \\  height: number;
+            \\}
+            \\
+            \\/** The payload of "video:closed", "video:ended", "video:audio-unsupported", "video:error" (with `message`) and "video:fullscreen" (with `fullscreen`). */
             \\export interface VideoEvent {
             \\  url: string;
             \\  message?: string;
+            \\  fullscreen?: boolean;
             \\}
             \\
             \\export interface VideoApi {
@@ -861,6 +871,12 @@ pub fn typescriptWithOptions(comptime Commands: type, comptime Events: type, com
             \\  readonly available: boolean;
             \\  /** Shows the native player over this window; resolves once it shows. Rejects with "Unsupported", "InvalidUrl", "NoWindow" or "Failed". */
             \\  play(options: VideoPlayOptions): Promise<void>;
+            \\  /** Moves an embedded player to this rectangle (the page's layout changed). */
+            \\  setRect(rect: VideoRect): Promise<void>;
+            \\  /** Covers the screen, or goes back to the page's rectangle ("video:fullscreen"). */
+            \\  setFullscreen(on: boolean): Promise<void>;
+            \\  /** Hides the player while the page shows a menu or dialog over it (native views draw above the page), or shows it again; it keeps playing. */
+            \\  setVisible(on: boolean): Promise<void>;
             \\  /** Closes the player, if one shows ("video:closed"). */
             \\  close(): Promise<void>;
             \\}

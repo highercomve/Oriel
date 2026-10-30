@@ -1149,10 +1149,22 @@ object OrielRuntime {
      * main one): OrielVideo.SHOWN, -1 without an Activity, NOT_FOUND or FAILED.
      */
     @JvmStatic
-    fun videoPlay(window: Int, url: ByteArray, title: ByteArray, kind: Int): Int {
+    fun videoPlay(window: Int, url: ByteArray, title: ByteArray, kind: Int, x: Float, y: Float, width: Float, height: Float): Int {
         val activity = windows[window]?.activity ?: foreground ?: mainActivity ?: return -1
-        return OrielVideo.play(activity, url.utf8(), title.utf8(), kind)
+        val rect = if (width > 0f && height > 0f) android.graphics.RectF(x, y, x + width, y + height) else null
+        return OrielVideo.play(activity, url.utf8(), title.utf8(), kind, rect)
     }
+
+    /** An embedded player's rectangle of the page (CSS pixels) changed. */
+    @JvmStatic
+    fun videoSetRect(x: Float, y: Float, width: Float, height: Float) =
+        OrielVideo.setRect(android.graphics.RectF(x, y, x + width, y + height))
+
+    @JvmStatic
+    fun videoSetFullscreen(on: Boolean) = OrielVideo.setFullscreen(on)
+
+    @JvmStatic
+    fun videoSetVisible(visible: Boolean) = OrielVideo.setVisible(visible)
 
     /** Close the player (Zig asked): whether one was showing. */
     @JvmStatic

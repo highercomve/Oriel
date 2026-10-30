@@ -20,10 +20,16 @@
 //! Elsewhere (Windows, macOS, iOS) and with `-Dnative_ui`,
 //! `oriel.video.available` is false.
 //!
-//! The page: `oriel.video.play({ url, title })` and `oriel.video.close()`;
-//! the events `video:closed`, `video:ended`, `video:error` (`{ url,
-//! message }`) and, on Android, `video:audio-unsupported` (it plays
-//! without sound) go to every window.
+//! Embedded (`options.rect`): the player sits over a rectangle of the page,
+//! under the page's own bar, with a fullscreen button; `setRect` follows
+//! the page's layout, `setFullscreen` (or that button) covers the screen,
+//! and Esc or Back comes back to the rectangle.
+//!
+//! The page: `oriel.video.play({ url, title, rect })`, `setRect(rect)`,
+//! `setFullscreen(on)` and `close()`; the events `video:closed`,
+//! `video:ended`, `video:error` (`{ url, message }`), `video:fullscreen`
+//! (`{ url, fullscreen }`) and, on Android, `video:audio-unsupported` (it
+//! plays without sound) go to every window.
 
 /// Built for this target (docs/modules.md, "Availability").
 pub const available = true;
@@ -34,6 +40,7 @@ const App = @import("../core/App.zig");
 const common = @import("video/common.zig");
 
 pub const Options = common.Options;
+pub const Rect = common.Rect;
 pub const Error = common.Error;
 
 /// Show the player over `window` (null: the focused window, else "main")
@@ -44,6 +51,26 @@ pub const Error = common.Error;
 /// to use as `App.getWindow` says.
 pub fn play(window: ?*App.Window, options: Options) Error!void {
     return impl.play(window, options);
+}
+
+/// Move an embedded player to `rect` of the page (its layout changed).
+/// A fullscreen player goes there when it comes back. Any thread.
+pub fn setRect(rect: Rect) Error!void {
+    if (!rect.valid()) return error.InvalidRect;
+    impl.setRect(rect);
+}
+
+/// Cover the screen (`true`) or go back to the page's rectangle, or the
+/// window for a player that isn't embedded (`video:fullscreen`). Any thread.
+pub fn setFullscreen(on: bool) void {
+    impl.setFullscreen(on);
+}
+
+/// Hide the player (`false`) while the page shows something over it (a
+/// menu, a dialog: native views draw above the page), or show it again.
+/// It keeps its place and keeps playing. Any thread.
+pub fn setVisible(visible: bool) void {
+    impl.setVisible(visible);
 }
 
 /// Stop and close the player, if one is showing (`video:closed`). Any thread.

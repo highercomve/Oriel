@@ -12,6 +12,8 @@
 // Keep it plain ES2020 that every WebView runs: no imports, no globals but
 // the page's own (Blob, File, atob, btoa, console, Promise).
 function orielApi({ invoke, listeners, pendingEvents, platform, features, label }) {
+  // { x, y, width, height } from a DOMRect or a plain object.
+  const rectOf = (r) => ({ x: +r.x || 0, y: +r.y || 0, width: +r.width || 0, height: +r.height || 0 });
   function listen(event, callback) {
     let set = listeners.get(event);
     if (!set) listeners.set(event, (set = new Set()));
@@ -182,14 +184,27 @@ function orielApi({ invoke, listeners, pendingEvents, platform, features, label 
         return invoke("bluetooth:stop", { id: typeof id === "object" && id ? id.id : id });
       },
     }),
-    // oriel.video (features.video): a native player over this window.
-    // play({ url, title }) resolves once it shows; then "video:ended",
-    // "video:error" ({ url, message }), "video:audio-unsupported" ({ url };
-    // Android: it plays without sound) and "video:closed" ({ url }).
+    // oriel.video (features.video): a native player over this window, or
+    // embedded over a rectangle of the page (rect, in CSS pixels; setRect
+    // follows the layout). play({ url, title, rect }) resolves once it
+    // shows; then "video:ended", "video:error" ({ url, message }),
+    // "video:fullscreen" ({ url, fullscreen }), "video:audio-unsupported"
+    // ({ url }; Android: it plays without sound) and "video:closed" ({ url }).
     video: Object.freeze({
       available: !!(features && features.video),
       play(options = {}) {
-        return invoke("video:play", { url: options.url, title: options.title || "", label: label() || "main" });
+        const args = { url: options.url, title: options.title || "", label: label() || "main" };
+        if (options.rect) args.rect = rectOf(options.rect);
+        return invoke("video:play", args);
+      },
+      setRect(rect) {
+        return invoke("video:rect", { rect: rectOf(rect) });
+      },
+      setFullscreen(on) {
+        return invoke("video:fullscreen", { on: !!on });
+      },
+      setVisible(on) {
+        return invoke("video:visible", { on: !!on });
       },
       close() {
         return invoke("video:close", {});

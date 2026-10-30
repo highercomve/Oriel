@@ -1,10 +1,25 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.4, 0.20.3 and earlier.",
+.description = "Release notes for Oriel 0.20.5, 0.20.4 and earlier.",
 .date = .date("2026-10-30T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.5 · October 30, 2026]($heading.id('oriel-0-20-5-october-30-2026'))
+
+## [Added]($heading.id('added-0-20-5'))
+
+- Video: the player can be embedded in the page. `play({ url, rect })` puts
+  it over that rectangle (CSS pixels), under the page's own bar and menus,
+  with a fullscreen button; `setRect` follows the layout, `setFullscreen`
+  covers the screen (window fullscreen on Linux; on Android the system bars
+  hide and a landscape video turns the phone sideways), and Esc or Back come
+  back. `video:fullscreen` (`{ url, fullscreen }`) reports the changes.
+  `setVisible` hides the player while the page shows a menu or dialog over
+  it, since native views draw above the page
+  ([Video]($link.page('docs/video').ref('embedded'))).
+- Android: `runtime.call` passes `f32` and `f64` arguments.
 
 # [Oriel 0.20.4 · October 30, 2026]($heading.id('oriel-0-20-4-october-30-2026'))
 

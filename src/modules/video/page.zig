@@ -9,14 +9,20 @@ const common = @import("common.zig");
 
 pub const play_command = "video:play";
 pub const close_command = "video:close";
+pub const rect_command = "video:rect";
+pub const fullscreen_command = "video:fullscreen";
+pub const visible_command = "video:visible";
 
 pub fn isCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, play_command) or std.mem.eql(u8, cmd, close_command);
+    inline for (.{ play_command, close_command, rect_command, fullscreen_command, visible_command }) |c| if (std.mem.eql(u8, cmd, c)) return true;
+    return false;
 }
 
 pub const PlayArgs = struct {
     url: []const u8,
     title: []const u8 = "",
+    /// Embedded: the page's rectangle for it.
+    rect: ?common.Rect = null,
     /// The calling window's label (bridge_api.js sends it).
     label: ?[]const u8 = null,
 };
@@ -36,11 +42,26 @@ pub fn call(comptime video: type, arena: std.mem.Allocator, cmd: []const u8, arg
         video.close();
         return arena.dupe(u8, "null");
     }
+    if (std.mem.eql(u8, cmd, rect_command)) {
+        const a = std.json.parseFromValueLeaky(struct { rect: common.Rect }, arena, args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
+        try video.setRect(a.rect);
+        return arena.dupe(u8, "null");
+    }
+    if (std.mem.eql(u8, cmd, visible_command)) {
+        const a = std.json.parseFromValueLeaky(struct { on: bool }, arena, args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
+        video.setVisible(a.on);
+        return arena.dupe(u8, "null");
+    }
+    if (std.mem.eql(u8, cmd, fullscreen_command)) {
+        const a = std.json.parseFromValueLeaky(struct { on: bool }, arena, args, .{ .ignore_unknown_fields = true }) catch return error.InvalidArgs;
+        video.setFullscreen(a.on);
+        return arena.dupe(u8, "null");
+    }
     const a = try playArgs(arena, args);
     const App = @import("../../core/App.zig");
     // Main thread (builtins are): the window pointer is safe to use.
     const win: ?*App.Window = if (a.label) |l| App.getWindow(l) else null;
-    try video.play(win, .{ .url = a.url, .title = a.title });
+    try video.play(win, .{ .url = a.url, .title = a.title, .rect = a.rect });
     return arena.dupe(u8, "null");
 }
 
@@ -57,6 +78,9 @@ test playArgs {
     const q = try playArgs(a, bare);
     try std.testing.expectEqualStrings("", q.title);
     try std.testing.expect(q.label == null);
+    const embedded = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"url\":\"file:///a.mts\",\"rect\":{\"x\":0,\"y\":64.5,\"width\":412,\"height\":700}}", .{});
+    const e = try playArgs(a, embedded);
+    try std.testing.expectEqual(@as(f64, 64.5), e.rect.?.y);
     const missing = try std.json.parseFromSliceLeaky(std.json.Value, a, "{\"title\":\"x\"}", .{});
     try std.testing.expectError(error.InvalidArgs, playArgs(a, missing));
     try std.testing.expectError(error.InvalidArgs, playArgs(a, .null));
@@ -78,5 +102,8 @@ test "playArgs: every allocation failure" {
 test isCommand {
     try std.testing.expect(isCommand("video:play"));
     try std.testing.expect(isCommand("video:close"));
+    try std.testing.expect(isCommand("video:rect"));
+    try std.testing.expect(isCommand("video:fullscreen"));
+    try std.testing.expect(isCommand("video:visible"));
     try std.testing.expect(!isCommand("video:stop"));
 }

@@ -39,6 +39,8 @@ WebView window. The page sees `window.oriel.features.video` and
   cleartext to that host.
 - **One player at a time.** `play` while one shows plays the new URL in
   it (no `video:closed` for the old one).
+- **Embedded or covering.** By default the player covers the window; with
+  `rect` it is embedded in the page ([Embedded in the page]($link.ref('embedded'))).
 
 # [From the page]($heading.id('page'))
 
@@ -65,8 +67,36 @@ open: not the app's media URLs), and sends `video:audio-unsupported`. The
 player has a mute button. The events go to every window; each carries the
 URL it is about.
 
-`play` covers the window that called it. The types are in the generated
-`oriel.ts` (`VideoApi`, `VideoPlayOptions`, `VideoEvent`).
+`play` covers the window that called it, unless it is embedded. The
+types are in the generated `oriel.ts` (`VideoApi`, `VideoPlayOptions`,
+`VideoRect`, `VideoEvent`).
+
+## [Embedded in the page]($heading.id('embedded'))
+
+With `rect`, the player sits over that rectangle of the page (CSS pixels
+from the viewport's top left), so the page's own bar, buttons and menus
+stay around it. It shows no title and no close button of its own; it has
+a **fullscreen** button.
+
+```js
+const slot = document.querySelector("#player-slot");
+await oriel.video.play({ url, rect: slot.getBoundingClientRect() });
+new ResizeObserver(() => oriel.video.setRect(slot.getBoundingClientRect())).observe(slot);
+oriel.listen("video:fullscreen", ({ fullscreen }) => { /* its button, Esc or Back */ });
+oriel.video.setFullscreen(true); // or the player's own button
+```
+
+- `setRect(rect)` moves it when the page's layout changes.
+- `setFullscreen(on)` covers the screen: the window goes fullscreen
+  (Linux) or the system bars hide and a landscape video turns the phone
+  sideways (Android). Esc, Back or the button come back to the rectangle;
+  `video:fullscreen` (`{ url, fullscreen }`) says so either way.
+- Embedded and not fullscreen, Esc and Back are the page's (to close its
+  viewer, say), and the page keeps the keyboard.
+- Native views draw above the page: a menu or a dialog the page opens over
+  the player would be hidden behind it. `setVisible(false)` hides the
+  player while one shows and `setVisible(true)` brings it back in place
+  (on Android the surface goes, so playback pauses and resumes).
 
 # [From Zig]($heading.id('zig'))
 

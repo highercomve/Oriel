@@ -62,10 +62,17 @@ extern fn gtk_widget_add_controller(widget: *anyopaque, controller: *anyopaque) 
 extern fn gtk_widget_remove_controller(widget: *anyopaque, controller: *anyopaque) void;
 extern fn gtk_event_controller_key_new() *anyopaque;
 extern fn gtk_event_controller_set_propagation_phase(controller: *anyopaque, phase: c_int) void;
+extern fn gtk_widget_set_visible(widget: *anyopaque, visible: c_int) void;
+extern fn gtk_widget_set_size_request(widget: *anyopaque, width: c_int, height: c_int) void;
+extern fn gtk_window_fullscreen(window: *gtk.Window) void;
+extern fn gtk_window_unfullscreen(window: *gtk.Window) void;
+extern fn gtk_window_is_fullscreen(window: *gtk.Window) c_int;
+extern fn gtk_button_set_icon_name(button: *anyopaque, icon: [*:0]const u8) void;
 extern fn gtk_css_provider_new() *anyopaque;
 extern fn gtk_css_provider_load_from_string(provider: *anyopaque, css: [*:0]const u8) void;
 extern fn gtk_style_context_add_provider_for_display(display: *anyopaque, provider: *anyopaque, priority: c_uint) void;
 
+const align_fill = 0;
 const align_start = 1;
 const align_end = 2;
 const phase_capture = 1;
@@ -90,6 +97,13 @@ const Player = struct {
     stream: *anyopaque,
     /// Esc and Space, on the window (capture phase: before the page).
     keys: *anyopaque,
+    /// The fullscreen button (its icon follows the state).
+    fullscreen_button: *anyopaque,
+    /// Embedded: the page's rectangle for it, in the window's pixels.
+    rect: ?common.Rect,
+    fullscreen: bool = false,
+    /// The window was fullscreen before the player made it so: leave it.
+    window_was_fullscreen: bool = false,
     ended_id: c_ulong,
     error_id: c_ulong,
     destroy_id: c_ulong,
@@ -112,14 +126,52 @@ pub fn play(window: ?*App.Window, options: common.Options) common.Error!void {
         window: ?*App.Window,
         url: [:0]u8,
         title: [:0]const u8,
+        rect: ?common.Rect,
         result: common.Error!void = error.AppNotRunning,
         fn run(c: *@This()) void {
-            c.result = show(c.window, c.url, c.title);
+            c.result = show(c.window, c.url, c.title, c.rect);
         }
     };
-    var ctx: Ctx = .{ .window = window, .url = url, .title = title };
+    var ctx: Ctx = .{ .window = window, .url = url, .title = title, .rect = options.rect };
     try onMain(Ctx, &ctx, Ctx.run);
     try ctx.result; // on success the url belongs to common (adopt)
+}
+
+pub fn setRect(rect: common.Rect) void {
+    const Ctx = struct {
+        rect: common.Rect,
+        fn run(c: *@This()) void {
+            const p = if (current) |*cur| cur else return;
+            if (p.rect == null) return; // covers the window: no rectangle to follow
+            p.rect = c.rect;
+            place(p.*);
+        }
+    };
+    var ctx: Ctx = .{ .rect = rect };
+    onMain(Ctx, &ctx, Ctx.run) catch {};
+}
+
+pub fn setVisible(visible: bool) void {
+    const Ctx = struct {
+        visible: bool,
+        fn run(c: *@This()) void {
+            const p = current orelse return;
+            gtk_widget_set_visible(p.root, @intFromBool(c.visible));
+        }
+    };
+    var ctx: Ctx = .{ .visible = visible };
+    onMain(Ctx, &ctx, Ctx.run) catch {};
+}
+
+pub fn setFullscreen(on: bool) void {
+    const Ctx = struct {
+        on: bool,
+        fn run(c: *@This()) void {
+            fullscreen(c.on);
+        }
+    };
+    var ctx: Ctx = .{ .on = on };
+    onMain(Ctx, &ctx, Ctx.run) catch {};
 }
 
 pub fn close() void {
@@ -151,7 +203,7 @@ fn pickWindow(win: ?*App.Window) ?*gtk.Window {
 }
 
 /// Main thread. On success `url` belongs to common (the URL playing).
-fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8) common.Error!void {
+fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8, rect: ?common.Rect) common.Error!void {
     const window = pickWindow(win) orelse return error.NoWindow;
     // A web view window's content (window.zig wraps it while the module
     // is built); anything else has nowhere to put the player.
@@ -176,7 +228,9 @@ fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8) common.Error!void {
     const root = gtk_overlay_new();
     gtk_widget_add_css_class(root, "oriel-video");
     gtk_overlay_set_child(root, video);
-    if (title.len > 0) {
+    // Embedded, the page around it has the title and a way to close it.
+    const embedded = rect != null;
+    if (title.len > 0 and !embedded) {
         const label = gtk_label_new(title.ptr);
         gtk_label_set_ellipsize(label, ellipsize_end);
         gtk_widget_add_css_class(label, "osd");
@@ -197,7 +251,17 @@ fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8) common.Error!void {
     gtk_widget_set_margin_end(close_button, 12);
     gtk_widget_set_tooltip_text(close_button, "Close (Esc)");
     _ = g_signal_connect_data(close_button, "clicked", @ptrCast(&onCloseClicked), null, null, 0);
-    gtk_overlay_add_overlay(root, close_button);
+    if (!embedded) gtk_overlay_add_overlay(root, close_button);
+    const fullscreen_button = gtk_button_new_from_icon_name("view-fullscreen-symbolic");
+    gtk_widget_add_css_class(fullscreen_button, "osd");
+    gtk_widget_add_css_class(fullscreen_button, "circular");
+    gtk_widget_set_halign(fullscreen_button, align_end);
+    gtk_widget_set_valign(fullscreen_button, align_start);
+    gtk_widget_set_margin_top(fullscreen_button, 12);
+    gtk_widget_set_margin_end(fullscreen_button, if (embedded) 12 else 64); // clear of the close button
+    gtk_widget_set_tooltip_text(fullscreen_button, "Fullscreen");
+    _ = g_signal_connect_data(fullscreen_button, "clicked", @ptrCast(&onFullscreenClicked), null, null, 0);
+    gtk_overlay_add_overlay(root, fullscreen_button);
 
     gtk_overlay_add_overlay(overlay, root);
 
@@ -212,13 +276,50 @@ fn show(win: ?*App.Window, url: [:0]u8, title: [:0]const u8) common.Error!void {
         .root = root,
         .stream = stream,
         .keys = keys,
+        .fullscreen_button = fullscreen_button,
+        .rect = rect,
         .ended_id = g_signal_connect_data(stream, "notify::ended", @ptrCast(&onEnded), null, null, 0),
         .error_id = g_signal_connect_data(stream, "notify::error", @ptrCast(&onError), null, null, 0),
         .destroy_id = g_signal_connect_data(root, "destroy", @ptrCast(&onRootDestroyed), null, null, 0),
     };
+    place(current.?);
     common.adopt(url);
-    // Keys reach the controls (Space, arrows) rather than the page.
-    if (gtk_widget_grab_focus(video) == 0) _ = gtk_widget_grab_focus(close_button);
+    // Covering the window, keys reach the controls (Space, arrows) rather
+    // than the page; embedded, the page keeps them.
+    if (!embedded and gtk_widget_grab_focus(video) == 0) _ = gtk_widget_grab_focus(close_button);
+}
+
+/// Over the page's rectangle (embedded), else over the whole window.
+fn place(p: Player) void {
+    const r = if (p.fullscreen) null else p.rect;
+    if (r) |rect| {
+        gtk_widget_set_halign(p.root, align_start);
+        gtk_widget_set_valign(p.root, align_start);
+        gtk_widget_set_margin_start(p.root, @intFromFloat(@round(@max(rect.x, 0))));
+        gtk_widget_set_margin_top(p.root, @intFromFloat(@round(@max(rect.y, 0))));
+        gtk_widget_set_size_request(p.root, @intFromFloat(@round(rect.width)), @intFromFloat(@round(rect.height)));
+    } else {
+        gtk_widget_set_halign(p.root, align_fill);
+        gtk_widget_set_valign(p.root, align_fill);
+        gtk_widget_set_margin_start(p.root, 0);
+        gtk_widget_set_margin_top(p.root, 0);
+        gtk_widget_set_size_request(p.root, -1, -1);
+    }
+}
+
+/// The player over the whole screen (the window fullscreen too), or back.
+fn fullscreen(on: bool) void {
+    const p = if (current) |*cur| cur else return;
+    if (p.fullscreen == on) return;
+    p.fullscreen = on;
+    if (on) {
+        p.window_was_fullscreen = gtk_window_is_fullscreen(p.window) != 0;
+        if (!p.window_was_fullscreen) gtk_window_fullscreen(p.window);
+    } else if (!p.window_was_fullscreen) gtk_window_unfullscreen(p.window);
+    gtk_button_set_icon_name(p.fullscreen_button, if (on) "view-restore-symbolic" else "view-fullscreen-symbolic");
+    gtk_widget_set_tooltip_text(p.fullscreen_button, if (on) "Exit fullscreen (Esc)" else "Fullscreen");
+    place(p.*);
+    common.fullscreenChanged(on);
 }
 
 const Teardown = enum {
@@ -238,6 +339,7 @@ fn teardown(how: Teardown) void {
     g_signal_handler_disconnect(p.stream, p.error_id);
     g_signal_handler_disconnect(p.root, p.destroy_id);
     if (how != .destroyed) {
+        if (p.fullscreen and !p.window_was_fullscreen) gtk_window_unfullscreen(p.window);
         gtk_widget_remove_controller(@ptrCast(p.window), p.keys);
         gtk_overlay_remove_overlay(p.overlay, p.root);
     }
@@ -289,14 +391,21 @@ fn onCloseClicked(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
     closeLater();
 }
 
+fn onFullscreenClicked(_: *anyopaque, _: ?*anyopaque) callconv(.c) void {
+    const p = current orelse return;
+    fullscreen(!p.fullscreen);
+}
+
 fn onKeyPressed(_: *anyopaque, keyval: c_uint, _: c_uint, state: c_uint, _: ?*anyopaque) callconv(.c) c_int {
     const p = current orelse return 0;
     // Shift, Lock and the mouse buttons aside, no modifiers.
     const modifiers: c_uint = state & ~@as(c_uint, 1 | 2 | (0x1f << 8));
     if (modifiers != 0) return 0;
+    // Embedded in the page, the page keeps its keys (its Esc closes it).
+    if (p.rect != null and !p.fullscreen) return 0;
     switch (keyval) {
         key_escape => {
-            closeLater();
+            if (p.fullscreen) fullscreen(false) else closeLater();
             return 1;
         },
         key_space => {

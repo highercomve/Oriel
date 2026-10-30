@@ -88,6 +88,10 @@ fn toJValue(e: *jni.Env, arg: anytype, locals: *[16]jni.jobject, n_locals: *usiz
             if (T == i64 or T == u64) return .{ .j = @intCast(arg) };
             return .{ .i = @intCast(arg) };
         },
+        .float => {
+            if (T == f64) return .{ .d = arg };
+            return .{ .f = arg };
+        },
         .pointer => {
             const bytes: []const u8 = arg;
             const arr = e.newBytes(bytes);
@@ -116,7 +120,8 @@ fn RetType(comptime ret: Ret) type {
 }
 
 /// Call `OrielRuntime.<name>` (a `@JvmStatic` method) on the UI thread.
-/// `args`: a tuple of bools, ints, `[]const u8` (passed as `byte[]`),
+/// `args`: a tuple of bools, ints, floats (`f32` as `float`, `f64` as
+/// `double`), `[]const u8` (passed as `byte[]`),
 /// optional slices (null `byte[]`) and jobjects. Returns null when not on
 /// the UI thread, the method is missing, or it threw (logged).
 pub fn call(comptime ret: Ret, comptime name: [:0]const u8, comptime sig: [:0]const u8, args: anytype) ?RetType(ret) {

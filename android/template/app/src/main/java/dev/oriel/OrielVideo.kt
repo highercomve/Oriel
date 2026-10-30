@@ -3,7 +3,16 @@ package dev.oriel
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.drawable.Drawable
+import android.os.Build
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
@@ -16,6 +25,8 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.Button
 import android.widget.ImageButton
@@ -30,6 +41,13 @@ import android.widget.TextView
  * MediaController for play, pause and seeking, the title, a mute button
  * and a close button. Back, Esc and the close button close it.
  *
+ * Embedded (a rectangle of the page, in CSS pixels): the player sits over
+ * that part of the page, under the page's own bar, without a title or a
+ * close button of its own; the page moves it with `setRect`. Its
+ * fullscreen button (or `setFullscreen`) covers the screen: the system
+ * bars hide, a landscape video turns the phone sideways, and Back or Esc
+ * come back to the page's rectangle. Embedded, Back and Esc are the page's.
+ *
  * When the video's sound can't be decoded on this device (AC3 or DTS on
  * most phones), the picture still plays: the player says so and, for a
  * URL other apps can open, offers to open it in one (VLC and the like).
@@ -41,7 +59,8 @@ import android.widget.TextView
  *
  * Zig hears the end, errors and a close it didn't ask for through
  * `NativeLib.onSystemEvent("video", ...)`: "ended", "error\n<message>",
- * "closed", "audio-unsupported". Main thread only.
+ * "closed", "audio-unsupported", "fullscreen\n1" / "fullscreen\n0". Main
+ * thread only.
  */
 internal object OrielVideo {
     private const val TAG = "OrielVideo"
@@ -57,7 +76,7 @@ internal object OrielVideo {
     val isShowing: Boolean get() = player != null
 
     /** Show the player over `activity` playing `url` (replacing one that shows). */
-    fun play(activity: OrielActivity, url: String, title: String, kind: Int): Int {
+    fun play(activity: OrielActivity, url: String, title: String, kind: Int, rect: RectF?): Int {
         player?.release(notify = false)
         player = null
         val mp = MediaPlayer()
@@ -78,7 +97,7 @@ internal object OrielVideo {
         }
         // Another app can open it unless it's an app media URL (only this
         // process's WebView serves those).
-        val p = Player(activity, mp, title, if (kind == KIND_APP_MEDIA) null else Uri.parse(url))
+        val p = Player(activity, mp, title, if (kind == KIND_APP_MEDIA) null else Uri.parse(url), rect)
         player = p
         p.show()
         return SHOWN
@@ -93,10 +112,28 @@ internal object OrielVideo {
         return true
     }
 
-    /** Back (and Esc) close the player first. */
+    fun setRect(rect: RectF) {
+        player?.setRect(rect)
+    }
+
+    fun setFullscreen(on: Boolean) {
+        player?.setFullscreen(on)
+    }
+
+    fun setVisible(visible: Boolean) {
+        player?.setVisible(visible)
+    }
+
+    /** Back (and Esc) leave fullscreen, else close a player covering the
+     * window; an embedded one leaves them to the page. */
     fun handleBack(activity: OrielActivity): Boolean {
         val p = player ?: return false
         if (p.activity !== activity) return false
+        if (p.fullscreen) {
+            p.setFullscreen(false)
+            return true
+        }
+        if (p.embedded) return false
         Log.i(TAG, "closed by back")
         closeByUser(p)
         return true
@@ -105,9 +142,12 @@ internal object OrielVideo {
     fun onKey(activity: OrielActivity, event: KeyEvent): Boolean {
         val p = player ?: return false
         if (p.activity !== activity || event.keyCode != KeyEvent.KEYCODE_ESCAPE) return false
+        if (p.embedded && !p.fullscreen) return false
         if (event.action == KeyEvent.ACTION_UP) {
-            Log.i(TAG, "closed by Esc")
-            closeByUser(p)
+            if (p.fullscreen) p.setFullscreen(false) else {
+                Log.i(TAG, "closed by Esc")
+                closeByUser(p)
+            }
         }
         return true
     }
@@ -130,8 +170,24 @@ internal object OrielVideo {
     private fun report(data: String) = NativeLib.onSystemEvent("video".bytes(), data.bytes())
 
     /** One shown video: its views over the WebView, and its MediaPlayer. */
-    private class Player(val activity: OrielActivity, private val mp: MediaPlayer, title: String, private val shareable: Uri?) :
-        SurfaceHolder.Callback, MediaController.MediaPlayerControl {
+    private class Player(
+        val activity: OrielActivity,
+        private val mp: MediaPlayer,
+        title: String,
+        private val shareable: Uri?,
+        /** Embedded: the page's rectangle, in CSS pixels. */
+        private var rect: RectF?,
+    ) : SurfaceHolder.Callback, MediaController.MediaPlayerControl {
+        val embedded = rect != null
+        var fullscreen = false
+            private set
+        private var savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        /** The system bars showed before fullscreen hid them. */
+        private var barsShowed = true
+        private var savedUiFlags = 0
+        private lateinit var fullscreenButton: ImageButton
+        /** Hidden while it played: the surface comes back, so does the playing. */
+        private var resumeOnSurface = false
         private val root = FitFrame(activity)
         private val surface = SurfaceView(activity)
         private val controller = MediaController(activity)
@@ -150,7 +206,8 @@ internal object OrielVideo {
             root.surface = surface
             root.addView(surface, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             val pad = dp(12)
-            if (title.isNotEmpty()) {
+            // Embedded, the page around it has the title and a way to close it.
+            if (title.isNotEmpty() && !embedded) {
                 val label = TextView(activity).apply {
                     text = title
                     setTextColor(Color.WHITE)
@@ -173,8 +230,19 @@ internal object OrielVideo {
                     OrielVideo.closeByUser(this@Player)
                 }
             }
-            root.addView(close, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
+            if (!embedded) root.addView(close, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
                 setMargins(pad, pad, pad, pad)
+            })
+            // Right of the mute button; where the close button is, embedded.
+            val slot = if (embedded) 0 else 1
+            fullscreenButton = ImageButton(activity).apply {
+                setImageDrawable(FullscreenIcon(exit = false, density = activity.resources.displayMetrics.density))
+                setBackgroundColor(0x66000000)
+                contentDescription = "Fullscreen"
+                setOnClickListener { setFullscreen(!fullscreen) }
+            }
+            root.addView(fullscreenButton, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
+                setMargins(pad, pad, pad + dp(56) * slot, pad)
             })
             val mute = ImageButton(activity).apply {
                 setImageResource(android.R.drawable.ic_lock_silent_mode_off)
@@ -188,7 +256,7 @@ internal object OrielVideo {
                 }
             }
             root.addView(mute, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP or Gravity.END).apply {
-                setMargins(pad, pad, pad + dp(56), pad)
+                setMargins(pad, pad, pad + dp(56) * (slot + 1), pad)
             })
             root.setOnClickListener { if (controller.isShowing) controller.hide() else if (prepared) controller.show() }
             surface.holder.addCallback(this)
@@ -261,13 +329,100 @@ internal object OrielVideo {
 
         fun show() {
             activity.addOverlay(root)
-            root.requestFocus()
+            place()
+            // Covering the window, keys go to the player; embedded, the page keeps them.
+            if (!embedded) root.requestFocus()
             mp.prepareAsync()
+        }
+
+        /** Hidden, the surface goes (playback pauses); shown, it resumes. */
+        fun setVisible(visible: Boolean) {
+            if (released) return
+            if (!visible) {
+                resumeOnSurface = ok() && mp.isPlaying
+                controller.hide()
+            }
+            root.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        }
+
+        fun setRect(r: RectF) {
+            if (!embedded || released) return
+            rect = r
+            if (!fullscreen) place()
+        }
+
+        /** Over the page's rectangle (embedded), else the whole window. The
+         * page's CSS pixels are dp; the overlay starts where the page does. */
+        private fun place() {
+            val r = rect
+            root.layoutParams = if (r == null || fullscreen) {
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            } else {
+                val d = activity.resources.displayMetrics.density
+                FrameLayout.LayoutParams((r.width() * d).toInt(), (r.height() * d).toInt(), Gravity.TOP or Gravity.START).apply {
+                    leftMargin = (r.left * d).toInt()
+                    topMargin = (r.top * d).toInt()
+                }
+            }
+            if (controller.isShowing) controller.hide()
+        }
+
+        /** The whole screen: the window, without the system bars, sideways
+         * for a landscape video. Back, Esc or the button come back. */
+        fun setFullscreen(on: Boolean) {
+            if (on == fullscreen || released) return
+            fullscreen = on
+            if (on) {
+                savedOrientation = activity.requestedOrientation
+                if (videoWide()) activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                hideBars()
+            } else {
+                activity.requestedOrientation = savedOrientation
+                restoreBars()
+            }
+            fullscreenButton.setImageDrawable(FullscreenIcon(exit = on, density = activity.resources.displayMetrics.density))
+            fullscreenButton.contentDescription = if (on) "Exit fullscreen" else "Fullscreen"
+            place()
+            if (on) root.requestFocus()
+            OrielVideo.report(if (on) "fullscreen\n1" else "fullscreen\n0")
+        }
+
+        private fun videoWide(): Boolean = ok() && mp.videoWidth > mp.videoHeight
+
+        @Suppress("DEPRECATION")
+        private fun hideBars() {
+            val w = activity.window
+            if (Build.VERSION.SDK_INT >= 30) {
+                barsShowed = w.decorView.rootWindowInsets?.isVisible(WindowInsets.Type.systemBars()) ?: true
+                w.insetsController?.let {
+                    it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    it.hide(WindowInsets.Type.systemBars())
+                }
+            } else {
+                savedUiFlags = w.decorView.systemUiVisibility
+                w.decorView.systemUiVisibility = savedUiFlags or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        private fun restoreBars() {
+            val w = activity.window
+            if (Build.VERSION.SDK_INT >= 30) {
+                if (barsShowed) w.insetsController?.show(WindowInsets.Type.systemBars())
+            } else {
+                w.decorView.systemUiVisibility = savedUiFlags
+            }
         }
 
         fun release(notify: Boolean) {
             if (released) return
             released = true
+            if (fullscreen) {
+                fullscreen = false
+                activity.requestedOrientation = savedOrientation
+                restoreBars()
+            }
             controller.hide()
             surface.holder.removeCallback(this)
             activity.removeOverlay(root)
@@ -282,7 +437,10 @@ internal object OrielVideo {
 
         // SurfaceHolder.Callback: the surface goes away when the app goes to the background.
         override fun surfaceCreated(holder: SurfaceHolder) {
-            if (!released) mp.setDisplay(holder)
+            if (released) return
+            mp.setDisplay(holder)
+            if (resumeOnSurface && ok()) mp.start()
+            resumeOnSurface = false
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
@@ -322,6 +480,42 @@ internal object OrielVideo {
             else -> extra.toString()
         }
         return "$w ($e)"
+    }
+
+    /** Four corners: pointing out (fullscreen) or in (exit fullscreen). */
+    private class FullscreenIcon(private val exit: Boolean, private val density: Float) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f * density
+        }
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            val half = minOf(b.width(), b.height()) * 0.3f
+            val arm = half * 0.6f
+            val cx = b.exactCenterX()
+            val cy = b.exactCenterY()
+            val path = Path()
+            for (sx in intArrayOf(-1, 1)) for (sy in intArrayOf(-1, 1)) {
+                // The corner's point, and arms toward the centre (in) or away (out).
+                val at = if (exit) half * 0.35f else half
+                val x = cx + sx * at
+                val y = cy + sy * at
+                val dir = if (exit) 1 else -1
+                path.moveTo(x, y + dir * sy * arm)
+                path.lineTo(x, y)
+                path.lineTo(x + dir * sx * arm, y)
+            }
+            canvas.drawPath(path, paint)
+        }
+
+        override fun getIntrinsicWidth() = (24 * density).toInt()
+        override fun getIntrinsicHeight() = (24 * density).toInt()
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+        override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter }
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity() = PixelFormat.TRANSLUCENT
     }
 
     /**
