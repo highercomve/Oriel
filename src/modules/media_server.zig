@@ -194,6 +194,17 @@ fn hostAllowed(host: ?[]const u8, port: u16, network_accessible: bool) bool {
     return !std.mem.eql(u8, &parsed_ip.bytes, &.{ 0, 0, 0, 0 }) and parsed_ip.bytes[0] < 224;
 }
 
+test "media server Host validation stays local unless network access is enabled" {
+    try std.testing.expect(hostAllowed("127.0.0.1:1234", 1234, false));
+    try std.testing.expect(hostAllowed("LOCALHOST:1234", 1234, false));
+    try std.testing.expect(!hostAllowed("192.168.1.20:1234", 1234, false));
+    try std.testing.expect(hostAllowed("192.168.1.20:1234", 1234, true));
+    try std.testing.expect(!hostAllowed("device.local:1234", 1234, true));
+    try std.testing.expect(!hostAllowed("0.0.0.0:1234", 1234, true));
+    try std.testing.expect(!hostAllowed("224.0.0.1:1234", 1234, true));
+    try std.testing.expect(!hostAllowed("192.168.1.20:1235", 1234, true));
+}
+
 /// Send the response headers. Header values must outlive the handler (httpz
 /// may serialize them again, e.g. for an error response), so they are
 /// allocated in `res.arena`. On failure the connection state is unknown:

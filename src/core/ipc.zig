@@ -1106,8 +1106,8 @@ test "typescript generation" {
     try std.testing.expect(std.mem.indexOf(u8, ts, "window: WindowApi;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const orielWindow: WindowApi") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const window") == null);
-    try std.testing.expect(std.mem.indexOf(u8, ts, "openExternal(url: string): Promise<void>;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ts, "export function openExternal(url: string): Promise<void>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "openExternal(url: string, options?: { type?: string }): Promise<void>;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ts, "export function openExternal(url: string, options?: { type?: string }): Promise<void>") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "      platform: Platform;") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "export const platform: Platform") != null);
     try std.testing.expect(std.mem.indexOf(u8, ts, "      features: Features;") != null);
