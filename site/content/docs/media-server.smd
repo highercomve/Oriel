@@ -15,6 +15,10 @@ sharing the same range parser and path checks:
 
 - a **loopback HTTP server** (`Server`) on `127.0.0.1:<port>`, which every
   element can use, `<video>` and `<audio>` included;
+- optionally, a **network HTTP server** on all IPv4 interfaces, for apps that
+  deliberately issue capability URLs to other devices. Set
+  `.network_accessible = true`; callers should use unguessable URLs and only
+  share them with intended recipients;
 - the app's **own scheme**: `app://app/media/<path>` on Linux and macOS,
   `https://app.localhost/media/<path>` on Windows (`scheme.setRoot`), with
   no port and no CORS, for `fetch`, XHR and `<img>`.
@@ -29,11 +33,11 @@ For a small file the user picked, read it in a command ([Files]($link.page('docs
 
 # [Availability]($heading.id('availability'))
 
-| Platform | Loopback server | Scheme | Path confinement |
+| Platform | HTTP server | Scheme | Path confinement |
 |---|---|---|---|
-| Linux | ✓ | `app://app/media/` (WebKitGTK): `fetch`, XHR, `<img>`; not `<video>`/`<audio>`. Not with `-Dnative_ui` | `openat2(RESOLVE_BENEATH)`, Linux 5.6+ |
-| Windows | ✓ | `https://app.localhost/media/` (WebView2 `WebResourceRequested`) | lexical checks, then `GetFinalPathNameByHandleW` below the root |
-| macOS | ✓ | `app://app/media/` (`WKURLSchemeHandler`) | `fcntl(F_GETPATH)` below the root; `O_NOFOLLOW_ANY` for `.refuse_all` |
+| Linux | loopback; optional all IPv4 interfaces | `app://app/media/` (WebKitGTK): `fetch`, XHR, `<img>`; not `<video>`/`<audio>`. Not with `-Dnative_ui` | `openat2(RESOLVE_BENEATH)`, Linux 5.6+ |
+| Windows | loopback; optional all IPv4 interfaces | `https://app.localhost/media/` (WebView2 `WebResourceRequested`) | lexical checks, then `GetFinalPathNameByHandleW` below the root |
+| macOS | loopback; optional all IPv4 interfaces | `app://app/media/` (`WKURLSchemeHandler`) | `fcntl(F_GETPATH)` below the root; `O_NOFOLLOW_ANY` for `.refuse_all` |
 | Android | — | `https://app.localhost/media/` (the WebView's request interception, `OrielMedia.kt`); also a `Source` (`scheme.setSource`) | the canonical path below the root |
 | iOS | — | — | — |
 
@@ -57,7 +61,7 @@ pub fn main(init: std.process.Init) !u8 {
     if (oriel.media_server.available) {
         try media.start(init.io, init.gpa, .{
             .root_dir = "/home/me/Videos", // /<path> maps to files below it
-            .port = 17893, // 127.0.0.1 only
+            .port = 17893, // 127.0.0.1 only by default
         });
     }
     defer if (oriel.media_server.available) media.stop();
@@ -75,6 +79,12 @@ const Events = struct {};
 ```html
 <video controls src="http://127.0.0.1:17893/holiday/2025.mkv"></video>
 ```
+
+For a server that other devices on the LAN must reach, set
+`.network_accessible = true`. It binds all IPv4 interfaces and accepts only
+numeric IPv4 `Host` headers (in addition to localhost); hostnames remain
+rejected to limit DNS rebinding. Keep this opt-in server for capability URLs
+and avoid exposing sensitive files without authorization.
 
 The default content security policy already allows
 `http://127.0.0.1:*` for media, images and `fetch`.

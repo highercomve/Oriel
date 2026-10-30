@@ -1,10 +1,18 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.1, 0.20.0 and earlier.",
+.description = "Release notes for Oriel 0.20.2, 0.20.1 and earlier.",
 .date = .date("2026-10-30T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.2 · October 30, 2026]($heading.id('oriel-0-20-2-october-30-2026'))
+
+## [Added]($heading.id('added-0-20-2'))
+
+- Media server: apps can opt in to a listener on all IPv4 interfaces for
+  capability URLs shared with devices on the LAN or a VPN. Numeric IPv4 Host
+  headers are accepted only in this mode; the default remains loopback-only.
 
 # [Oriel 0.20.1 · October 30, 2026]($heading.id('oriel-0-20-1-october-30-2026'))
 

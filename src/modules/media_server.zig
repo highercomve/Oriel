@@ -1,5 +1,6 @@
 //! Local HTTP server (http.zig) for streaming large local media to the
-//! webview with HTTP range requests (RFC 9110 §14). Binds to 127.0.0.1 only.
+//! webview with HTTP range requests (RFC 9110 §14). Binds to 127.0.0.1 only
+//! unless the app explicitly requests network access.
 //! Serves the files below a root folder, or an app's own `Source`.
 
 /// Built for this target (docs/modules.md, "Availability").
@@ -24,8 +25,12 @@ pub const Options = struct {
     /// Directory whose files are served (`/<path>` maps to `<root_dir>/<path>`).
     /// Ignored (it may be "") when `source` is set.
     root_dir: []const u8,
-    /// TCP port on 127.0.0.1.
+    /// TCP port to listen on.
     port: u16,
+    /// Also accept connections from other devices on the local network.
+    /// In this mode the server binds all IPv4 interfaces and accepts only
+    /// numeric IPv4 Host headers. The app should expose only capability URLs.
+    network_accessible: bool = false,
     /// Value of `Access-Control-Allow-Origin` on file responses: the page
     /// origin (`app://app` on Linux, `https://app.localhost` on Windows, for
     /// embedded assets) or the dev server origin.
@@ -61,7 +66,7 @@ pub const Handler = struct {
     }
 
     fn validateHost(self: *Handler, req: *httpz.Request, res: *httpz.Response) bool {
-        if (hostAllowed(req.header("host"), self.options.port)) return true;
+        if (hostAllowed(req.header("host"), self.options.port, self.options.network_accessible)) return true;
         res.status = 403;
         res.body = "Forbidden";
         return false;
@@ -174,13 +179,19 @@ fn respond(req: *httpz.Request, res: *httpz.Response, path: []const u8, size: u6
 }
 
 /// Reject DNS-rebinding hostnames before exposing any local endpoint.
-fn hostAllowed(host: ?[]const u8, port: u16) bool {
+fn hostAllowed(host: ?[]const u8, port: u16, network_accessible: bool) bool {
     const value = host orelse return false;
     var buf: [32]u8 = undefined;
     const ip = std.fmt.bufPrint(&buf, "127.0.0.1:{d}", .{port}) catch unreachable;
     if (std.mem.eql(u8, value, ip)) return true;
     const local = std.fmt.bufPrint(&buf, "localhost:{d}", .{port}) catch unreachable;
-    return std.ascii.eqlIgnoreCase(value, local);
+    if (std.ascii.eqlIgnoreCase(value, local)) return true;
+    if (!network_accessible) return false;
+    const colon = std.mem.lastIndexOfScalar(u8, value, ':') orelse return false;
+    const host_port = std.fmt.parseInt(u16, value[colon + 1 ..], 10) catch return false;
+    if (host_port != port) return false;
+    const parsed_ip = std.Io.net.Ip4Address.parse(value[0..colon], port) catch return false;
+    return !std.mem.eql(u8, &parsed_ip.bytes, &.{ 0, 0, 0, 0 }) and parsed_ip.bytes[0] < 224;
 }
 
 /// Send the response headers. Header values must outlive the handler (httpz
@@ -214,7 +225,8 @@ pub const Server = struct {
         errdefer if (root) |r| open.closeRoot(r);
         self.handler = .{ .options = options, .root = root, .io = io };
 
-        self.inner = try httpz.Server(*Handler).init(io, gpa, .{ .address = .localhost(self.port) }, &self.handler);
+        const address: httpz.Config.Address = if (options.network_accessible) .all(self.port) else .localhost(self.port);
+        self.inner = try httpz.Server(*Handler).init(io, gpa, .{ .address = address }, &self.handler);
         errdefer self.inner.deinit();
 
         var router = try self.inner.router(.{});

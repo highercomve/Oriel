@@ -2,6 +2,14 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.2] — 2026-10-30
+
+### Added
+
+- Media server: apps can opt in to a listener on all IPv4 interfaces for
+  capability URLs shared with devices on the LAN or a VPN. Numeric IPv4 Host
+  headers are accepted only in this mode; the default remains loopback-only.
+
 ## [0.20.1] — 2026-10-30
 
 ### Fixed
