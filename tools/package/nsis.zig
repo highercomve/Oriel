@@ -250,7 +250,7 @@ fn writeWebView2Check(w: *std.Io.Writer) !void {
         \\      ${EndIf}
         \\      Goto done_wv2
         \\    skip_wv2:
-        \\      MessageBox MB_ICONINFORMATION "Please install Microsoft Edge WebView2 Runtime manually before running ${NAME}:$\nhttps://go.microsoft.com/fwlink/p/?LinkId=2124703"
+        \\      MessageBox MB_ICONINFORMATION "Please install Microsoft Edge WebView2 Runtime manually before running ${NAME}:$\nhttps://go.microsoft.com/fwlink/p/?LinkId=2124703" /SD IDOK
         \\    done_wv2:
         \\  ${EndIf}
         \\FunctionEnd
@@ -600,6 +600,15 @@ test "generateNsisScript produces valid script with all options and escaping" {
 
     // Verify uninstall data prompt and /REMOVEDATA handling
     try testing.expect(std.mem.indexOf(u8, script, "MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION") != null);
+    // A silent install never waits on a message box (CI, deployment tools).
+    var lines = std.mem.splitScalar(u8, script, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "MessageBox") == null) continue;
+        const guarded = std.mem.indexOf(u8, line, "/SD ") != null or
+            std.mem.indexOf(u8, line, "remove application data") != null or // inside ${If} ${Silent} ... ${Else}
+            std.mem.indexOf(u8, line, "is running") != null; // after IfSilent
+        try testing.expect(guarded);
+    }
     try testing.expect(std.mem.indexOf(u8, script, "${un.GetOptions} $R0 \"/REMOVEDATA\" $R1") != null);
     try testing.expect(std.mem.indexOf(u8, script, "RMDir /r \"$LOCALAPPDATA\\${APP_ID}\"") != null);
 

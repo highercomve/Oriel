@@ -235,7 +235,9 @@ installer ignores them. An invalid name is a build error.
 
 **Installers.** The NSIS installer is per-user
 (`%LOCALAPPDATA%\Programs\<name>`, no administrator rights), adds Start Menu
-shortcuts and an uninstaller, and supports silent `setup.exe /S`. MSIX
+shortcuts and an uninstaller, and supports silent `setup.exe /S`: it never
+waits for an answer (without the WebView2 runtime it installs the app and
+skips the runtime). MSIX
 targets Windows 10.0.17763.0 by default (`.package.msix.min_version`).
 Details: [Packaging](packaging.md).
 

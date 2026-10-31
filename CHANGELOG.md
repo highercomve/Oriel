@@ -2,6 +2,15 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.7] — 2026-10-30
+
+### Fixed
+
+- Windows installer: a silent install (`setup.exe /S`) on a machine without
+  the WebView2 runtime waited forever on a message box it couldn't show; it
+  now finishes. Every message box in the installer has a silent answer, and a
+  test checks it.
+
 ## [0.20.6] — 2026-10-30
 
 ### Fixed

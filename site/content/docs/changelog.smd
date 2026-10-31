@@ -1,10 +1,19 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.6, 0.20.5 and earlier.",
+.description = "Release notes for Oriel 0.20.7, 0.20.6 and earlier.",
 .date = .date("2026-10-30T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.7 · October 30, 2026]($heading.id('oriel-0-20-7-october-30-2026'))
+
+## [Fixed]($heading.id('fixed-0-20-7'))
+
+- Windows installer: a silent install (`setup.exe /S`) on a machine without
+  the WebView2 runtime waited forever on a message box it couldn't show; it
+  now finishes. Every message box in the installer has a silent answer, and a
+  test checks it.
 
 # [Oriel 0.20.6 · October 30, 2026]($heading.id('oriel-0-20-6-october-30-2026'))
 
