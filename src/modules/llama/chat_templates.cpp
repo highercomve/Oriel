@@ -194,10 +194,9 @@ oriel_llama_chat_turn * oriel_llama_chat_begin(oriel_llama_chat * chat, const ch
             inputs.tool_choice = tc.is_string() ? common_chat_tool_choice_parse_oaicompat(tc.get<std::string>()) : COMMON_CHAT_TOOL_CHOICE_REQUIRED;
         }
         const auto caps = common_chat_templates_get_caps(chat->tmpls.get());
-        const auto par  = caps.find("supports_parallel_tool_calls");
         inputs.parallel_tool_calls = body.contains("parallel_tool_calls") && body.at("parallel_tool_calls").is_boolean()
             ? body.at("parallel_tool_calls").get<bool>()
-            : (par != caps.end() && par->second);
+            : caps.at("supports_parallel_tool_calls").get<bool>();
         inputs.json_schema          = json_schema_of(body);
         inputs.reasoning_format     = COMMON_REASONING_FORMAT_DEEPSEEK;
         inputs.enable_thinking      = think;
@@ -236,12 +235,13 @@ oriel_llama_chat_turn * oriel_llama_chat_begin(oriel_llama_chat * chat, const ch
             return nullptr;
         }
 
-        turn->parser                  = common_chat_parser_params(params);
-        turn->parser.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
-        turn->parser.parse_tool_calls = !inputs.tools.empty() && inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
-        if (!params.parser.empty()) turn->parser.parser.load(params.parser);
+        // The parser applying the template built reads the reasoning and the
+        // tool calls the inputs above asked for (reasoning_format, tools,
+        // tool_choice): nothing to switch on here.
+        turn->parser        = common_chat_parser_params(params);
+        turn->parser.parser = params.parser;
 
-        if (prompt) *prompt = dup_string(params.prompt);
+        if (prompt) *prompt = dup_string(params.prompt.str());
         return turn;
     } catch (const std::exception & e) {
         set_error(err, e.what());
@@ -277,7 +277,7 @@ bool oriel_llama_chat_feed(oriel_llama_chat_turn * turn, llama_token tok, char *
     }
     std::string r, c;
     try {
-        const auto next = common_chat_parse(turn->text.substr(0, complete_utf8(turn->text)), true, turn->parser);
+        const auto next = common_chat_parse(common_chat_input(turn->text.substr(0, complete_utf8(turn->text))), true, turn->parser);
         if (!next.empty()) take_diffs(turn, next, r, c);
     } catch (...) {
         // A partial parse can fail mid-structure: the next token retries.
@@ -296,7 +296,7 @@ char * oriel_llama_chat_finish(oriel_llama_chat_turn * turn, char ** reasoning, 
     *content   = nullptr;
     common_chat_msg final_msg;
     try {
-        final_msg = common_chat_parse(turn->text, false, turn->parser);
+        final_msg = common_chat_parse(common_chat_input(turn->text), false, turn->parser);
     } catch (...) {
         final_msg = turn->msg;
         if (final_msg.empty()) final_msg.content = turn->text;

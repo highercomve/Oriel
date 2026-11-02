@@ -2,6 +2,23 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.8] — 2026-11-01
+
+### Changed
+
+- llama.cpp updated from the September 15 commit (`d1d3c33`) to October 30
+  (`792fcf4`), about 1,000 commits: new model architectures load, among them
+  Flint, GLM-5-Next, DeepSeek-4.1, Mistral Large 4 and LFM3 (and their
+  multimodal parts with `.llama_mtmd`), and the CPU backend gains the tiled
+  matmul for MoE experts. whisper.cpp, Kokoro and the speaker module keep
+  building on the same shared ggml.
+- `oriel.chat` follows llama.cpp's new chat parsing: the parser the template
+  builds reads the reasoning and the tool calls the request asked for, so
+  replies with a `<think>` block, tool calls or both come back as before.
+- Hexagon (`-Dggml_hexagon_prebuilt`): rebuild `libggml-hexagon.so` and
+  `libggml-htp-v*.so` at the new commit; libraries from the old one don't
+  match Oriel's ggml.
+
 ## [0.20.7] — 2026-10-30
 
 ### Fixed

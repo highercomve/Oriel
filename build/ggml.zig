@@ -296,7 +296,6 @@ pub fn addGgml(
             "binary-ops.cpp",
             "ggml-cpu.cpp",
             "hbm.cpp",
-            "iqp.cpp",
             "ops.cpp",
             "repack.cpp",
             "traits.cpp",
@@ -304,6 +303,8 @@ pub fn addGgml(
             "vec.cpp",
             "amx/amx.cpp",
             "amx/mmq.cpp",
+            "tiled/tiled.cpp",
+            "tiled/tiled-kernel.cpp",
         },
         .flags = cpp_flags,
     });
@@ -858,6 +859,15 @@ const mtmd_sources = [_][]const u8{
     "models/youtuvl.cpp",
     "models/yasa2.cpp",
     "models/parakeet.cpp",
+    "models/lfm3a-gen.cpp",
+    "models/lfm3a.cpp",
+    "models/lfm3vl.cpp",
+    "models/ling3vl.cpp",
+    "models/muse-spark-audio.cpp",
+    "models/nemotron-omni.cpp",
+    "models/sensenova-u1.cpp",
+    "models/soprano.cpp",
+    "models/voxtral-rt.cpp",
 };
 
 const cuda_sources = [_][]const u8{
@@ -1004,6 +1014,9 @@ const cuda_sources = [_][]const u8{
     "template-instances/fattn-vec-instance-q4_0-q4_0.cu",
     "template-instances/fattn-vec-instance-q8_0-q8_0.cu",
     "template-instances/fattn-vec-instance-bf16-bf16.cu",
+    "conv3d.cu",
+    "gated-delta-net-mma.cu",
+    "top-k-mask.cu",
 };
 
 /// The FlashAttention K/V type combinations whose vec-kernel instances are
@@ -1087,6 +1100,13 @@ const llama_common_sources = [_][]const u8{
     "subproc.cpp",
     "trie.cpp",
     "unicode.cpp",
+    "file-lock.cpp",
+    "parsers/harmony-xml.cpp",
+    "parsers/k2-horizon.cpp",
+    "parsers/ling3.cpp",
+    "parsers/llm-jp-harmony.cpp",
+    "parsers/muse-spark.cpp",
+    "parsers/translate-gemma.cpp",
 };
 
 const llama_core_sources = [_][]const u8{
@@ -1122,6 +1142,7 @@ const llama_core_sources = [_][]const u8{
     "llama-vocab.cpp",
     "unicode.cpp",
     "unicode-data.cpp",
+    "llama-moe-cache.cpp",
 };
 
 const llama_model_sources = [_][]const u8{
@@ -1279,4 +1300,21 @@ const llama_model_sources = [_][]const u8{
     "models/talkie.cpp",
     "models/wavtokenizer-dec.cpp",
     "models/xverse.cpp",
+    "models/beam.cpp",
+    "models/clef.cpp",
+    "models/deepseek41.cpp",
+    "models/flint.cpp",
+    "models/gemma-embedding2.cpp",
+    "models/glm5-next.cpp",
+    "models/hrm-text.cpp",
+    "models/k2-horizon.cpp",
+    "models/kolibri1.cpp",
+    "models/lfm-base.cpp",
+    "models/lfm3.cpp",
+    "models/limite.cpp",
+    "models/maion-coder.cpp",
+    "models/mistral-large4.cpp",
+    "models/muse-spark.cpp",
+    "models/sensenova-u1.cpp",
+    "models/vllm-decision2.cpp",
 };
