@@ -1,10 +1,22 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.8, 0.20.7 and earlier.",
+.description = "Release notes for Oriel 0.20.9, 0.20.8 and earlier.",
 .date = .date("2026-11-01T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.9 · November 1, 2026]($heading.id('oriel-0-20-9-november-1-2026'))
+
+0.20.8 was tagged but not published: its CI failed on a whisper-only build.
+Its changes (below) ship in this release.
+
+## [Fixed]($heading.id('fixed-0-20-9'))
+
+- A build with whisper.cpp but without llama.cpp (`-Dwhisper`, `-Dkokoro`,
+  `-Dspeakers`) compiles again: the CPU backend's `iqp.cpp` and its newer tiled
+  matmul, and the CUDA kernels newer than whisper.cpp's ggml, are compiled from
+  whichever of the two ggml trees has them.
 
 # [Oriel 0.20.8 · November 1, 2026]($heading.id('oriel-0-20-8-november-1-2026'))
 

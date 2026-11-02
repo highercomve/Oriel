@@ -2,6 +2,18 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.9] — 2026-11-01
+
+0.20.8 was tagged but not published: its CI failed on a whisper-only build.
+Its changes (below) ship in this release.
+
+### Fixed
+
+- A build with whisper.cpp but without llama.cpp (`-Dwhisper`, `-Dkokoro`,
+  `-Dspeakers`) compiles again: the CPU backend's `iqp.cpp` and its newer tiled
+  matmul, and the CUDA kernels newer than whisper.cpp's ggml, are compiled from
+  whichever of the two ggml trees has them.
+
 ## [0.20.8] — 2026-11-01
 
 ### Changed

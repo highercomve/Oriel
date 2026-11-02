@@ -303,11 +303,18 @@ pub fn addGgml(
             "vec.cpp",
             "amx/amx.cpp",
             "amx/mmq.cpp",
-            "tiled/tiled.cpp",
-            "tiled/tiled-kernel.cpp",
         },
         .flags = cpp_flags,
     });
+    // The two ggml trees differ here: llama.cpp's (newer) replaced iqp.cpp
+    // with the tiled matmul, while whisper.cpp's (a whisper-only build)
+    // still has iqp.cpp. Each is compiled where it exists.
+    for ([_][]const u8{ "iqp.cpp", "tiled/tiled.cpp", "tiled/tiled-kernel.cpp" }) |name| {
+        const file = ggml_root.path(b, b.fmt("src/ggml-cpu/{s}", .{name}));
+        if (std.Io.Dir.cwd().access(b.graph.io, file.getPath(b), .{})) |_| {
+            oriel.addCSourceFile(.{ .file = file, .flags = cpp_flags });
+        } else |_| {}
+    }
 
     // Arch-specific CPU sources
     const target_arch = oriel.resolved_target.?.result.cpu.arch;
@@ -586,6 +593,9 @@ fn addCudaBackend(b: *std.Build, ggml_root: std.Build.LazyPath, opts: CudaOption
     const link = b.addSystemCommand(&.{ nvcc, "-shared", "-o" });
     const lib = link.addOutputFileArg("libggml-cuda.so");
     for (cuda_sources) |src| {
+        // Kernels newer than the ggml whisper.cpp ships (a whisper-only
+        // build) aren't in its tree: compiled where they exist.
+        std.Io.Dir.cwd().access(b.graph.io, ggml_root.path(b, b.fmt("src/ggml-cuda/{s}", .{src})).getPath(b), .{}) catch continue;
         const cc = b.addSystemCommand(&.{
             nvcc,                "-std=c++17",             "-O3",
             "-use_fast_math",    "-extended-lambda",       "-compress-mode=size",
