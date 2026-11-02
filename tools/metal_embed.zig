@@ -5,10 +5,13 @@
 //!     metal_embed <ggml/src dir> <out.s>
 //!
 //! For each `ggml-metal/kernels/<kind>.metal`: prepend kernels/common.h
-//! (and dequantize.h / quantize.h when the kernel includes them), drop the
-//! internal includes and `#pragma once`, inline ../ggml-common.h at its
-//! `__embed_ggml-common.h__` sentinel and ggml-metal-impl.h at its include,
-//! then emit `_ggml_metallib_<kind>_{start,end}` around the bytes.
+//! (and dequantize.h / quantize.h, fa_common.metal / fa_vec_common.metal
+//! when the kernel includes them), drop the internal includes and
+//! `#pragma once`, inline ../ggml-common.h at its `__embed_ggml-common.h__`
+//! sentinel and ggml-metal-impl.h at its include, then emit
+//! `_ggml_metallib_<kind>_{start,end}` around the bytes. The two fa_*common
+//! files are shared sources, not kernels (newer ggml; the ggml whisper.cpp
+//! ships has one fa.metal instead).
 
 const std = @import("std");
 
@@ -34,6 +37,13 @@ pub fn main(init: std.process.Init) !u8 {
     const k_common = try read(arena, io, &.{ src_dir, "ggml-metal", "kernels", "common.h" });
     const k_dequant = try read(arena, io, &.{ src_dir, "ggml-metal", "kernels", "dequantize.h" });
     const k_quant = try read(arena, io, &.{ src_dir, "ggml-metal", "kernels", "quantize.h" });
+    const shared: Shared = .{
+        .common = k_common,
+        .dequant = k_dequant,
+        .quant = k_quant,
+        .fa_common = read(arena, io, &.{ src_dir, "ggml-metal", "kernels", "fa_common.metal" }) catch null,
+        .fa_vec_common = read(arena, io, &.{ src_dir, "ggml-metal", "kernels", "fa_vec_common.metal" }) catch null,
+    };
 
     const kernels_path = try std.fs.path.join(arena, &.{ src_dir, "ggml-metal", "kernels" });
     var kernels = try cwd.openDir(io, kernels_path, .{ .iterate = true });
@@ -41,7 +51,9 @@ pub fn main(init: std.process.Init) !u8 {
     var names: std.ArrayList([]const u8) = .empty;
     var it = kernels.iterate();
     while (try it.next(io)) |e| {
-        if (e.kind == .file and std.mem.endsWith(u8, e.name, ".metal")) try names.append(arena, try arena.dupe(u8, e.name));
+        if (e.kind != .file or !std.mem.endsWith(u8, e.name, ".metal")) continue;
+        if (std.mem.eql(u8, e.name, "fa_common.metal") or std.mem.eql(u8, e.name, "fa_vec_common.metal")) continue;
+        try names.append(arena, try arena.dupe(u8, e.name));
     }
     std.mem.sort([]const u8, names.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
@@ -55,7 +67,7 @@ pub fn main(init: std.process.Init) !u8 {
     for (names.items) |name| {
         const kind = name[0 .. name.len - ".metal".len];
         const src = try read(arena, io, &.{ kernels_path, name });
-        const text = try embedText(arena, src, k_common, k_dequant, k_quant, ggml_common, impl);
+        const text = try embedText(arena, src, shared, ggml_common, impl);
         // Symbols must be C identifiers ('-' is not allowed).
         const sym = try arena.dupe(u8, kind);
         for (sym) |*ch| if (ch.* == '-') {
@@ -77,12 +89,25 @@ pub fn main(init: std.process.Init) !u8 {
     return 0;
 }
 
-/// The self-contained source of one kernel (see the file comment).
-fn embedText(a: std.mem.Allocator, src: []const u8, k_common: []const u8, k_dequant: []const u8, k_quant: []const u8, ggml_common: []const u8, impl: []const u8) ![]u8 {
+/// The kernels' shared sources: kernels/common.h always, the others when a
+/// kernel includes them (fa_*common: null where the ggml tree has none).
+const Shared = struct {
+    common: []const u8,
+    dequant: []const u8,
+    quant: []const u8,
+    fa_common: ?[]const u8 = null,
+    fa_vec_common: ?[]const u8 = null,
+};
+
+/// The self-contained source of one kernel (see the file comment), its
+/// shared sources in ggml's CMake order.
+fn embedText(a: std.mem.Allocator, src: []const u8, shared: Shared, ggml_common: []const u8, impl: []const u8) ![]u8 {
     var joined: std.Io.Writer.Allocating = .init(a);
-    try joined.writer.writeAll(k_common);
-    if (std.mem.indexOf(u8, src, "#include \"dequantize.h\"") != null) try joined.writer.writeAll(k_dequant);
-    if (std.mem.indexOf(u8, src, "#include \"quantize.h\"") != null) try joined.writer.writeAll(k_quant);
+    try joined.writer.writeAll(shared.common);
+    if (std.mem.indexOf(u8, src, "#include \"dequantize.h\"") != null) try joined.writer.writeAll(shared.dequant);
+    if (std.mem.indexOf(u8, src, "#include \"quantize.h\"") != null) try joined.writer.writeAll(shared.quant);
+    if (shared.fa_common) |t| if (std.mem.indexOf(u8, src, "#include \"fa_common.metal\"") != null) try joined.writer.writeAll(t);
+    if (shared.fa_vec_common) |t| if (std.mem.indexOf(u8, src, "#include \"fa_vec_common.metal\"") != null) try joined.writer.writeAll(t);
     try joined.writer.writeAll(src);
 
     var out: std.Io.Writer.Allocating = .init(a);
@@ -92,6 +117,8 @@ fn embedText(a: std.mem.Allocator, src: []const u8, k_common: []const u8, k_dequ
         if (std.mem.indexOf(u8, line, "#include \"common.h\"") != null or
             std.mem.indexOf(u8, line, "#include \"dequantize.h\"") != null or
             std.mem.indexOf(u8, line, "#include \"quantize.h\"") != null or
+            std.mem.indexOf(u8, line, "#include \"fa_common.metal\"") != null or
+            std.mem.indexOf(u8, line, "#include \"fa_vec_common.metal\"") != null or
             std.mem.indexOf(u8, line, "#pragma once") != null) continue;
         if (!first) try out.writer.writeByte('\n');
         first = false;
@@ -110,14 +137,29 @@ test embedText {
     const a = std.testing.allocator;
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
+    const shared: Shared = .{
+        .common = "#pragma once\n#include \"ggml-metal-impl.h\"\ncommon;\n",
+        .dequant = "#pragma once\n__embed_ggml-common.h__\ndequant;\n",
+        .quant = "quant;\n",
+        .fa_common = "#pragma once\nfa;\n",
+        .fa_vec_common = "fa_vec;\n",
+    };
     const got = try embedText(
         arena.allocator(),
         "#include \"common.h\"\n#include \"dequantize.h\"\nkernel void k();\n",
-        "#pragma once\n#include \"ggml-metal-impl.h\"\ncommon;\n",
-        "#pragma once\n__embed_ggml-common.h__\ndequant;\n",
-        "quant;\n",
+        shared,
         "GGML_COMMON",
         "IMPL",
     );
     try std.testing.expectEqualStrings("IMPL\ncommon;\nGGML_COMMON\ndequant;\nkernel void k();\n", got);
+    // A flash-attention kernel: fa_common.metal inlined after dequantize.h,
+    // its include gone; fa_vec_common.metal not included, not added.
+    const fa = try embedText(
+        arena.allocator(),
+        "#include \"common.h\"\n#include \"dequantize.h\"\n#include \"fa_common.metal\"\nkernel void fa_f16();\n",
+        shared,
+        "GGML_COMMON",
+        "IMPL",
+    );
+    try std.testing.expectEqualStrings("IMPL\ncommon;\nGGML_COMMON\ndequant;\nfa;\nkernel void fa_f16();\n", fa);
 }

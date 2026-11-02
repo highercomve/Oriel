@@ -2,6 +2,17 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.10] — 2026-11-01
+
+### Fixed
+
+- llama.cpp on Metal (macOS, iOS): creating a context failed
+  (`ContextFailed`) with 0.20.8's llama.cpp. Its flash-attention kernels
+  moved into `fa_*.metal` files that include two shared sources,
+  `fa_common.metal` and `fa_vec_common.metal`; the build now inlines them
+  into each kernel that includes them, as ggml's CMake does, instead of
+  embedding them as kernels of their own.
+
 ## [0.20.9] — 2026-11-01
 
 0.20.8 was tagged but not published: its CI failed on a whisper-only build.
