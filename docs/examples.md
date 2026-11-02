@@ -158,8 +158,7 @@ and logs the frame rate every 2 s; `BREAKOUT_MODE` is `js` or `zig`.
 [`examples/system-monitor`](https://github.com/highercomve/Oriel/tree/main/examples/system-monitor):
 a live system monitor. The page is the same everywhere; a sampler per OS
 fills it, with no subprocesses: `/proc` and `/sys` on Linux, NT and Win32
-calls on Windows, Mach, libproc and sysctl on macOS. It renders in the
-WebView or the native renderer, and hides what an OS doesn't report.
+calls on Windows, Mach, libproc and sysctl on macOS. It renders by default in the Oriel renderer using compiled `.oriel` templates ([Oriel UI reference](oriel-ui-reference.md)), as well as in the native web renderer and WebView, and hides what an OS doesn't report.
 
 - **Summary tiles**: CPU, memory, processes and threads, uptime, each with a
   60-sample sparkline.
@@ -181,8 +180,9 @@ renderer build uses less memory and CPU; the numbers and method are on the
 
 ```sh
 cd examples/system-monitor
-oriel run -Dnative_ui     # native renderer
-oriel run                 # WebView
+oriel run                 # Oriel renderer (.oriel templates, default)
+oriel run -Dnative_ui     # native web renderer
+oriel run -Drenderer=webview # WebView
 ```
 
 ![The system monitor on the native renderer: CPU, memory, processes and uptime tiles above a sortable process table](../site/assets/screenshots/system-monitor.png)

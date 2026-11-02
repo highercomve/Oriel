@@ -12,7 +12,7 @@ exactly: what each element becomes, which CSS applies, which events fire,
 which browser APIs exist, and where the platforms differ. Anything not
 listed here is not supported; a page that uses it still runs, and that part
 is ignored. The last section, [Not supported]($link.ref('not-supported')),
-names the gaps apps run into most.
+names the gaps apps run into most. For interfaces written in compiled `.oriel` templates directly from Zig without JavaScript, see the [Oriel UI reference]($link.page('docs/oriel-ui-reference')).
 
 The renderer matches each platform's own web view where it can: controls
 are sized and lettered as WebKitGTK draws them on Linux, WebView2 on
@@ -537,6 +537,7 @@ iPad it gets a scene of its own.
 # [Related]($heading.id('related'))
 
 - [Native renderer]($link.page('docs/native-renderer')): how the renderer works, its build options and `oriel.canvas`.
+- [Oriel UI reference]($link.page('docs/oriel-ui-reference')): reference for compiled .oriel templates and the pure-Zig Oriel renderer.
 - [Drag and drop]($link.page('docs/drag-and-drop')): drops into the page.
 - [Store]($link.page('docs/store')): persistent key-value storage on every platform.
 - [Security]($link.page('docs/security')): the CSP that governs `eval` and inline handlers.

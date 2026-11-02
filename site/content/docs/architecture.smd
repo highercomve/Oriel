@@ -189,4 +189,5 @@ targets.
 - [Concepts]($link.page('docs/concepts')): the process, the bridge, commands and events.
 - [Native renderer]($link.page('docs/native-renderer')): the native renderer's front end in detail.
 - [Native UI reference]($link.page('docs/native-ui-reference')): what the native renderer supports.
+- [Oriel UI reference]($link.page('docs/oriel-ui-reference')): what the Oriel renderer and .oriel templates support.
 - [Modules]($link.page('docs/modules')): turning modules on, and how they're built.

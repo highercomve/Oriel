@@ -186,4 +186,5 @@ targets.
 - [Concepts](concepts.md): the process, the bridge, commands and events.
 - [Native renderer](native-renderer.md): the native renderer's front end in detail.
 - [Native UI reference](native-ui-reference.md): what the native renderer supports.
+- [Oriel UI reference](oriel-ui-reference.md): what the Oriel renderer and .oriel templates support.
 - [Modules](modules.md): turning modules on, and how they're built.

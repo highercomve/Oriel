@@ -77,6 +77,7 @@ The same pages as the website, https://oriel.foreachdeveloper.com/docs/.
 
 - [Native renderer](native-renderer.md): Your HTML, CSS and JavaScript drawn with the platform's own views instead of a web view: one process, a fraction of the memory, the same web files.
 - [Native UI reference](native-ui-reference.md): Every HTML element, CSS selector, property, unit, event and browser API the native renderer supports, how each platform draws it, and what it doesn't support.
+- [Oriel UI reference](oriel-ui-reference.md): Every element, attribute, style rule, media condition, and Zig API the Oriel renderer supports, how .oriel templates compile, and how applications drive them.
 - [Drag and drop](drag-and-drop.md): Files, text and links dragged from other apps into the page, with the browser's DragEvent, DataTransfer and File API, in both renderers.
 
 ## Reference

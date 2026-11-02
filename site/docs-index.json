@@ -6,6 +6,6 @@
   { "section": "Native code", "pages": ["platform-hooks", "extensions"] },
   { "section": "Platforms", "pages": ["desktop", "android", "ios"] },
   { "section": "Ship", "pages": ["building", "packaging", "signing", "updater"] },
-  { "section": "Native UI", "pages": ["native-renderer", "native-ui-reference", "drag-and-drop"] },
+  { "section": "Native UI", "pages": ["native-renderer", "native-ui-reference", "oriel-ui-reference", "drag-and-drop"] },
   { "section": "Reference", "pages": ["modules", "comparison"] }
 ]

@@ -621,6 +621,7 @@ an app is built:
 
 - [Architecture](architecture.md): what the renderer shares with the others, layer by layer.
 - [Native UI reference](native-ui-reference.md): every element, CSS property, event and API the renderer supports.
+- [Oriel UI reference](oriel-ui-reference.md): reference for the pure-Zig Oriel renderer and compiled .oriel templates.
 - [Drag and drop](drag-and-drop.md): files and text dropped into the page.
 - [Commands](commands.md): how the page calls Zig, the same in both renderers.
 - [Security](security.md): the CSP and capabilities the renderer applies.

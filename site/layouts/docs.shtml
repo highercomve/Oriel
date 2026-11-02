@@ -65,6 +65,7 @@
 				<h4>Native UI</h4>
 				<a href="$site.page('docs/native-renderer').link()">Native renderer</a>
 				<a href="$site.page('docs/native-ui-reference').link()">Native UI reference</a>
+				<a href="$site.page('docs/oriel-ui-reference').link()">Oriel UI reference</a>
 				<a href="$site.page('docs/drag-and-drop').link()">Drag and drop</a>
 				<h4>Reference</h4>
 				<a href="$site.page('docs/modules').link()">Modules</a>
