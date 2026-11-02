@@ -2,6 +2,18 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.11] — 2026-11-02
+
+### Fixed
+
+- llama.cpp with Vulkan on Windows: linking failed with undefined
+  `ggml_vk_*` symbols since 0.20.8's llama.cpp, which moved the Vulkan
+  backend's buffer and debug code out of `ggml-vulkan.cpp` into
+  `ggml-vulkan-buffers.cpp` and `ggml-vulkan-debug.cpp`. Both are now
+  compiled, into the executable on Windows and into `libggml-vulkan.so`
+  elsewhere (where the missing symbols only showed up when the library was
+  loaded).
+
 ## [0.20.10] — 2026-11-01
 
 ### Fixed

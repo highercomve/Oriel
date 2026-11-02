@@ -695,6 +695,17 @@ fn addVulkanShaders(b: *std.Build, m: *std.Build.Module, ggml_root: std.Build.La
     }
 }
 
+/// The Vulkan backend's sources besides ggml-vulkan.cpp: llama.cpp split
+/// buffers and debug helpers out of it (October 2026). A ggml tree from
+/// before the split (whisper's) doesn't have them.
+fn addVulkanExtraSources(b: *std.Build, m: *std.Build.Module, vk_dir: std.Build.LazyPath, flags: []const []const u8) void {
+    for ([_][]const u8{ "ggml-vulkan-buffers.cpp", "ggml-vulkan-debug.cpp" }) |name| {
+        const file = vk_dir.path(b, name);
+        std.Io.Dir.cwd().access(b.graph.io, file.getPath(b), .{}) catch continue;
+        m.addCSourceFile(.{ .file = file, .flags = flags });
+    }
+}
+
 /// Windows: ggml-vulkan compiled into the executable. A DLL couldn't take
 /// ggml's symbols from the executable (no rdynamic), and linking vulkan-1.lib
 /// would keep the app from starting without a Vulkan loader: instead
@@ -710,6 +721,7 @@ fn addVulkanStatic(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     oriel.addIncludePath(ggml_root.path(b, "src/ggml-vulkan"));
     const flags = std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, defines.items }) catch @panic("OOM");
     oriel.addCSourceFile(.{ .file = ggml_root.path(b, "src/ggml-vulkan/ggml-vulkan.cpp"), .flags = flags });
+    addVulkanExtraSources(b, oriel, ggml_root.path(b, "src/ggml-vulkan"), flags);
     addVulkanShaders(b, oriel, ggml_root, sg.gen, opts.glslc, flags);
     const loader = if (oriel.resolved_target.?.result.abi.isAndroid()) "src/modules/ggml_vulkan_loader_android.c" else "src/modules/ggml_vulkan_loader.c";
     oriel.addCSourceFile(.{ .file = b.path(loader), .flags = &.{"-std=c11"} });
@@ -791,6 +803,7 @@ fn addVulkanBackend(
         defines.items,
     }) catch @panic("OOM");
     m.addCSourceFile(.{ .file = vk_dir.path(b, "ggml-vulkan.cpp"), .flags = flags });
+    addVulkanExtraSources(b, m, vk_dir, flags);
     // The header must exist before any source that includes it compiles.
     lib.step.dependOn(&sg.header.step);
     addVulkanShaders(b, m, ggml_root, sg.gen, opts.glslc, flags);
