@@ -698,9 +698,11 @@ fn gitRef(b: *std.Build) ?[]const u8 {
     return null;
 }
 
-/// The ggml GPU backends built as loadable libraries (named lazy paths of the
-/// Oriel dependency; installed as `<name>.so` next to the executable).
-pub const gpu_backend_libraries = [_][]const u8{ "libggml-cuda", "libggml-vulkan" };
+/// The ggml backends built as loadable libraries (named lazy paths of the
+/// Oriel dependency; installed as `<name>.so` next to the executable): the
+/// GPU backends, and the CPU's x86-64-v3 kernels (build/ggml.zig
+/// `addCpuVariant`).
+pub const gpu_backend_libraries = [_][]const u8{ "libggml-cuda", "libggml-vulkan", "libggml-cpu-x64v3" };
 
 /// `-Dggml_cuda`: build the CUDA backend for llama/whisper (Linux, needs the
 /// CUDA toolkit). `-Dcuda_path` defaults to $CUDA_PATH or /opt/cuda,
@@ -2063,8 +2065,8 @@ pub fn addApp(b: *std.Build, oriel_dep: *std.Build.Dependency, options: AppOptio
     }
 
     // -Dggml_cuda / -Dggml_vulkan: ship libggml-cuda.so / libggml-vulkan.so
-    // next to the executable. They resolve ggml's symbols from the
-    // executable, so those must be exported.
+    // next to the executable, and on x86-64 Linux libggml-cpu-x64v3.so. They
+    // resolve ggml's symbols from the executable, so those must be exported.
     for (gpu_backend_libraries) |name| {
         const lib = oriel_dep.builder.named_lazy_paths.get(name) orelse continue;
         b.getInstallStep().dependOn(&b.addInstallFileWithDir(lib, .bin, b.fmt("{s}.so", .{name})).step);

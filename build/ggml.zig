@@ -276,10 +276,23 @@ pub fn addGgml(
             "ggml-threading.cpp",
             "gguf.cpp",
             "ggml-backend-dl.cpp",
-            "ggml-backend-reg.cpp",
         },
         .flags = cpp_flags,
     });
+    // x86-64 Linux with a baseline CPU (a build that starts anywhere): the
+    // registry adds the CPU backend `oriel_ggml_cpu_reg` picks, the v3
+    // kernels of libggml-cpu-x64v3.so when this CPU runs them
+    // (src/modules/ggml_cpu_variant.c).
+    const cpu_variant = cpuVariant(oriel.resolved_target.?);
+    const reg_flags = if (cpu_variant)
+        std.mem.concat(b.allocator, []const u8, &.{ cpp_flags, &.{"-Dggml_backend_cpu_reg=oriel_ggml_cpu_reg"} }) catch @panic("OOM")
+    else
+        cpp_flags;
+    oriel.addCSourceFile(.{ .file = ggml_root.path(b, "src/ggml-backend-reg.cpp"), .flags = reg_flags });
+    if (cpu_variant) {
+        oriel.addCSourceFile(.{ .file = b.path("src/modules/ggml_cpu_variant.c"), .flags = c_flags });
+        b.addNamedLazyPath("libggml-cpu-x64v3", addCpuVariant(b, oriel, ggml_root, write_files.getDirectory()));
+    }
 
     // GGML CPU backend sources
     oriel.addCSourceFiles(.{
@@ -756,6 +769,101 @@ fn addOpenClStatic(b: *std.Build, oriel: *std.Build.Module, ggml_root: std.Build
     } }) catch @panic("OOM");
     oriel.addCSourceFiles(.{ .root = cl_dir, .files = &.{ "ggml-opencl.cpp", "cl-program-cache.cpp" }, .flags = flags });
     oriel.addCSourceFile(.{ .file = b.path("src/modules/ggml_opencl_loader.c"), .flags = &.{"-std=c11"} });
+}
+
+/// Whether to build libggml-cpu-x64v3.so: x86-64 Linux (not Android) with
+/// a CPU model short of AVX2 — the baseline Oriel builds for, so the app
+/// starts on any x86-64 CPU. A build for a newer CPU has the fast kernels
+/// already.
+fn cpuVariant(target: std.Build.ResolvedTarget) bool {
+    const t = target.result;
+    if (t.cpu.arch != .x86_64 or t.os.tag != .linux or t.abi.isAndroid()) return false;
+    return !std.Target.x86.featureSetHas(t.cpu.features, .avx2);
+}
+
+/// ggml's CPU backend compiled for x86-64-v3 (AVX2, FMA, F16C, BMI2), with
+/// llamafile's matrix kernels and weight repacking, as a loadable library:
+/// ggml's GGML_CPU_ALL_VARIANTS idea for one variant. Its score
+/// (cpu-feats.cpp) checks the CPU before anything runs. ggml's base symbols
+/// come from the executable (rdynamic), like the GPU backends'; its own are
+/// hidden, so it never calls the executable's baseline copy of them.
+/// Returns its path.
+fn addCpuVariant(
+    b: *std.Build,
+    oriel: *std.Build.Module,
+    ggml_root: std.Build.LazyPath,
+    version_headers: std.Build.LazyPath,
+) std.Build.LazyPath {
+    var query = oriel.resolved_target.?.query;
+    query.cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 };
+    query.cpu_features_add = .empty;
+    query.cpu_features_sub = .empty;
+    const lib = b.addLibrary(.{
+        .name = "ggml-cpu-x64v3",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .target = b.resolveTargetQuery(query),
+            .optimize = oriel.optimize.?,
+            .link_libc = true,
+            .link_libcpp = true,
+        }),
+    });
+    lib.linker_allow_shlib_undefined = true;
+    const m = lib.root_module;
+    const cpu_dir = ggml_root.path(b, "src/ggml-cpu");
+    m.addIncludePath(version_headers);
+    m.addIncludePath(ggml_root.path(b, "include"));
+    m.addIncludePath(ggml_root.path(b, "src"));
+    m.addIncludePath(cpu_dir);
+    m.addIncludePath(cpu_dir.path(b, "amx"));
+    const opt: []const []const u8 = if (oriel.optimize == .Debug or oriel.optimize == null) &.{"-O2"} else &.{};
+    const common: []const []const u8 = &.{
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=600",
+        "-DNDEBUG",
+        "-fno-sanitize=undefined",
+        "-fvisibility=hidden",
+        "-fvisibility-inlines-hidden",
+        // ggml's base API from the executable; the CPU backend's own
+        // (GGML_BACKEND_API) stays hidden.
+        "-DGGML_SHARED",
+        "-DGGML_BACKEND_DL",
+        "-DGGML_USE_LLAMAFILE",
+        "-DGGML_USE_CPU_REPACK",
+        // What cpu-feats.cpp's score requires of the CPU.
+        "-DGGML_SSE42",
+        "-DGGML_AVX",
+        "-DGGML_AVX2",
+        "-DGGML_FMA",
+        "-DGGML_F16C",
+        "-DGGML_BMI2",
+    };
+    const c_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, common, &.{"-std=c11"} }) catch @panic("OOM");
+    const cpp_flags = std.mem.concat(b.allocator, []const u8, &.{ opt, common, &.{"-std=c++17"} }) catch @panic("OOM");
+    m.addCSourceFiles(.{ .root = cpu_dir, .files = &.{ "ggml-cpu.c", "quants.c", "arch/x86/quants.c" }, .flags = c_flags });
+    m.addCSourceFiles(.{ .root = cpu_dir, .files = &.{
+        "binary-ops.cpp",
+        "ggml-cpu.cpp",
+        "hbm.cpp",
+        "ops.cpp",
+        "repack.cpp",
+        "traits.cpp",
+        "unary-ops.cpp",
+        "vec.cpp",
+        "amx/amx.cpp",
+        "amx/mmq.cpp",
+        "arch/x86/repack.cpp",
+        "arch/x86/cpu-feats.cpp",
+        "llamafile/sgemm.cpp",
+    }, .flags = cpp_flags });
+    for ([_][]const u8{ "iqp.cpp", "tiled/tiled.cpp", "tiled/tiled-kernel.cpp" }) |name| {
+        const file = cpu_dir.path(b, name);
+        if (std.Io.Dir.cwd().access(b.graph.io, file.getPath(b), .{})) |_| {
+            m.addCSourceFile(.{ .file = file, .flags = cpp_flags });
+        } else |_| {}
+    }
+    m.addCSourceFile(.{ .file = b.path("src/modules/ggml_cpu_variant_exports.cpp"), .flags = cpp_flags });
+    return lib.getEmittedBin();
 }
 
 /// Generate the Vulkan shaders (one cached step per .comp source, as ggml's

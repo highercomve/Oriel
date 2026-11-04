@@ -2,6 +2,22 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.12] — 2026-11-04
+
+### Added
+
+- ggml's CPU kernels for x86-64-v3 (AVX2, FMA, F16C) on x86-64 Linux:
+  `libggml-cpu-x64v3.so`, built and shipped next to the executable like the
+  GPU backends, with llamafile's matrix kernels and weight repacking. The
+  registry takes it instead of the built-in baseline kernels when the CPU
+  runs it (ggml's feature score), so a build still starts on any x86-64
+  CPU. On a Ryzen 7 7800X3D, Qwen3.5 2B on the CPU reads a prompt at
+  428 tok/s instead of 34 and generates at 39 tok/s instead of 23.
+  `ORIEL_GGML_CPU_BASELINE=1` keeps the built-in kernels. Apps that make
+  their own threadpool should take `ggml_threadpool_new` from the CPU
+  backend (`ggml_backend_reg_get_proc_address`): the executable's copy
+  runs the baseline kernels on every worker thread.
+
 ## [0.20.11] — 2026-11-02
 
 ### Fixed

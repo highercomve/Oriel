@@ -107,7 +107,7 @@ its own `package-<format>` step. When the target has no formats
 
 What enters every format is resolved once into a *payload*: the app's
 executable, `.package.contents` (extra executables and files) and Oriel's
-runtime libraries (`libggml-cuda.so`, `libggml-vulkan.so`, `espeak-ng-data/`
+runtime libraries (`libggml-cuda.so`, `libggml-vulkan.so`, `libggml-cpu-x64v3.so`, `espeak-ng-data/`
 when built with them). Linux packages get stripped copies; `zig-out/bin`
 keeps the originals.
 

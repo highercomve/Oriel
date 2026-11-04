@@ -202,7 +202,8 @@ pub const Contents = struct {
     files: []const File = &.{},
     /// Oriel's runtime libraries and data the app was built with
     /// (libggml-cuda.so with -Dggml_cuda, libggml-vulkan.so with
-    /// -Dggml_vulkan, espeak-ng-data/ with -Dkokoro). Default on. A `files`
+    /// -Dggml_vulkan, libggml-cpu-x64v3.so on x86-64 Linux, espeak-ng-data/
+    /// with -Dkokoro). Default on. A `files`
     /// entry of the same path replaces it.
     runtime_libraries: bool = true,
     /// Strip debug info and symbols from ELF executables/libraries in packages
@@ -266,7 +267,7 @@ fn resolvePayload(
     }
     files.appendSlice(b.allocator, contents.files) catch @panic("OOM");
     if (contents.runtime_libraries) {
-        for ([_][]const u8{ "libggml-cuda", "libggml-vulkan" }) |lib_name| {
+        for (@import("../build.zig").gpu_backend_libraries) |lib_name| {
             const lib = oriel_dep.builder.named_lazy_paths.get(lib_name) orelse continue;
             const name = b.fmt("{s}.so", .{lib_name});
             // The app ships its own copy: keep that one.

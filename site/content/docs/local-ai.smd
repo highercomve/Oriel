@@ -173,6 +173,18 @@ returns the number of GPU devices; 0 means the CPU.
   cuBLAS, no Vulkan loader) is logged and skipped. CUDA stays a separate
   library because nvcc's host code uses GCC's libstdc++ and Zig builds C++
   against libc++; the ggml backend interface between them is plain C.
+- **CPU (x86-64 Linux):** Oriel builds for baseline x86-64 so an app
+  starts on any CPU, and ggml's CPU kernels would be baseline too.
+  `libggml-cpu-x64v3.so`, installed and packaged like the GPU libraries,
+  holds the same kernels compiled for x86-64-v3 (AVX2, FMA, F16C) with
+  llamafile's matrix kernels and weight repacking. ggml's registry takes it
+  in place of the built-in kernels when its score says this CPU runs it:
+  on a Ryzen 7 7800X3D, Qwen3.5 2B reads a prompt ~12x and generates ~1.7x
+  faster on the CPU, which also speeds up the CPU half of a split model.
+  `ORIEL_GGML_CPU_BASELINE=1` keeps the built-in kernels. An app that makes
+  its own threadpool takes `ggml_threadpool_new` from the CPU backend
+  (`ggml_backend_reg_get_proc_address`): the executable's copy would run
+  the baseline kernels on every worker thread.
 - **Windows:** Vulkan is compiled into the executable (a DLL couldn't take
   ggml's symbols from it). The executable doesn't link `vulkan-1.lib`; `load`
   opens `vulkan-1.dll` from System32 (`src/modules/ggml_vulkan_loader.c`),
@@ -586,7 +598,7 @@ collide.
 
 | Platform | Files |
 |---|---|
-| Linux | `libggml-cuda.so`, `libggml-vulkan.so` next to the executable (`zig-out/bin`, the deb/rpm's `/usr/lib/<app>/`, the AppImage), when built |
+| Linux | `libggml-cuda.so`, `libggml-vulkan.so`, and on x86-64 `libggml-cpu-x64v3.so` next to the executable (`zig-out/bin`, the deb/rpm's `/usr/lib/<app>/`, the AppImage), when built |
 | Windows | nothing extra: Vulkan is in the `.exe` |
 | macOS, iOS | nothing extra: Metal is in the executable |
 | Android | everything in `liboriel.so`; with `-Dggml_hexagon_prebuilt`, `libggml-hexagon.so`, `libggml-htp-v*.so` and the `libggml-base.so` stub in the APK |
