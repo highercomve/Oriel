@@ -2,6 +2,17 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.13] — 2026-11-05
+
+### Fixed
+
+- Linux tray: a window the tray icon opens comes forward on GNOME and KDE.
+  The tray now takes the activation token the tray host sends for the click
+  (`ProvideXdgActivationToken`) and the next window presented spends it;
+  before, GTK asked for a token of its own, tied to no input, which those
+  compositors refuse. A later launch's `XDG_ACTIVATION_TOKEN` already
+  reached the running instance through GTK.
+
 ## [0.20.12] — 2026-11-04
 
 ### Added

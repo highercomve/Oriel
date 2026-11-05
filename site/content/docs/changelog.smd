@@ -1,10 +1,21 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.12, 0.20.11 and earlier.",
-.date = .date("2026-11-04T00:00:00"),
+.description = "Release notes for Oriel 0.20.13, 0.20.12 and earlier.",
+.date = .date("2026-11-05T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.13 · November 5, 2026]($heading.id('oriel-0-20-13-november-5-2026'))
+
+## [Fixed]($heading.id('fixed-0-20-13'))
+
+- Linux tray: a window the tray icon opens comes forward on GNOME and KDE.
+  The tray now takes the activation token the tray host sends for the click
+  (`ProvideXdgActivationToken`) and the next window presented spends it;
+  before, GTK asked for a token of its own, tied to no input, which those
+  compositors refuse. A later launch's `XDG_ACTIVATION_TOKEN` already
+  reached the running instance through GTK.
 
 # [Oriel 0.20.12 · November 4, 2026]($heading.id('oriel-0-20-12-november-4-2026'))
 

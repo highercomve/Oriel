@@ -38,6 +38,7 @@ const item_iface = "org.kde.StatusNotifierItem";
 const menu_iface = "com.canonical.dbusmenu";
 
 const common = @import("common.zig");
+const activation = @import("../../platform/linux/activation.zig");
 
 pub const MenuItem = common.MenuItem;
 pub const Icon = common.Icon;
@@ -326,7 +327,13 @@ pub const Tray = struct {
         const method = std.mem.span(method_z);
 
         if (std.mem.eql(u8, iface, item_iface)) {
-            if (std.mem.eql(u8, method, "Activate") or std.mem.eql(u8, method, "SecondaryActivate")) {
+            // The host sends a token for the click before Activate, so the
+            // window that opens can come forward (GNOME, KDE).
+            if (std.mem.eql(u8, method, "ProvideXdgActivationToken")) {
+                const token = params.getChildValue(0);
+                defer token.unref();
+                activation.setPending(token.getString(null));
+            } else if (std.mem.eql(u8, method, "Activate") or std.mem.eql(u8, method, "SecondaryActivate")) {
                 if (self.on_activate) |f| f() else if (oriel.App.getWindow("main")) |w| w.toggle();
             }
             invocation.returnValue(null); // ContextMenu/Scroll: nothing to do
@@ -475,6 +482,7 @@ const introspection_xml =
     \\  <method name="ContextMenu"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
     \\  <method name="Activate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
     \\  <method name="SecondaryActivate"><arg name="x" type="i" direction="in"/><arg name="y" type="i" direction="in"/></method>
+    \\  <method name="ProvideXdgActivationToken"><arg name="token" type="s" direction="in"/></method>
     \\  <method name="Scroll"><arg name="delta" type="i" direction="in"/><arg name="orientation" type="s" direction="in"/></method>
     \\  <signal name="NewTitle"/>
     \\  <signal name="NewIcon"/>
