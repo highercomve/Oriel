@@ -4,13 +4,20 @@ Notable changes in Oriel releases.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `Commands.inline_commands` for quick sync commands that run inside
+  the WebView callback without a UI queue hop. They must not open windows or
+  dialogs, run nested event loops, or close/navigate the calling window.
+
 ### Changed
 
 - `App.spawn` reports `WorkerPoolBusy` when its worker queue is full;
   `AppNotRunning` now means the pool is unavailable or stopped.
 - WebView bridges share one security and command dispatch pipeline, with
   platform transports preserving stale-reply checks. Sync web commands
-  now consistently run from the UI queue, including on Linux.
+  now consistently run from the UI queue, including on Linux, unless opted
+  into `inline_commands`.
 - **Breaking:** `oriel.store.Store.get` and `Store.getString` take an
   allocator and return owned copies (`std.json.Parsed(std.json.Value)` and
   `[]u8`) copied under the store's mutex instead of borrowed slices.

@@ -122,11 +122,18 @@ flowchart TB
   the tray and menus may only be touched there. Commands run there unless
   they are listed in `async_commands`, so a slow sync command freezes the
   UI.
-  Web commands are queued on the UI loop before execution on every
-  platform, rather than running inside the WebView's message callback.
+  By default, sync WebView commands are queued on the UI loop before
+  execution on every platform, after the message callback returns.
   A command may pump UI messages (a dialog or opening a window) or close
   its calling window; WebView2 in particular forbids nested message loops
-  inside its callback. Events emitted by the command precede its reply.
+  inside its callback. Quick commands can opt into running directly inside
+  the callback with `pub const inline_commands = .{"echo"};` in `Commands`.
+  They must not open windows or dialogs, run a nested event loop, or close
+  or navigate their own window: closing the calling window inside its
+  callback is unsafe. Every listed name must be a command and must not also
+  appear in `async_commands` (compile errors otherwise). Security checks
+  still precede execution. Native-renderer sync commands already run inline.
+  Events emitted by the command precede its reply.
 - **The worker pool** (`src/core/ThreadPool.zig`) has one thread per CPU,
   at least 2 and at most 16, and at most 1024 queued tasks. It runs async
   commands and `App.spawn` jobs; replies go back to the main thread.

@@ -119,8 +119,9 @@ app's commands to `ipc.dispatchRequest` (`src/core/ipc.zig`).
 (an `inline for` over `Commands`' declarations, so there is no table to
 register), fills each parameter (the allocator, the `std.Io`, the argument
 value parsed from `args` with `std.json`), calls it and serializes the
-result with `std.json.Stringify`. A sync command runs right there on the
-main thread. A command named in `async_commands` is copied into a job with
+result with `std.json.Stringify`. A sync WebView command is queued on the
+main thread after the message callback returns, unless it opts into
+`inline_commands` (see below). A command named in `async_commands` is copied into a job with
 its own arena and posted to the worker pool (`src/core/ThreadPool.zig`);
 its reply is queued back to the main thread.
 
@@ -161,6 +162,32 @@ pub const Commands = struct {
 ```
 
 A name in `async_commands` that isn't a command is a compile error.
+
+### A quick command inside the WebView callback
+
+```zig
+pub const Commands = struct {
+    pub const inline_commands = .{"echo"};
+
+    pub fn echo(_: std.mem.Allocator, args: struct { text: []const u8 }) []const u8 {
+        return args.text;
+    }
+};
+```
+
+An `inline_commands` command runs immediately on the UI thread inside the
+WebView's message callback, avoiding the UI queue hop. It must be quick and
+must not open windows or dialogs, run a nested event loop, or close or
+navigate its own window. WebView2 forbids nested message loops inside its
+message handler; closing the calling window inside its callback is unsafe.
+Token, isolation and capability checks still run before the command.
+Other sync commands remain queued, so they may use dialogs and window APIs.
+The native renderer already runs sync commands inline; this declaration does
+not change their execution there.
+
+Each listed name must be a command. A name in both `async_commands` and
+`inline_commands` is a compile error: a worker command cannot also run inside
+the UI callback.
 
 ### A readable error for the page
 
@@ -250,13 +277,14 @@ doesn't compile the whole app a second time for the bindings.
 
 Every `pub fn` of the struct passed as `App.Api.commands` is a command named
 after the function. Other declarations (constants, non-`pub` functions) are
-ignored, except `async_commands`.
+ignored, except `async_commands` and `inline_commands`.
 
 | Rule | Detail |
 |---|---|
 | Parameters | Any order. `std.mem.Allocator`: the call's arena. `std.Io`: the app's `std.Io` (the one `oriel.main` got). At most one other parameter: the arguments, parsed from `args`. More than one is a compile error ("commands can have at most one arguments type"); a parameter without a concrete type is too. |
 | Return | Any type `std.json.Stringify` can write, or an error union of one. `void` returns `null`. |
 | `pub const async_commands = .{ "a", "b" }` | These run on the worker pool. Each name must be a `pub fn` (compile error otherwise). |
+| `pub const inline_commands = .{ "a", "b" }` | Quick sync commands run inside the WebView callback. Each name must be a `pub fn` and must not be in `async_commands` (compile error otherwise). No dialogs, window opening, nested event loops, or closing/navigating the calling window. |
 | Name collisions | A name the bridge handles first (`open_external`, `events:ready`, `oriel:window:*`, ...) never reaches `Commands`. Zig identifiers can't contain `:`, so only `open_external` could clash. |
 
 ### Arguments and results as JSON
@@ -301,7 +329,7 @@ on the main thread after the reply.
 
 | What | Thread |
 |---|---|
-| A sync command | The main (UI) thread; the UI waits for it. |
+| A sync command | The main (UI) thread; the UI waits for it. WebView commands are queued after the message callback, unless listed in `inline_commands`. |
 | A command in `async_commands` | A worker-pool thread. The pool has one thread per CPU (at least 2, at most 16) and holds at most 1024 waiting tasks; beyond that the call fails with `WorkerPoolBusy`. |
 | `oriel.extensions.call`, `oriel.systemAi` calls, `oriel.camera.capturePhoto` from the page | Always a worker (they wait on native code or the user). |
 | `events.emit`, `events.emitTo` | Any thread. On the main thread the event is delivered at once; from others it is queued to the main thread, in order. |

@@ -14,6 +14,9 @@
 //!
 //! Commands can optionally run asynchronously off the main thread by listing them
 //! in `pub const async_commands = .{ "cmd1", ... };`.
+//! Quick sync commands may opt into the WebView callback with
+//! `pub const inline_commands = .{ "cmd1", ... };`. They must not open windows
+//! or dialogs, pump a nested event loop, or close/navigate their own window.
 //! Note on cancellation: command cancellation is currently out of scope.
 
 const std = @import("std");
@@ -234,6 +237,7 @@ test tokenValid {
 
 /// Check if `cmd` is configured to run asynchronously on the worker pool.
 pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
+    comptime checkInlineCommands(Commands);
     // The page's oriel.extensions.call blocks on native code: always a worker's.
     if (std.mem.eql(u8, cmd, extensions.page_command)) return true;
     // oriel.systemAi's calls block on the platform too (not its cancel).
@@ -249,6 +253,32 @@ pub fn isAsync(comptime Commands: type, cmd: []const u8) bool {
         if (std.mem.eql(u8, item, cmd)) return true;
     }
     return false;
+}
+
+/// Check if an app command opts into running inside the WebView callback.
+pub fn isInline(comptime Commands: type, cmd: []const u8) bool {
+    comptime checkInlineCommands(Commands);
+    if (!@hasDecl(Commands, "inline_commands")) return false;
+    inline for (Commands.inline_commands) |name| {
+        if (std.mem.eql(u8, name, cmd)) return true;
+    }
+    return false;
+}
+
+// Compile-time validation is shared with isAsync so native dispatch validates
+// inline_commands too, although its sync commands already execute inline.
+fn checkInlineCommands(comptime Commands: type) void {
+    if (!@hasDecl(Commands, "inline_commands")) return;
+    for (Commands.inline_commands) |name| {
+        if (!@hasDecl(Commands, name) or @typeInfo(@TypeOf(@field(Commands, name))) != .@"fn")
+            @compileError("inline_commands lists \"" ++ name ++ "\", but Commands has no pub fn " ++ name);
+        if (@hasDecl(Commands, "async_commands")) {
+            for (Commands.async_commands) |async_name| {
+                if (std.mem.eql(u8, name, async_name))
+                    @compileError("command \"" ++ name ++ "\" is listed in both async_commands and inline_commands: a worker command cannot run inside the UI callback");
+            }
+        }
+    }
 }
 
 /// Every name in `async_commands` must be a command: otherwise a renamed or

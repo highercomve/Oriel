@@ -38,8 +38,14 @@ pub fn Dispatcher(comptime api: App.Api, comptime config: App.Config, comptime l
         fn route(t: Transport, gpa: std.mem.Allocator, arena: std.mem.Allocator, call: ipc.Request, page: []const u8, label: ?[]const u8, pool: ?*@import("ThreadPool.zig").ThreadPool) !void {
             const is_window = windows.isWindowCommand(call.cmd);
             const io = if (pool) |p| p.io else null;
+            if (!is_window and !ipc.isBuiltinCommand(call.cmd) and ipc.isInline(api.commands, call.cmd)) {
+                // Explicit opt-in: the command promises not to pump UI messages
+                // or close/navigate the calling window during this callback.
+                execute(t, arena, call, page, label, io);
+                return;
+            }
             if (is_window or ipc.isBuiltinCommand(call.cmd) or !ipc.isAsync(api.commands, call.cmd)) {
-                // Always leave the WebView callback before running app code:
+                // Leave the WebView callback before running other app code:
                 // modal commands can pump UI messages or close their window.
                 const job = try Job.prepare(gpa, t, call, page, label, io);
                 Transport.post(Job.runSync, job, Job.discard);
@@ -181,6 +187,10 @@ pub fn NativeEngines(comptime Engine: type, comptime enabled: bool, comptime eva
 
 const TestCommands = struct {
     pub const async_commands = .{ "background", "background_fail" };
+    pub const inline_commands = .{"fast"};
+    pub fn fast(a: std.mem.Allocator) u32 {
+        return ping(a);
+    }
     var calls: usize = 0;
     pub fn ping(_: std.mem.Allocator) u32 {
         calls += 1;
@@ -281,6 +291,42 @@ test "page dispatch: token, isolation and capability checks precede routing" {
     try std.testing.expectEqualStrings("Forbidden", state.answer());
     try std.testing.expectEqual(@as(usize, 0), TestCommands.calls);
     try std.testing.expect(TestTransport.pending == null);
+}
+
+// Invalid lists and async/inline overlap are rejected by ipc.checkInlineCommands
+// at compile time (also reached by the native renderer through ipc.isAsync).
+test "page dispatch: inline settles before return without posting; capability denial still wins" {
+    TestTransport.pending = null;
+    defer TestTransport.drain(true);
+    TestCommands.calls = 0;
+    var state: TestState = .{};
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const token = try testToken(a);
+    const t: TestTransport = .{ .state = &state };
+    try TestDispatch.run(t, std.testing.allocator, a, .{ .cmd = "fast", .token = token }, "{}", security.app_origin ++ "/", "main", 1);
+    try std.testing.expectEqualStrings("7", state.answer());
+    try std.testing.expectEqual(@as(usize, 1), state.replies);
+    try std.testing.expectEqual(@as(usize, 1), TestCommands.calls);
+    try std.testing.expectEqual(@as(usize, 0), state.refs);
+    try std.testing.expect(TestTransport.pending == null);
+
+    const script = try ipc.tokenScript(a, test_config.security, .{});
+    const marker = "[\"https://partner.example\", \"";
+    const off = (std.mem.indexOf(u8, script, marker) orelse return error.TestUnexpectedResult) + marker.len;
+    // This origin can call ping, but not the inline fast command.
+    try TestDispatch.run(t, std.testing.allocator, a, .{ .cmd = "fast", .token = script[off..][0..64] }, "{}", "https://partner.example/", "main", 1);
+    try std.testing.expectEqualStrings("Forbidden", state.answer());
+    try std.testing.expectEqual(@as(usize, 1), TestCommands.calls);
+    try std.testing.expect(TestTransport.pending == null);
+
+    const replies = state.replies;
+    try TestDispatch.run(t, std.testing.allocator, a, .{ .cmd = "ping", .token = token }, "{}", security.app_origin ++ "/", "main", 1);
+    try std.testing.expectEqual(replies, state.replies);
+    try std.testing.expect(TestTransport.pending != null);
+    TestTransport.drain(false);
+    try std.testing.expectEqual(replies + 1, state.replies);
 }
 
 test "page dispatch: window routing, queued sync replies, errors and stale drop" {
