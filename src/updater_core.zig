@@ -300,11 +300,12 @@ pub fn checkForUpdate(
     var select_buf: [2]ResultUnion = undefined;
     var sel = std.Io.Select(ResultUnion).init(io, &select_buf);
 
+    defer sel.cancelDiscard();
+
     try sel.concurrent(.fetched, Fetcher.fetchBody, .{ io, gpa, config.manifest_url, &manifest_buf });
     try sel.concurrent(.timeout, Fetcher.sleepTimeout, .{ io, config.timeout_ms });
 
     const awaited = try sel.await();
-    sel.cancelDiscard();
 
     const fetch_info = switch (awaited) {
         .fetched => |res| try res,
@@ -447,25 +448,27 @@ pub fn download(
         timeout: void,
     };
     var select_buf: [2]ResultUnion = undefined;
+    var drained = false;
     var sel = std.Io.Select(ResultUnion).init(io, &select_buf);
+    defer if (!drained) {
+        while (sel.cancel()) |late| switch (late) {
+            .downloaded => |res| if (res) |p| gpa.free(p) else |_| {},
+            .timeout => {},
+        };
+    };
 
     try sel.concurrent(.downloaded, Runner.run, .{ io, gpa, update, dest_path, progress_callback });
     try sel.concurrent(.timeout, Runner.sleepTimeout, .{ io, timeout_ms });
 
     // cancel, not cancelDiscard: the download returns an allocated path.
-    var awaited = sel.await() catch |err| {
-        while (sel.cancel()) |late| switch (late) {
-            .downloaded => |res| if (res) |p| gpa.free(p) else |_| {},
-            .timeout => {},
-        };
-        return err;
-    };
+    var awaited = try sel.await();
     while (sel.cancel()) |late| switch (late) {
         // Finished just as the timeout won: the binary is already
         // replaced, so report that rather than a timeout.
         .downloaded => awaited = late,
         .timeout => {},
     };
+    drained = true;
 
     switch (awaited) {
         .downloaded => |res| return res,
@@ -1372,4 +1375,69 @@ test "manifest expiry fails closed on invalid clocks" {
     try std.testing.expectError(error.InvalidSystemTime, validateExpiration(100, 0));
     try std.testing.expectError(error.InvalidSystemTime, validateExpiration(100, -1));
     try std.testing.expectError(error.ManifestExpired, validateExpiration(100, 101));
+}
+
+// A deterministic scheduler keeps submissions pending until cleanup. It makes
+// stack-lifetime failures observable without racing a network request.
+const SelectFailureIo = struct {
+    submissions: usize = 0,
+    cancels: usize = 0,
+    pending: bool = false,
+    fail_second: bool,
+
+    fn concurrent(userdata: ?*anyopaque, group: *std.Io.Group, _: []const u8, _: std.mem.Alignment, _: *const fn (*const anyopaque) void) std.Io.ConcurrentError!void {
+        const self: *@This() = @ptrCast(@alignCast(userdata.?));
+        self.submissions += 1;
+        if (self.fail_second and self.submissions == 2) return error.ConcurrencyUnavailable;
+        self.pending = true;
+        group.token.store(self, .release);
+    }
+
+    fn cancel(userdata: ?*anyopaque, group: *std.Io.Group, _: *anyopaque) void {
+        const self: *@This() = @ptrCast(@alignCast(userdata.?));
+        self.cancels += 1;
+        self.pending = false;
+        group.token.store(null, .release);
+    }
+
+    fn wait(_: ?*anyopaque, _: *const u32, _: u32, _: std.Io.Timeout) std.Io.Cancelable!void {
+        return error.Canceled;
+    }
+};
+
+test "updater Select cleans pending tasks on second submission failure and canceled await" {
+    for ([_]bool{ true, false }) |fail_second| {
+        var fake: SelectFailureIo = .{ .fail_second = fail_second };
+        var vtable = std.testing.io.vtable.*;
+        vtable.groupConcurrent = SelectFailureIo.concurrent;
+        vtable.groupCancel = SelectFailureIo.cancel;
+        vtable.futexWait = SelectFailureIo.wait;
+        const io: std.Io = .{ .userdata = &fake, .vtable = &vtable };
+        const expected = if (fail_second) error.ConcurrencyUnavailable else error.Canceled;
+        try std.testing.expectError(expected, checkForUpdate(io, std.testing.allocator, .{
+            .app_id = "test",
+            .manifest_url = "https://example.com/manifest.json",
+            .current_version = "1.0.0",
+            .public_key_b64 = "",
+        }));
+        try std.testing.expect(!fake.pending);
+        try std.testing.expectEqual(@as(usize, 1), fake.cancels);
+
+        fake = .{ .fail_second = fail_second };
+        var update: Update = .{
+            .app_id = "test",
+            .version = "1.0.1",
+            .target = DEFAULT_TARGET,
+            .format = "raw",
+            .size = 0,
+            .sha256 = "",
+            .url = "https://example.com/update",
+            .signature = "",
+            .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        };
+        defer update.deinit();
+        try std.testing.expectError(expected, download(io, std.testing.allocator, update, .{}));
+        try std.testing.expect(!fake.pending);
+        try std.testing.expectEqual(@as(usize, 1), fake.cancels);
+    }
 }

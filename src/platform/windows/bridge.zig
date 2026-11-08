@@ -24,40 +24,20 @@ const log = std.log.scoped(.oriel);
 const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
 const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {
-    pub const Engine = opaque {};
+    pub const Engine = struct {
+        serial: u64 = 0,
+    };
 };
 
-/// Up to 16 native windows' engines, found under the windows lock and
-/// called outside it (a page may open or close windows).
-const NativeEngines = struct {
-    items: [16]*native.Engine = undefined,
-    len: usize = 0,
-
-    fn add(self: *NativeEngines, win: *App.Window) void {
-        if (comptime !build_opts.native_ui) return;
-        const e = win.handle.native orelse return;
-        if (self.len == self.items.len) return;
-        self.items[self.len] = @ptrCast(@alignCast(e));
-        self.len += 1;
+const dispatch = @import("../../core/bridge_dispatch.zig");
+const NativeEngines = dispatch.NativeEngines(native.Engine, build_opts.native_ui, struct {
+    fn evaluate(e: *native.Engine, script: [:0]const u8) void {
+        if (comptime build_opts.native_ui) e.evalScript(script);
     }
+}.evaluate);
 
-    fn eval(self: *const NativeEngines, script: [:0]const u8) void {
-        if (comptime !build_opts.native_ui) return;
-        for (self.items[0..self.len]) |e| e.evalScript(script);
-    }
-};
-
-/// The engine still belongs to an open window (a reply or event for a
-/// window that closed meanwhile is dropped, not run on a freed engine).
-/// `serial` tells a new engine at a reused address apart; `e` is only
-/// read once it's known to be some open window's engine.
 pub fn nativeEngineAlive(e: *native.Engine, serial: u64) bool {
-    if (comptime !build_opts.native_ui) return false;
-    internal.ensureWindowsMutex();
-    internal.windows_mutex.lock();
-    defer internal.windows_mutex.unlock();
-    for (internal.windows_list.items) |win| if (win.handle.native == @as(?*anyopaque, @ptrCast(e))) return e.serial == serial;
-    return false;
+    return NativeEngines.alive(e, serial);
 }
 
 /// Each view's navigation serial: bumped when a top-level navigation starts
@@ -140,6 +120,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             if (self.target) |v| {
                 // Handles match by HWND only: use the live window's webview,
                 // not the (possibly stale) copy queued with the task.
+                _ = engines.reserve(std.heap.smp_allocator, 1);
                 internal.ensureWindowsMutex();
                 internal.windows_mutex.lock();
                 var webview: ?*webview2.ICoreWebView2 = null;
@@ -158,6 +139,7 @@ pub fn evalJs(target: ?window_mod.WindowHandle, script: [:0]const u8) void {
             } else {
                 internal.ensureWindowsMutex();
                 internal.windows_mutex.lock();
+                _ = engines.reserve(std.heap.smp_allocator, internal.windows_list.items.len);
                 for (internal.windows_list.items) |win| {
                     if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
                         _ = view.executeScript(script_w.ptr, null);
@@ -223,6 +205,7 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
             var engines: NativeEngines = .{};
             internal.ensureWindowsMutex();
             internal.windows_mutex.lock();
+            _ = engines.reserve(std.heap.smp_allocator, if (self.target != null or self.label != null) 1 else internal.windows_list.items.len);
             for (internal.windows_list.items) |win| {
                 // Handles match by HWND: the live window's webview, not a stale copy.
                 if (self.target) |t| if (!win.handle.eql(t)) continue;
@@ -234,7 +217,7 @@ pub fn emitEvent(target: ?window_mod.WindowHandle, label: ?[]const u8, name_json
                 engines.add(win);
             }
             internal.windows_mutex.unlock();
-            if (self.script) |s| engines.eval(s);
+            if (self.script) |s| engines.eval(s) else engines.deinit();
         }
     };
 
@@ -284,12 +267,13 @@ pub fn evalJsByLabel(label: [:0]const u8, script: [:0]const u8) void {
             const script_w = std.unicode.utf8ToUtf16LeAllocZ(std.heap.smp_allocator, self.script) catch return;
             defer std.heap.smp_allocator.free(script_w);
 
+            var engines: NativeEngines = .{};
+            _ = engines.reserve(std.heap.smp_allocator, 1);
             internal.ensureWindowsMutex();
             internal.windows_mutex.lock();
             var webview: ?*webview2.ICoreWebView2 = null;
             // A native window (-Dnative_ui) has an engine instead of a web
             // view: targeted events (internal.emitTo) must reach it too.
-            var engines: NativeEngines = .{};
             for (internal.windows_list.items) |win| if (std.mem.eql(u8, win.label, self.label)) {
                 if (win.handle.webview) |view| if (viewGetsEvents(view, win.label)) {
                     webview = view;
@@ -320,10 +304,32 @@ pub fn Bridge(
     comptime config: App.Config,
     comptime local: security.Local,
 ) type {
-    const window_commands = @import("../../core/window_commands.zig");
     const native_commands = @import("../../core/native_commands.zig");
     return struct {
         const Self = @This();
+        const Dispatch = dispatch.Dispatcher(api, config, local, Transport);
+        const Transport = struct {
+            pub const warn = log.warn;
+            view: *webview2.ICoreWebView2,
+            id: ?u64,
+            nav: u64,
+            pub fn retain(self: *@This()) !void {
+                _ = self.view.lpVtbl.AddRef(self.view);
+            }
+            pub fn release(self: @This()) void {
+                // COM references are thread-affine. As before, on worker-side
+                // queue rejection leave the reference for process teardown.
+                if (win32.GetCurrentThreadId() == ShellMod.main_thread_id) _ = self.view.lpVtbl.Release(self.view);
+            }
+            pub fn alive(self: @This()) bool {
+                return navSerial(self.view) == self.nav;
+            }
+            pub fn settle(self: @This(), result: ?[:0]const u8, err: ?[:0]const u8) void {
+                if (err) |e| sendErrorReply(self.view, self.id, e) else sendSuccessReply(self.view, self.id, result orelse "null");
+            }
+            pub fn discard(_: @This()) void {}
+            pub const post = ShellMod.dispatchWithCleanup;
+        };
 
         /// Register the bridge script for every document of `view`. The
         /// registration is asynchronous: `done` is invoked once it applies,
@@ -537,237 +543,13 @@ pub fn Bridge(
                 break :blk std.unicode.utf16LeToUtf8Alloc(temp_alloc, src_w.?[0..slen]) catch "";
             } else "";
 
-            // Before anything else: the call must carry the token of the
-            // document that sent it (page_url is the sender's URL), which only
-            // that origin's bridge closure has.
-            if (!ipc.tokenValid(req.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)])});
-                sendErrorReply(view, req.id, "Forbidden");
-                return;
-            }
-            // With isolation on, the app's pages send only calls the
-            // isolation hook signed; `call` is the call inside.
-            const checked = isolation.check(temp_alloc, config.app.isolation, local, page_url, @intFromPtr(view), .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, msg_u8) catch |err| {
-                sendErrorReply(view, req.id, isolation.errorText(err));
-                return;
-            };
-            const call = checked.request;
-            // Page-controlled: escaped and capped in logs.
-            const cmd_log = std.zig.fmtString(call.cmd[0..@min(call.cmd.len, 64)]);
-
             const caller_win = window_mod.getWindowByHwnd(hwnd) orelse window_mod.getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
-
-            if (window_commands.isWindowCommand(call.cmd)) {
-                SyncCall.queue(view, req.id, call.cmd, call.args, page_url, win_label, null);
-                return;
-            }
-
-            if (!security.commandAllowedForWindow(config.security, local, page_url, call.cmd, win_label)) {
-                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
-                sendErrorReply(view, req.id, "Forbidden");
-                return;
-            }
-
-            const pool = internal.getWorkerPool();
-            defer if (pool != null) internal.releaseWorkerPool();
-
-            if (!ipc.isAsync(api.commands, call.cmd)) {
-                // Run sync commands from the message loop, not inside this
-                // WebView2 event handler: a command that pumps messages (e.g.
-                // openWindow waiting for a new WebView2 controller, or a modal
-                // file dialog) would otherwise nest a message loop inside the
-                // handler, which WebView2 doesn't support (it hangs). Tasks run
-                // in order, so replies keep the order of the requests.
-                SyncCall.queue(view, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
-                return;
-            }
-
-            // Async command: execute on worker pool and reply on main thread.
-            const worker_pool = pool orelse {
-                sendErrorReply(view, req.id, "WorkerPoolNotRunning");
-                return;
-            };
-
-            // The Windows bridge message also carries the reply `id`, which
-            // ipc.Request (and its strict parser) doesn't know: hand the
-            // worker just `{cmd, args}`.
-            const request_json = std.json.Stringify.valueAlloc(temp_alloc, ipc.Request{ .cmd = call.cmd, .args = call.args }, .{}) catch |err| {
-                sendErrorReply(view, req.id, ipc.errorText(err));
-                return;
-            };
-
-            _ = view.lpVtbl.AddRef(view);
-
-            const AsyncReplyContext = struct {
-                view: *webview2.ICoreWebView2,
-                id: ?u64,
-                /// The view's navigation serial when the call came.
-                nav: u64,
-                arena_state: std.heap.ArenaAllocator,
-                result: ?[:0]const u8,
-                err_name: ?[:0]const u8,
-
-                fn onWorkerDone(self: *@This(), arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
-                    self.arena_state = arena_state;
-                    self.result = res;
-                    self.err_name = err_name;
-                    ShellMod.dispatchWithCleanup(&idleReply, self, &discardReply);
-                }
-
-                /// The reply couldn't be queued, or the app shut down first.
-                fn discardReply(ctx: ?*anyopaque) void {
-                    const self: *@This() = @ptrCast(@alignCast(ctx));
-                    // COM objects may only be released on their own (main)
-                    // thread; from a worker, leak the one reference instead.
-                    if (win32.GetCurrentThreadId() == ShellMod.main_thread_id) {
-                        _ = self.view.lpVtbl.Release(self.view);
-                    }
-                    var a = self.arena_state;
-                    a.deinit();
-                    std.heap.smp_allocator.destroy(self);
-                }
-
-                fn idleReply(ctx: ?*anyopaque) void {
-                    const self: *@This() = @ptrCast(@alignCast(ctx));
-                    defer {
-                        _ = self.view.lpVtbl.Release(self.view);
-                        var a = self.arena_state;
-                        a.deinit();
-                        std.heap.smp_allocator.destroy(self);
-                    }
-
-                    // The page that asked is gone: not for the one shown now.
-                    if (navSerial(self.view) != self.nav) return;
-                    if (self.err_name) |err| {
-                        sendErrorReply(self.view, self.id, err);
-                    } else if (self.result) |res| {
-                        sendSuccessReply(self.view, self.id, res);
-                    }
-                }
-            };
-
-            const async_ctx = std.heap.smp_allocator.create(AsyncReplyContext) catch {
-                sendErrorReply(view, req.id, "OutOfMemory");
-                _ = view.lpVtbl.Release(view);
-                return;
-            };
-            async_ctx.* = .{
-                .view = view,
-                .id = req.id,
-                .nav = navSerial(view),
-                .arena_state = undefined,
-                .result = null,
-                .err_name = null,
-            };
-
-            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, request_json, worker_pool.io, async_ctx, AsyncReplyContext.onWorkerDone) catch |err| {
-                std.heap.smp_allocator.destroy(async_ctx);
-                sendErrorReply(view, req.id, ipc.errorText(err));
-                _ = view.lpVtbl.Release(view);
-                return;
+            const transport: Transport = .{ .view = view, .id = req.id, .nav = navSerial(view) };
+            Dispatch.run(transport, gpa, temp_alloc, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, msg_u8, page_url, win_label, @intFromPtr(view)) catch |err| {
+                transport.settle(null, ipc.errorText(err));
             };
         }
-
-        /// A sync command deferred to the main thread's message loop. Owns a
-        /// reference on the webview and an arena with the request.
-        const SyncCall = struct {
-            view: *webview2.ICoreWebView2,
-            id: ?u64,
-            /// The view's navigation serial when the call came.
-            nav: u64,
-            arena_state: std.heap.ArenaAllocator,
-            request: ipc.Request,
-            page_url: []const u8,
-            win_label: ?[]const u8,
-            io: ?std.Io,
-
-            fn queue(
-                view: *webview2.ICoreWebView2,
-                id: ?u64,
-                cmd: []const u8,
-                args: std.json.Value,
-                page_url: []const u8,
-                win_label: ?[]const u8,
-                io: ?std.Io,
-            ) void {
-                const gpa = std.heap.smp_allocator;
-                const self = gpa.create(SyncCall) catch {
-                    sendErrorReply(view, id, "OutOfMemory");
-                    return;
-                };
-                self.* = .{
-                    .view = view,
-                    .id = id,
-                    .nav = navSerial(view),
-                    .arena_state = .init(gpa),
-                    .request = undefined,
-                    .page_url = "",
-                    .win_label = null,
-                    .io = io,
-                };
-                const arena = self.arena_state.allocator();
-                self.page_url = arena.dupe(u8, page_url) catch {
-                    self.fail("OutOfMemory");
-                    return;
-                };
-                if (win_label) |wl| {
-                    self.win_label = arena.dupe(u8, wl) catch {
-                        self.fail("OutOfMemory");
-                        return;
-                    };
-                }
-                // Deep-copy the request out of the caller's parse arena.
-                const request_json = std.json.Stringify.valueAlloc(arena, ipc.Request{ .cmd = cmd, .args = args }, .{}) catch {
-                    self.fail("OutOfMemory");
-                    return;
-                };
-                self.request = ipc.parseRequest(arena, request_json) catch |err| {
-                    self.fail(ipc.errorText(err));
-                    return;
-                };
-                _ = view.lpVtbl.AddRef(view);
-                // `run` or `discard` releases the reference and frees the task.
-                ShellMod.dispatchWithCleanup(&run, self, &discard);
-            }
-
-            fn fail(self: *SyncCall, err_name: []const u8) void {
-                sendErrorReply(self.view, self.id, err_name);
-                self.arena_state.deinit();
-                std.heap.smp_allocator.destroy(self);
-            }
-
-            fn run(ctx: ?*anyopaque) void {
-                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                defer finish(self);
-                const arena = self.arena_state.allocator();
-                const result = (if (window_commands.isWindowCommand(self.request.cmd))
-                    window_commands.dispatch(config.security, local, arena, self.page_url, self.win_label, self.request.cmd, self.request.args)
-                else if (ipc.isBuiltinCommand(self.request.cmd))
-                    ipc.dispatchBuiltin(config.security, arena, self.request)
-                else
-                    ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
-                    if (navSerial(self.view) == self.nav) sendErrorReply(self.view, self.id, ipc.errorText(err));
-                    return;
-                };
-                // The view navigated while the call waited or ran: the page
-                // shown now didn't ask.
-                if (navSerial(self.view) != self.nav) return;
-                sendSuccessReply(self.view, self.id, result);
-            }
-
-            /// Queue failure (on the calling thread, which is the main thread
-            /// here) or shutdown: no reply, just release.
-            fn discard(ctx: ?*anyopaque) void {
-                finish(@ptrCast(@alignCast(ctx.?)));
-            }
-
-            fn finish(self: *SyncCall) void {
-                _ = self.view.lpVtbl.Release(self.view);
-                self.arena_state.deinit();
-                std.heap.smp_allocator.destroy(self);
-            }
-        };
 
         fn sendSuccessReply(view: *webview2.ICoreWebView2, id: ?u64, result_json: []const u8) void {
             if (id == null) return;
@@ -797,6 +579,12 @@ pub fn Bridge(
     };
 }
 
-test {
-    std.testing.refAllDecls(@This());
+test "web bridge transport typechecks shared dispatch" {
+    const Commands = struct {
+        pub fn ping(_: std.mem.Allocator) u32 {
+            return 1;
+        }
+    };
+    const B = Bridge(.{ .commands = Commands }, .{ .app = .{ .id = "test" } }, .{});
+    _ = &B.onMessage;
 }

@@ -103,6 +103,26 @@ pub fn pageGetsEvents(page_url: []const u8, label: ?[]const u8) bool {
 
 pub var windows_list: std.ArrayList(*Window) = .empty;
 
+/// Options of windows declared with `App.registerWindow` and not created yet.
+/// Guarded by `windows_mutex`; the strings are owned (`heap.gpa`).
+pub var registered_windows: std.ArrayList(App.WindowOptions) = .empty;
+
+pub fn freeRegisteredWindow(opts: App.WindowOptions) void {
+    const gpa = heap.gpa;
+    gpa.free(opts.label);
+    gpa.free(opts.title);
+    if (opts.url) |u| gpa.free(u);
+}
+
+pub fn deinitRegisteredWindows() void {
+    ensureWindowsMutex();
+    windows_mutex.lock();
+    defer windows_mutex.unlock();
+    for (registered_windows.items) |r| freeRegisteredWindow(r);
+    registered_windows.deinit(heap.gpa);
+    registered_windows = .empty;
+}
+
 /// A theme colour sent before its window was registered: the native
 /// renderer's page boots inside platform.createWindow, before openWindow
 /// adds the window. Applied when it is (one slot; guarded by windows_mutex).
@@ -267,6 +287,9 @@ pub fn run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8 {
         windows_mutex.lock();
         windows_list.deinit(heap.gpa);
         windows_list = .empty;
+        for (registered_windows.items) |r| freeRegisteredWindow(r);
+        registered_windows.deinit(heap.gpa);
+        registered_windows = .empty;
         windows_mutex.unlock();
     }
 

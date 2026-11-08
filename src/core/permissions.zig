@@ -36,7 +36,7 @@ const impl = switch (target.os) {
     .other => @compileError("permissions are not supported on " ++ target.name),
 };
 
-var on_change: ?*const fn (Kind, Status) void = null;
+var on_change: std.atomic.Value(?*const fn (Kind, Status) void) = .init(null);
 
 /// What the app declares in build.zig (`AppOptions.permissions`).
 pub fn declared() Declared {
@@ -46,7 +46,7 @@ pub fn declared() Declared {
 /// Called (on any thread) when a `request` resolves. The page also gets a
 /// `permission-changed` event with `{ name, status }`.
 pub fn onChange(callback: ?*const fn (Kind, Status) void) void {
-    on_change = callback;
+    on_change.store(callback, .release);
 }
 
 /// Current status. An undeclared permission is `denied`: on macOS, using one
@@ -82,7 +82,7 @@ pub fn openSettings(kind: Kind) bool {
 }
 
 fn resolved(kind: Kind, s: Status) void {
-    if (on_change) |cb| cb(kind, s);
+    if (on_change.load(.acquire)) |cb| cb(kind, s);
     const internal = @import("internal.zig");
     internal.emit("permission-changed", .{ .name = @tagName(kind), .status = @tagName(s) });
 }
@@ -108,4 +108,30 @@ test "undeclared permissions are denied" {
     defer gate.setDeclared(.{});
     try std.testing.expectEqual(Status.denied, status(.camera));
     try std.testing.expect(status(.microphone) != .denied or builtin.os.tag != .linux);
+}
+
+test "onChange stores and loads atomically across threads" {
+    const State = struct {
+        var seen_kind: std.atomic.Value(u8) = .init(255);
+        var seen_status: std.atomic.Value(u8) = .init(255);
+
+        fn cb(k: Kind, s: Status) void {
+            seen_kind.store(@intFromEnum(k), .release);
+            seen_status.store(@intFromEnum(s), .release);
+        }
+
+        fn writer() void {
+            onChange(&cb);
+        }
+    };
+    defer onChange(null);
+    State.seen_kind.store(255, .release);
+    State.seen_status.store(255, .release);
+
+    const t = try std.Thread.spawn(.{}, State.writer, .{});
+    t.join();
+
+    if (on_change.load(.acquire)) |f| f(.camera, .denied);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(Kind.camera)), State.seen_kind.load(.acquire));
+    try std.testing.expectEqual(@as(u8, @intFromEnum(Status.denied)), State.seen_status.load(.acquire));
 }

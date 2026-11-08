@@ -10,6 +10,9 @@ const posix = @import("posix.zig");
 
 const c = std.c;
 
+extern "c" fn confstr(name: c_int, buf: [*]u8, len: usize) usize;
+const _CS_DARWIN_USER_TEMP_DIR = 65537;
+
 pub const Backend = struct {
     pub const Mutex = posix.Mutex;
     pub const readFile = posix.readFile;
@@ -19,9 +22,24 @@ pub const Backend = struct {
 
 pub const Store = common.GenericStore(Backend);
 
+fn userTempDir(buf: []u8) []const u8 {
+    if (c.getenv("TMPDIR")) |t| {
+        const dir = std.mem.trimEnd(u8, std.mem.span(t), "/");
+        if (dir.len > 0 and !std.mem.eql(u8, dir, "/tmp") and !std.mem.eql(u8, dir, "/private/tmp")) return dir;
+    }
+    const n = confstr(_CS_DARWIN_USER_TEMP_DIR, buf.ptr, buf.len);
+    if (n > 1 and n <= buf.len) {
+        const dir = std.mem.trimEnd(u8, buf[0 .. n - 1], "/");
+        if (dir.len > 0) return dir;
+    }
+    return "/tmp";
+}
+
 pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
-    var dir_buf: [64]u8 = undefined;
-    const test_path = try std.fmt.bufPrintZ(&dir_buf, "/tmp/oriel_check_store.{d}.json", .{c.getpid()});
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_dir = userTempDir(&tmp_buf);
+    const test_path = try std.fmt.allocPrintSentinel(gpa, "{s}/oriel_check_store.{d}.json", .{ tmp_dir, c.getpid() }, 0);
+    defer gpa.free(test_path);
     _ = c.unlink(test_path.ptr);
     defer _ = c.unlink(test_path.ptr);
 
@@ -33,7 +51,8 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     // Reopen: the value must come back from disk.
     var s = try Store.openPath(gpa, test_path);
     defer s.deinit();
-    const val = s.getString("test_key") orelse return .{ .module = "store", .ok = false, .detail = "failed to read back stored key" };
+    const val = (try s.getString(gpa, "test_key")) orelse return .{ .module = "store", .ok = false, .detail = "failed to read back stored key" };
+    defer gpa.free(val);
     if (!std.mem.eql(u8, val, "check_value")) return .{ .module = "store", .ok = false, .detail = "stored key mismatch" };
 
     return .{ .module = "store", .ok = true, .detail = "JSON store roundtrip through disk ok" };
@@ -57,7 +76,9 @@ test "Store persists across reopen, atomic writes leave no temp files" {
 
     var reopened = try Store.openPath(gpa, path);
     defer reopened.deinit();
-    try std.testing.expectEqualStrings("oriel", reopened.getString("name").?);
+    const name = (try reopened.getString(gpa, "name")).?;
+    defer gpa.free(name);
+    try std.testing.expectEqualStrings("oriel", name);
     try std.testing.expectEqual(@as(i64, 1), reopened.getInt("version", i64).?);
     try std.testing.expectEqual(true, reopened.getBool("active").?);
 

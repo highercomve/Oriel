@@ -463,7 +463,13 @@ static JSValue h_font_metrics(JSContext *ctx, JSValueConst this_val, int argc, J
     if (family) JS_FreeCString(ctx, family);
     if (n <= 0) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < (uint32_t)n; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < (uint32_t)n; i++) {
+        if (JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i])) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+    }
     return arr;
 }
 
@@ -478,10 +484,21 @@ static JSValue h_run_rects(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     int n = oriel_nui_run_rects(opaque_of(ctx), id, first, last, out, 64);
     if (n < 0) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
     for (int i = 0; i < n; i++) {
         JSValue r = JS_NewArray(ctx);
-        for (uint32_t j = 0; j < 4; j++) JS_SetPropertyUint32(ctx, r, j, JS_NewFloat64(ctx, out[i * 4 + j]));
-        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, r);
+        if (JS_IsException(r)) { JS_FreeValue(ctx, arr); return JS_EXCEPTION; }
+        for (uint32_t j = 0; j < 4; j++)
+            if (JS_SetPropertyUint32(ctx, r, j, JS_NewFloat64(ctx, out[i * 4 + j])) < 0) {
+                JS_FreeValue(ctx, r);
+                JS_FreeValue(ctx, arr);
+                return JS_EXCEPTION;
+            }
+        // JS_SetPropertyUint32 consumes r even when it fails.
+        if (JS_SetPropertyUint32(ctx, arr, (uint32_t)i, r) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
     }
     return arr;
 }
@@ -516,7 +533,11 @@ static JSValue h_storage_key(JSContext *ctx, JSValueConst this_val, int argc, JS
     if (argc < 1 || JS_ToUint32(ctx, &i, argv[0])) return JS_NULL;
     char *out = NULL;
     size_t out_len = 0;
-    return storage_string(ctx, oriel_nui_storage_key(opaque_of(ctx), i, &out, &out_len), out, out_len);
+    // The call first: reading out/out_len in the same expression as the
+    // call that writes them (as storage_string's arguments are) would be
+    // unsequenced.
+    int ok = oriel_nui_storage_key(opaque_of(ctx), i, &out, &out_len);
+    return storage_string(ctx, ok, out, out_len);
 }
 
 static JSValue h_storage_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -588,7 +609,13 @@ static JSValue h_frame(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     JS_ToFloat64(ctx, &id, argv[0]);
     if (!oriel_nui_frame(opaque_of(ctx), id, out)) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 9; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < 9; i++) {
+        if (JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i])) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+    }
     return arr;
 }
 
@@ -600,7 +627,13 @@ static JSValue h_selection(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     double out[2];
     if (!oriel_nui_selection(opaque_of(ctx), id, out)) return JS_UNDEFINED;
     JSValue arr = JS_NewArray(ctx);
-    for (uint32_t i = 0; i < 2; i++) JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i]));
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+    for (uint32_t i = 0; i < 2; i++) {
+        if (JS_SetPropertyUint32(ctx, arr, i, JS_NewFloat64(ctx, out[i])) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+    }
     return arr;
 }
 
@@ -790,28 +823,42 @@ static JSValue h_compile_handler(JSContext *ctx, JSValueConst this_val, int argc
     (void)this_val;
     if (argc < 2) return JS_UNDEFINED;
     size_t nlen = 0, clen = 0;
+    // A conversion that fails (out of memory, a throwing toString) is the
+    // caller's exception; stop at the first one.
     const char *name = JS_ToCStringLen(ctx, &nlen, argv[0]);
+    if (!name) return JS_EXCEPTION;
     const char *code = JS_ToCStringLen(ctx, &clen, argv[1]);
+    if (!code) {
+        JS_FreeCString(ctx, name);
+        return JS_EXCEPTION;
+    }
     JSValue r = JS_UNDEFINED;
     const char *refusal = oriel_nui_csp(opaque_of(ctx), 1);
     if (refusal) {
         // Refused by the CSP (no 'unsafe-inline'): noted, and no handler.
         oriel_nui_log(opaque_of(ctx), 3, refusal, strlen(refusal));
-    } else if (name && code) {
+    } else {
         static const char head[] = "(function (event) {\n";
         static const char tail[] = "\n})";
         size_t n = sizeof head - 1 + clen + sizeof tail - 1;
-        char *src = malloc(n + 1);
-        if (src) {
+        // Through js_malloc, so the runtime's memory limit sees it (the
+        // rest of the compilation does): failing that is out-of-memory
+        // (the page gets its exception), not a silently dropped handler.
+        char *src = js_malloc(ctx, n + 1);
+        if (!src) {
+            // Not JS_UNDEFINED: the caller (the eval path) must see the
+            // exception, not a silent "no handler compiled".
+            r = JS_ThrowOutOfMemory(ctx);
+        } else {
             memcpy(src, head, sizeof head - 1);
             memcpy(src + sizeof head - 1, code, clen);
             memcpy(src + sizeof head - 1 + clen, tail, sizeof tail);
             r = JS_Eval(ctx, src, n, name, JS_EVAL_TYPE_GLOBAL);
-            free(src);
+            js_free(ctx, src);
         }
     }
-    if (name) JS_FreeCString(ctx, name);
-    if (code) JS_FreeCString(ctx, code);
+    JS_FreeCString(ctx, name);
+    JS_FreeCString(ctx, code);
     return r;
 }
 

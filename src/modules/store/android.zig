@@ -30,7 +30,8 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     }
     var s = try Store.openPath(gpa, test_path);
     defer s.deinit();
-    const val = s.getString("test_key") orelse return .{ .module = "store", .ok = false, .detail = "failed to read back stored key" };
+    const val = (try s.getString(gpa, "test_key")) orelse return .{ .module = "store", .ok = false, .detail = "failed to read back stored key" };
+    defer gpa.free(val);
     if (!std.mem.eql(u8, val, "check_value")) return .{ .module = "store", .ok = false, .detail = "stored key mismatch" };
     return .{ .module = "store", .ok = true, .detail = "JSON store roundtrip through disk ok" };
 }

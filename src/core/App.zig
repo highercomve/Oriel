@@ -331,10 +331,6 @@ pub fn getWindow(label: []const u8) ?*Window {
     return null;
 }
 
-/// Options of windows declared with `registerWindow` and not created yet.
-/// Guarded by `windows_mutex`; the strings are owned (`heap.gpa`).
-var registered_windows: std.ArrayList(WindowOptions) = .empty;
-
 /// Declare a window without creating it: `ensureWindow(label)` creates it
 /// the first time it's needed. Each window is a web view (a WebKit or
 /// WebView2 process and a page load), so a window the user may never open
@@ -353,19 +349,12 @@ pub fn registerWindow(options: WindowOptions) !void {
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();
     defer internal.windows_mutex.unlock();
-    for (registered_windows.items) |*r| if (std.mem.eql(u8, r.label, opts.label)) {
-        freeRegistered(r.*);
+    for (internal.registered_windows.items) |*r| if (std.mem.eql(u8, r.label, opts.label)) {
+        internal.freeRegisteredWindow(r.*);
         r.* = opts;
         return;
     };
-    try registered_windows.append(gpa, opts);
-}
-
-fn freeRegistered(opts: WindowOptions) void {
-    const gpa = heap.gpa;
-    gpa.free(opts.label);
-    gpa.free(opts.title);
-    if (opts.url) |u| gpa.free(u);
+    try internal.registered_windows.append(gpa, opts);
 }
 
 /// The window `label`, created now from its `registerWindow` options if it
@@ -376,7 +365,7 @@ pub fn ensureWindow(label: []const u8) !*Window {
         internal.ensureWindowsMutex();
         internal.windows_mutex.lock();
         defer internal.windows_mutex.unlock();
-        for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) {
+        for (internal.registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) {
             var copy = r;
             copy.label = try heap.gpa.dupeZ(u8, r.label);
             errdefer heap.gpa.free(copy.label);
@@ -387,7 +376,7 @@ pub fn ensureWindow(label: []const u8) !*Window {
         };
         return error.WindowNotFound;
     };
-    defer freeRegistered(opts);
+    defer internal.freeRegisteredWindow(opts);
     // openWindow copies this snapshot; registration can change concurrently.
     return openWindow(opts);
 }
@@ -397,25 +386,31 @@ pub fn isWindowRegistered(label: []const u8) bool {
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();
     defer internal.windows_mutex.unlock();
-    for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) return true;
+    for (internal.registered_windows.items) |r| if (std.mem.eql(u8, r.label, label)) return true;
     return false;
 }
 
-test "registerWindow: declared, replaced, not created" {
+test "registerWindow: declared, replaced, not created, and freed on reset" {
+    defer internal.deinitRegisteredWindows();
     try registerWindow(.{ .label = "lazy-test", .title = "A", .url = "index.html#/a" });
     try registerWindow(.{ .label = "lazy-test", .title = "B", .url = null });
     try std.testing.expect(isWindowRegistered("lazy-test"));
     try std.testing.expect(!isWindowRegistered("other"));
     try std.testing.expect(getWindow("lazy-test") == null);
-    internal.windows_mutex.lock();
-    defer internal.windows_mutex.unlock();
-    var n: usize = 0;
-    for (registered_windows.items) |r| if (std.mem.eql(u8, r.label, "lazy-test")) {
-        n += 1;
-        try std.testing.expectEqualStrings("B", r.title);
-        try std.testing.expect(r.url == null);
-    };
-    try std.testing.expectEqual(@as(usize, 1), n);
+    {
+        internal.windows_mutex.lock();
+        defer internal.windows_mutex.unlock();
+        var n: usize = 0;
+        for (internal.registered_windows.items) |r| if (std.mem.eql(u8, r.label, "lazy-test")) {
+            n += 1;
+            try std.testing.expectEqualStrings("B", r.title);
+            try std.testing.expect(r.url == null);
+        };
+        try std.testing.expectEqual(@as(usize, 1), n);
+    }
+    internal.deinitRegisteredWindows();
+    try std.testing.expect(!isWindowRegistered("lazy-test"));
+    try std.testing.expectEqual(@as(usize, 0), internal.registered_windows.capacity);
 }
 
 pub fn openWindow(options: WindowOptions) !*Window {
@@ -516,9 +511,18 @@ pub fn quit(code: u8) void {
     platform.quit(code);
 }
 
-pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !void {
+/// Submission failures: `AppNotRunning` before startup/after shutdown,
+/// `WorkerPoolBusy` when the bounded queue is full, or `OutOfMemory`.
+pub const SpawnError = error{ AppNotRunning, WorkerPoolBusy, OutOfMemory };
+
+/// Queue a background job. See `SpawnError` for submission failures.
+pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) SpawnError!void {
     const pool = internal.getWorkerPool() orelse return error.AppNotRunning;
     defer internal.releaseWorkerPool();
+    return spawnOnPool(func, args, pool);
+}
+
+fn spawnOnPool(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func)), pool: *ThreadPool) SpawnError!void {
     const Job = struct {
         task: ThreadPool.Task,
         args: @TypeOf(args),
@@ -535,7 +539,25 @@ pub fn spawn(comptime func: anytype, args: std.meta.ArgsTuple(@TypeOf(func))) !v
     const job = try heap.gpa.create(Job);
     errdefer heap.gpa.destroy(job);
     job.* = .{ .task = .{ .run_fn = &Job.run }, .args = args };
-    if (!pool.post(&job.task)) return error.AppNotRunning;
+    pool.submit(&job.task) catch |err| return switch (err) {
+        error.WorkerPoolBusy => error.WorkerPoolBusy,
+        error.WorkerPoolNotRunning => error.AppNotRunning,
+    };
+}
+
+test "spawn distinguishes a full pool from an app that is not running" {
+    const noop = struct {
+        fn run() void {}
+    }.run;
+    try std.testing.expectError(error.AppNotRunning, spawn(noop, .{}));
+    const pool = try ThreadPool.init(std.testing.allocator, std.testing.io, 1);
+    defer pool.deinit();
+    pool.mutex.lockUncancelable(pool.io);
+    pool.max_queued = 0;
+    pool.mutex.unlock(pool.io);
+    try std.testing.expectError(error.WorkerPoolBusy, spawnOnPool(noop, .{}, pool));
+    pool.stop();
+    try std.testing.expectError(error.AppNotRunning, spawnOnPool(noop, .{}, pool));
 }
 
 /// Run `func(ctx)` on the main (UI) thread, from any thread: windows, the

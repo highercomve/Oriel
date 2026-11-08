@@ -18,6 +18,7 @@ const App = @import("../../core/App.zig");
 const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
+const dispatch = @import("../../core/bridge_dispatch.zig");
 const isolation = @import("../../core/isolation.zig");
 const runtime = @import("runtime.zig");
 const ShellMod = @import("Shell.zig");
@@ -61,6 +62,29 @@ fn evaluate(id: u32, script: []const u8) void {
     _ = runtime.call(.void, "evalJs", "(I[B)V", .{ @as(i32, @intCast(id)), script });
 }
 
+/// Collect window ids matching `target` / `label` under `windows_mutex` into a
+/// heap list so callers can invoke JNI outside the lock without a fixed cap.
+fn collectTargetIds(gpa: std.mem.Allocator, target: ?window_mod.WindowHandle, label: ?[]const u8) ?std.ArrayList(u32) {
+    var ids: std.ArrayList(u32) = .empty;
+    internal.ensureWindowsMutex();
+    internal.windows_mutex.lock();
+    defer internal.windows_mutex.unlock();
+    const reserve_count = if (target != null or label != null) @min(@as(usize, 1), internal.windows_list.items.len) else internal.windows_list.items.len;
+    ids.ensureUnusedCapacity(gpa, reserve_count) catch {
+        log.err("window broadcast failed: out of memory", .{});
+        return null;
+    };
+    for (internal.windows_list.items) |win| {
+        if (target) |t| if (!win.handle.eql(t)) continue;
+        if (label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
+        ids.append(gpa, win.handle.id) catch {
+            log.err("window broadcast failed: out of memory", .{});
+            break;
+        };
+    }
+    return ids;
+}
+
 /// A copy of a script (and optional label/target) run on the UI thread.
 const EvalTask = struct {
     target: ?window_mod.WindowHandle,
@@ -95,20 +119,9 @@ const EvalTask = struct {
         const self: *EvalTask = @ptrCast(@alignCast(ctx.?));
         defer discard(self);
         // Collect ids under the lock, call Java after (Java may call back).
-        var ids: [64]u32 = undefined;
-        var n: usize = 0;
-        internal.ensureWindowsMutex();
-        internal.windows_mutex.lock();
-        for (internal.windows_list.items) |win| {
-            if (self.target) |t| if (!win.handle.eql(t)) continue;
-            if (self.label) |l| if (!std.mem.eql(u8, win.label, l)) continue;
-            if (n < ids.len) {
-                ids[n] = win.handle.id;
-                n += 1;
-            }
-        }
-        internal.windows_mutex.unlock();
-        for (ids[0..n]) |id| if (self.as_message) post(id, 0, self.text) else evaluate(id, self.text);
+        var ids = collectTargetIds(heap.gpa, self.target, self.label) orelse return;
+        defer ids.deinit(heap.gpa);
+        for (ids.items) |id| if (self.as_message) post(id, 0, self.text) else evaluate(id, self.text);
     }
 
     /// Now on the UI thread (in order with a sync command's reply), else queued.
@@ -161,9 +174,28 @@ pub fn Bridge(
     comptime config: App.Config,
     comptime local: security.Local,
 ) type {
-    const window_commands = @import("../../core/window_commands.zig");
     const native_commands = @import("../../core/native_commands.zig");
     return struct {
+        const Dispatch = dispatch.Dispatcher(api, config, local, Transport);
+        const Transport = struct {
+            pub const warn = log.warn;
+            window: u32,
+            load: u32,
+            req_id: ?u64,
+            pub fn retain(_: *@This()) !void {}
+            pub fn release(_: @This()) void {}
+            pub fn alive(_: @This()) bool {
+                return true;
+            } // Kotlin checks the originating page-load counter.
+            pub fn settle(self: @This(), result: ?[:0]const u8, err: ?[:0]const u8) void {
+                if (err) |e| sendErrorReply(self.window, self.load, self.req_id, e) else sendSuccessReply(self.window, self.load, self.req_id, result orelse "null");
+            }
+            pub fn discard(self: @This()) void {
+                if (ShellMod.isMainThread()) self.settle(null, "AppNotRunning");
+            }
+            pub const post = ShellMod.dispatchWithCleanup;
+        };
+
         /// The document-start script for window `label`: the prelude, the
         /// label, and the bridge with this origin's token and the isolation
         /// part filled in. Caller frees.
@@ -322,150 +354,13 @@ pub fn Bridge(
             };
             const page_url = std.fmt.allocPrint(temp, "{s}/", .{origin}) catch return sendErrorReply(id, load, req.id, "OutOfMemory");
 
-            // The call must carry the token of the document that sent it.
-            if (!ipc.tokenValid(req.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(req.cmd[0..@min(req.cmd.len, 64)])});
-                return sendErrorReply(id, load, req.id, "Forbidden");
-            }
-            const checked = isolation.check(temp, config.app.isolation, local, page_url, id, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, data) catch |err| {
-                return sendErrorReply(id, load, req.id, isolation.errorText(err));
-            };
-            const call = checked.request;
-            const cmd_log = std.zig.fmtString(call.cmd[0..@min(call.cmd.len, 64)]);
-
             const caller_win = window_mod.getWindowById(id);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
-
-            if (window_commands.isWindowCommand(call.cmd)) {
-                return SyncCall.queue(id, load, req.id, call.cmd, call.args, page_url, win_label, null);
-            }
-            if (!security.commandAllowedForWindow(config.security, local, page_url, call.cmd, win_label)) {
-                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
-                return sendErrorReply(id, load, req.id, "Forbidden");
-            }
-
-            const pool = internal.getWorkerPool();
-            defer if (pool != null) internal.releaseWorkerPool();
-            if (ipc.isBuiltinCommand(call.cmd) or !ipc.isAsync(api.commands, call.cmd)) {
-                return SyncCall.queue(id, load, req.id, call.cmd, call.args, page_url, win_label, if (pool) |p| p.io else null);
-            }
-
-            const worker_pool = pool orelse return sendErrorReply(id, load, req.id, "WorkerPoolNotRunning");
-            // The worker gets just `{cmd, args}` (ipc.Request has no `id`).
-            const request_json = std.json.Stringify.valueAlloc(temp, ipc.Request{ .cmd = call.cmd, .args = call.args }, .{}) catch |err| {
-                return sendErrorReply(id, load, req.id, ipc.errorText(err));
-            };
-            const async_ctx = gpa.create(AsyncReply) catch return sendErrorReply(id, load, req.id, "OutOfMemory");
-            async_ctx.* = .{ .window = id, .load = load, .req_id = req.id, .arena_state = undefined, .result = null, .err_name = null };
-            ipc.dispatchAsync(api.commands, worker_pool, gpa, request_json, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
-                gpa.destroy(async_ctx);
-                return sendErrorReply(id, load, req.id, ipc.errorText(err));
+            const transport: Transport = .{ .window = id, .load = load, .req_id = req.id };
+            Dispatch.run(transport, gpa, temp, .{ .cmd = req.cmd, .args = req.args, .token = req.token, .iso = req.iso }, data, page_url, win_label, id) catch |err| {
+                transport.settle(null, ipc.errorText(err));
             };
         }
-
-        const AsyncReply = struct {
-            window: u32,
-            load: u32,
-            req_id: ?u64,
-            arena_state: std.heap.ArenaAllocator,
-            result: ?[:0]const u8,
-            err_name: ?[:0]const u8,
-
-            /// On the worker: hand the result to the UI thread.
-            fn onWorkerDone(self: *@This(), arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
-                self.arena_state = arena_state;
-                self.result = res;
-                self.err_name = err_name;
-                ShellMod.dispatchWithCleanup(&reply, self, &drop);
-            }
-
-            fn reply(ctx: ?*anyopaque) void {
-                const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                defer drop(self);
-                if (self.err_name) |err| {
-                    sendErrorReply(self.window, self.load, self.req_id, err);
-                } else {
-                    sendSuccessReply(self.window, self.load, self.req_id, self.result orelse "null");
-                }
-            }
-
-            fn drop(ctx: ?*anyopaque) void {
-                const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                var a = self.arena_state;
-                a.deinit();
-                heap.gpa.destroy(self);
-            }
-        };
-
-        /// A sync command, run from the task queue rather than inside the
-        /// WebView callback: a command may then open or close windows
-        /// (including its own). Replies keep the order of the requests.
-        const SyncCall = struct {
-            window: u32,
-            load: u32,
-            req_id: ?u64,
-            arena_state: std.heap.ArenaAllocator,
-            request: ipc.Request,
-            page_url: []const u8,
-            win_label: ?[]const u8,
-            io: ?std.Io,
-
-            fn queue(window: u32, load: u32, req_id: ?u64, cmd: []const u8, args: std.json.Value, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
-                const gpa = heap.gpa;
-                const self = gpa.create(SyncCall) catch return sendErrorReply(window, load, req_id, "OutOfMemory");
-                self.* = .{
-                    .window = window,
-                    .load = load,
-                    .req_id = req_id,
-                    .arena_state = .init(gpa),
-                    .request = undefined,
-                    .page_url = "",
-                    .win_label = null,
-                    .io = io,
-                };
-                const arena = self.arena_state.allocator();
-                self.page_url = arena.dupe(u8, page_url) catch return self.fail("OutOfMemory");
-                if (win_label) |wl| self.win_label = arena.dupe(u8, wl) catch return self.fail("OutOfMemory");
-                // Deep-copy the request out of the caller's parse arena.
-                const request_json = std.json.Stringify.valueAlloc(arena, ipc.Request{ .cmd = cmd, .args = args }, .{}) catch return self.fail("OutOfMemory");
-                self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(ipc.errorText(err));
-                ShellMod.dispatchWithCleanup(&run, self, &discard);
-            }
-
-            fn fail(self: *SyncCall, err_name: []const u8) void {
-                sendErrorReply(self.window, self.load, self.req_id, err_name);
-                self.arena_state.deinit();
-                heap.gpa.destroy(self);
-            }
-
-            fn run(ctx: ?*anyopaque) void {
-                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                defer finish(self);
-                const arena = self.arena_state.allocator();
-                const result = (if (window_commands.isWindowCommand(self.request.cmd))
-                    window_commands.dispatch(config.security, local, arena, self.page_url, self.win_label, self.request.cmd, self.request.args)
-                else if (ipc.isBuiltinCommand(self.request.cmd))
-                    ipc.dispatchBuiltin(config.security, arena, self.request)
-                else
-                    ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
-                    sendErrorReply(self.window, self.load, self.req_id, ipc.errorText(err));
-                    return;
-                };
-                sendSuccessReply(self.window, self.load, self.req_id, result);
-            }
-
-            /// Shutdown: reject the call so the page's Promise settles.
-            fn discard(ctx: ?*anyopaque) void {
-                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                if (ShellMod.isMainThread()) sendErrorReply(self.window, self.load, self.req_id, "AppNotRunning");
-                finish(self);
-            }
-
-            fn finish(self: *SyncCall) void {
-                self.arena_state.deinit();
-                heap.gpa.destroy(self);
-            }
-        };
     };
 }
 
@@ -474,4 +369,44 @@ test "bridge script: Android transport" {
     try std.testing.expect(std.mem.indexOf(u8, bridge_js, "native.postMessage(JSON.stringify(") != null);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, bridge_js, token_placeholder));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, bridge_js, isolation_placeholder));
+}
+
+test "collectTargetIds: collects beyond 64 windows without dropping" {
+    internal.ensureWindowsMutex();
+    defer {
+        internal.windows_mutex.lock();
+        internal.windows_list.deinit(std.testing.allocator);
+        internal.windows_list = .empty;
+        internal.windows_mutex.unlock();
+    }
+
+    const count = 70;
+    var win_storage: [count]App.Window = undefined;
+    for (&win_storage, 0..) |*win, i| {
+        win.* = .{
+            .handle = .{ .id = @intCast(i + 1) },
+            .label = if (i % 2 == 0) "even" else "odd",
+            .options = .{},
+            .app_id = "test",
+        };
+        try internal.windows_list.append(std.testing.allocator, win);
+    }
+
+    var all = collectTargetIds(std.testing.allocator, null, null) orelse return error.TestUnexpectedResult;
+    defer all.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, count), all.items.len);
+
+    var by_label = collectTargetIds(std.testing.allocator, null, "even") orelse return error.TestUnexpectedResult;
+    defer by_label.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, count / 2), by_label.items.len);
+}
+
+test "web bridge transport typechecks shared dispatch" {
+    const Commands = struct {
+        pub fn ping(_: std.mem.Allocator) u32 {
+            return 1;
+        }
+    };
+    const B = Bridge(.{ .commands = Commands }, .{ .app = .{ .id = "test" } }, .{});
+    _ = &B.onMessage;
 }

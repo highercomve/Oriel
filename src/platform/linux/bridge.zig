@@ -12,6 +12,7 @@ const build_opts = @import("build_options");
 const webkit = if (build_opts.native_ui) @import("no_webkit.zig") else @import("webkit");
 const jsc = if (build_opts.native_ui) struct {} else @import("jsc");
 const App = @import("../../core/App.zig");
+const ShellMod = @import("Shell.zig");
 const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
@@ -19,7 +20,11 @@ const isolation = @import("../../core/isolation.zig");
 
 const log = std.log.scoped(.oriel);
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
-const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {};
+const native = if (build_opts.native_ui) @import("../../native_ui/engine.zig") else struct {
+    pub const Engine = struct {
+        serial: u64 = 0,
+    };
+};
 
 const bridge = @import("../../core/bridge_js.zig");
 pub const handler_name = bridge.handler_name;
@@ -39,6 +44,17 @@ fn viewGetsEvents(view: *webkit.WebView, label: []const u8) bool {
     if (comptime build_opts.native_ui) return false; // links no WebKit
     const uri = webkit_web_view_get_uri(view) orelse return false;
     return internal.pageGetsEvents(std.mem.span(uri), label);
+}
+
+const dispatch = @import("../../core/bridge_dispatch.zig");
+const NativeEngines = dispatch.NativeEngines(native.Engine, build_opts.native_ui, struct {
+    fn evaluate(e: *native.Engine, script: [:0]const u8) void {
+        if (comptime build_opts.native_ui) e.evalScript(script);
+    }
+}.evaluate);
+
+pub fn nativeEngineAlive(e: *native.Engine, serial: u64) bool {
+    return NativeEngines.alive(e, serial);
 }
 
 /// One type for the producer and the idle callback (it's cast back from
@@ -91,37 +107,23 @@ fn evalScriptTask(data: ?*anyopaque) callconv(.c) c_int {
             if (nativeEngine(v)) |e| e.evalScript(task.script);
         }
     } else {
+        var engines: NativeEngines = .{};
         internal.ensureWindowsMutex();
         internal.windows_mutex.lock();
-        var engines: [16]*anyopaque = undefined;
-        var n_engines: usize = 0;
+        _ = engines.reserve(std.heap.smp_allocator, internal.windows_list.items.len);
         for (internal.windows_list.items) |win| {
             // Only to pages the bridge serves (any other could read it).
             if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
                 view.evaluateJavascript(task.script, -1, null, null, null, null, null);
             };
-            if (comptime build_opts.native_ui) if (win.handle.native) |e| if (n_engines < engines.len) {
-                engines[n_engines] = e;
-                n_engines += 1;
-            };
+            engines.add(win);
         }
         internal.windows_mutex.unlock();
         // Outside the lock: the page may open or close windows.
         // Each still open: a page's script may close another window.
-        if (comptime build_opts.native_ui) for (engines[0..n_engines]) |e| {
-            if (engineListed(e)) @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
-        };
+        engines.eval(task.script);
     }
     return 0; // one-shot
-}
-
-/// Whether an open window has this native engine.
-fn engineListed(e: *anyopaque) bool {
-    internal.ensureWindowsMutex();
-    internal.windows_mutex.lock();
-    defer internal.windows_mutex.unlock();
-    for (internal.windows_list.items) |win| if (win.handle.native == e) return true;
-    return false;
 }
 
 const EvalByLabelTask = struct {
@@ -160,28 +162,27 @@ fn evalScriptByLabelTask(data: ?*anyopaque) callconv(.c) c_int {
         std.heap.smp_allocator.free(task.script);
         std.heap.smp_allocator.destroy(task);
     }
+    var engines: NativeEngines = .{};
+    _ = engines.reserve(std.heap.smp_allocator, 1);
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();
     var web_view: ?*webkit.WebView = null;
     // A native window (-Dnative_ui) has an engine instead of a web view:
     // targeted events (internal.emitTo) must reach it too.
-    var engine: ?*anyopaque = null;
     for (internal.windows_list.items) |win| {
         if (!std.mem.eql(u8, win.label, task.label)) continue;
         if (win.handle.web_view) |view| if (viewGetsEvents(view, win.label)) {
             web_view = view;
         };
-        if (comptime build_opts.native_ui) engine = win.handle.native;
+        engines.add(win);
         break;
     }
     internal.windows_mutex.unlock();
 
     if (web_view) |view| {
         view.evaluateJavascript(task.script, -1, null, null, null, null, null);
-    } else if (comptime build_opts.native_ui) {
-        // Outside the lock: the page may open or close windows.
-        if (engine) |e| @as(*native.Engine, @ptrCast(@alignCast(e))).evalScript(task.script);
     }
+    engines.eval(task.script);
     return 0; // one-shot
 }
 
@@ -191,9 +192,43 @@ pub fn Bridge(
     comptime local: security.Local,
     comptime bridge_patterns: anytype,
 ) type {
-    const window_commands = @import("../../core/window_commands.zig");
     const native_commands = @import("../../core/native_commands.zig");
     return struct {
+        const Dispatch = dispatch.Dispatcher(api, config, local, Transport);
+        const Transport = struct {
+            pub const warn = log.warn;
+            reply: *webkit.ScriptMessageReply,
+            context: *jsc.Context,
+            pub fn retain(self: *@This()) !void {
+                _ = self.reply.ref();
+                _ = self.context.ref();
+            }
+            pub fn release(self: @This()) void {
+                // WebKit objects are main-thread only. A worker-side queue
+                // rejection (out of memory) leaves them for process teardown,
+                // like the Windows and Apple transports.
+                if (glib.MainContext.default().isOwner() == 0) {
+                    log.warn("IPC reply dropped off the main thread: its WebKit reference is kept", .{});
+                    return;
+                }
+                self.reply.unref();
+                self.context.unref();
+            }
+            pub fn alive(_: @This()) bool {
+                return true;
+            } // WebKit owns the originating document's reply.
+            pub fn settle(self: @This(), result: ?[:0]const u8, err: ?[:0]const u8) void {
+                if (err) |e| return self.reply.returnErrorMessage(e);
+                const v = jsc.Value.newFromJson(self.context, result orelse "null");
+                defer v.unref();
+                self.reply.returnValue(v);
+            }
+            pub fn discard(self: @This()) void {
+                if (glib.MainContext.default().isOwner() != 0) self.settle(null, "AppNotRunning");
+            }
+            pub const post = ShellMod.dispatchWithCleanup;
+        };
+
         pub fn setupUserContent(view: *webkit.WebView, label: [:0]const u8) void {
             const gpa = std.heap.smp_allocator;
             const content = view.getUserContentManager();
@@ -258,7 +293,7 @@ pub fn Bridge(
 
         const NativeReply = struct {
             /// Not owned: the window may close (and free its engine) while a
-            /// worker runs the command, so it's checked by engineAlive before use.
+            /// worker runs the command, so it's checked by nativeEngineAlive before use.
             engine: *native.Engine,
             serial: u64,
             call_id: u32,
@@ -298,23 +333,9 @@ pub fn Bridge(
                     std.heap.smp_allocator.destroy(self);
                 }
                 // The window closed while the command ran: nobody to answer.
-                if (!engineAlive(self.engine, self.serial)) return 0;
+                if (!nativeEngineAlive(self.engine, self.serial)) return 0;
                 self.engine.resolve(self.call_id, self.ok, self.text);
                 return 0;
-            }
-
-            /// Whether an open window still has this engine (the same one: its
-            /// serial, read only once the pointer is found among live windows).
-            /// Main thread, where windows close and engines are freed.
-            fn engineAlive(engine: *native.Engine, serial: u64) bool {
-                internal.ensureWindowsMutex();
-                internal.windows_mutex.lock();
-                defer internal.windows_mutex.unlock();
-                for (internal.windows_list.items) |win| {
-                    const e = win.handle.native orelse continue;
-                    if (e == @as(*anyopaque, @ptrCast(engine))) return engine.serial == serial;
-                }
-                return false;
             }
         };
 
@@ -346,147 +367,17 @@ pub fn Bridge(
             const page_url: []const u8 = if (webkit_web_view_get_uri(view)) |u| std.mem.span(u) else "";
             const caller_win = @import("window.zig").getWindowByView(view);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
-            // The handler is reachable from every frame, but only the top
-            // frame's bridge has this page's token (ipc.tokenScript), so a
-            // frame from another origin can't act as the page.
-            if (!ipc.tokenValid(message_request.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(message_request.cmd[0..@min(message_request.cmd.len, 64)])});
-                reply.returnErrorMessage("Forbidden");
-                return 1;
-            }
-            // With isolation on, the app's pages send only calls the
-            // isolation hook signed; `request` is the call inside.
-            const checked = isolation.check(temp_alloc, config.app.isolation, local, page_url, @intFromPtr(view), message_request, req_slice) catch |err| {
-                reply.returnErrorMessage(isolation.errorText(err));
-                return 1;
+            const transport: Transport = .{ .reply = reply, .context = value.getContext() };
+            Dispatch.run(transport, std.heap.smp_allocator, temp_alloc, message_request, req_slice, page_url, win_label, @intFromPtr(view)) catch |err| {
+                transport.settle(null, ipc.errorText(err));
             };
-            const request = checked.request;
-            // Page-controlled: escaped and capped in logs.
-            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
-
-            if (window_commands.isWindowCommand(request.cmd)) {
-                const result = window_commands.dispatch(config.security, local, temp_alloc, page_url, win_label, request.cmd, request.args) catch |err| {
-                    reply.returnErrorMessage(ipc.errorText(err));
-                    return 1;
-                };
-                const result_z = temp_alloc.dupeZ(u8, result) catch {
-                    reply.returnErrorMessage("OutOfMemory");
-                    return 1;
-                };
-                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
-                defer js_value.unref();
-                reply.returnValue(js_value);
-                return 1;
-            }
-
-            if (!security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label)) {
-                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
-                reply.returnErrorMessage("Forbidden");
-                return 1;
-            }
-
-            const pool = internal.getWorkerPool();
-            defer if (pool != null) internal.releaseWorkerPool();
-
-            if (ipc.isBuiltinCommand(request.cmd)) {
-                const result = ipc.dispatchBuiltin(config.security, temp_alloc, request) catch |err| {
-                    reply.returnErrorMessage(ipc.errorText(err));
-                    return 1;
-                };
-                const result_z = temp_alloc.dupeZ(u8, result) catch {
-                    reply.returnErrorMessage("OutOfMemory");
-                    return 1;
-                };
-                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
-                defer js_value.unref();
-                reply.returnValue(js_value);
-                return 1;
-            }
-
-            if (!ipc.isAsync(api.commands, request.cmd)) {
-                const result = ipc.dispatchRequest(api.commands, temp_alloc, request, if (pool) |p| p.io else null) catch |err| {
-                    reply.returnErrorMessage(ipc.errorText(err));
-                    return 1;
-                };
-                const result_z = temp_alloc.dupeZ(u8, result) catch {
-                    reply.returnErrorMessage("OutOfMemory");
-                    return 1;
-                };
-                const js_value = jsc.Value.newFromJson(value.getContext(), result_z);
-                defer js_value.unref();
-                reply.returnValue(js_value);
-                return 1;
-            }
-
-            // Async command: execute on worker pool and reply on GTK main thread.
-            const worker_pool = pool orelse {
-                reply.returnErrorMessage("WorkerPoolNotRunning");
-                return 1;
-            };
-
-            _ = reply.ref();
-            const context = value.getContext();
-            _ = context.ref();
-
-            const GtkReply = struct {
-                reply: *webkit.ScriptMessageReply,
-                context: *jsc.Context,
-                arena_state: std.heap.ArenaAllocator,
-                result: ?[:0]const u8,
-                err_name: ?[:0]const u8,
-
-                fn onWorkerDone(self: *@This(), arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
-                    self.arena_state = arena_state;
-                    self.result = res;
-                    self.err_name = err_name;
-                    _ = glib.idleAdd(&idleReply, self);
-                }
-
-                fn idleReply(data: ?*anyopaque) callconv(.c) c_int {
-                    const self: *@This() = @ptrCast(@alignCast(data));
-                    defer {
-                        self.reply.unref();
-                        self.context.unref();
-                        var a = self.arena_state;
-                        a.deinit();
-                        std.heap.smp_allocator.destroy(self);
-                    }
-                    if (self.err_name) |err| {
-                        self.reply.returnErrorMessage(err);
-                    } else if (self.result) |res_z| {
-                        const js_value = jsc.Value.newFromJson(self.context, res_z);
-                        defer js_value.unref();
-                        self.reply.returnValue(js_value);
-                    }
-                    return 0; // one-shot idle callback
-                }
-            };
-
-            const gtk_reply = std.heap.smp_allocator.create(GtkReply) catch {
-                reply.unref();
-                context.unref();
-                reply.returnErrorMessage("OutOfMemory");
-                return 1;
-            };
-            gtk_reply.* = .{
-                .reply = reply,
-                .context = context,
-                .arena_state = undefined,
-                .result = null,
-                .err_name = null,
-            };
-
-            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, checked.json, worker_pool.io, gtk_reply, GtkReply.onWorkerDone) catch |err| {
-                reply.unref();
-                context.unref();
-                std.heap.smp_allocator.destroy(gtk_reply);
-                reply.returnErrorMessage(ipc.errorText(err));
-                return 1;
-            };
-
             return 1;
         }
     };
+}
+
+test {
+    std.testing.refAllDecls(dispatch);
 }
 
 fn nativeEngine(handle: @import("window.zig").WindowHandle) ?*native.Engine {
@@ -497,4 +388,15 @@ fn nativeEngine(handle: @import("window.zig").WindowHandle) ?*native.Engine {
         if (win.handle.eql(handle)) return @ptrCast(@alignCast(win.handle.native orelse return null));
     }
     return null;
+}
+
+test "web bridge transport typechecks shared dispatch" {
+    if (comptime build_opts.native_ui) return;
+    const Commands = struct {
+        pub fn ping(_: std.mem.Allocator) u32 {
+            return 1;
+        }
+    };
+    const B = Bridge(.{ .commands = Commands }, .{ .app = .{ .id = "test" } }, .{}, .{});
+    _ = &B.onMessage;
 }

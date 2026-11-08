@@ -279,7 +279,7 @@ await openExternal("zoommtg://zoom.us/join?confno=123");
 | `origin` | `[]const u8` | required | `scheme://host[:port]`; the host may start with `*.` (any subdomain and the host itself). |
 | `commands` | `?[]const []const u8` | `null` | Commands this origin may call (the app's and built-ins like `open_external`, `permissions:query`); null: all. |
 | `windows` | `?[]const []const u8` | `null` | Window labels where it applies; null: all. |
-| `window_api` | `bool` | `false` | The origin may use `oriel.window`. |
+| `window_api` | `bool` | `false` | The origin may use `oriel.window`. Independent of `commands` (it grants the `oriel.window` API on its own). |
 
 ## [The default CSP]($heading.id('default-csp'))
 

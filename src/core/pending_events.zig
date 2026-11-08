@@ -137,6 +137,9 @@ fn Fifo(comptime T: type, comptime capacity: usize) type {
         items: [capacity]T = undefined,
         head: usize = 0,
         len: usize = 0,
+        /// Events dropped since the current overflow episode began; reset
+        /// once the queue drains so a new episode logs again.
+        dropped: usize = 0,
 
         const Self = @This();
 
@@ -146,7 +149,10 @@ fn Fifo(comptime T: type, comptime capacity: usize) type {
                 return;
             };
             if (self.len == capacity) {
-                if (capacity > 1) log.info("{d} events came before anyone listened: dropped the oldest", .{capacity + 1});
+                self.dropped += 1;
+                if (capacity > 1 and self.dropped == 1) {
+                    log.info("{d} events came before anyone listened: dropped the oldest", .{capacity + self.dropped});
+                }
                 freeDeep(gpa, T, self.items[self.head]);
                 self.head = (self.head + 1) % capacity;
                 self.len -= 1;
@@ -168,6 +174,7 @@ fn Fifo(comptime T: type, comptime capacity: usize) type {
             const item = self.items[self.head];
             self.head = (self.head + 1) % capacity;
             self.len -= 1;
+            if (self.len == 0) self.dropped = 0;
             return item;
         }
     };
@@ -312,12 +319,14 @@ test "Pending: a full queue drops the oldest; capacity 1 keeps the last" {
 
     var q: Pending(Click, 2) = .{ .gpa = testing.allocator };
     defer q.deinit();
-    for ([_][]const u8{ "1", "2", "3" }) |id| q.deliver(.{ .id = id, .action = null }, Seen.toHandler, true, Seen.emit);
+    for ([_][]const u8{ "1", "2", "3", "4" }) |id| q.deliver(.{ .id = id, .action = null }, Seen.toHandler, true, Seen.emit);
+    try testing.expectEqual(@as(usize, 2), q.for_handler.dropped);
     Seen.handler_on = true;
     q.flushHandler(Seen.toHandler);
+    try testing.expectEqual(@as(usize, 0), q.for_handler.dropped);
     try testing.expectEqual(@as(usize, 2), Seen.handler_n);
-    try Seen.expectHandler(0, "2/-");
-    try Seen.expectHandler(1, "3/-");
+    try Seen.expectHandler(0, "3/-");
+    try Seen.expectHandler(1, "4/-");
 }
 
 test "Pending: a handler gone while flushing keeps the rest" {
@@ -337,18 +346,19 @@ test "Pending: a handler gone while flushing keeps the rest" {
 test dupeDeep {
     const File = struct { handle: u32, name: []const u8 };
     const Share = struct { id: u32, text: ?[]const u8, files: []const File };
-    const gpa = testing.allocator;
-    const files = [_]File{ .{ .handle = 1, .name = "a.png" }, .{ .handle = 2, .name = "b.txt" } };
-    const copy = try dupeDeep(gpa, Share, .{ .id = 7, .text = "hi", .files = &files });
-    defer freeDeep(gpa, Share, copy);
-    try testing.expectEqual(@as(u32, 7), copy.id);
-    try testing.expectEqualStrings("hi", copy.text.?);
-    try testing.expect(copy.files.ptr != &files);
-    try testing.expectEqualStrings("b.txt", copy.files[1].name);
-    try testing.expect(copy.files[1].name.ptr != files[1].name.ptr);
-    // Out of memory part-way: nothing leaks.
-    var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = 3 });
-    try testing.expectError(error.OutOfMemory, dupeDeep(failing.allocator(), Share, .{ .id = 7, .text = "hi", .files = &files }));
+    const Runner = struct {
+        fn run(ally: Allocator) !void {
+            const files = [_]File{ .{ .handle = 1, .name = "a.png" }, .{ .handle = 2, .name = "b.txt" } };
+            const copy = try dupeDeep(ally, Share, .{ .id = 7, .text = "hi", .files = &files });
+            defer freeDeep(ally, Share, copy);
+            try testing.expectEqual(@as(u32, 7), copy.id);
+            try testing.expectEqualStrings("hi", copy.text.?);
+            try testing.expect(copy.files.ptr != &files);
+            try testing.expectEqualStrings("b.txt", copy.files[1].name);
+            try testing.expect(copy.files[1].name.ptr != files[1].name.ptr);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, Runner.run, .{});
 }
 
 test isQueued {

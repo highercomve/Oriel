@@ -81,7 +81,7 @@ read and change.
 flowchart LR
   Page["Page"] -->|"invoke(command)"| Cmd["Your command<br/>(any thread)"]
   Zig["Your Zig code"] --> Store
-  Cmd --> Store["Store<br/>(mutex + JSON map<br/>in an arena)"]
+  Cmd --> Store["Store<br/>(mutex + JSON map<br/>with per-entry arenas)"]
   Store -->|"open: read + parse"| File[("config dir/name.json")]
   Store -->|"set / delete / clear / save:<br/>whole file, temp + rename"| File
   Store -.->|"unparseable file:<br/>copy kept"| Corrupt[("name.json.corrupt")]
@@ -90,7 +90,7 @@ flowchart LR
 `Store.open(gpa, app_id, name)` resolves the app's config directory
 ([`oriel.paths.appConfig`](paths.md), created if missing;
 on Android its `<app id>` folder), reads `<name>.json` and parses it into a
-`std.json.ObjectMap` whose keys and values live in the store's arena. A
+map whose keys and values each live in their own entry arena. A
 missing or empty file is an empty store. A file that doesn't parse is
 copied to `<name>.json.corrupt` before anything else, a warning is logged,
 and the store opens empty: the next save replaces the original, the copy
@@ -98,10 +98,12 @@ keeps the user's data.
 
 Every method takes the store's mutex, so one `*Store` can be shared between
 threads (commands run on the main thread, or on workers when listed in
-`async_commands`). Each `set` turns the value into JSON and parses it back
-into the arena, so the store never borrows the caller's memory. With
-`auto_save` on (the default), `set`, `delete` and `clear` rewrite the whole
-file before returning; `deinit` saves once more and frees everything.
+`async_commands`). Each `set` copies the value into a new entry arena (and
+frees the previous arena when replacing a key), so the store never borrows
+the caller's memory, and `get` / `getString` copy out under the mutex so
+callers own what they read. With `auto_save` on (the default), `set`,
+`delete` and `clear` rewrite the whole file before returning; `deinit`
+saves once more and frees everything.
 
 The file is written atomically: a sibling temp file
 (`<name>.json.tmp.<pid>.<n>`), flushed to disk, renamed over the old one
@@ -137,8 +139,8 @@ fn setup() !void {
 }
 
 pub const Commands = struct {
-    pub fn get_theme(_: std.mem.Allocator) []const u8 {
-        return settings.getString("theme") orelse "system";
+    pub fn get_theme(arena: std.mem.Allocator) ![]const u8 {
+        return (try settings.getString(arena, "theme")) orelse "system";
     }
 
     pub fn set_theme(_: std.mem.Allocator, args: struct { theme: []const u8 }) !void {
@@ -149,9 +151,9 @@ pub const Commands = struct {
 };
 ```
 
-Pass `.setup = setup` in `oriel.main`'s config. The returned string is
-borrowed from the store and stays valid until `deinit`; the command's
-result is serialized before the next call.
+Pass `.setup = setup` in `oriel.main`'s config. `getString` copies the
+string into the command's per-call `arena` while holding the store's mutex,
+so another thread can overwrite or delete `"theme"` at any time.
 
 ### Batch several changes into one write
 
@@ -173,16 +175,17 @@ while no other thread uses that store.
 ### Structured values
 
 `set` takes anything `std.json.Stringify` can write (structs, arrays,
-optionals, enums); `get` returns the `std.json.Value`, which
-`std.json.parseFromValue` turns back into a struct:
+optionals, enums); `get` returns an owned `std.json.Parsed(std.json.Value)`,
+whose `.value` `std.json.parseFromValue` turns back into a struct:
 
 ```zig
 const Window = struct { x: i32, y: i32, docked: bool = false };
 
 try store.set("palette", Window{ .x = 40, .y = 60 });
 
-if (store.get("palette")) |v| {
-    const parsed = try std.json.parseFromValue(Window, gpa, v, .{});
+if (try store.get(gpa, "palette")) |v| {
+    defer v.deinit();
+    const parsed = try std.json.parseFromValue(Window, gpa, v.value, .{});
     defer parsed.deinit();
     std.log.info("palette at {d},{d}", .{ parsed.value.x, parsed.value.y });
 }
@@ -220,9 +223,9 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
 |---|---|
 | `open(gpa, app_id: []const u8, name: []const u8) !*Store` | Opens (or starts) `<name>.json` in the app's config directory (the Availability table); `.json` is added unless `name` already ends with it. Creates the directory. |
 | `openPath(gpa, path: []const u8) !*Store` | Opens a store at any path. The directory must exist; the file needn't. |
-| `deinit(self) void` | Saves (when `auto_save` is on, errors ignored) and frees the store. Every value `get` returned becomes invalid. |
-| `get(self, key) ?std.json.Value` | The raw value, or null. |
-| `getString(self, key) ?[]const u8` | The string, or null when missing or not a string. |
+| `deinit(self) void` | Saves (when `auto_save` is on, errors ignored) and frees the store. |
+| `get(self, gpa, key) !?std.json.Parsed(std.json.Value)` | An owned copy of the raw value (call `.deinit()` to free), or null when missing. |
+| `getString(self, gpa, key) !?[]u8` | An owned copy of the string (free with `gpa.free`), or null when missing or not a string. |
 | `getInt(self, key, comptime T: type) ?T` | The integer cast to `T`, or null when missing, not an integer, or out of `T`'s range. |
 | `getFloat(self, key, comptime T: type) ?T` | The number as `T` (integers convert), or null. |
 | `getBool(self, key) ?bool` | The boolean, or null. |
@@ -233,22 +236,23 @@ pub fn check(gpa: std.mem.Allocator, ctx: oriel.CheckContext) !oriel.Check;
 | `save(self) !void` | Writes the file now, atomically. |
 | `auto_save: bool` | Default `true`. Not locked: set it while no other thread uses the store. |
 
-**Values.** Strings, arrays and objects returned by the getters are
-borrowed from the store's arena: valid until `deinit`, even after the key
-is overwritten or deleted (the arena only grows; a store that is `set`
-millions of times should be reopened now and then). Keys are compared
-exactly; the order in the file is insertion order, with deletes moving the
-last key into the hole.
+**Values.** `get` and `getString` copy under the store's mutex and return
+memory the caller owns (`v.deinit()` for `get`, `gpa.free(s)` for
+`getString`), so returned values stay valid across `set`, `delete`, `clear`
+and `deinit`. Each entry in the store has its own arena, which is freed
+immediately when the key is overwritten, deleted or cleared. Keys are
+compared exactly; the order in the file is insertion order, with deletes
+moving the last key into the hole.
 
 **Errors.** `open` and `openPath`: allocation failures; the directory's
 errors (`error.CreateDirectoryFailed`; Windows `error.KnownFolderNotFound`;
 macOS and iOS `error.HomeNotSet`; Android `error.AppNotRunning` before the
 runtime started); `error.InvalidAppId` / `error.EmptyAppId` from the app id
 check (the [`oriel.paths` name rules](paths.md#zig-api)); on macOS, iOS and Android `error.OpenFailed`, `error.ReadFailed` and
-`error.StoreTooLarge` (over 16 MiB). Saving: `error.SaveFailed` (Linux,
-Windows; Linux logs GLib's message), or on macOS, iOS and Android
-`error.CreateTempFailed`, `error.WriteFailed`, `error.SyncFailed`,
-`error.RenameFailed`.
+`error.StoreTooLarge` (over 16 MiB). `get` and `getString`:
+`error.OutOfMemory`. Saving: `error.SaveFailed` (Linux, Windows; Linux logs
+GLib's message), or on macOS, iOS and Android `error.CreateTempFailed`,
+`error.WriteFailed`, `error.SyncFailed`, `error.RenameFailed`.
 
 **Threads.** Every method locks the store; a `*Store` may be used from any
 thread. Opening the same file twice gives two independent stores.

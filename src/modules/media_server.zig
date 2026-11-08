@@ -112,12 +112,21 @@ pub const Handler = struct {
         }
 
         const opened = open.openInRoot(self.root.?, sanitized, self.options.symlink_policy) catch |err| {
-            res.status = switch (err) {
-                error.Forbidden => 403,
-                error.NotFound, error.NotAFile => 404,
-                error.Unexpected => 500,
-            };
-            res.body = @errorName(err);
+            log.debug("openInRoot failed for {s}: {s}", .{ sanitized, @errorName(err) });
+            switch (err) {
+                error.Forbidden => {
+                    res.status = 403;
+                    res.body = "Forbidden";
+                },
+                error.NotFound, error.NotAFile => {
+                    res.status = 404;
+                    res.body = "Not Found";
+                },
+                error.Unexpected => {
+                    res.status = 500;
+                    res.body = "Internal Server Error";
+                },
+            }
             return;
         };
         var file: std.Io.File = opened.toFile();
@@ -377,6 +386,7 @@ test "media_server: streaming over TCP with std.http.Client" {
     }
 
     try tmp.dir.writeFile(test_io, .{ .sub_path = "sample.mp4", .data = test_data });
+    try tmp.dir.createDirPath(test_io, "subdir");
 
     // Pick a test port
     const test_port: u16 = 19874;
@@ -462,7 +472,7 @@ test "media_server: streaming over TCP with std.http.Client" {
         try std.testing.expectEqual(@as(usize, 0), body_416.written().len);
     }
 
-    // 5. GET 404 missing file
+    // 5. GET 404 missing file and directory (constant "Not Found" body, never @errorName)
     {
         var body_404: std.Io.Writer.Allocating = .init(ally);
         defer body_404.deinit();
@@ -471,6 +481,16 @@ test "media_server: streaming over TCP with std.http.Client" {
             .response_writer = &body_404.writer,
         });
         try std.testing.expectEqual(std.http.Status.not_found, res_404.status);
+        try std.testing.expectEqualStrings("Not Found", body_404.written());
+
+        var body_dir: std.Io.Writer.Allocating = .init(ally);
+        defer body_dir.deinit();
+        const res_dir = try client.fetch(.{
+            .location = .{ .url = "http://127.0.0.1:19874/subdir" },
+            .response_writer = &body_dir.writer,
+        });
+        try std.testing.expectEqual(std.http.Status.not_found, res_dir.status);
+        try std.testing.expectEqualStrings("Not Found", body_dir.written());
     }
 
     // 6. GET 403 traversal attempt
@@ -482,6 +502,7 @@ test "media_server: streaming over TCP with std.http.Client" {
             .response_writer = &body_403.writer,
         });
         try std.testing.expectEqual(std.http.Status.forbidden, res_403.status);
+        try std.testing.expectEqualStrings("Forbidden", body_403.written());
     }
 }
 

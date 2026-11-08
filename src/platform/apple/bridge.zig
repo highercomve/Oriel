@@ -21,6 +21,7 @@ const App = @import("../../core/App.zig");
 const internal = @import("../../core/internal.zig");
 const ipc = @import("../../core/ipc.zig");
 const security = @import("../../core/security.zig");
+const dispatch = @import("../../core/bridge_dispatch.zig");
 const isolation = @import("../../core/isolation.zig");
 const build_opts = @import("build_options");
 /// -Dnative_ui: pages drawn with native views (docs/native-renderer.md).
@@ -193,9 +194,31 @@ pub fn Bridge(
     comptime config: App.Config,
     comptime local: security.Local,
 ) type {
-    const window_commands = @import("../../core/window_commands.zig");
     const native_commands = @import("../../core/native_commands.zig");
     return struct {
+        const Dispatch = dispatch.Dispatcher(api, config, local, Transport);
+        const Transport = struct {
+            pub const warn = log.warn;
+            reply: apple.id,
+            pub fn retain(self: *@This()) !void {
+                self.reply = apple.copyBlock(self.reply);
+                if (self.reply == null) return error.OutOfMemory;
+            }
+            pub fn release(self: @This()) void {
+                if (apple.isMainThread()) apple.releaseBlock(self.reply);
+            }
+            pub fn alive(_: @This()) bool {
+                return true;
+            } // Reply block belongs to the sending document.
+            pub fn settle(self: @This(), result: ?[:0]const u8, err: ?[:0]const u8) void {
+                if (err) |e| replyError(self.reply, e) else replySuccess(self.reply, result orelse "null");
+            }
+            pub fn discard(self: @This()) void {
+                if (apple.isMainThread()) self.settle(null, "AppNotRunning");
+            }
+            pub const post = ShellMod.dispatchWithCleanup;
+        };
+
         /// The native renderer's `invoke` (-Dnative_ui): the same dispatch as
         /// `onMessage`, for the app's own page. No IPC token or isolation: the
         /// page is the app's embedded code running in its own engine, not web
@@ -394,193 +417,24 @@ pub fn Bridge(
             const page_url = senderOriginUrl(&origin_buf, frame);
             const caller_win = window_mod.getWindowByView(view.value);
             const win_label: ?[]const u8 = if (caller_win) |w| w.label else null;
-            // Only the bridge script has the token for this page's origin
-            // (ipc.tokenScript / ipc.tokenValid).
-            if (!ipc.tokenValid(message_request.token, config.security, local, page_url)) {
-                log.warn("refused an IPC call without this page's token (\"{f}\")", .{std.zig.fmtString(message_request.cmd[0..@min(message_request.cmd.len, 64)])});
-                replyError(reply, "Forbidden");
-                return;
-            }
-            // With isolation on, the app's pages send only calls the
-            // isolation hook signed; `request` is the call inside.
-            const checked = isolation.check(temp_alloc, config.app.isolation, local, page_url, if (view.value) |v| @intFromPtr(v) else 0, message_request, req_slice) catch |err| {
-                replyError(reply, isolation.errorText(err));
-                return;
-            };
-            const request = checked.request;
-            // Page-controlled: escaped and capped in logs.
-            const cmd_log = std.zig.fmtString(request.cmd[0..@min(request.cmd.len, 64)]);
-
-            if (!window_commands.isWindowCommand(request.cmd) and
-                !security.commandAllowedForWindow(config.security, local, page_url, request.cmd, win_label))
-            {
-                log.warn("blocked command \"{f}\" from {s} (window: {?s})", .{ cmd_log, page_url, win_label });
-                replyError(reply, "Forbidden");
-                return;
-            }
-
-            const pool = internal.getWorkerPool();
-            defer if (pool != null) internal.releaseWorkerPool();
-            if (window_commands.isWindowCommand(request.cmd) or ipc.isBuiltinCommand(request.cmd) or !ipc.isAsync(api.commands, request.cmd)) {
-                SyncCall.queue(reply, request, page_url, win_label, if (pool) |p| p.io else null);
-                return;
-            }
-
-            // Async command: run on the worker pool, reply on the main thread.
-            const worker_pool = pool orelse {
-                replyError(reply, "WorkerPoolNotRunning");
-                return;
-            };
-            const async_ctx = std.heap.smp_allocator.create(AsyncReply) catch {
-                replyError(reply, "OutOfMemory");
-                return;
-            };
-            async_ctx.* = .{
-                .reply = apple.copyBlock(reply),
-                .arena_state = undefined,
-                .result = null,
-                .err_name = null,
-            };
-            if (async_ctx.reply == null) {
-                std.heap.smp_allocator.destroy(async_ctx);
-                replyError(reply, "OutOfMemory");
-                return;
-            }
-            ipc.dispatchAsync(api.commands, worker_pool, std.heap.smp_allocator, checked.json, worker_pool.io, async_ctx, AsyncReply.onWorkerDone) catch |err| {
-                apple.releaseBlock(async_ctx.reply);
-                std.heap.smp_allocator.destroy(async_ctx);
-                replyError(reply, ipc.errorText(err));
-                return;
+            const transport: Transport = .{ .reply = reply };
+            Dispatch.run(transport, std.heap.smp_allocator, temp_alloc, message_request, req_slice, page_url, win_label, if (view.value) |v| @intFromPtr(v) else 0) catch |err| {
+                transport.settle(null, ipc.errorText(err));
             };
         }
-
-        const AsyncReply = struct {
-            reply: apple.id,
-            arena_state: std.heap.ArenaAllocator,
-            result: ?[:0]const u8,
-            err_name: ?[:0]const u8,
-
-            /// On the worker thread: hand the result to the main thread.
-            fn onWorkerDone(self: *@This(), arena_state: std.heap.ArenaAllocator, res: ?[:0]const u8, err_name: ?[:0]const u8) void {
-                self.arena_state = arena_state;
-                self.result = res;
-                self.err_name = err_name;
-                ShellMod.dispatchWithCleanup(&mainReply, self, &discardReply);
-            }
-
-            fn mainReply(ctx: ?*anyopaque) void {
-                const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                defer finish(self);
-                if (self.err_name) |err| {
-                    replyError(self.reply, err);
-                } else if (self.result) |res| {
-                    replySuccess(self.reply, res);
-                } else {
-                    replySuccess(self.reply, "null");
-                }
-            }
-
-            /// Not queued (out of memory, or after shutdown).
-            fn discardReply(ctx: ?*anyopaque) void {
-                const self: *@This() = @ptrCast(@alignCast(ctx.?));
-                // WebKit objects captured by the block may only be released on
-                // the main thread; from a worker, leak the one reference instead.
-                if (apple.isMainThread()) {
-                    // WebKit raises if its reply block is freed uncalled.
-                    replyError(self.reply, "AppNotRunning");
-                    finish(self);
-                } else {
-                    var a = self.arena_state;
-                    a.deinit();
-                    std.heap.smp_allocator.destroy(self);
-                }
-            }
-
-            fn finish(self: *@This()) void {
-                apple.releaseBlock(self.reply);
-                var a = self.arena_state;
-                a.deinit();
-                std.heap.smp_allocator.destroy(self);
-            }
-        };
-
-        /// A sync command deferred to the main loop. Owns a copy of the reply
-        /// block and an arena with the request.
-        const SyncCall = struct {
-            reply: apple.id,
-            arena_state: std.heap.ArenaAllocator,
-            request: ipc.Request,
-            page_url: []const u8,
-            win_label: ?[]const u8,
-            io: ?std.Io,
-
-            fn queue(reply: apple.id, request: ipc.Request, page_url: []const u8, win_label: ?[]const u8, io: ?std.Io) void {
-                const gpa = std.heap.smp_allocator;
-                const self = gpa.create(SyncCall) catch {
-                    replyError(reply, "OutOfMemory");
-                    return;
-                };
-                self.* = .{
-                    .reply = reply,
-                    .arena_state = .init(gpa),
-                    .request = undefined,
-                    .page_url = "",
-                    .win_label = null,
-                    .io = io,
-                };
-                const arena = self.arena_state.allocator();
-                self.page_url = arena.dupe(u8, page_url) catch return self.fail("OutOfMemory");
-                if (win_label) |wl| self.win_label = arena.dupe(u8, wl) catch return self.fail("OutOfMemory");
-                // Deep-copy the request out of the caller's parse arena.
-                const request_json = std.json.Stringify.valueAlloc(arena, request, .{}) catch return self.fail("OutOfMemory");
-                self.request = ipc.parseRequest(arena, request_json) catch |err| return self.fail(ipc.errorText(err));
-                const copied = apple.copyBlock(reply);
-                if (copied == null) return self.fail("OutOfMemory");
-                self.reply = copied;
-                // `run` or `discard` releases the block and frees the task.
-                ShellMod.dispatchWithCleanup(&run, self, &discard);
-            }
-
-            /// Before the reply block was copied: answer with the borrowed one.
-            fn fail(self: *SyncCall, err_name: []const u8) void {
-                replyError(self.reply, err_name);
-                self.arena_state.deinit();
-                std.heap.smp_allocator.destroy(self);
-            }
-
-            fn run(ctx: ?*anyopaque) void {
-                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                defer finish(self);
-                const arena = self.arena_state.allocator();
-                const result = (if (window_commands.isWindowCommand(self.request.cmd))
-                    window_commands.dispatch(config.security, local, arena, self.page_url, self.win_label, self.request.cmd, self.request.args)
-                else if (ipc.isBuiltinCommand(self.request.cmd))
-                    ipc.dispatchBuiltin(config.security, arena, self.request)
-                else
-                    ipc.dispatchRequest(api.commands, arena, self.request, self.io)) catch |err| {
-                    replyError(self.reply, ipc.errorText(err));
-                    return;
-                };
-                replySuccess(self.reply, result);
-            }
-
-            /// Shutdown (main thread, queued from the main thread): reject
-            /// the call so the page's Promise settles.
-            fn discard(ctx: ?*anyopaque) void {
-                const self: *SyncCall = @ptrCast(@alignCast(ctx.?));
-                if (apple.isMainThread()) replyError(self.reply, "AppNotRunning");
-                finish(self);
-            }
-
-            fn finish(self: *SyncCall) void {
-                apple.releaseBlock(self.reply);
-                self.arena_state.deinit();
-                std.heap.smp_allocator.destroy(self);
-            }
-        };
     };
 }
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "web bridge transport typechecks shared dispatch" {
+    const Commands = struct {
+        pub fn ping(_: std.mem.Allocator) u32 {
+            return 1;
+        }
+    };
+    const B = Bridge(.{ .commands = Commands }, .{ .app = .{ .id = "test" } }, .{});
+    _ = &B.onMessage;
 }

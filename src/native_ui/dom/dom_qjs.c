@@ -382,11 +382,17 @@ static JSValue node_has_children(JSContext *ctx, JSValueConst this_val, int argc
 static JSValue node_get_child_nodes(JSContext *ctx, JSValueConst this_val) {
     THIS_NODE();
     JSValue arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
     uint32_t i = 0;
     for (Index c = nui_dom_first(dc->dom, self); c; c = nui_dom_next(dc->dom, c)) {
         JSValue w = wrap(ctx, dc, c);
         if (JS_IsException(w)) { JS_FreeValue(ctx, arr); return w; }
-        JS_SetPropertyUint32(ctx, arr, i++, w);
+        // (The value is consumed by the set on any outcome; only the
+        // array goes, and the pending exception seen.)
+        if (JS_SetPropertyUint32(ctx, arr, i++, w) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
     }
     return arr;
 }
@@ -689,12 +695,16 @@ ELEM_WALK(el_prev_element, nui_dom_prev, nui_dom_prev)
 static JSValue el_children(JSContext *ctx, JSValueConst this_val) {
     THIS_NODE();
     JSValue arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
     uint32_t i = 0;
     for (Index c = nui_dom_first(dc->dom, self); c; c = nui_dom_next(dc->dom, c)) {
         if (nui_dom_kind(dc->dom, c) != K_ELEMENT) continue;
         JSValue w = wrap(ctx, dc, c);
         if (JS_IsException(w)) { JS_FreeValue(ctx, arr); return w; }
-        JS_SetPropertyUint32(ctx, arr, i++, w);
+        if (JS_SetPropertyUint32(ctx, arr, i++, w) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
     }
     return arr;
 }
@@ -738,7 +748,10 @@ static bool query_found(void *p, Index idx) {
     if (!q->all) { q->first = idx; return false; }
     JSValue w = wrap(q->ctx, q->dc, idx);
     if (JS_IsException(w)) { q->failed = true; return false; }
-    JS_SetPropertyUint32(q->ctx, q->arr, q->n++, w);
+    if (JS_SetPropertyUint32(q->ctx, q->arr, q->n++, w) < 0) {
+        q->failed = true; // (the value is consumed by the set on any outcome)
+        return false;
+    }
     return true;
 }
 
@@ -1082,8 +1095,17 @@ static JSValue nd_class_style(JSContext *ctx, JSValueConst this_val, int argc, J
     const JSValue *cls, *style;
     if (!nui_dom_class_style_only(dc->dom, idx, argc > 1 && JS_ToBool(ctx, argv[1]), &cls, &style)) return JS_NULL;
     JSValue arr = JS_NewArray(ctx);
-    JS_SetPropertyUint32(ctx, arr, 0, cls ? JS_DupValue(ctx, *cls) : JS_UNDEFINED);
-    JS_SetPropertyUint32(ctx, arr, 1, style ? JS_DupValue(ctx, *style) : JS_UNDEFINED);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
+    // (Each set consumes its value on any outcome; on a failed set the
+    // array as a whole goes, and the pending exception is seen.)
+    if (JS_SetPropertyUint32(ctx, arr, 0, cls ? JS_DupValue(ctx, *cls) : JS_UNDEFINED) < 0) {
+        JS_FreeValue(ctx, arr);
+        return JS_EXCEPTION;
+    }
+    if (JS_SetPropertyUint32(ctx, arr, 1, style ? JS_DupValue(ctx, *style) : JS_UNDEFINED) < 0) {
+        JS_FreeValue(ctx, arr);
+        return JS_EXCEPTION;
+    }
     return arr;
 }
 
@@ -1093,12 +1115,24 @@ static JSValue nd_attrs(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     Index idx = arg_node(ctx, argv[0]);
     if (!idx) return JS_EXCEPTION;
     JSValue arr = JS_NewArray(ctx);
+    if (JS_IsException(arr)) return JS_EXCEPTION;
     size_t n = nui_dom_attr_count(dc->dom, idx);
     for (size_t i = 0; i < n; i++) {
         const JSValue *v;
         uint32_t name = nui_dom_attr_at(dc->dom, idx, i, &v);
-        JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i), JS_AtomToString(ctx, name));
-        JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i + 1), JS_DupValue(ctx, *v));
+        // (Each set consumes its value on any outcome; on a failed set the
+        // array as a whole goes, and the pending exception is seen.)
+        // The name may need a new string (a numeric atom): that can fail too.
+        JSValue name_v = JS_AtomToString(ctx, name);
+        if (JS_IsException(name_v)) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
+        if (JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i), name_v) < 0 ||
+            JS_SetPropertyUint32(ctx, arr, (uint32_t)(2 * i + 1), JS_DupValue(ctx, *v)) < 0) {
+            JS_FreeValue(ctx, arr);
+            return JS_EXCEPTION;
+        }
     }
     return arr;
 }

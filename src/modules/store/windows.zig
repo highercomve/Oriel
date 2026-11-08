@@ -30,6 +30,27 @@ const WindowsMutex = struct {
     }
 };
 
+// Keep the OS diagnostic at the failing read; callers can leave the store unavailable.
+extern "kernel32" fn FormatMessageW(flags: win32.DWORD, source: ?*const anyopaque, code: win32.DWORD, language: win32.DWORD, buffer: [*]u16, size: win32.DWORD, arguments: ?*anyopaque) callconv(.winapi) win32.DWORD;
+
+fn readFailure(path: []const u8, code: win32.DWORD) error{ AccessDenied, OutOfMemory, ReadFailed } {
+    if (!@import("builtin").is_test) {
+        var message_w: [512]u16 = undefined;
+        // FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS.
+        const len = FormatMessageW(0x1000 | 0x200, null, code, 0, &message_w, message_w.len, null);
+        var message: [1536]u8 = undefined;
+        const message_len = std.unicode.utf16LeToUtf8(&message, message_w[0..len]) catch 0;
+        std.log.warn("failed to read store {s}: {s} (Windows error {d})", .{
+            path, if (message_len == 0) "unknown OS message" else std.mem.trim(u8, message[0..message_len], " \r\n"), code,
+        });
+    }
+    return switch (code) {
+        win32.ERROR_ACCESS_DENIED => error.AccessDenied,
+        8, 14 => error.OutOfMemory, // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY.
+        else => error.ReadFailed,
+    };
+}
+
 fn windowsReadFile(gpa: std.mem.Allocator, path: [:0]const u8) !?[]u8 {
     const path_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, path);
     defer gpa.free(path_w);
@@ -44,13 +65,21 @@ fn windowsReadFile(gpa: std.mem.Allocator, path: [:0]const u8) !?[]u8 {
         null,
     );
     if (hFile == win32.INVALID_HANDLE_VALUE) {
-        return null;
+        const code = win32.GetLastError();
+        if (code == win32.ERROR_FILE_NOT_FOUND or code == win32.ERROR_PATH_NOT_FOUND) return null;
+        return readFailure(path, code);
     }
     defer _ = win32.CloseHandle(hFile);
 
     var file_size: win32.LARGE_INTEGER = 0;
-    if (win32.GetFileSizeEx(hFile, &file_size) == win32.FALSE or file_size < 0 or file_size > 16 * 1024 * 1024) {
-        return null;
+    if (win32.GetFileSizeEx(hFile, &file_size) == win32.FALSE) return readFailure(path, win32.GetLastError());
+    if (file_size < 0) {
+        if (!@import("builtin").is_test) std.log.warn("failed to read store {s}: invalid file size {d}", .{ path, file_size });
+        return error.InvalidFileSize;
+    }
+    if (file_size > 16 * 1024 * 1024) {
+        if (!@import("builtin").is_test) std.log.warn("failed to read store {s}: file exceeds 16 MiB", .{path});
+        return error.FileTooLarge;
     }
     if (file_size == 0) {
         return try gpa.alloc(u8, 0);
@@ -61,11 +90,12 @@ fn windowsReadFile(gpa: std.mem.Allocator, path: [:0]const u8) !?[]u8 {
 
     var bytes_read: win32.DWORD = 0;
     if (win32.ReadFile(hFile, buf.ptr, @intCast(size_usize), &bytes_read, null) == win32.FALSE) {
-        gpa.free(buf);
-        return null;
+        return readFailure(path, win32.GetLastError());
     }
-    if (bytes_read < size_usize) {
-        return try gpa.realloc(buf, bytes_read);
+    // Never hand a partial snapshot to the parser: saving it could lose keys.
+    if (bytes_read != size_usize) {
+        if (!@import("builtin").is_test) std.log.warn("failed to read store {s}: short read ({d} of {d} bytes)", .{ path, bytes_read, size_usize });
+        return error.UnexpectedEndOfFile;
     }
     return buf;
 }
@@ -129,7 +159,10 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     const temp_u8 = try std.unicode.utf16LeToUtf8Alloc(gpa, temp_buf[0..len]);
     defer gpa.free(temp_u8);
 
-    const test_path = try std.fs.path.join(gpa, &.{ temp_u8, "oriel_check_store.json" });
+    const filename = try std.fmt.allocPrint(gpa, "oriel_check_store.{d}.json", .{win32.GetCurrentProcessId()});
+    defer gpa.free(filename);
+
+    const test_path = try std.fs.path.join(gpa, &.{ temp_u8, filename });
     defer gpa.free(test_path);
 
     const test_path_w = try std.unicode.utf8ToUtf16LeAllocZ(gpa, test_path);
@@ -141,11 +174,12 @@ pub fn check(gpa: std.mem.Allocator, _: oriel.CheckContext) !oriel.Check {
     defer s.deinit();
 
     try s.set("test_key", "check_value");
-    const val = s.getString("test_key") orelse return .{
+    const val = (try s.getString(gpa, "test_key")) orelse return .{
         .module = "store",
         .ok = false,
         .detail = "failed to read back stored key",
     };
+    defer gpa.free(val);
     if (!std.mem.eql(u8, val, "check_value")) {
         return .{
             .module = "store",

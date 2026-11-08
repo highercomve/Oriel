@@ -228,6 +228,10 @@ fn transcribe(seconds: u32) !void {
 }
 ```
 
+`App.spawn` returns `error.WorkerPoolBusy` when the worker queue is full,
+`error.AppNotRunning` before startup or after the pool stops, and
+`error.OutOfMemory` if allocating the job fails. A rejected job never runs.
+
 ### Generate the types without compiling the whole app
 
 ```zig

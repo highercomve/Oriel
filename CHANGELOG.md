@@ -2,6 +2,19 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Changed
+
+- `App.spawn` reports `WorkerPoolBusy` when its worker queue is full;
+  `AppNotRunning` now means the pool is unavailable or stopped.
+- WebView bridges share one security and command dispatch pipeline, with
+  platform transports preserving stale-reply checks. Sync web commands
+  now consistently run from the UI queue, including on Linux.
+- **Breaking:** `oriel.store.Store.get` and `Store.getString` take an
+  allocator and return owned copies (`std.json.Parsed(std.json.Value)` and
+  `[]u8`) copied under the store's mutex instead of borrowed slices.
+
 ## [0.20.13] — 2026-11-05
 
 ### Fixed

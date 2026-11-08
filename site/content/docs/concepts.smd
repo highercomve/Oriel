@@ -122,6 +122,11 @@ flowchart TB
   the tray and menus may only be touched there. Commands run there unless
   they are listed in `async_commands`, so a slow sync command freezes the
   UI.
+  Web commands are queued on the UI loop before execution on every
+  platform, rather than running inside the WebView's message callback.
+  A command may pump UI messages (a dialog or opening a window) or close
+  its calling window; WebView2 in particular forbids nested message loops
+  inside its callback. Events emitted by the command precede its reply.
 - **The worker pool** (`src/core/ThreadPool.zig`) has one thread per CPU,
   at least 2 and at most 16, and at most 1024 queued tasks. It runs async
   commands and `App.spawn` jobs; replies go back to the main thread.

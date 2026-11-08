@@ -61,7 +61,7 @@ test "AsyncRequest basic flow" {
 
     const Worker = struct {
         fn run(r: *AsyncRequest(u32)) void {
-            std.time.sleep(10 * std.time.ns_per_ms);
+            std.testing.io.sleep(.fromMilliseconds(10), .awake) catch {};
             r.complete(42);
         }
     };
