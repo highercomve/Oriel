@@ -1,0 +1,282 @@
+---
+.title = "Agent control",
+.description = "Drive a running dev build from a coding agent or a script: read what a window shows, click, type, take screenshots and read logs, from the CLI or as MCP tools, without touching the desktop.",
+.date = .date("2026-11-09T00:00:00"),
+.authors = ["Oriel"],
+.layout = "docs.shtml",
+---
+
+Development builds (`oriel dev`) answer on a control socket of their own.
+`oriel agent` talks to it from the terminal, and `oriel agent mcp` offers the
+same commands as MCP tools, so a coding agent can check its own UI changes:
+read the window's content as an outline with a ref for every element, click
+and type into it, take a screenshot of the window and read the page's
+console and the app's log. Nothing goes through the mouse, the keyboard or
+a screen capture: the window can be covered, on another workspace or on a
+headless display, and the agent never types into the wrong window.
+
+Use it to test an app while developing it. It isn't a remote-control
+feature for users: production builds don't contain it, and `oriel package`
+refuses to package a binary that does.
+
+# [Availability]($heading.id('availability'))
+
+| Platform | Agent | Screenshots |
+|---|---|---|
+| Linux | Development builds (`oriel dev`, `zig build build-dev`) | WebView windows (WebKitGTK's own snapshot); not `-Dnative_ui` yet |
+| macOS | Development builds; not tested yet | Not yet |
+| Windows | Not yet | |
+| Android, iOS | Not yet | |
+
+Nothing to turn on: every development build starts the agent, and no
+production build has it.
+
+# [Quick start]($heading.id('quick-start'))
+
+```sh
+oriel dev                         # in one terminal
+oriel agent snapshot              # in another, in the app's directory
+```
+
+```
+# My App
+# http://localhost:5173/
+- main [ref=e1]
+  - heading "Notes" [level=1] [ref=e2]
+  - textbox "Title" [ref=e3] value=""
+  - button "Save" [disabled] [ref=e4]
+```
+
+```sh
+oriel agent fill e3 "Groceries"
+oriel agent click "role=button[name=Save]"
+oriel agent wait "text=Saved"
+oriel agent screenshot            # prints the PNG's path
+oriel agent logs                  # the app's log and the page's console
+```
+
+For an agent, register the MCP server once:
+
+```sh
+claude mcp add oriel -- oriel agent mcp      # Claude Code
+```
+
+Other MCP clients take the same command: `oriel agent mcp`, on stdio.
+
+# [How it works]($heading.id('how-it-works'))
+
+>[]($block.attrs("mermaid"))
+```
+flowchart LR
+  Agent["coding agent"] -->|"MCP on stdio"| MCP["oriel agent mcp"]
+  Shell["terminal"] --> CLI["oriel agent"]
+  MCP -->|"JSON lines"| Sock["dev build: control socket"]
+  CLI -->|"JSON lines"| Sock
+  Sock -->|"evalJs (runtime + call)"| Page["window's page"]
+  Page -->|"oriel:agent:reply (IPC)"| Sock
+  Sock -->|"WebKit snapshot"| PNG["PNG file"]
+```
+
+`internal.run` starts the agent (`src/core/agent.zig`) when the app's
+`App.Config.app.dev` is set, a comptime fact: in a production build the
+agent is never analyzed, so none of its code, strings or page script is in
+the binary. It listens on a Unix socket, `$XDG_RUNTIME_DIR/oriel-agent/<app
+id>.sock` (else `$TMPDIR/oriel-agent-<uid>/` or `/tmp/oriel-agent-<uid>/`),
+in a directory only the user can open (0700, checked to be the user's own),
+the socket itself 0600, and serves each connection on a thread of its own
+(at most 8 at once).
+
+Requests are one JSON object per line, `{"id": 1, "method": "snapshot",
+"params": {"window": "main"}}`; each gets one line back, `{"id": 1,
+"result": ...}` or `{"id": 1, "error": "..."}`.
+
+Most methods run in the window's page. The agent evaluates
+`src/core/agent_runtime.js` there (once per page load: it defines
+`window.__oriel_agent`), then the call; the page answers through the
+`oriel:agent:reply` IPC command, which only development builds handle, and
+the agent's thread waits for it (10 s by default). Scripts reach only the
+app's own pages (the pages that get events), like `App.emit`. The page's
+console is recorded from the agent's first call in that page; the app's own
+log comes from `oriel.log.logFn` (the newest 1000 lines).
+
+Actions are DOM events sent inside the page: a click is pointer and mouse
+events at the element's centre (on what is really there: an overlay that
+covers the element gets them, and the reply says so), then `click`; `fill`
+sets the value through the element's own setter and sends `input` and
+`change`, which React and the other frameworks see.
+
+Screenshots come from the web view (`webkit_web_view_get_snapshot`, on the
+main thread), written as PNG by GDK.
+
+The CLI finds the app by its id: `--app`, else the `.id` in the project's
+`build.zig`, else the only dev build running.
+
+## [Packaging never ships it]($heading.id('packaging'))
+
+Every package (`zig build package`, each format) takes its executables
+through `package_tool check-no-agent`, which copies a binary only when it
+doesn't contain the agent's marker (`src/core/agent_marker.zig`) and fails
+the build otherwise:
+
+```
+error: zig-out/bin/my-app-dev contains Oriel's dev agent (a control socket for `oriel agent`):
+       it is a development build and must not be packaged.
+```
+
+# [Examples]($heading.id('examples'))
+
+## [Check a change, then look at it]($heading.id('check-a-change'))
+
+```sh
+oriel agent snapshot --interactive        # only what can be acted on
+oriel agent fill "#email" "ada@example.com"
+oriel agent press Enter --target "#email"
+oriel agent wait ".toast" && oriel agent text ".toast"
+oriel agent screenshot --out /tmp/after.png --full
+```
+
+## [Call a command, read the page's state]($heading.id('commands-and-eval'))
+
+```sh
+oriel agent invoke greet '{"name":"Ada"}'
+oriel agent eval "document.querySelectorAll('li').length"
+oriel agent eval "window.oriel.invoke('app_info')"   # promises are awaited
+```
+
+## [Follow the logs]($heading.id('follow-logs'))
+
+```sh
+oriel agent logs                 # ends with: --since 42 for newer lines
+oriel agent logs --since 42 --page
+```
+
+## [A second window]($heading.id('second-window'))
+
+```sh
+oriel agent windows
+oriel agent snapshot --window settings
+```
+
+## [Raw requests]($heading.id('raw-requests'))
+
+```sh
+oriel agent call wait_for '{"target":"text=Ready","timeout_ms":20000}'
+```
+
+```python
+import json, os, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["XDG_RUNTIME_DIR"] + "/oriel-agent/dev.oriel.MyApp.sock")
+f = s.makefile("rw")
+f.write(json.dumps({"id": 1, "method": "snapshot", "params": {}}) + "\n"); f.flush()
+print(json.loads(f.readline())["result"]["snapshot"])
+```
+
+# [Reference]($heading.id('reference'))
+
+## [Targets]($heading.id('targets'))
+
+| Form | Finds |
+|---|---|
+| `e12` | The element with that ref in the last snapshot of the page (stale after a reload or once removed: take a new snapshot) |
+| `text=Save` | The smallest visible element whose text is, or contains, "Save" (case-insensitive) |
+| `role=button[name=Save]` | The first visible element with that role whose name contains "Save"; `role=dialog` alone: any |
+| anything else | A CSS selector (`document.querySelector`) |
+
+## [Snapshot lines]($heading.id('snapshot-lines'))
+
+`- <role> "<name>" [<states>] [ref=eN] value="..." href="..."`, indented
+under their container. Roles are ARIA roles, explicit (`role=`) or implied
+by the element (`button`, `link`, `textbox`, `checkbox`, `combobox`,
+`heading`, `list`, `listitem`, `dialog`, ...). States: `disabled`,
+`checked`/`unchecked`, `expanded`/`collapsed`, `selected`, `current`,
+`focused`, `level=N`. Text outside named elements appears as `text: "..."`.
+Hidden elements (`display: none`, `visibility: hidden`, `aria-hidden`,
+`hidden`) are left out. Output stops at 60,000 characters (pass a selector
+to narrow it).
+
+## [Methods]($heading.id('methods'))
+
+Every method takes `window` (a label, default `"main"`); page methods also
+take `timeout_ms` (default 10,000, at most 120,000).
+
+| Method | Params | Result |
+|---|---|---|
+| `ping` | | `{app, pid, platform, renderer, agent}` |
+| `windows` | | `[{label, title, width, height}]` |
+| `info` | | `{url, title, readyState, size: {width, height, dpr}, focused}` |
+| `snapshot` | `interactive?`, `selector?` | `{url, title, snapshot}` |
+| `text` | `target?` | `{text}` |
+| `click` | `target`, `double?` | `{clicked, covered}` (`covered`: what the click really hit, when not the target) |
+| `hover` | `target` | `{hovered}` |
+| `fill` | `target`, `value` | `{filled, value}` or `{filled, checked}` |
+| `type` | `text`, `target?` (default: the focused element) | `{typed, value}` |
+| `press` | `key` (`Enter`, `Control+a`, ...), `target?` | `{pressed, on, defaultPrevented}` |
+| `scroll` | `target?`, `dx?`, `dy?` | `{scrollX, scrollY}` |
+| `wait_for` | `target`, `state?` (`"visible"`, `"hidden"`), `timeout_ms?` (default 5,000, at most 60,000) | `{waited_ms}` |
+| `eval` | `expression` | Its value as JSON (elements as `role "name"`; promises awaited) |
+| `invoke` | `cmd`, `args?` | The command's result |
+| `reload` | | `{reloading}` |
+| `logs` | `since?` | `{entries: [{seq, level, text, time}], last}` (the page's console) |
+| `app_logs` | `since?` | `{entries: [{seq, text}], last}` (the app's log) |
+| `screenshot` | `path?` (absolute), `full_page?` | `{path, width, height}`; default path: in the socket directory |
+| `quit` | | `true` |
+
+`press` does what the browser would for the keys agents use most when the
+page doesn't prevent it: Enter submits a form's input or clicks a button
+or link, Space clicks a button, Tab moves the focus, Backspace deletes,
+Control/Meta+a selects a field, printable keys insert.
+
+## [oriel agent]($heading.id('cli'))
+
+| Command | Method |
+|---|---|
+| `snapshot [--interactive] [--selector <css>]` | `snapshot` |
+| `text [<target>]` | `text` |
+| `click <target> [--double]`, `hover <target>` | `click`, `hover` |
+| `fill <target> <value>` | `fill` |
+| `type <text> [--target <t>]`, `press <key> [--target <t>]` | `type`, `press` |
+| `scroll [--target <t>] [--dx N] [--dy N]` | `scroll` |
+| `wait <target> [--hidden] [--timeout <ms>]` | `wait_for` |
+| `eval <expression>`, `invoke <cmd> [<json>]` | `eval`, `invoke` |
+| `screenshot [--out <file>] [--full]` | `screenshot` (prints the path) |
+| `logs [--since N] [--page \| --app-log]` | `app_logs` and `logs` |
+| `windows`, `info`, `reload`, `quit` | the same |
+| `apps` | The running dev builds this user can drive |
+| `call <method> [<json params>]` | Any method |
+| `mcp` | The MCP server |
+
+Every command takes `--app <id>` and `--window <label>`. Errors go to
+stderr with exit code 1; wrong arguments exit with 2.
+
+## [MCP tools]($heading.id('mcp-tools'))
+
+`oriel agent mcp` serves MCP (protocol 2024-11-05 to 2025-06-18) on stdio
+with the tools `oriel_apps`, `oriel_snapshot`, `oriel_click`, `oriel_fill`,
+`oriel_type`, `oriel_press`, `oriel_hover`, `oriel_scroll`,
+`oriel_wait_for`, `oriel_text`, `oriel_screenshot` (returns the image),
+`oriel_logs` (`source`: `both`, `page`, `app`), `oriel_eval`,
+`oriel_invoke`, `oriel_windows`, `oriel_info` and `oriel_reload`. Each
+takes the method's params plus `app` and `window`. A failed call is a
+result with `isError: true` and the reason. It connects for every call, so
+it keeps working across the restarts `oriel dev` does after a Zig change.
+
+# [Troubleshooting]($heading.id('troubleshooting'))
+
+| Symptom | Cause and fix |
+|---|---|
+| `no dev build is running` | Start it with `oriel dev`; production builds (`oriel run`) have no agent. The app logs `dev agent on <path>` when it starts. |
+| `several dev builds are running` | Pass `--app <id>` (`oriel agent apps` lists them). |
+| `no answer within 10000 ms` | The window shows a page that isn't the app's own (an external site), or it is still loading: `oriel agent info`, then `wait`. |
+| `ref e12 is stale` | The page changed or reloaded: take a new snapshot. |
+| `dev agent off: cannot listen ... AnotherInstanceListens` | Another copy of the same dev build runs; the second one has no agent. |
+| `screenshot isn't supported` | Not yet on that platform or with `-Dnative_ui`; `snapshot` and `text` work. |
+| `contains Oriel's dev agent` while packaging | A dev executable reached the package (for example through `.package.contents.executables`); package the production one. |
+
+# [Related]($heading.id('related'))
+
+- [Development]($link.page('docs/development')): `oriel dev`, the loop this drives.
+- [CLI]($link.page('docs/cli')): every `oriel` command.
+- [Commands and events]($link.page('docs/commands')): what `invoke` calls.
+- [Logging]($link.page('docs/logging')): the log `app_logs` reads.
+- [Packaging]($link.page('docs/packaging')): the packages the guard protects.

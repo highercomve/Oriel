@@ -1,10 +1,32 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.14, 0.20.13 and earlier.",
+.description = "Release notes for Oriel 0.20.15, 0.20.14 and earlier.",
 .date = .date("2026-11-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.15 · November 9, 2026]($heading.id('oriel-0-20-15-november-9-2026'))
+
+## [Added]($heading.id('added-0-20-15'))
+
+- Agent control ([Agent control]($link.page('docs/agent'))): development
+  builds answer on a control socket (`$XDG_RUNTIME_DIR/oriel-agent/<id>.sock`,
+  owner-only) so coding agents and scripts can drive the app without the
+  desktop: an outline of the window with refs (`snapshot`), `click`, `fill`,
+  `type`, `press`, `hover`, `scroll`, `wait_for`, `eval`, `invoke`, `reload`,
+  window screenshots rendered by the web view, and the page's console plus
+  the app's log. `oriel agent <command>` drives it from a terminal and
+  `oriel agent mcp` serves it as MCP tools on stdio. Linux (macOS socket in
+  place, untested; screenshots on Linux WebView windows only).
+- Packaging refuses a binary that contains the dev agent: every package's
+  executables go through `package_tool check-no-agent`. The agent is started
+  only when `App.Config.app.dev` is set (comptime), so production builds
+  contain none of its code, strings or page script.
+- `zig build package-executable`: the bare executable in `zig-out/package`
+  (`<exe>-<version>-<arch>-<os>[.exe]`), checked and stripped like the
+  packages' copy, for in-app updater payloads, so release pipelines never
+  publish from `zig-out/bin`.
 
 # [Oriel 0.20.14 · November 9, 2026]($heading.id('oriel-0-20-14-november-9-2026'))
 

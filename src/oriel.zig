@@ -352,6 +352,8 @@ test {
     std.testing.refAllDecls(@import("core/file_handles.zig"));
     std.testing.refAllDecls(@import("core/window_commands.zig"));
     _ = @import("core/internal.zig");
+    // The dev agent (development builds only), where it runs.
+    if (comptime @import("core/target.zig").is_desktop_linux or @import("builtin").os.tag == .macos) _ = @import("core/agent.zig");
     _ = App;
     std.testing.refAllDecls(log);
     std.testing.refAllDecls(platform);

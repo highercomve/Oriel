@@ -2,6 +2,28 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.15] — 2026-11-09
+
+### Added
+
+- Agent control (docs/agent.md): development builds answer on a control
+  socket (`$XDG_RUNTIME_DIR/oriel-agent/<id>.sock`, owner-only) so coding
+  agents and scripts can drive the app without the desktop: an outline of
+  the window with refs (`snapshot`), `click`, `fill`, `type`, `press`,
+  `hover`, `scroll`, `wait_for`, `eval`, `invoke`, `reload`, window
+  screenshots rendered by the web view, and the page's console plus the
+  app's log. `oriel agent <command>` drives it from a terminal and
+  `oriel agent mcp` serves it as MCP tools on stdio. Linux (macOS socket in
+  place, untested; screenshots on Linux WebView windows only).
+- Packaging refuses a binary that contains the dev agent: every package's
+  executables go through `package_tool check-no-agent`. The agent is
+  started only when `App.Config.app.dev` is set (comptime), so production
+  builds contain none of its code, strings or page script.
+- `zig build package-executable`: the bare executable in `zig-out/package`
+  (`<exe>-<version>-<arch>-<os>[.exe]`), checked and stripped like the
+  packages' copy, for in-app updater payloads, so release pipelines never
+  publish from `zig-out/bin`.
+
 ## [0.20.14] — 2026-11-09
 
 ### Added

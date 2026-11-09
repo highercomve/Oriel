@@ -136,6 +136,14 @@ Development builds are Debug builds, so `App.Config.devtools` is on:
 To inspect a release build, set `.devtools = true` in `App.Config` (and
 remove it before shipping).
 
+### Let an agent drive the app
+
+Development builds answer on a control socket: `oriel agent snapshot`,
+`click`, `fill`, `screenshot` and `logs` from a terminal, and
+`oriel agent mcp` for coding agents, with no mouse, keyboard or desktop
+screenshots. Production builds don't contain it, and packaging refuses a
+binary that does. See [Agent control](agent.md).
+
 ### Type-check while editing
 
 ```sh
@@ -263,6 +271,7 @@ Where the file is, levels, and the page's console:
 ## Related
 
 - [CLI](cli.md): every `oriel` command.
+- [Agent control](agent.md): drive the dev build from an agent or a script.
 - [Building](building.md): `addApp`, `Frontend` and the build options.
 - [Commands and events](commands.md): the generated types.
 - [Logging](logging.md): log files and the page's console.

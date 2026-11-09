@@ -19,6 +19,7 @@ The same pages as the website, https://oriel.foreachdeveloper.com/docs/.
 - [Windows](windows.md): The main window and any others: every WindowOptions field, labels, placement and overlays, the page's oriel.window API, and how each platform shows them.
 - [Security](security.md): What a page may load and call: the navigation policy, IPC tokens and capabilities, the Content-Security-Policy, response headers, external URLs and the isolation pattern.
 - [Development](development.md): The dev loop: oriel dev with the frontend's dev server and hot reload, Zig rebuilds and restarts, devtools, logs and type checking.
+- [Agent control](agent.md): Drive a running dev build from a coding agent or a script: read what a window shows, click, type, take screenshots and read logs, from the CLI or as MCP tools, without touching the desktop.
 - [CLI](cli.md): Every oriel command and flag: creating and wrapping apps, the build wrappers, phones, tools, permissions, deep links, signing and updates.
 
 ## App and system

@@ -246,6 +246,14 @@ directory.
 | `package-msix` | `<exe>-<version>.msix` |
 | `package-app` | `<Name>.app` and `<Name>.entitlements` (signed for distribution with `-Dmacos-sign-identity`) |
 | `package-dmg` | `<exe>-<version>.dmg` (the `.app` and an `Applications` link) |
+| `package-executable` | `<exe>-<version>-<arch>-<os>[.exe]`: the bare executable, stripped like the packages' copy; what an in-app updater downloads. Not part of `package` |
+
+Every step takes the executable through `package_tool check-no-agent`,
+which fails the build when it contains the dev agent (a development build:
+[Agent control](agent.md#packaging)). Release
+pipelines should take every file they publish from `zig-out/package`,
+updater payloads included (`package-executable`), and never from
+`zig-out/bin`, which no check covers.
 
 Options: `-Dwebview2-loader`, `-Dappimage-runtime`, `-Dwinget-url`, and the
 signing options on [Signing](signing.md). `oriel package`

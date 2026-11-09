@@ -446,6 +446,19 @@ Needs the iOS SDK (`$APPLE_SDK`, Xcode's on a Mac, `xtool setup` on Linux)
 and xtool (a device) or Xcode's simctl (the simulator). See
 [iOS](ios.md).
 
+### `oriel agent`
+
+```
+Usage: oriel agent <command> [args] [--app <id>] [--window <label>]
+```
+
+Drives the running dev build (`oriel dev`; Linux, macOS) through its control
+socket: `snapshot`, `text`, `screenshot`, `logs`, `windows`, `info`, `click`,
+`fill`, `type`, `press`, `hover`, `scroll`, `wait`, `eval`, `invoke`,
+`reload`, `quit`, `apps`, `call`, and `mcp` (the same as MCP tools on stdio:
+`claude mcp add oriel -- oriel agent mcp`). Production builds have no
+socket. See [Agent control](agent.md).
+
 ### Build wrappers
 
 | Command | Runs | What |

@@ -7,6 +7,7 @@
 //!     oriel zig install | uninstall | list | which [version]
 //!     oriel android init | dev | build | devices
 //!     oriel ios build | dev | install | setup
+//!     oriel agent snapshot | click | fill | screenshot | logs | mcp ...
 //!
 //! A standalone static program (no GTK), built with `zig build cli`.
 
@@ -29,6 +30,7 @@ const android_cmd = @import("android.zig");
 const ios_cmd = @import("ios.zig");
 const wrap_cmd = @import("wrap.zig");
 const fmt_cmd = @import("fmt.zig");
+const agent_cmd = @import("agent.zig");
 
 const program = "oriel";
 
@@ -53,6 +55,7 @@ pub const Commands = union(enum) {
     package: project.Wrapper("package", "Build packages into zig-out/package (deb, rpm, AppImage; setup.exe; .app, .dmg)"),
     types: project.Wrapper("types", "Regenerate the frontend's TypeScript types for the Zig commands"),
     check: project.Wrapper("check", "Type-check the app's Zig code without building"),
+    agent: agent_cmd.Command,
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -120,6 +123,7 @@ fn dispatch(ctx: Context, argv: []const []const u8) !u8 {
             .zig => |c| return zig_cmd.run(ctx, c),
             .android => |c| return android_cmd.runCommand(ctx, c),
             .ios => |c| return ios_cmd.runCommand(ctx, c),
+            .agent => |c| return agent_cmd.run(ctx, c),
             inline else => |c| return project.exec(ctx, @TypeOf(c).zig_step, c.args),
         },
     }
@@ -132,6 +136,7 @@ test {
     _ = wrap_cmd;
     _ = doctor;
     _ = fmt_cmd;
+    _ = agent_cmd;
     _ = setup_cmd;
     _ = update_cmd;
     _ = webview2_cmd;

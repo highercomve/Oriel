@@ -222,6 +222,11 @@ pub fn getPath() ?[]const u8 {
     return log_path_buf[0..log_path_len];
 }
 
+/// Set by the dev agent (agent.zig) to keep the newest lines for
+/// `oriel agent logs`; null in production builds. Called under this
+/// file's lock.
+pub var agent_tap: ?*const fn (line: []const u8) void = null;
+
 /// Custom log function compatible with `std.Options.logFn`.
 pub fn logFn(
     comptime level: std.log.Level,
@@ -260,6 +265,9 @@ fn writeEntry(
         // Truncate gracefully if buffer fills
         break :blk std.fmt.allocPrint(alloc, "{s} [{s}] ({s}): [log truncated]\n", .{ now_str, level_str, scope_str }) catch return;
     };
+
+    // The dev agent's copy (agent.zig; development builds only).
+    if (agent_tap) |tap| tap(formatted);
 
     if (to_stderr) {
         if (is_android) {

@@ -274,6 +274,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "android_manifest", .module = android_manifest_mod },
         },
     });
+    package_tool_mod.addImport("agent_marker", b.createModule(.{ .root_source_file = b.path("src/core/agent_marker.zig") }));
     const package_tool = b.addExecutable(.{
         .name = "package_tool",
         .root_module = package_tool_mod,
@@ -584,6 +585,7 @@ pub fn build(b: *std.Build) void {
         .{ "tools/package/main.zig", &.{
             .{ .name = "zigimg", .module = zigimg_target.module("zigimg") },
             .{ .name = "android_manifest", .module = b.createModule(.{ .root_source_file = b.path("build/android_manifest.zig") }) },
+            .{ .name = "agent_marker", .module = b.createModule(.{ .root_source_file = b.path("src/core/agent_marker.zig") }) },
         } },
         .{ "tools/update_tool.zig", &.{.{ .name = "update_manifest", .module = update_manifest_target }} },
     };

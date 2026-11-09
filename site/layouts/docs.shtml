@@ -19,6 +19,7 @@
 				<a href="$site.page('docs/windows').link()">Windows</a>
 				<a href="$site.page('docs/security').link()">Security</a>
 				<a href="$site.page('docs/development').link()">Development</a>
+				<a href="$site.page('docs/agent').link()">Agent control</a>
 				<a href="$site.page('docs/cli').link()">CLI</a>
 				<h4>App and system</h4>
 				<a href="$site.page('docs/lifecycle').link()">Lifecycle</a>

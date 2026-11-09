@@ -101,6 +101,8 @@ pub fn main(init: std.process.Init) !u8 {
         return installDesktopEntryCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "strip-elf")) {
         return stripElfCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "check-no-agent")) {
+        return checkNoAgentCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-winget")) {
         return packageWingetCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "ios-app")) {
@@ -135,6 +137,7 @@ fn printUsage() void {
         \\  install-desktop-entry Install desktop file and icons to $XDG_DATA_HOME
         \\  package-winget        WinGet manifests for a setup.exe (--installer, --url, --out-dir, --id, metadata)
         \\  strip-elf             Copy an ELF file without its symbol table and debug info (--in, --out)
+        \\  check-no-agent        Copy an executable, failing if it contains the dev agent (--in, --out)
         \\  ios-app               Assemble an (unsigned) iOS .app bundle: Info.plist, icons
         \\                        (--out-dir, --bin, --icon, --app-id, --name, --exe-name, --simulator, ...)
         \\  android-project       Write the app's Android (Gradle) project from Oriel's template
@@ -301,6 +304,69 @@ fn stripElfCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
     defer out.close(io);
     try out.writeStreamingAll(io, stripped orelse data);
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// check-no-agent
+// ---------------------------------------------------------------------------
+
+/// In every binary that contains the dev agent, and in no other
+/// (src/core/agent_marker.zig, shared with the agent).
+pub const agent_marker = @import("agent_marker").marker;
+
+/// Whether `data` (an executable) contains the dev agent.
+pub fn hasDevAgent(data: []const u8) bool {
+    return std.mem.indexOf(u8, data, agent_marker) != null;
+}
+
+/// Copy --in to --out unless it contains the dev agent: a development
+/// build (`<name>-dev`) must never be packaged.
+fn checkNoAgentCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var in_path: ?[]const u8 = null;
+    var out_path: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--in") and i + 1 < args.len) {
+            i += 1;
+            in_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--out") and i + 1 < args.len) {
+            i += 1;
+            out_path = args[i];
+        } else {
+            std.debug.print("error: check-no-agent: unknown argument {s}\n", .{args[i]});
+            return 1;
+        }
+    }
+    if (in_path == null or out_path == null) {
+        std.debug.print("error: check-no-agent: needs --in and --out\n", .{});
+        return 1;
+    }
+    const st = Dir.cwd().statFile(io, in_path.?, .{}) catch |err| {
+        std.debug.print("error: check-no-agent: {s}: {s}\n", .{ in_path.?, @errorName(err) });
+        return 1;
+    };
+    const data = try Dir.cwd().readFileAlloc(io, in_path.?, gpa, .unlimited);
+    defer gpa.free(data);
+    if (hasDevAgent(data)) {
+        std.debug.print(
+            \\error: {s} contains Oriel's dev agent (a control socket for `oriel agent`):
+            \\       it is a development build and must not be packaged.
+            \\       Package the production executable (`zig build package`), not `<name>-dev`.
+            \\
+        , .{in_path.?});
+        return 1;
+    }
+    if (std.fs.path.dirname(out_path.?)) |parent| try Dir.cwd().createDirPath(io, parent);
+    var out = try Dir.cwd().createFile(io, out_path.?, .{ .permissions = st.permissions });
+    defer out.close(io);
+    try out.writeStreamingAll(io, data);
+    return 0;
+}
+
+test "hasDevAgent finds the marker anywhere" {
+    try std.testing.expect(!hasDevAgent("\x7fELF......"));
+    try std.testing.expect(hasDevAgent("\x7fELF..." ++ agent_marker ++ "..."));
+    try std.testing.expect(!hasDevAgent(agent_marker[0 .. agent_marker.len - 1]));
 }
 
 // ---------------------------------------------------------------------------

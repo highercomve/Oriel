@@ -32,6 +32,9 @@ pub const DispatchFn = *const fn (io: ?std.Io, arena: std.mem.Allocator, request
 pub const BuiltinDispatchFn = *const fn (arena: std.mem.Allocator, request: Request) anyerror![]u8;
 
 pub var video_dispatch: ?BuiltinDispatchFn = null;
+/// `oriel:agent:reply`: set by the dev agent (agent.zig), which only
+/// development builds contain; null elsewhere, so the command is unknown.
+pub var agent_dispatch: ?BuiltinDispatchFn = null;
 pub var camera_dispatch: ?DispatchFn = null;
 pub var dialog_dispatch: ?DispatchFn = null;
 
@@ -341,7 +344,8 @@ pub fn isBuiltinCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "open_external") or std.mem.eql(u8, cmd, "deep_link:current") or std.mem.eql(u8, cmd, "share:read") or std.mem.eql(u8, cmd, "share:send") or std.mem.eql(u8, cmd, "share:capabilities") or
         std.mem.eql(u8, cmd, "bluetooth:capabilities") or std.mem.eql(u8, cmd, "bluetooth:advertise") or std.mem.eql(u8, cmd, "bluetooth:stop") or
         std.mem.eql(u8, cmd, "events:ready") or @import("../modules/video/page.zig").isCommand(cmd) or
-        std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings");
+        std.mem.eql(u8, cmd, "permissions:query") or std.mem.eql(u8, cmd, "permissions:request") or std.mem.eql(u8, cmd, "permissions:open_settings") or
+        std.mem.eql(u8, cmd, "oriel:agent:reply");
 }
 
 /// `type/subtype` of letters, digits and `.+-*` (and `/` once): what an
@@ -360,6 +364,10 @@ fn validMimeType(t: []const u8) bool {
 /// Dispatch a built-in framework command.
 pub fn dispatchBuiltin(sec: security.Security, arena: std.mem.Allocator, request: Request) ![]u8 {
     fail_len = null; // see dispatchRequest
+    if (std.mem.eql(u8, request.cmd, "oriel:agent:reply")) {
+        if (agent_dispatch) |disp| return disp(arena, request);
+        return error.UnknownCommand;
+    }
     if (std.mem.eql(u8, request.cmd, "open_external")) {
         const OpenExternalArgs = struct {
             url: []const u8,

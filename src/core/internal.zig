@@ -314,6 +314,10 @@ pub fn run(io: std.Io, comptime api: App.Api, comptime config: App.Config) u8 {
         current_app_id = null;
     }
 
+    // Development builds only: comptime, so production builds contain none
+    // of it (packaging checks: tools/package/main.zig check-no-agent).
+    if (comptime @import("agent.zig").enabled(config)) @import("agent.zig").start(io, config.app.id);
+
     lifecycle.beginRun();
     @import("extensions/runtime.zig").begin(io);
     const code = platform.run(io, api, config);

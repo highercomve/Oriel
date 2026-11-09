@@ -286,7 +286,7 @@ fn resolvePayload(
     var executables: std.ArrayList(std.Build.LazyPath) = .empty;
     var files: std.ArrayList(File) = .empty;
     for (contents.executables) |e| {
-        const bin = e.getEmittedBin();
+        const bin = noDevAgent(b, package_tool, e.getEmittedBin(), e.out_filename);
         executables.append(b.allocator, if (strip) strippedElf(b, package_tool, bin, e.out_filename) else bin) catch @panic("OOM");
     }
     files.appendSlice(b.allocator, contents.files) catch @panic("OOM");
@@ -313,12 +313,25 @@ fn resolvePayload(
             }
         }
     }
-    const bin = exe.getEmittedBin();
+    const bin = noDevAgent(b, package_tool, exe.getEmittedBin(), exe.out_filename);
     return .{
         .exe = if (strip) strippedElf(b, package_tool, bin, exe.out_filename) else bin,
         .executables = executables.items,
         .files = files.items,
     };
+}
+
+/// `src`, copied only when it contains no dev agent (src/core/agent.zig,
+/// which only development builds have): `package_tool check-no-agent`
+/// fails the build otherwise. Every package takes its executables from
+/// here, so none can ship the agent's control socket.
+fn noDevAgent(b: *std.Build, package_tool: *std.Build.Step.Compile, src: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    const run = b.addRunArtifact(package_tool);
+    run.setName(b.fmt("check {s} has no dev agent", .{basename}));
+    run.addArgs(&.{ "check-no-agent", "--in" });
+    run.addFileArg(src);
+    run.addArg("--out");
+    return run.addOutputFileArg(basename);
 }
 
 /// `src` without its symbol table and debug info (`package_tool strip-elf`),
@@ -772,6 +785,17 @@ pub fn addPackageSteps(
             step.dependOn(&b.addFail(msg).step);
         package_step.dependOn(step);
         getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
+    }
+    // The bare executable, checked like every package's (no dev agent) and
+    // stripped like them: what an in-app updater downloads. Its own step,
+    // so `package` doesn't add a file nobody asked for; CI copies it from
+    // zig-out/package, never from zig-out/bin.
+    {
+        const ext = if (os_tag == .windows) ".exe" else "";
+        const filename = b.fmt("{s}-{s}-{s}-{s}{s}", .{ exe_name, version, @tagName(target.result.cpu.arch), @tagName(os_tag), ext });
+        const install = b.addInstallFileWithDir(payload.exe, .prefix, b.fmt("package/{s}", .{filename}));
+        if (contents_error) |fail| install.step.dependOn(fail);
+        getOrCreateStep(b, "package-executable", "Install the checked, stripped executable into zig-out/package (updater payloads)").dependOn(&install.step);
     }
     if (os_tag == .linux and !containsFormat(target_formats, .flatpak)) {
         const step = addFormat(&ctx, .flatpak);
