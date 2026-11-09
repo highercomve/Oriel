@@ -25,6 +25,7 @@ to package an existing website instead of an app, see [Wrap](wrap.md).
 | `.deb` | Linux | Linux | yes | `nfpm` |
 | `.rpm` | Linux | Linux | yes | `nfpm` |
 | `.AppImage` | Linux | Linux | yes | `mksquashfs`; the type-2 runtime (downloaded) |
+| `.flatpak` | Linux | Linux | no (add to `formats` or `package-flatpak`) | `flatpak` |
 | NSIS `setup.exe` | Windows | Windows or Linux | yes | `makensis` (NSIS 3) |
 | `.msix` | Windows | Windows or Linux | no (add to `formats`) | none to build; `signtool` to sign |
 | `.app` | macOS | a Mac (assembled anywhere, unsigned off a Mac) | yes | `codesign` |
@@ -79,6 +80,7 @@ flowchart LR
   Steps -->|"arguments"| Tool
   Tool -->|"nfpm"| Deb[".deb / .rpm"]
   Tool -->|"mksquashfs + runtime"| AI[".AppImage"]
+  Tool -->|"flatpak"| FP[".flatpak"]
   Tool -->|"makensis"| NSIS["setup.exe<br/>(+ WinGet manifests)"]
   Tool -->|"zip + block map"| MSIX[".msix"]
   Tool -->|"Info.plist, codesign, hdiutil"| Mac[".app / .dmg"]
@@ -190,7 +192,7 @@ oriel ios build --ipa             # zig-out/<Name>.ipa
 | `homepage` | `?[]const u8` | none | Project URL (deb, rpm, NSIS, WinGet). |
 | `categories` | `?[]const u8` | `"Utility;"` | XDG categories, `;`-separated. |
 | `version` | `?[]const u8` | `"0.1.0"` | The version in every format and file name; Android derives `versionCode` from it ([Building](building.md#android)). |
-| `formats` | `?[]const Format` | per OS | Formats `package` builds: `.deb`, `.rpm`, `.appimage`, `.nsis`, `.msix`, `.app`, `.dmg`. Default: Linux `deb, rpm, appimage`; Windows `nsis`; macOS `app, dmg`. |
+| `formats` | `?[]const Format` | per OS | Formats `package` builds: `.deb`, `.rpm`, `.appimage`, `.flatpak`, `.nsis`, `.msix`, `.app`, `.dmg`. Default: Linux `deb, rpm, appimage`; Windows `nsis`; macOS `app, dmg`. |
 | `extra_deb_depends` | `[]const []const u8` | `&.{}` | Added to the derived deb `Depends`. |
 | `extra_rpm_depends` | `[]const []const u8` | `&.{}` | Added to the derived rpm `Requires`. |
 | `replaces` | `[]const []const u8` | `&.{}` | deb `Replaces`, rpm `Obsoletes`: installing this upgrades those packages. |
@@ -199,6 +201,7 @@ oriel ios build --ipa             # zig-out/<Name>.ipa
 | `contents` | `PackageContents` | `.{}` | What else every package holds ([below](#contents)). |
 | `winget` | `?Winget` | `null` | WinGet manifests ([below](#winget)). |
 | `msix` | `Msix` | `.{}` | The `.msix` format's settings ([below](#msix)). |
+| `flatpak` | `Flatpak` | `.{}` | The `.flatpak` format's settings ([below](#flatpak)). |
 
 The icon is `AppOptions.icon` and the URL schemes `AppOptions.url_schemes`
 ([Building](building.md#appoptions)).
@@ -221,6 +224,7 @@ Where the payload goes:
 | deb, rpm, no extras | `/usr/bin/<exe>` | none |
 | deb, rpm, with extras | `/usr/lib/<exe>/<exe>` | `/usr/lib/<exe>/`, with `/usr/bin/<name>` symlinks for every executable |
 | AppImage | `usr/bin/<exe>` | `usr/bin/` |
+| Flatpak | `files/bin/<exe>` | `files/bin/` |
 | NSIS | `$INSTDIR\<exe>.exe` | `$INSTDIR\`, removed by the uninstaller (and emptied directories) |
 | MSIX | the package root | next to it |
 | `.app` | `Contents/MacOS/<exe>` | executables and Mach-O files in `Contents/MacOS/` (signed inside-out with the bundle); other files in `Contents/Resources/`, reached through a `Contents/MacOS/<top-level name>` symlink |
@@ -237,6 +241,7 @@ directory.
 | `package-deb` | `<exe>_<version>_<arch>.deb` (`amd64`, `arm64`) |
 | `package-rpm` | `<exe>-<version>-1.<arch>.rpm` (`x86_64`, `aarch64`) |
 | `package-appimage` | `<exe>-<version>-<arch>.AppImage` |
+| `package-flatpak` | `<exe>-<version>-<arch>.flatpak` |
 | `package-nsis` | `<exe>-<version>-setup.exe`, and `winget/` with `-Dwinget-url` |
 | `package-msix` | `<exe>-<version>.msix` |
 | `package-app` | `<Name>.app` and `<Name>.entitlements` (signed for distribution with `-Dmacos-sign-identity`) |
@@ -279,6 +284,43 @@ match the host. The AppImage is therefore a few MB and runs on any
 distribution with GTK 4 and WebKitGTK 6.0 installed, and on none without
 them. The [Updater](updater.md) replaces the outer
 `.AppImage` file when the app runs from one.
+
+### Flatpak
+
+Single-file `.flatpak` bundles (`<name>-<version>-<arch>.flatpak`), built using
+the host's `flatpak` command alone (no SDK or `flatpak-builder` needed; the
+app is already compiled).
+
+The bundle installs on any machine with Flatpak and the GNOME Platform runtime
+(`org.gnome.Platform`, default branch `"49"`; override with
+`-Dflatpak-runtime-version=<branch>` or `package.flatpak.runtime_version`).
+
+Oriel derives the sandbox permissions automatically from the app's enabled
+modules and declared permissions:
+- Always: `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc`, `--device=dri`.
+- Network (`--share=network`): enabled with `network`, `share`, `media_server`, `updater`, or `.permissions.local_network`.
+- System Tray (`--talk-name=org.kde.StatusNotifierWatcher`): enabled with `tray`.
+- Audio playback and capture (`--socket=pulseaudio`): enabled with `audio_capture`, `kokoro`, `video`, or audio permissions.
+- Bluetooth (`--system-talk-name=org.bluez`): enabled with `bluetooth`.
+
+Extra permissions can be passed through `package.flatpak.extra_finish_args` (e.g. `&.{"--filesystem=xdg-documents"}`).
+Inside a Flatpak sandbox, the files are read-only and Flatpak manages updates;
+Oriel's [Updater](updater.md) detects this (`/.flatpak-info`)
+and returns `error.ManagedByFlatpak`.
+
+`Flatpak`:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `runtime_version` | `?[]const u8` | `"49"` | The `org.gnome.Platform` branch. |
+| `branch` | `?[]const u8` | `"stable"` | The branch name for the bundle ref. |
+| `extra_finish_args` | `[]const []const u8` | `&.{}` | Additional `flatpak build-finish` options (`--finish-arg`). |
+
+Build it with:
+```sh
+zig build package-flatpak
+```
+or add `.flatpak` to `package.formats` to build it as part of `oriel package`.
 
 ### Desktop entries
 

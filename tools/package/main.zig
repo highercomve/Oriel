@@ -19,6 +19,7 @@ pub const metadata = @import("metadata.zig");
 pub const desktop = @import("desktop.zig");
 pub const nfpm = @import("nfpm.zig");
 pub const appimage = @import("appimage.zig");
+pub const flatpak = @import("flatpak.zig");
 pub const icons = @import("icons.zig");
 pub const ico = @import("ico.zig");
 pub const nsis = @import("nsis.zig");
@@ -82,6 +83,8 @@ pub fn main(init: std.process.Init) !u8 {
         return packageNfpmCmd(gpa, io, args, .rpm);
     } else if (std.mem.eql(u8, command, "package-appimage")) {
         return packageAppImageCmd(gpa, io, args);
+    } else if (std.mem.eql(u8, command, "package-flatpak")) {
+        return packageFlatpakCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-msix")) {
         return packageMsixCmd(gpa, io, args);
     } else if (std.mem.eql(u8, command, "package-nsis")) {
@@ -120,6 +123,7 @@ fn printUsage() void {
         \\  package-deb           Generate nfpm.yaml and build Debian (.deb) package
         \\  package-rpm           Generate nfpm.yaml and build RPM (.rpm) package
         \\  package-appimage      Assemble AppDir, run mksquashfs, prepend runtime
+        \\  package-flatpak       Assemble a build dir, finish, export, bundle (flatpak command)
         \\  package-nsis          Generate installer.nsi and build Windows setup.exe via makensis
         \\  package-msix          Build a Windows .msix (manifest, block map); signed with signtool
         \\                        when --pfx or --cert-sha1 is given, else unsigned
@@ -1193,6 +1197,312 @@ fn packageAppImageCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8
     // Clean up temporary AppDir and squashfs image
     _ = Dir.cwd().deleteTree(io, app_dir) catch {};
     _ = Dir.cwd().deleteFile(io, squashfs_path) catch {};
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// package-flatpak
+// ---------------------------------------------------------------------------
+
+/// Runs one `flatpak` command; prints its output when it fails and returns
+/// `false`. `what` names the step (finish, export, bundle) in the message.
+fn flatpakRun(gpa: std.mem.Allocator, io: Io, argv: []const []const u8, what: []const u8) bool {
+    const res = std.process.run(gpa, io, .{ .argv = argv }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("error: 'flatpak' is required for package-flatpak's {s} but was not found in PATH\n", .{what});
+        } else {
+            std.debug.print("error: failed to run flatpak ({s}): {s}\n", .{ what, @errorName(err) });
+        }
+        return false;
+    };
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    if (res.term == .exited and res.term.exited == 0) return true;
+    std.debug.print("error: flatpak {s} failed:\n{s}{s}\n", .{ what, res.stdout, res.stderr });
+    return false;
+}
+
+fn packageFlatpakCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8) !u8 {
+    var out_dir: ?[]const u8 = null;
+    var filename: ?[]const u8 = null;
+    var bin_path: ?[]const u8 = null;
+    var desktop_path: ?[]const u8 = null;
+    var icons_dir: ?[]const u8 = null;
+    var app_id: ?[]const u8 = null;
+    var exe_name: ?[]const u8 = null;
+    var version: []const u8 = "0.1.0";
+    var arch: []const u8 = "x86_64";
+    var runtime_version: []const u8 = "49";
+    var branch: []const u8 = "stable";
+    var name: ?[]const u8 = null;
+    var summary: ?[]const u8 = null;
+    var description: ?[]const u8 = null;
+    var publisher: ?[]const u8 = null;
+    var license: ?[]const u8 = null;
+    var homepage: ?[]const u8 = null;
+    var finish_args: std.ArrayList([]const u8) = .empty;
+    defer finish_args.deinit(gpa);
+    var extras: contents.Contents = .{};
+    defer extras.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (parseContentsArg(&extras, gpa, "package-flatpak", args, &i) orelse return 1) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--out-dir") and i + 1 < args.len) {
+            i += 1;
+            out_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--filename") and i + 1 < args.len) {
+            i += 1;
+            filename = args[i];
+        } else if (std.mem.eql(u8, arg, "--bin") and i + 1 < args.len) {
+            i += 1;
+            bin_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--desktop") and i + 1 < args.len) {
+            i += 1;
+            desktop_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--icons-dir") and i + 1 < args.len) {
+            i += 1;
+            icons_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--app-id") and i + 1 < args.len) {
+            i += 1;
+            app_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--exe-name") and i + 1 < args.len) {
+            i += 1;
+            exe_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--version") and i + 1 < args.len) {
+            i += 1;
+            version = args[i];
+        } else if (std.mem.eql(u8, arg, "--arch") and i + 1 < args.len) {
+            i += 1;
+            arch = args[i];
+        } else if (std.mem.eql(u8, arg, "--runtime-version") and i + 1 < args.len) {
+            i += 1;
+            runtime_version = args[i];
+        } else if (std.mem.eql(u8, arg, "--branch") and i + 1 < args.len) {
+            i += 1;
+            branch = args[i];
+        } else if (std.mem.eql(u8, arg, "--name") and i + 1 < args.len) {
+            i += 1;
+            name = args[i];
+        } else if (std.mem.eql(u8, arg, "--summary") and i + 1 < args.len) {
+            i += 1;
+            summary = args[i];
+        } else if (std.mem.eql(u8, arg, "--description") and i + 1 < args.len) {
+            i += 1;
+            description = args[i];
+        } else if (std.mem.eql(u8, arg, "--publisher") and i + 1 < args.len) {
+            i += 1;
+            publisher = args[i];
+        } else if (std.mem.eql(u8, arg, "--license") and i + 1 < args.len) {
+            i += 1;
+            license = args[i];
+        } else if (std.mem.eql(u8, arg, "--homepage") and i + 1 < args.len) {
+            i += 1;
+            homepage = args[i];
+        } else if (std.mem.eql(u8, arg, "--finish-arg") and i + 1 < args.len) {
+            i += 1;
+            try finish_args.append(gpa, args[i]);
+        }
+    }
+
+    const dest_dir = out_dir orelse {
+        std.debug.print("error: package-flatpak: missing --out-dir\n", .{});
+        return 1;
+    };
+    const target_filename = filename orelse {
+        std.debug.print("error: package-flatpak: missing --filename\n", .{});
+        return 1;
+    };
+    const target_bin = bin_path orelse {
+        std.debug.print("error: package-flatpak: missing --bin\n", .{});
+        return 1;
+    };
+    const target_desktop = desktop_path orelse {
+        std.debug.print("error: package-flatpak: missing --desktop\n", .{});
+        return 1;
+    };
+    const target_icons_dir = icons_dir orelse {
+        std.debug.print("error: package-flatpak: missing --icons-dir\n", .{});
+        return 1;
+    };
+    const target_app_id = app_id orelse {
+        std.debug.print("error: package-flatpak: missing --app-id\n", .{});
+        return 1;
+    };
+    const target_exe_name = exe_name orelse target_app_id;
+    const target_name = name orelse {
+        std.debug.print("error: package-flatpak: missing --name (the metainfo's application name)\n", .{});
+        return 1;
+    };
+    const target_summary = summary orelse {
+        std.debug.print("error: package-flatpak: missing --summary\n", .{});
+        return 1;
+    };
+    const target_description = description orelse {
+        std.debug.print("error: package-flatpak: missing --description\n", .{});
+        return 1;
+    };
+    const target_publisher = publisher orelse {
+        std.debug.print("error: package-flatpak: missing --publisher\n", .{});
+        return 1;
+    };
+
+    // The Flatpak ref, the metainfo's file name and the OSTree tag all use
+    // the app id; one that `flatpak` won't take fails later than it should.
+    if (!metadata.validAppId(target_app_id)) {
+        std.debug.print("error: package-flatpak: invalid --app-id '{s}' (reverse-DNS, e.g. com.example.App)\n", .{target_app_id});
+        return 1;
+    }
+    metadata.validateExeName(target_exe_name) catch |err| {
+        std.debug.print("error: package-flatpak: invalid --exe-name '{s}': {s}\n", .{ target_exe_name, @errorName(err) });
+        return 1;
+    };
+    flatpak.validateRuntimeVersion(runtime_version) catch |err| {
+        std.debug.print("error: package-flatpak: invalid --runtime-version '{s}': {s}\n", .{ runtime_version, @errorName(err) });
+        return 1;
+    };
+    // The ref's branch and arch accept the same characters as the runtime version.
+    flatpak.validateRuntimeVersion(branch) catch {
+        std.debug.print("error: package-flatpak: invalid --branch '{s}'\n", .{branch});
+        return 1;
+    };
+    flatpak.validateRuntimeVersion(arch) catch {
+        std.debug.print("error: package-flatpak: invalid --arch '{s}'\n", .{arch});
+        return 1;
+    };
+    for (finish_args.items) |fa| flatpak.validateFinishArg(fa) catch {
+        std.debug.print("error: package-flatpak: invalid --finish-arg (one line, no spaces around it)\n", .{});
+        return 1;
+    };
+    // The metainfo's text is XML; control characters are rejected instead of
+    // written, so a software center doesn't refuse the bundle.
+    inline for (.{ target_name, target_summary, target_publisher, version }) |v| {
+        flatpak.validateText(v, false) catch {
+            std.debug.print("error: package-flatpak: invalid metainfo text (valid UTF-8, no control characters)\n", .{});
+            return 1;
+        };
+    }
+    flatpak.validateText(target_description, true) catch {
+        std.debug.print("error: package-flatpak: invalid --description\n", .{});
+        return 1;
+    };
+    if (!validateContents(&extras, "package-flatpak", &.{target_exe_name})) return 1;
+
+    try Dir.cwd().createDirPath(io, dest_dir);
+
+    // 1. Stage the build directory the flatpak command finishes and exports.
+    const build_dir = try std.fmt.allocPrint(gpa, "{s}/build", .{dest_dir});
+    defer gpa.free(build_dir);
+    const repo_dir = try std.fmt.allocPrint(gpa, "{s}/repo", .{dest_dir});
+    defer gpa.free(repo_dir);
+    const bundle_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ dest_dir, target_filename });
+    defer gpa.free(bundle_path);
+    _ = Dir.cwd().deleteTree(io, build_dir) catch {};
+    _ = Dir.cwd().deleteTree(io, repo_dir) catch {};
+    _ = Dir.cwd().deleteFile(io, bundle_path) catch {};
+
+    const files_bin = try std.fmt.allocPrint(gpa, "{s}/files/bin", .{build_dir});
+    defer gpa.free(files_bin);
+    const share_apps = try std.fmt.allocPrint(gpa, "{s}/files/share/applications", .{build_dir});
+    defer gpa.free(share_apps);
+    const share_metainfo = try std.fmt.allocPrint(gpa, "{s}/files/share/metainfo", .{build_dir});
+    defer gpa.free(share_metainfo);
+    for ([_][]const u8{ files_bin, share_apps, share_metainfo }) |d| try Dir.cwd().createDirPath(io, d);
+
+    // metadata ([Application]; build-finish adds [Context]).
+    {
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try flatpak.writeMetadata(&out.writer, .{
+            .app_id = target_app_id,
+            .exe_name = target_exe_name,
+            .arch = arch,
+            .runtime_version = runtime_version,
+        });
+        const metadata_path = try std.fmt.allocPrint(gpa, "{s}/metadata", .{build_dir});
+        defer gpa.free(metadata_path);
+        try Dir.cwd().writeFile(io, .{ .sub_path = metadata_path, .data = out.written() });
+    }
+
+    // files/bin/<exe_name> (mode 0755) and the contents next to it.
+    const exe_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ files_bin, target_exe_name });
+    defer gpa.free(exe_path);
+    try Dir.cwd().copyFile(target_bin, Dir.cwd(), exe_path, io, .{
+        .permissions = filePerms(0o755),
+    });
+    try copyContents(gpa, io, &extras, files_bin);
+
+    // files/share/applications/<app_id>.desktop (the package desktop entry;
+    // its Exec is the bare exe name, which is the metadata's command).
+    const desktop_data = try Dir.cwd().readFileAlloc(io, target_desktop, gpa, .limited(1024 * 1024));
+    defer gpa.free(desktop_data);
+    const desktop_dest = try std.fmt.allocPrint(gpa, "{s}/{s}.desktop", .{ share_apps, target_app_id });
+    defer gpa.free(desktop_dest);
+    try Dir.cwd().writeFile(io, .{ .sub_path = desktop_dest, .data = desktop_data });
+
+    // files/share/icons/hicolor/<n>x<n>/apps/<app_id>.png
+    for (icons.icon_sizes) |size| {
+        const icon_src = try std.fmt.allocPrint(gpa, "{s}/{d}x{d}.png", .{ target_icons_dir, size, size });
+        defer gpa.free(icon_src);
+        if (!pathExists(io, icon_src)) continue;
+        const icon_data = try Dir.cwd().readFileAlloc(io, icon_src, gpa, .limited(10 * 1024 * 1024));
+        defer gpa.free(icon_data);
+        const icon_dir = try std.fmt.allocPrint(gpa, "{s}/files/share/icons/hicolor/{d}x{d}/apps", .{ build_dir, size, size });
+        defer gpa.free(icon_dir);
+        try Dir.cwd().createDirPath(io, icon_dir);
+        const icon_dest = try std.fmt.allocPrint(gpa, "{s}/{s}.png", .{ icon_dir, target_app_id });
+        defer gpa.free(icon_dest);
+        try Dir.cwd().writeFile(io, .{ .sub_path = icon_dest, .data = icon_data });
+    }
+
+    // files/share/metainfo/<app_id>.metainfo.xml
+    {
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try flatpak.writeMetainfo(&out.writer, .{
+            .app_id = target_app_id,
+            .name = target_name,
+            .summary = target_summary,
+            .description = target_description,
+            .version = version,
+            .publisher = target_publisher,
+            .homepage = homepage,
+            .license = license,
+        });
+        const metainfo_path = try std.fmt.allocPrint(gpa, "{s}/{s}.metainfo.xml", .{ share_metainfo, target_app_id });
+        defer gpa.free(metainfo_path);
+        try Dir.cwd().writeFile(io, .{ .sub_path = metainfo_path, .data = out.written() });
+    }
+
+    // 2. flatpak build-finish: the sandbox permissions ([Context]) and the
+    //    export list (files/share).
+    var finish_argv: std.ArrayList([]const u8) = .empty;
+    defer finish_argv.deinit(gpa);
+    try finish_argv.appendSlice(gpa, &.{ "flatpak", "build-finish" });
+    try finish_argv.appendSlice(gpa, &flatpak.base_finish_args);
+    try finish_argv.appendSlice(gpa, finish_args.items);
+    try finish_argv.append(gpa, build_dir);
+    if (!flatpakRun(gpa, io, finish_argv.items, "build-finish")) return 1;
+
+    // 3. flatpak build-export: commit the build dir into a local OSTree repo,
+    //    under the same branch build-bundle reads it back from.
+    if (!flatpakRun(gpa, io, &.{ "flatpak", "build-export", repo_dir, build_dir, branch }, "build-export")) return 1;
+
+    // 4. flatpak build-bundle: the single-file .flatpak. --runtime-repo
+    //    points at Flathub so `flatpak install` can fetch the runtime.
+    if (!flatpakRun(gpa, io, &.{
+        "flatpak",        "build-bundle",
+        "--arch",         arch,
+        "--runtime-repo", flatpak.runtime_repo,
+        repo_dir,         bundle_path,
+        target_app_id,    branch,
+    }, "build-bundle")) return 1;
+
+    // The exported repo is reproducible state, not the deliverable: drop it.
+    _ = Dir.cwd().deleteTree(io, repo_dir) catch {};
 
     return 0;
 }
@@ -2362,6 +2672,7 @@ test {
     std.testing.refAllDecls(desktop);
     std.testing.refAllDecls(nfpm);
     std.testing.refAllDecls(appimage);
+    std.testing.refAllDecls(flatpak);
     std.testing.refAllDecls(icons);
     std.testing.refAllDecls(ico);
     std.testing.refAllDecls(nsis);

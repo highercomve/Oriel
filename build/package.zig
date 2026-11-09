@@ -11,6 +11,7 @@ const espeak_data = @import("espeak_data.zig");
 pub const targetToDebArch = metadata_mod.targetToDebArch;
 pub const targetToRpmArch = metadata_mod.targetToRpmArch;
 pub const targetToAppImageArch = metadata_mod.targetToAppImageArch;
+pub const targetToFlatpakArch = metadata_mod.targetToFlatpakArch;
 
 /// Target package formats supported by Oriel.
 ///
@@ -23,6 +24,9 @@ pub const targetToAppImageArch = metadata_mod.targetToAppImageArch;
 /// - `dmg`: macOS disk image with the .app and an Applications link (`hdiutil`, macOS hosts).
 /// - `msix`: Windows MSIX package (tools/package/msix.zig; no SDK needed to
 ///   build it, signtool to sign it). Opt-in: see `PackageOptions.msix`.
+/// - `flatpak`: Linux Flatpak bundle (`.flatpak`; tools/package/flatpak.zig:
+///   no SDK or flatpak-builder needed, the `flatpak` command alone).
+///   Opt-in: see `PackageOptions.flatpak`.
 ///
 /// Future formats:
 /// - `msi`: Windows installer MSI generated via WiX toolset.
@@ -34,6 +38,7 @@ pub const Format = enum {
     app,
     dmg,
     msix,
+    flatpak,
 };
 
 /// Return default package formats for a given operating system.
@@ -143,6 +148,11 @@ pub const PackageOptions = struct {
     /// certificate in the user's store), or $ORIEL_MSIX_PFX /
     /// $ORIEL_MSIX_CERT_SHA1; `-Dmsix-timestamp=<url>` timestamps it.
     msix: Msix = .{},
+
+    /// Linux: the `.flatpak` format's settings (add `.flatpak` to `formats`).
+    /// The sandbox permissions come from the app's modules and declared
+    /// permissions; these are the flatpak-specific knobs.
+    flatpak: Flatpak = .{},
 };
 
 /// See `PackageOptions.msix` and tools/package/msix.zig.
@@ -158,6 +168,20 @@ pub const Msix = struct {
     identity_name: ?[]const u8 = null,
     /// The oldest Windows it installs on (TargetDeviceFamily MinVersion).
     min_version: []const u8 = "10.0.17763.0",
+};
+
+/// See `PackageOptions.flatpak` and tools/package/flatpak.zig.
+pub const Flatpak = struct {
+    /// The org.gnome.Platform branch to run on ("48", "49", "50", "master").
+    /// Override once the app needs a newer WebKitGTK than the default's.
+    runtime_version: ?[]const u8 = null,
+    /// The branch name for the bundle ref (default: "stable").
+    branch: ?[]const u8 = null,
+    /// Extra `flatpak build-finish` permissions (--finish-arg values, e.g.
+    /// "--filesystem=xdg-documents"), for needs the modules don't cover.
+    /// The ones the modules derive are added automatically and can't be
+    /// overridden here.
+    extra_finish_args: []const []const u8 = &.{},
 };
 
 /// See `PackageOptions.winget` and tools/package/winget.zig.
@@ -370,6 +394,8 @@ pub const Context = struct {
     /// (`<kind>:<name>`), for MSIX.
     msix_capabilities: []const []const u8 = &.{},
     msix: Msix = .{},
+    /// `PackageOptions.flatpak`, for the `.flatpak` format.
+    flatpak: Flatpak = .{},
 };
 
 fn shareTypes(options: anytype) []const []const u8 {
@@ -725,6 +751,7 @@ pub fn addPackageSteps(
         .permission_kinds = declaredKinds(b, permissions),
         .msix_capabilities = msixCapabilities(b, options),
         .msix = pkg_opts.msix,
+        .flatpak = pkg_opts.flatpak,
     };
 
     // Determine target formats
@@ -745,6 +772,11 @@ pub fn addPackageSteps(
             step.dependOn(&b.addFail(msg).step);
         package_step.dependOn(step);
         getOrCreateStep(b, b.fmt("package-{s}", .{@tagName(fmt)}), b.fmt("Build only the {s} package", .{@tagName(fmt)})).dependOn(step);
+    }
+    if (os_tag == .linux and !containsFormat(target_formats, .flatpak)) {
+        const step = addFormat(&ctx, .flatpak);
+        if (contents_error) |fail| step.dependOn(fail);
+        getOrCreateStep(b, "package-flatpak", "Build only the flatpak package").dependOn(step);
     }
 
     // Desktop entries for local runs (Linux): the GlobalShortcuts portal (and
@@ -823,6 +855,11 @@ fn addDesktopEntryStep(
     step.dependOn(&run_install_desktop.step);
 }
 
+fn containsFormat(formats: []const Format, format: Format) bool {
+    for (formats) |f| if (f == format) return true;
+    return false;
+}
+
 /// Dispatch format builder based on Format enum.
 fn addFormat(ctx: *const Context, format: Format) *std.Build.Step {
     return switch (format) {
@@ -833,6 +870,7 @@ fn addFormat(ctx: *const Context, format: Format) *std.Build.Step {
         .app => addApp(ctx),
         .dmg => addDmg(ctx),
         .msix => addMsix(ctx),
+        .flatpak => addFlatpak(ctx),
     };
 }
 
@@ -1012,6 +1050,101 @@ fn addAppImage(ctx: *const Context) *std.Build.Step {
         ctx.b.fmt("package/{s}", .{appimage_filename}),
     );
     return &install.step;
+}
+
+/// Build a Flatpak bundle (`<name>-<version>-<arch>.flatpak`).
+///
+/// The `flatpak` command does the archive (build-finish, build-export,
+/// build-bundle); the sandbox permissions come from the app's modules and
+/// declared permissions, plus `PackageOptions.flatpak.extra_finish_args`.
+fn addFlatpak(ctx: *const Context) *std.Build.Step {
+    const b = ctx.b;
+    const flatpak_arch = targetToFlatpakArch(ctx.target.result.cpu.arch) orelse
+        return &b.addFail(b.fmt("PackageFormats: the GNOME runtimes ship x86_64 and aarch64 only, not {s}: package {s} as deb, rpm or AppImage instead", .{ @tagName(ctx.target.result.cpu.arch), ctx.metadata.exe_name })).step;
+    const filename = b.fmt("{s}-{s}-{s}.flatpak", .{ ctx.metadata.exe_name, ctx.metadata.version, flatpak_arch });
+
+    const runtime_version = ctx.flatpak.runtime_version orelse
+        getOrDeclareStringOption(b, "flatpak-runtime-version", "The org.gnome.Platform branch the .flatpak runs on (e.g. 50; default 49)") orelse "49";
+
+    const run = b.addRunArtifact(ctx.package_tool);
+    run.addArg("package-flatpak");
+    run.addArg("--out-dir");
+    const out_dir = run.addOutputDirectoryArg("flatpak");
+    run.addArgs(&.{ "--filename", filename });
+    run.addArg("--bin");
+    run.addFileArg(ctx.payload.exe);
+    ctx.payload.addArgs(ctx.b, run);
+    run.addArg("--desktop");
+    run.addFileArg(ctx.desktop_file);
+    run.addArg("--icons-dir");
+    run.addDirectoryArg(ctx.icons_dir);
+    run.addArgs(&.{ "--app-id", ctx.metadata.id });
+    run.addArgs(&.{ "--exe-name", ctx.metadata.exe_name });
+    run.addArgs(&.{ "--version", ctx.metadata.version });
+    run.addArgs(&.{ "--arch", flatpak_arch });
+    run.addArgs(&.{ "--runtime-version", runtime_version });
+    if (ctx.flatpak.branch) |br| run.addArgs(&.{ "--branch", br });
+    run.addArgs(&.{ "--name", ctx.metadata.name });
+    run.addArgs(&.{ "--summary", ctx.metadata.summary });
+    run.addArgs(&.{ "--description", ctx.metadata.description });
+    run.addArgs(&.{ "--publisher", ctx.metadata.publisher });
+    if (ctx.metadata.license) |lic| run.addArgs(&.{ "--license", lic });
+    if (ctx.metadata.homepage) |hp| run.addArgs(&.{ "--homepage", hp });
+
+    // What the app's modules and declared permissions need from the sandbox
+    // (hands: what's outside it). File dialogs, notifications and global
+    // shortcuts go through portals and need none.
+    const needs = featuresNeeds(ctx);
+    var extras: std.ArrayList([]const u8) = .empty;
+    if (needs.network) extras.append(b.allocator, "--share=network") catch @panic("OOM");
+    if (needs.tray) extras.append(b.allocator, "--talk-name=org.kde.StatusNotifierWatcher") catch @panic("OOM");
+    if (needs.audio) extras.append(b.allocator, "--socket=pulseaudio") catch @panic("OOM");
+    if (needs.bluetooth) extras.append(b.allocator, "--system-talk-name=org.bluez") catch @panic("OOM");
+    for (ctx.flatpak.extra_finish_args) |a| extras.append(b.allocator, a) catch @panic("OOM");
+    for (extras.items) |a| run.addArgs(&.{ "--finish-arg", a });
+
+    const install = b.addInstallFileWithDir(
+        out_dir.path(ctx.b, filename),
+        .prefix,
+        b.fmt("package/{s}", .{filename}),
+    );
+    return &install.step;
+}
+
+/// What the modules and declared permissions need from a Flatpak sandbox
+/// (a hole in it), for the `.flatpak` format's `--finish-arg`s.
+fn featuresNeeds(ctx: *const Context) FlatpakNeeds {
+    var needs: FlatpakNeeds = .{};
+    needs.network = isFeatureEnabled(ctx.oriel_dep, "network") or
+        isFeatureEnabled(ctx.oriel_dep, "share") or
+        isFeatureEnabled(ctx.oriel_dep, "media_server") or
+        isFeatureEnabled(ctx.oriel_dep, "updater") or
+        hasKind(ctx.permission_kinds, "local_network");
+    needs.tray = isFeatureEnabled(ctx.oriel_dep, "tray");
+    // Recording (audio_capture) and playing (kokoro, GStreamer's video) go
+    // through the sound server.
+    needs.audio = isFeatureEnabled(ctx.oriel_dep, "audio_capture") or
+        isFeatureEnabled(ctx.oriel_dep, "kokoro") or
+        isFeatureEnabled(ctx.oriel_dep, "video") or
+        hasKind(ctx.permission_kinds, "microphone") or
+        hasKind(ctx.permission_kinds, "system_audio");
+    needs.bluetooth = isFeatureEnabled(ctx.oriel_dep, "bluetooth");
+    return needs;
+}
+
+/// The sandbox holes `featuresNeeds` derives (tools/package/flatpak.zig
+/// turns them into `--finish-arg`s).
+const FlatpakNeeds = struct {
+    network: bool = false,
+    tray: bool = false,
+    audio: bool = false,
+    bluetooth: bool = false,
+};
+
+/// A declared permission kind by name (`Context.permission_kinds`).
+fn hasKind(kinds: []const []const u8, kind: []const u8) bool {
+    for (kinds) |k| if (std.mem.eql(u8, k, kind)) return true;
+    return false;
 }
 
 /// Build Windows NSIS installer (`<name>-<version>-setup.exe`).

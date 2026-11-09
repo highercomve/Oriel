@@ -33,6 +33,7 @@ pub const download = core.download;
 pub const restart = core.restart;
 pub const resolveDestPath = core.resolveDestPath;
 pub const runningAsAppImage = core.runningAsAppImage;
+pub const runningInFlatpak = core.runningInFlatpak;
 
 // ---------------------------------------------------------------------------
 // Commands state
@@ -154,6 +155,8 @@ pub fn Commands(comptime config: Config) type {
         /// throttled `updater://progress` events ({ downloaded, total }).
         pub fn updater_install(_: std.mem.Allocator, io: std.Io) !bool {
             const alloc = getAllocator(config.allocator);
+            // Before taking the pending update: Flatpak installs this app's updates.
+            if (runningInFlatpak(io)) return error.ManagedByFlatpak;
 
             state_mutex.lockUncancelable(io);
             if (current_state != .idle) {

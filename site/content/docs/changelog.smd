@@ -1,10 +1,25 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.13, 0.20.12 and earlier.",
-.date = .date("2026-11-05T00:00:00"),
+.description = "Release notes for Oriel 0.20.14, 0.20.13 and earlier.",
+.date = .date("2026-11-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.14 · November 9, 2026]($heading.id('oriel-0-20-14-november-9-2026'))
+
+## [Added]($heading.id('added-0-20-14'))
+
+- Flatpak bundle packaging (`package-flatpak`): build single-file `.flatpak`
+  bundles with the host's `flatpak` command alone, using `org.gnome.Platform`
+  (default branch `"49"`, configurable via `-Dflatpak-runtime-version` or
+  `package.flatpak.runtime_version`). Sandbox permissions are derived
+  automatically from enabled modules and declared permissions (Wayland,
+  X11 fallback, DRI, IPC, network, PulseAudio, BlueZ, StatusNotifierWatcher),
+  with optional `package.flatpak.extra_finish_args`.
+- Self-updater Flatpak safety: `runningInFlatpak(io)` detects when running
+  inside a Flatpak sandbox (`/.flatpak-info`) and returns `error.ManagedByFlatpak`
+  instead of attempting to modify read-only sandbox files.
 
 # [Oriel 0.20.13 · November 5, 2026]($heading.id('oriel-0-20-13-november-5-2026'))
 

@@ -161,6 +161,16 @@ pub fn runningAsAppImage(io: std.Io, gpa: std.mem.Allocator) !bool {
     return backend.runningAsAppImage(io, gpa, has_ai, ad);
 }
 
+/// True inside a Flatpak sandbox (`/.flatpak-info` exists). The app's
+/// files are read-only there and Flatpak installs its updates, so the
+/// updater refuses to replace them (`error.ManagedByFlatpak`); an app can
+/// hide its update UI.
+pub fn runningInFlatpak(io: std.Io) bool {
+    if (builtin.os.tag != .linux) return false;
+    std.Io.Dir.cwd().access(io, "/.flatpak-info", .{}) catch return false;
+    return true;
+}
+
 /// Determine the target binary path without calling getenv off the main thread.
 pub fn resolveDestPath(io: std.Io, gpa: std.mem.Allocator, dest_path: ?[]const u8) ![]u8 {
     if (dest_path) |p| {
@@ -485,6 +495,9 @@ fn downloadInternal(
 ) ![]u8 {
     // The signed size bounds what is written; past the unpacked cap it is refused.
     if (update.size > MAX_UNPACKED_SIZE) return error.PayloadTooLarge;
+
+    // A Flatpak's files are read-only and Flatpak updates them.
+    if (dest_path == null and runningInFlatpak(io)) return error.ManagedByFlatpak;
 
     // Replacing this copy: the signed format must match how it is installed
     // (an AppImage only by an AppImage, a raw binary by a raw one). An

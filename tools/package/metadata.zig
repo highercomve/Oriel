@@ -38,6 +38,18 @@ pub fn targetToAppImageArch(arch: std.Target.Cpu.Arch) []const u8 {
     };
 }
 
+/// Map CPU architecture to a Flatpak (OSTree) architecture name, null when
+/// the GNOME runtimes don't ship it (Flathub has x86_64 and aarch64 only;
+/// other targets bundle as deb, rpm or AppImage instead).
+pub fn targetToFlatpakArch(arch: std.Target.Cpu.Arch) ?[]const u8 {
+    return switch (arch) {
+        .x86_64 => "x86_64",
+        .aarch64 => "aarch64",
+        else => null,
+    };
+}
+
+
 pub const ValidationError = error{
     InvalidExeName,
     InvalidAppId,
@@ -361,6 +373,12 @@ test "targetToArch mappings" {
     try testing.expectEqualStrings("armhf", targetToAppImageArch(.arm));
     try testing.expectEqualStrings("riscv64", targetToAppImageArch(.riscv64));
     try testing.expectEqualStrings("i686", targetToAppImageArch(.x86));
+
+    try testing.expectEqualStrings("x86_64", targetToFlatpakArch(.x86_64).?);
+    try testing.expectEqualStrings("aarch64", targetToFlatpakArch(.aarch64).?);
+    try testing.expect(targetToFlatpakArch(.x86) == null);
+    try testing.expect(targetToFlatpakArch(.arm) == null);
+    try testing.expect(targetToFlatpakArch(.riscv64) == null);
 }
 
 test "validateExeName rejects and accepts" {

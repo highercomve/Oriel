@@ -2,9 +2,20 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.20.14] — 2026-11-09
 
 ### Added
+
+- Flatpak bundle packaging (`package-flatpak`): build single-file `.flatpak`
+  bundles with the host's `flatpak` command alone, using `org.gnome.Platform`
+  (default branch `"49"`, configurable via `-Dflatpak-runtime-version` or
+  `package.flatpak.runtime_version`). Sandbox permissions are derived
+  automatically from enabled modules and declared permissions (Wayland,
+  X11 fallback, DRI, IPC, network, PulseAudio, BlueZ, StatusNotifierWatcher),
+  with optional `package.flatpak.extra_finish_args`.
+- Self-updater Flatpak safety: `runningInFlatpak(io)` detects when running
+  inside a Flatpak sandbox (`/.flatpak-info`) and returns `error.ManagedByFlatpak`
+  instead of attempting to modify read-only sandbox files.
 
 - Opt-in `Commands.inline_commands` for quick sync commands that run inside
   the WebView callback without a UI queue hop. They must not open windows or

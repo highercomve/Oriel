@@ -324,6 +324,7 @@ Declare it in `Events` (as in the quick start) for a typed `listen`.
 | `restart(io, exe_path) !noreturn` | Replace this process with `exe_path` (see [How it works](#how-it-works)). |
 | `resolveDestPath(io, gpa, dest_path) ![]u8` | The file an update replaces: `dest_path` (must be absolute), else `$APPIMAGE` when running from it, else the executable. |
 | `runningAsAppImage(io, gpa) !bool` | `$APPIMAGE` set and the executable under `$APPDIR`. |
+| `runningInFlatpak(io) bool` | `/.flatpak-info` exists: Flatpak manages updates and files are read-only (`ManagedByFlatpak`). |
 | `emitProgress(downloaded, total) void` | Emit `updater://progress`. |
 | `Update` | A verified update: the manifest's fields and an arena; `deinit()` frees it. |
 | `DownloadOptions` | `{ dest_path: ?[]const u8 = null, progress: ?ProgressCallback = null, timeout_ms: u32 = DEFAULT_DOWNLOAD_TIMEOUT_MS }`. `dest_path` null: the running executable, or `$APPIMAGE`. |
@@ -501,6 +502,7 @@ the tool.
 | `ManifestExpired`, `InvalidSystemTime` | `expires` passed, or the clock is unset. |
 | `FormatMismatch` | An AppImage payload for a non-AppImage install, or the reverse. |
 | `PayloadTooLarge`, `PayloadSizeExceeded`, `PayloadSizeMismatch`, `PayloadHashMismatch`, `UpdateTooLarge` | The download doesn't match the manifest, or expands past 512 MiB. |
+| `ManagedByFlatpak` | The app is running in a Flatpak sandbox; Flatpak manages updates. |
 | `DestinationPathNotAbsolute` | An explicit `dest_path` is relative. |
 | `NotInAppBundle`, `InvalidAppBundle`, `UnsupportedFormat` | `app.tar.gz` for an app not in a bundle, a tar without exactly one `.app` with the same executable, or on another OS. |
 | `RenameRunningToOldFailed`, `RenameTmpToTargetFailed`, `RenameFailed` | The swap failed (Windows rolls back). |
