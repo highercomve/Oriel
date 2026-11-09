@@ -2,7 +2,7 @@
 
 Notable changes in Oriel releases.
 
-## [Unreleased]
+## [0.20.16] — 2026-11-09
 
 ### Changed
 

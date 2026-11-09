@@ -1,10 +1,20 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.15, 0.20.14 and earlier.",
+.description = "Release notes for Oriel 0.20.16, 0.20.15 and earlier.",
 .date = .date("2026-11-09T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.16 · November 9, 2026]($heading.id('oriel-0-20-16-november-9-2026'))
+
+## [Changed]($heading.id('changed-0-20-16'))
+
+- Agent screenshots (`oriel agent screenshot`, [Agent control]($link.page('docs/agent')))
+  on Linux render the window with GTK instead of asking WebKit for the page:
+  native views drawn over the page, such as `oriel.video`'s player, are in
+  the picture as on screen (they came out black). `--full` is still WebKit's
+  snapshot of the whole document, the page alone.
 
 # [Oriel 0.20.15 · November 9, 2026]($heading.id('oriel-0-20-15-november-9-2026'))
 
