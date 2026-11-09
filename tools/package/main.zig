@@ -1489,7 +1489,7 @@ fn packageFlatpakCmd(gpa: std.mem.Allocator, io: Io, args: []const [:0]const u8)
 
     // 3. flatpak build-export: commit the build dir into a local OSTree repo,
     //    under the same branch build-bundle reads it back from.
-    if (!flatpakRun(gpa, io, &.{ "flatpak", "build-export", repo_dir, build_dir, branch }, "build-export")) return 1;
+    if (!flatpakRun(gpa, io, &.{ "flatpak", "build-export", "--disable-sandbox", repo_dir, build_dir, branch }, "build-export")) return 1;
 
     // 4. flatpak build-bundle: the single-file .flatpak. --runtime-repo
     //    points at Flathub so `flatpak install` can fetch the runtime.
