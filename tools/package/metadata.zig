@@ -49,7 +49,6 @@ pub fn targetToFlatpakArch(arch: std.Target.Cpu.Arch) ?[]const u8 {
     };
 }
 
-
 pub const ValidationError = error{
     InvalidExeName,
     InvalidAppId,
