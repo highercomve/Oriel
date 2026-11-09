@@ -1,7 +1,13 @@
-//! Window screenshots for the dev agent (src/core/agent.zig), WebKitGTK:
-//! `webkit_web_view_get_snapshot` renders the page itself (no compositor,
-//! no screen capture permission, works on a hidden or covered window),
-//! then GDK writes the texture as a PNG. Development builds only.
+//! Window screenshots for the dev agent (src/core/agent.zig). The visible
+//! window is rendered by GTK itself: the window's content as a
+//! GtkWidgetPaintable, drawn by the window's own GSK renderer into a
+//! texture, so native views over the page (the video player, oriel.video)
+//! are in the picture as they are on screen. A full-page shot (`full`) is
+//! WebKitGTK's `webkit_web_view_get_snapshot` of the whole document: only
+//! WebKit can draw what is scrolled out of view, and only the page. Neither
+//! needs the compositor or a screen capture permission, and both work on a
+//! hidden or covered window; GDK writes the texture as a PNG. Development
+//! builds only.
 
 const std = @import("std");
 const heap = @import("../../core/heap.zig");
@@ -27,6 +33,19 @@ extern fn gdk_texture_save_to_png(texture: *anyopaque, filename: [*:0]const u8) 
 extern fn gdk_texture_get_width(texture: *anyopaque) c_int;
 extern fn gdk_texture_get_height(texture: *anyopaque) c_int;
 extern fn g_object_unref(object: *anyopaque) void;
+extern fn gtk_window_get_child(window: *anyopaque) ?*anyopaque;
+extern fn gtk_widget_get_width(widget: *anyopaque) c_int;
+extern fn gtk_widget_get_height(widget: *anyopaque) c_int;
+extern fn gtk_widget_get_scale_factor(widget: *anyopaque) c_int;
+extern fn gtk_widget_get_mapped(widget: *anyopaque) c_int;
+extern fn gtk_widget_paintable_new(widget: ?*anyopaque) *anyopaque;
+extern fn gtk_native_get_renderer(native: *anyopaque) ?*anyopaque;
+extern fn gtk_snapshot_new() *anyopaque;
+extern fn gtk_snapshot_scale(snapshot: *anyopaque, x: f32, y: f32) void;
+extern fn gtk_snapshot_free_to_node(snapshot: *anyopaque) ?*anyopaque;
+extern fn gdk_paintable_snapshot(paintable: *anyopaque, snapshot: *anyopaque, width: f64, height: f64) void;
+extern fn gsk_renderer_render_texture(renderer: *anyopaque, root: *anyopaque, viewport: ?*const anyopaque) ?*anyopaque;
+extern fn gsk_render_node_unref(node: *anyopaque) void;
 extern fn g_error_free(err: *GError) void;
 
 const GError = extern struct { domain: u32, code: c_int, message: [*:0]const u8 };
@@ -66,16 +85,49 @@ fn start(p: ?*anyopaque) void {
     const t: *Task = @ptrCast(@alignCast(p.?));
     internal.ensureWindowsMutex();
     internal.windows_mutex.lock();
-    const view: ?*anyopaque = for (internal.windows_list.items) |w| {
-        if (std.mem.eql(u8, w.label, t.label)) break if (w.handle.web_view) |v| @ptrCast(v) else null;
-    } else null;
+    var view: ?*anyopaque = null;
+    var window: ?*anyopaque = null;
+    for (internal.windows_list.items) |w| {
+        if (!std.mem.eql(u8, w.label, t.label)) continue;
+        if (w.handle.web_view) |v| view = @ptrCast(v);
+        window = @ptrCast(w.handle.gtk_window);
+        break;
+    }
     internal.windows_mutex.unlock();
+    // The visible window, native views included; the page alone if GTK
+    // can't render it (not shown yet, no renderer).
+    if (!t.full) if (window) |win| if (renderWindow(win)) |texture| {
+        defer g_object_unref(texture);
+        save(t, texture);
+        t.destroy();
+        return;
+    };
     const v = view orelse {
         agent.complete(t.id, false, "\"the window has no web view\"");
         t.destroy();
         return;
     };
     webkit_web_view_get_snapshot(v, if (t.full) .full_document else .visible, snapshot_options_none, null, &done, t);
+}
+
+/// The window's content (the page and every native view over it) as GTK
+/// draws it, at the window's scale; a texture of ours, or null. Main thread.
+fn renderWindow(window: *anyopaque) ?*anyopaque {
+    if (gtk_widget_get_mapped(window) == 0) return null;
+    const content = gtk_window_get_child(window) orelse return null;
+    const renderer = gtk_native_get_renderer(window) orelse return null;
+    const width = gtk_widget_get_width(content);
+    const height = gtk_widget_get_height(content);
+    if (width <= 0 or height <= 0) return null;
+    const scale: f32 = @floatFromInt(@max(gtk_widget_get_scale_factor(window), 1));
+    const paintable = gtk_widget_paintable_new(content);
+    defer g_object_unref(paintable);
+    const snapshot = gtk_snapshot_new();
+    gtk_snapshot_scale(snapshot, scale, scale);
+    gdk_paintable_snapshot(paintable, snapshot, @floatFromInt(width), @floatFromInt(height));
+    const node = gtk_snapshot_free_to_node(snapshot) orelse return null;
+    defer gsk_render_node_unref(node);
+    return gsk_renderer_render_texture(renderer, node, null);
 }
 
 fn done(source: ?*anyopaque, result: *anyopaque, user_data: ?*anyopaque) callconv(.c) void {
@@ -91,6 +143,11 @@ fn done(source: ?*anyopaque, result: *anyopaque, user_data: ?*anyopaque) callcon
         return;
     };
     defer g_object_unref(texture);
+    save(t, texture);
+}
+
+/// Write `texture` to the task's path and answer the agent.
+fn save(t: *Task, texture: *anyopaque) void {
     if (gdk_texture_save_to_png(texture, t.path.ptr) == 0) {
         agent.complete(t.id, false, "\"could not write the PNG (does the path's directory exist?)\"");
         return;

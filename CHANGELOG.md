@@ -2,6 +2,16 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Changed
+
+- Agent screenshots (`oriel agent screenshot`) on Linux render the window
+  with GTK instead of asking WebKit for the page: native views drawn over
+  the page, such as `oriel.video`'s player, are in the picture as on screen
+  (they came out black). `--full` is still WebKit's snapshot of the whole
+  document, the page alone.
+
 ## [0.20.15] — 2026-11-09
 
 ### Added

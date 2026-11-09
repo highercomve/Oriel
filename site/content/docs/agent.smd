@@ -23,7 +23,7 @@ refuses to package a binary that does.
 
 | Platform | Agent | Screenshots |
 |---|---|---|
-| Linux | Development builds (`oriel dev`, `zig build build-dev`) | WebView windows (WebKitGTK's own snapshot); not `-Dnative_ui` yet |
+| Linux | Development builds (`oriel dev`, `zig build build-dev`) | WebView windows, native views over the page included (GTK renders the window); not `-Dnative_ui` yet |
 | macOS | Development builds; not tested yet | Not yet |
 | Windows | Not yet | |
 | Android, iOS | Not yet | |
@@ -105,8 +105,14 @@ covers the element gets them, and the reply says so), then `click`; `fill`
 sets the value through the element's own setter and sends `input` and
 `change`, which React and the other frameworks see.
 
-Screenshots come from the web view (`webkit_web_view_get_snapshot`, on the
-main thread), written as PNG by GDK.
+A screenshot of the window is rendered by GTK on the main thread: the
+window's content as a `GtkWidgetPaintable`, drawn by the window's own GSK
+renderer into a texture at the window's scale. Native views drawn over the
+page, such as `oriel.video`'s player, are in it as they are on screen, and
+it needs no compositor or screen capture, so a covered window works too.
+`--full` (`full_page`) is WebKit's snapshot of the whole document instead
+(`webkit_web_view_get_snapshot`): only WebKit can draw what is scrolled out
+of view, and that is the page alone. GDK writes either as PNG.
 
 The CLI finds the app by its id: `--app`, else the `.id` in the project's
 `build.zig`, else the only dev build running.
