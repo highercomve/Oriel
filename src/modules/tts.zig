@@ -24,6 +24,9 @@
 //!   `voice = "auto"`, picks a voice of that language that is on the device.
 //! - One utterance at a time: a new `speak` or a `stop` (from any thread)
 //!   silences the current one at once and its worker returns promptly.
+//! - `synthesize` makes the same speech without playing it: the PCM comes
+//!   back in memory (an HTTP endpoint, a voice note, a file). It waits its
+//!   turn behind a `speak` and never interrupts one.
 //!
 //! Events (`Events`, for the app's own `Events` struct): "tts:download"
 //! and "tts:state" (phase "loading", "generating", "playing", "idle" or
@@ -835,6 +838,29 @@ pub const Result = struct {
     stopped: bool,
 };
 
+/// What `speak` and `synthesize` settle before they touch the engine.
+const Prepared = struct {
+    /// The text to read, Markdown removed when asked.
+    readable: []const u8,
+    /// An espeak-ng language (static, or `opts.lang`).
+    lang: []const u8,
+    model: *const Model,
+    voice: *const Voice,
+};
+
+/// Markdown to prose, the language, the model and voice on the device, and
+/// the phoneme data. `readable` is allocated with `arena`.
+fn prepare(arena: std.mem.Allocator, input: []const u8, opts: Options) !Prepared {
+    const readable = if (opts.markdown) try text.prepare(arena, input) else input;
+    const lang = if (std.mem.eql(u8, opts.lang, "auto")) lang_guess.guess(readable) else opts.lang;
+    const m = try resolveModel(opts.model);
+    const v = try resolveVoice(opts.voice, lang);
+    mutex.lockUncancelable(io);
+    defer mutex.unlock(io);
+    if (resolveEspeak() == null) return error.EspeakDataMissing;
+    return .{ .readable = readable, .lang = lang, .model = m, .voice = v };
+}
+
 /// Read `input` aloud and return when it has been played (or stopped). A
 /// running utterance is stopped first. The strings in the result are
 /// allocated with `a`. Blocks: call it from a worker (an async command).
@@ -856,15 +882,11 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const readable = if (opts.markdown) try text.prepare(arena, input) else input;
-    const lang = if (std.mem.eql(u8, opts.lang, "auto")) lang_guess.guess(readable) else opts.lang;
-    const m = try resolveModel(opts.model);
-    const v = try resolveVoice(opts.voice, lang);
-    {
-        mutex.lockUncancelable(io);
-        defer mutex.unlock(io);
-        if (resolveEspeak() == null) return error.EspeakDataMissing;
-    }
+    const prepared = try prepare(arena, input, opts);
+    const readable = prepared.readable;
+    const lang = prepared.lang;
+    const m = prepared.model;
+    const v = prepared.voice;
     result.voice = try a.dupe(u8, v.id);
     result.lang = try a.dupe(u8, lang);
     setState(gen, .loading, "", v.id);
@@ -971,6 +993,116 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
     return result;
 }
 
+/// Speech as samples in memory, from `synthesize`.
+pub const Audio = struct {
+    /// Mono, -1 to 1, allocated with the allocator given to `synthesize`.
+    samples: []f32,
+    /// Samples per second (24 000 for Kokoro).
+    rate: u32,
+    /// The voice and language it was read with, and where Kokoro ran
+    /// (allocated with the same allocator).
+    voice: []const u8,
+    lang: []const u8,
+    backend: []const u8,
+    /// Chunks synthesized.
+    chunks: u32,
+    /// Synthesis time of all chunks, and the model's load time (0 if it
+    /// was loaded).
+    synth_ms: u32,
+    load_ms: u32,
+    /// Audio synthesized, in seconds.
+    audio_s: f32,
+
+    /// Free everything with the allocator `synthesize` was given.
+    pub fn deinit(self: Audio, a: std.mem.Allocator) void {
+        a.free(self.samples);
+        a.free(self.voice);
+        a.free(self.lang);
+        a.free(self.backend);
+    }
+};
+
+/// Read `input` like `speak` (same `Options`, text preparation, voice and
+/// language choice) but return the speech instead of playing it: nothing
+/// reaches the speakers and no "tts:state" is emitted. A `speak` in
+/// progress is not interrupted: this waits for it, and a `speak` that
+/// arrives meanwhile waits for this (the engine holds one voice and
+/// language at a time, and `speak` sets them once per utterance). `stop`
+/// does not cut it short. The whole text is synthesized before it returns,
+/// so long inputs take as long as they take: block on a worker.
+///
+/// Errors as `speak`, plus `NothingToSay` (no speakable text; a chunk with
+/// nothing to say is skipped, as in `speak`) and `EngineUnavailable` for
+/// `.engine = .system`: the platform's voices cannot hand over samples.
+pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio {
+    if (opts.engine == .system) return error.EngineUnavailable;
+    if (!ever_init.load(.acquire)) return error.NotInitialized;
+    speak_mutex.lockUncancelable(io);
+    defer speak_mutex.unlock(io);
+    // Keeps `delete` and `unloadIdle` away from the context between chunks.
+    speaking.store(true, .release);
+    defer speaking.store(false, .release);
+
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const prepared = try prepare(arena_state.allocator(), input, opts);
+
+    const voice_id = try a.dupe(u8, prepared.voice.id);
+    errdefer a.free(voice_id);
+    const lang_id = try a.dupe(u8, prepared.lang);
+    errdefer a.free(lang_id);
+    var load_ms: u32 = 0;
+    const backend_copy = blk: {
+        engine_mutex.lockUncancelable(io);
+        defer engine_mutex.unlock(io);
+        load_ms = try ensureEngine(prepared.model, opts.backend, if (opts.threads > 0) opts.threads else defaultThreads(), prepared.voice, prepared.lang, opts.speed);
+        break :blk try a.dupe(u8, engine.?.backendName());
+    };
+    errdefer a.free(backend_copy);
+
+    var pcm: std.ArrayList(f32) = .empty;
+    errdefer pcm.deinit(a);
+    var rate: u32 = kokoro.sample_rate;
+    var n_chunks: u32 = 0;
+    var failed: u32 = 0;
+    var synth_ms: u32 = 0;
+    var pos: usize = 0;
+    // No first sound to hurry for: the largest chunks.
+    while (chunks.next(prepared.readable, &pos, chunks.max)) |chunk| {
+        const ts = std.Io.Clock.awake.now(io);
+        const synth = blk: {
+            engine_mutex.lockUncancelable(io);
+            defer engine_mutex.unlock(io);
+            const e = engine orelse return error.NoModel;
+            break :blk kokoro.synthesize(e.ctx, chunk);
+        };
+        synth_ms += msSince(ts);
+        const audio = synth catch |err| {
+            log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), kokoro.lastError() });
+            failed += 1;
+            continue;
+        };
+        defer kokoro.freePcm(audio.samples);
+        try pcm.appendSlice(a, audio.samples);
+        rate = audio.rate;
+        n_chunks += 1;
+    }
+    if (n_chunks == 0) return if (failed > 0) error.SynthesisFailed else error.NothingToSay;
+    const audio_s = @as(f32, @floatFromInt(pcm.items.len)) / @as(f32, @floatFromInt(rate));
+    log.info("synthesized {d} chunks, {d:.1} s of audio in {d} ms on {s}", .{ n_chunks, audio_s, synth_ms, backend_copy });
+    return .{
+        .samples = try pcm.toOwnedSlice(a),
+        .rate = rate,
+        .voice = voice_id,
+        .lang = lang_id,
+        .backend = backend_copy,
+        .chunks = n_chunks,
+        .synth_ms = synth_ms,
+        .load_ms = load_ms,
+        .audio_s = audio_s,
+    };
+}
+
 /// `.system`: the platform reads it; blocks until it's done (or stopped).
 fn speakSystem(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
     if (comptime !builtin.abi.isAndroid()) return error.EngineUnavailable;
@@ -1066,6 +1198,8 @@ test "lifecycle APIs are safe before init and after teardown" {
     unloadIdle();
     deinit();
     try std.testing.expectError(error.NotInitialized, speak(std.testing.allocator, "Hi.", .{}));
+    try std.testing.expectError(error.NotInitialized, synthesize(std.testing.allocator, "Hi.", .{}));
+    try std.testing.expectError(error.EngineUnavailable, synthesize(std.testing.allocator, "Hi.", .{ .engine = .system }));
     try std.testing.expectError(error.NotInitialized, download("af_heart"));
     try std.testing.expect(!status().speaking);
 
@@ -1079,6 +1213,8 @@ test "lifecycle APIs are safe before init and after teardown" {
     try std.testing.expectError(error.UnknownModel, delete("nope"));
     try delete("af_heart"); // not there: nothing to do
     try std.testing.expectError(error.NoModel, speak(std.testing.allocator, "Hello there.", .{}));
+    try std.testing.expectError(error.NoModel, synthesize(std.testing.allocator, "Hello there.", .{}));
+    try std.testing.expect(!status().speaking); // synthesize let go of the flag
     try std.testing.expectError(error.UnknownVoice, resolveVoice("nope", "en-us"));
     const s = status();
     try std.testing.expect(!s.models[0].present and s.loaded == null and !s.speaking);
@@ -1261,6 +1397,18 @@ test "speak streams English and Spanish, stops promptly, beats synthesize-then-p
     defer freeResult(after);
     try t.expectEqual(@as(u32, 0), after.load_ms);
     report("warm-up", .auto, after);
+
+    // synthesize: samples in memory, the same voice choice, nothing played.
+    const made = try synthesize(t.allocator, spanish, .{ .backend = .cpu });
+    defer made.deinit(t.allocator);
+    try t.expectEqualStrings("ef_dora", made.voice);
+    try t.expectEqualStrings("es", made.lang);
+    try t.expectEqual(kokoro.sample_rate, made.rate);
+    try t.expect(made.samples.len > made.rate); // over a second of speech
+    try t.expect(made.audio_s > 1);
+    for (made.samples) |x| try t.expect(std.math.isFinite(x));
+    try t.expectError(error.NothingToSay, synthesize(t.allocator, "   ", .{}));
+    try t.expect(!status().speaking);
 }
 
 fn freeResult(r: Result) void {

@@ -2,6 +2,19 @@
 
 Notable changes in Oriel releases.
 
+## [Unreleased]
+
+### Added
+
+- `oriel.tts.synthesize(a, text, opts)`: the speech `speak` would play,
+  as samples in memory (`Audio`: mono f32 `samples` and their `rate`,
+  with the voice, language, backend and timings; `deinit(a)` frees it),
+  for apps that save or send speech instead of playing it. It plays
+  nothing, emits no `tts:state`, never interrupts a `speak` (it waits
+  for one, and a later `speak` waits for it) and `stop` doesn't cut it
+  short. `.system` returns `error.EngineUnavailable`; text with nothing
+  to say returns the new `error.NothingToSay`.
+
 ## [0.20.16] — 2026-11-09
 
 ### Changed

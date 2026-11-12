@@ -266,6 +266,7 @@ doesn't read that folder).
 |---|---|---|
 | `init(io, gpa, dir: []const u8) void` | any, once, before anything else | Where models and voices live (created when needed); `dir` must outlive the app. Subscribes to `oriel.lifecycle`. |
 | `speak(a, text, opts: Options) !Result` | worker | Read `text` aloud; returns when played or stopped. Stops a running utterance first. Strings in the result are allocated with `a`. |
+| `synthesize(a, text, opts: Options) !Audio` | worker | The speech `speak` would play, as samples in memory (`Audio`: mono f32 `samples`, `rate`, `voice`, `lang`, `backend`, `chunks`, `synth_ms`, `load_ms`, `audio_s`; `deinit(a)` frees it). Plays nothing, emits no `tts:state`, never interrupts a `speak` (waits for it; a later `speak` waits for this) and `stop` doesn't cut it short. `.system` returns `EngineUnavailable`. |
 | `stop() void` | any, returns at once | Silence the current utterance; its `speak` returns with `stopped`. |
 | `warmUp(opts: Options) !void` | worker | Load the model and voice `speak` would use, without speaking; on a GPU also synthesize a word so pipelines compile. `lang = "auto"`: English's voice (else any). Returns at once while speaking; `speak` waits for a warm-up in progress. About 0.2 s on a desktop, 1 s on a phone. |
 | `status() Status` | any; doesn't wait for synthesis (the first call loads the GPU backend) | The catalog, what's on the device, where the model runs, the phoneme data, the download and the phase. |
@@ -352,6 +353,8 @@ or `"CPU"`), `gpu`, `models_dir`, `espeak_data` (null: `speak` fails),
 |---|---|
 | `NotInitialized` | `init` wasn't called. |
 | `NoModel`, `NoVoice` | Nothing downloaded (or the asked-for one isn't). |
+| `NothingToSay` | `synthesize` found no speakable text. |
+| `EngineUnavailable` | `.system` without a platform engine; `synthesize` with `.system` always. |
 | `UnknownModel`, `UnknownVoice` | Not in the catalog (`download`/`delete` say `UnknownModel` for both). |
 | `EspeakDataMissing` | No phoneme data found. |
 | `ModelLoadFailed`, `VoiceFailed`, `LanguageFailed`, `SynthesisFailed` | kokoro.cpp failed (`kokoro.lastError()` has its text). |
