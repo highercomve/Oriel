@@ -2,6 +2,19 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.18] — 2026-11-17
+
+### Fixed
+
+- `oriel.tts.speak` and `synthesize` no longer drop the rest of a reading
+  when the GPU runs out of memory partway: with another model holding
+  most of the card (a local LLM), the short first chunk fit but every
+  longer one failed and was skipped, so only the first words were heard.
+  A chunk the GPU can't run now moves Kokoro to the CPU and is retried
+  there; the rest of the utterance reads on the CPU (`Result.backend` and
+  `Audio.backend` say "CPU") and the next one tries the GPU again. A chunk
+  with nothing to say is still skipped without leaving the GPU.
+
 ## [0.20.17] — 2026-11-11
 
 ### Added

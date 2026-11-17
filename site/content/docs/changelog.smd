@@ -1,10 +1,24 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.17, 0.20.16 and earlier.",
-.date = .date("2026-11-11T00:00:00"),
+.description = "Release notes for Oriel 0.20.18, 0.20.17 and earlier.",
+.date = .date("2026-11-17T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.18 · November 17, 2026]($heading.id('oriel-0-20-18-november-17-2026'))
+
+## [Fixed]($heading.id('fixed-0-20-18'))
+
+- `oriel.tts.speak` and `synthesize` ([Text to speech]($link.page('docs/tts')))
+  no longer drop the rest of a reading when the GPU runs out of memory partway:
+  with another model holding most of the card (a local LLM), the short first
+  chunk fit but every longer one failed and was skipped, so only the first
+  words were heard. A chunk the GPU can't run now moves Kokoro to the CPU and
+  is retried there; the rest of the utterance reads on the CPU
+  (`Result.backend` and `Audio.backend` say "CPU") and the next one tries the
+  GPU again. A chunk with nothing to say is still skipped without leaving the
+  GPU.
 
 # [Oriel 0.20.17 · November 11, 2026]($heading.id('oriel-0-20-17-november-11-2026'))
 
