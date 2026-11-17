@@ -719,6 +719,24 @@ fn ensureEngine(m: *const Model, backend: Backend, n_threads: c_int, v: *const V
 /// on this context, so a slow device (a phone's CPU: ~7 bytes/s) speaks
 /// sooner with a shorter first chunk. Before any measurement: the shortest
 /// on a phone's CPU, else `chunks.first_max`.
+/// One chunk on the loaded engine. A GPU that cannot run it (out of memory
+/// for the larger graph a longer chunk needs, e.g. with an LLM holding the
+/// rest of the card) moves the engine to the CPU and retries the chunk
+/// there instead of leaving it unsaid; `fell_back` is set then. The next
+/// utterance (`.backend = .auto`) loads on the GPU again.
+fn synthChunk(chunk: []const u8, m: *const Model, v: *const Voice, lang: []const u8, opts: Options, fell_back: *bool) !kokoro.Audio {
+    engine_mutex.lockUncancelable(io);
+    defer engine_mutex.unlock(io);
+    const e = engine orelse return error.NoModel;
+    if (kokoro.synthesize(e.ctx, chunk)) |audio| return audio else |err| {
+        if (err != error.BackendFailed or std.mem.eql(u8, e.backendName(), "CPU")) return err;
+    }
+    log.warn("{s} could not synthesize a chunk (out of GPU memory?): on the CPU", .{e.backendName()});
+    _ = try ensureEngine(m, .cpu, if (opts.threads > 0) opts.threads else defaultThreads(), v, lang, opts.speed);
+    fell_back.* = true;
+    return kokoro.synthesize(engine.?.ctx, chunk);
+}
+
 fn firstLimit(e: *const Engine) usize {
     if (e.bytes_per_s > 0) return @intFromFloat(std.math.clamp(e.bytes_per_s * 1.5, chunks.min, chunks.first_max));
     const on_cpu = std.mem.eql(u8, e.backendName(), "CPU");
@@ -922,12 +940,14 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
             break;
         }
         const ts = std.Io.Clock.awake.now(io);
-        const synth = blk: {
-            engine_mutex.lockUncancelable(io);
-            defer engine_mutex.unlock(io);
-            const e = engine orelse return error.NoModel;
-            break :blk kokoro.synthesize(e.ctx, chunk);
-        };
+        var fell_back = false;
+        const synth = synthChunk(chunk, m, v, lang, opts, &fell_back);
+        if (fell_back) {
+            const cpu = try a.dupe(u8, "CPU");
+            a.free(result.backend);
+            result.backend = cpu;
+            bytes_per_s = 0; // the GPU's speed would size the CPU's chunks
+        }
         const chunk_ms = msSince(ts);
         result.synth_ms += chunk_ms;
         // A chunk with nothing to say ("…", "—") is skipped, not fatal.
@@ -1052,7 +1072,7 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
     const lang_id = try a.dupe(u8, prepared.lang);
     errdefer a.free(lang_id);
     var load_ms: u32 = 0;
-    const backend_copy = blk: {
+    var backend_copy = blk: {
         engine_mutex.lockUncancelable(io);
         defer engine_mutex.unlock(io);
         load_ms = try ensureEngine(prepared.model, opts.backend, if (opts.threads > 0) opts.threads else defaultThreads(), prepared.voice, prepared.lang, opts.speed);
@@ -1070,12 +1090,13 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
     // No first sound to hurry for: the largest chunks.
     while (chunks.next(prepared.readable, &pos, chunks.max)) |chunk| {
         const ts = std.Io.Clock.awake.now(io);
-        const synth = blk: {
-            engine_mutex.lockUncancelable(io);
-            defer engine_mutex.unlock(io);
-            const e = engine orelse return error.NoModel;
-            break :blk kokoro.synthesize(e.ctx, chunk);
-        };
+        var fell_back = false;
+        const synth = synthChunk(chunk, prepared.model, prepared.voice, prepared.lang, opts, &fell_back);
+        if (fell_back) {
+            const cpu = try a.dupe(u8, "CPU");
+            a.free(backend_copy);
+            backend_copy = cpu;
+        }
         synth_ms += msSince(ts);
         const audio = synth catch |err| {
             log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), kokoro.lastError() });

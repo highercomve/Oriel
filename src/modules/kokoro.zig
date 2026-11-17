@@ -84,20 +84,30 @@ pub fn voiceName(ctx: *Context) []const u8 {
 
 /// Text to mono float32 PCM (espeak phonemes → Kokoro). The samples are the
 /// C library's until `freePcm`.
+///
+/// `error.BackendFailed`: the text was fine but the backend could not run
+/// it (a GPU out of memory for the graph a longer chunk needs); the same
+/// text may work on the CPU. `error.SynthesisFailed`: the text itself
+/// (nothing to phonemize, too long).
 pub fn synthesize(ctx: *Context, text: []const u8) !Audio {
     const buf = try std.heap.page_allocator.dupeZ(u8, text);
     defer std.heap.page_allocator.free(buf);
-    var n: c_int = 0;
-    const pcm = c.kokoro_synthesize(ctx, buf.ptr, &n);
-    if (pcm == null) return error.SynthesisFailed;
-    const raw_rate = c.kokoro_sample_rate(ctx);
-    if (n <= 0 or raw_rate <= 0) {
-        c.kokoro_pcm_free(pcm);
+    // kokoro_synthesize_audio clears the thread's last error first, so the
+    // message below is this call's.
+    var out = std.mem.zeroes(c.struct_kokoro_audio);
+    if (c.kokoro_synthesize_audio(ctx, buf.ptr, &out) != c.KOKORO_STATUS_OK) {
+        // The text checks give a reason; a failed graph allocation or
+        // compute gives none, and the wrapper fills in its generic message.
+        if (std.mem.eql(u8, lastError(), "text synthesis failed")) return error.BackendFailed;
+        return error.SynthesisFailed;
+    }
+    if (out.n_samples <= 0 or out.sample_rate <= 0) {
+        c.kokoro_audio_free(&out);
         return error.InvalidAudio;
     }
-    const len: usize = @intCast(n);
-    const rate: u32 = @intCast(raw_rate);
-    return .{ .samples = @as([*]f32, @ptrCast(pcm))[0..len], .rate = rate };
+    const len: usize = @intCast(out.n_samples);
+    const rate: u32 = @intCast(out.sample_rate);
+    return .{ .samples = @as([*]f32, @ptrCast(out.samples))[0..len], .rate = rate };
 }
 
 /// Free what `synthesize` handed out.

@@ -154,7 +154,10 @@ it. A chunk with nothing to say ("…") is skipped.
 **Engine.** The Kokoro context stays loaded between utterances: another
 voice or language reuses it, another model or backend reloads it.
 `.backend = .auto` loads the GPU backends (`ggml_gpu.load`) and lets Kokoro
-pick CUDA, Vulkan or Metal; a model the GPU can't take falls back to the CPU.
+pick CUDA, Vulkan or Metal; a model the GPU can't take falls back to the CPU,
+and so does a chunk it can't run (out of GPU memory for a longer chunk's
+graph, with another model holding the card): the rest of that utterance
+reads on the CPU, and the next one tries the GPU again.
 Kokoro has no OpenCL path, so Android phones whose Vulkan 1.2 isn't usable
 (older Adrenos) run it on the CPU, on the fast cores only: a thread on a
 little core holds every step back.
