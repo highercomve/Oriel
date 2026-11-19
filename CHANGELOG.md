@@ -2,6 +2,18 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.20] — 2026-11-19
+
+### Fixed
+
+- `oriel.tts.guessLanguage` (`lang = "auto"`) reads short Spanish as
+  Spanish: "Probando la versión publicada." used to be guessed English,
+  since it has one listed Spanish word and the guess wanted two. Spanish's
+  acute accents (á í ó ú, unless Portuguese words say Portuguese) and endings
+  like "-ción" and "-ando" now count for Spanish, "-ing" for English, both
+  languages know more everyday words ("hola", "gracias", "bien"; "you",
+  "hello", "thanks"), and one telling word with nothing against it decides.
+
 ## [0.20.19] — 2026-11-19
 
 ### Added

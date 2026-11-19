@@ -1,10 +1,23 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.19, 0.20.18 and earlier.",
+.description = "Release notes for Oriel 0.20.20, 0.20.19 and earlier.",
 .date = .date("2026-11-19T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.20 · November 19, 2026]($heading.id('oriel-0-20-20-november-19-2026'))
+
+## [Fixed]($heading.id('fixed-0-20-20'))
+
+- `oriel.tts.guessLanguage` ([Text to speech]($link.page('docs/tts'))) reads
+  short Spanish as Spanish: "Probando la versión publicada." used to be
+  guessed English, since it has one listed Spanish word and the guess wanted
+  two. Spanish's acute accents (á í ó ú, unless Portuguese words say
+  Portuguese) and endings like "-ción" and "-ando" now count for Spanish,
+  "-ing" for English, both languages know more everyday words ("hola",
+  "gracias", "bien"; "you", "hello", "thanks"), and one telling word with
+  nothing against it decides.
 
 # [Oriel 0.20.19 · November 19, 2026]($heading.id('oriel-0-20-19-november-19-2026'))
 
