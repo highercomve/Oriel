@@ -2,7 +2,8 @@
 //! espeak-ng language the voices read: scripts first (CJK, kana, Cyrillic,
 //! Devanagari), then letters only one language uses (ñ ¿ ¡, ã õ), then
 //! common function words for English, Spanish, French, Italian and
-//! Portuguese. Nothing clever: it covers the catalog's languages, and
+//! Portuguese, with Spanish's acute accents (á í ó ú) and a few telling
+//! word endings ("-ción", "-ando"; "-ing") as extra evidence. Nothing clever: it covers the catalog's languages, and
 //! falls back to US English.
 
 const std = @import("std");
@@ -11,8 +12,8 @@ const Lang = enum { en, es, fr, it, pt };
 const espeak = std.enums.EnumArray(Lang, []const u8).init(.{ .en = "en-us", .es = "es", .fr = "fr", .it = "it", .pt = "pt-br" });
 
 const words = std.enums.EnumArray(Lang, []const []const u8).init(.{
-    .en = &.{ "the", "a", "an", "of", "and", "or", "to", "in", "is", "are", "it", "that", "with", "for", "on", "as", "this", "be", "was" },
-    .es = &.{ "el", "la", "los", "las", "un", "una", "de", "del", "que", "con", "para", "por", "es", "son", "esta", "están", "más", "sí", "en", "su", "año", "sobre", "pero", "como", "muy" },
+    .en = &.{ "the", "a", "an", "of", "and", "or", "to", "in", "is", "are", "it", "that", "with", "for", "on", "as", "this", "be", "was", "i", "you", "we", "my", "your", "what", "how", "not", "have", "has", "can", "will", "hello", "thanks", "now" },
+    .es = &.{ "el", "la", "los", "las", "un", "una", "de", "del", "que", "con", "para", "por", "es", "son", "esta", "están", "más", "sí", "en", "su", "año", "sobre", "pero", "como", "muy", "lo", "se", "al", "y", "mi", "tu", "ya", "hay", "este", "esto", "eso", "bien", "hola", "gracias", "ahora", "también", "cuando", "porque", "qué", "cómo" },
     .fr = &.{ "le", "les", "des", "du", "et", "est", "une", "dans", "pour", "pas", "qui", "sur", "avec", "ce", "cette", "sont", "je", "vous", "nous", "il", "elle", "au", "aux", "mais", "très", "où" },
     .it = &.{ "il", "lo", "gli", "della", "delle", "di", "che", "è", "sono", "non", "per", "nel", "nella", "alla", "anche", "questo", "questa", "ma", "io", "ed", "molto", "perché" },
     .pt = &.{ "o", "os", "do", "da", "dos", "das", "não", "em", "um", "uma", "para", "com", "que", "é", "são", "mais", "ao", "você", "muito", "isso", "mas", "também", "está" },
@@ -27,6 +28,8 @@ pub fn guess(text: []const u8) []const u8 {
     var accented: usize = 0;
     var strong_es: usize = 0;
     var strong_pt: usize = 0;
+    // á í ó ú: Spanish (and Portuguese, which its words tell apart).
+    var acute: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
         const len = std.unicode.utf8ByteSequenceLength(text[i]) catch {
@@ -55,7 +58,12 @@ pub fn guess(text: []const u8) []const u8 {
                 accented += 1;
                 strong_pt += 1;
             },
-            0x00C0...0x00C2, 0x00C4...0x00D0, 0x00D2...0x00D4, 0x00D6...0x00E2, 0x00E4...0x00F0, 0x00F2...0x00F4, 0x00F6...0x00FF, 0x0100...0x024F => {
+            0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00C1, 0x00CD, 0x00D3, 0x00DA => {
+                latin += 1;
+                accented += 1;
+                acute += 1;
+            },
+            0x00C0, 0x00C2, 0x00C4...0x00CC, 0x00CE...0x00D0, 0x00D2, 0x00D4, 0x00D6...0x00D9, 0x00DB...0x00E0, 0x00E2, 0x00E4...0x00EC, 0x00EE...0x00F0, 0x00F2, 0x00F4, 0x00F6...0x00F9, 0x00FB...0x00FF, 0x0100...0x024F => {
                 latin += 1;
                 accented += 1;
             },
@@ -78,7 +86,12 @@ pub fn guess(text: []const u8) []const u8 {
                 break;
             };
         }
+        if (w.len > 4 and (endsWithIgnoreCase(w, "ción") or endsWithIgnoreCase(w, "ciones") or endsWithIgnoreCase(w, "ando") or endsWithIgnoreCase(w, "iendo"))) hits.getPtr(.es).* += 1;
+        if (w.len > 5 and endsWithIgnoreCase(w, "ing")) hits.getPtr(.en).* += 1;
     }
+    // Spanish accents count as Spanish words, unless Portuguese words say
+    // it's Portuguese (which has them too).
+    if (hits.get(.pt) == 0) hits.getPtr(.es).* += acute;
     var best: Lang = .en;
     var second: usize = 0;
     for (std.enums.values(Lang)) |l| {
@@ -89,10 +102,28 @@ pub fn guess(text: []const u8) []const u8 {
     }
     // A clear winner: at least two of its words, half again the runner-up's.
     if (hits.get(best) > 1 and hits.get(best) * 2 >= second * 3) return espeak.get(best);
+    // One telling word and nothing against it ("Gracias.").
+    if (hits.get(best) == 1 and second == 0) return espeak.get(best);
     // Accent density says Spanish over plain English; otherwise the default
     // voice stays (the English voices read most Latin text passably).
     if (accented * 100 / (1 + latin) > 12) return "es";
     return "en-us";
+}
+
+fn endsWithIgnoreCase(w: []const u8, suffix: []const u8) bool {
+    return w.len >= suffix.len and std.ascii.eqlIgnoreCase(w[w.len - suffix.len ..], suffix);
+}
+
+test "guess: short Spanish and English sentences" {
+    try std.testing.expectEqualStrings("es", guess("Probando la versión publicada."));
+    try std.testing.expectEqualStrings("es", guess("Hola Sergio, ahora hablo con mi voz por defecto."));
+    try std.testing.expectEqualStrings("es", guess("Esto funciona bien"));
+    try std.testing.expectEqualStrings("es", guess("Gracias."));
+    try std.testing.expectEqualStrings("es", guess("Listo, ya soy la voz por defecto."));
+    try std.testing.expectEqualStrings("en-us", guess("Testing the published version."));
+    try std.testing.expectEqualStrings("en-us", guess("And I can speak English too."));
+    try std.testing.expectEqualStrings("en-us", guess("I met José at the office."));
+    try std.testing.expectEqualStrings("en-us", guess("Deploying now."));
 }
 
 test "guess: the obvious cases" {
