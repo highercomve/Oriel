@@ -1,10 +1,36 @@
 ---
 .title = "Changelog",
-.description = "Release notes for Oriel 0.20.18, 0.20.17 and earlier.",
-.date = .date("2026-11-17T00:00:00"),
+.description = "Release notes for Oriel 0.20.19, 0.20.18 and earlier.",
+.date = .date("2026-11-19T00:00:00"),
 .authors = ["Oriel"],
 .layout = "docs.shtml",
 ---
+
+# [Oriel 0.20.19 · November 19, 2026]($heading.id('oriel-0-20-19-november-19-2026'))
+
+## [Added]($heading.id('added-0-20-19'))
+
+- Cloned voices in `oriel.tts` ([Text to speech]($link.page('docs/tts'))):
+  a recording in `<dir>/voices/<id>.wav` (`.mp3`, `.flac`; 10 to 15 seconds of
+  one speaker) is a voice `speak`, `synthesize` and `warmUp` read with, in that
+  speaker's voice, in English, Spanish, French, German, Italian, Portuguese,
+  Japanese, Korean, Chinese or Russian. It runs on Qwen3-TTS 1.7B
+  (`qwen3-tts-1.7b-q8_0` in the new `clone_models`, 2.3 GB, downloaded and
+  deleted like Kokoro's models) and needs `-Dllama -Dllama_mtmd` next to
+  `-Dkokoro` (`clones_available`). New: `cloneVoices`, `clonePath`,
+  `validCloneId`, `cloneReads`, `cloneModelPresent`, `findCloneModel`,
+  `Status.clone_models`, and the errors `NoCloneModel`, `UnsupportedLanguage`
+  and `SpeakerFailed`.
+- `oriel.qwen3tts`: Qwen3-TTS on llama.cpp's `mtmd` audio generation, for your
+  own pipeline: `Context.init`, `loadSpeaker` (a reference recording) and
+  `synthesize` (24 kHz mono samples), with a GPU and a CPU mode.
+
+## [Fixed]($heading.id('fixed-0-20-19'))
+
+- A cloned voice loads on the CPU when the GPU is too full for it (another
+  model holding most of the card): the CPU mode keeps the KV cache and every
+  operation on the CPU instead of still reaching for the full GPU, where
+  loading failed.
 
 # [Oriel 0.20.18 · November 17, 2026]($heading.id('oriel-0-20-18-november-17-2026'))
 

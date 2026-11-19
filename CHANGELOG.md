@@ -2,6 +2,31 @@
 
 Notable changes in Oriel releases.
 
+## [0.20.19] — 2026-11-19
+
+### Added
+
+- Cloned voices in `oriel.tts`: a recording in `<dir>/voices/<id>.wav`
+  (`.mp3`, `.flac`; 10 to 15 seconds of one speaker) is a voice `speak`,
+  `synthesize` and `warmUp` read with, in that speaker's voice, in English,
+  Spanish, French, German, Italian, Portuguese, Japanese, Korean, Chinese or
+  Russian. It runs on Qwen3-TTS 1.7B (`qwen3-tts-1.7b-q8_0` in the new
+  `clone_models`, 2.3 GB, downloaded and deleted like Kokoro's models) and
+  needs `-Dllama -Dllama_mtmd` next to `-Dkokoro` (`clones_available`). New:
+  `cloneVoices`, `clonePath`, `validCloneId`, `cloneReads`,
+  `cloneModelPresent`, `findCloneModel`, `Status.clone_models`, and the errors
+  `NoCloneModel`, `UnsupportedLanguage` and `SpeakerFailed`.
+- `oriel.qwen3tts`: Qwen3-TTS on llama.cpp's `mtmd` audio generation, for
+  your own pipeline: `Context.init`, `loadSpeaker` (a reference recording) and
+  `synthesize` (24 kHz mono samples), with a GPU and a CPU mode.
+
+### Fixed
+
+- A cloned voice loads on the CPU when the GPU is too full for it (another
+  model holding most of the card): the CPU mode keeps the KV cache and every
+  operation on the CPU instead of still reaching for the full GPU, where
+  loading failed.
+
 ## [0.20.18] — 2026-11-17
 
 ### Fixed
