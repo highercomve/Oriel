@@ -66,6 +66,12 @@ pub const chunks = @import("tts/chunks.zig");
 const log = std.log.scoped(.tts);
 const system_voice = if (builtin.abi.isAndroid()) @import("tts/android.zig") else struct {};
 
+const build_options = @import("build_options");
+/// Cloned voices (Qwen3-TTS through `oriel.qwen3tts`) are built in:
+/// `-Dllama -Dllama_mtmd` next to `-Dkokoro`.
+pub const clones_available = build_options.llama and build_options.llama_mtmd;
+const qwen3tts = if (clones_available) @import("qwen3tts.zig") else struct {};
+
 // ---------------------------------------------------------------------------
 // The catalog (simonfxr/kokoro.cpp-GGUF; SHA-256s from its manifest.json)
 
@@ -132,6 +138,58 @@ pub fn findModel(id: []const u8) ?*const Model {
 pub fn findVoice(id: []const u8) ?*const Voice {
     for (&voices) |*v| if (std.mem.eql(u8, v.id, id)) return v;
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Cloned voices: Qwen3-TTS (ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF) reads in
+// the voice of a short reference recording (`clonePath`). Two files: the
+// backbone and its mmproj (speaker encoder, code predictor, vocoder).
+
+pub const CloneModel = struct {
+    id: []const u8,
+    label: []const u8,
+    file: []const u8,
+    size: u64,
+    sha256: []const u8,
+    mmproj_file: []const u8,
+    mmproj_size: u64,
+    mmproj_sha256: []const u8,
+
+    pub fn mb(self: *const CloneModel) u32 {
+        return @intCast((self.size + self.mmproj_size + (1 << 19)) >> 20);
+    }
+};
+
+pub const clone_models = [_]CloneModel{.{
+    .id = "qwen3-tts-1.7b-q8_0",
+    .label = "Qwen3-TTS 1.7B (Q8_0)",
+    .file = "Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+    .size = 1_847_874_400,
+    .sha256 = "ac7931aeb2e7aad1a6ed6602d353a5679c9d096b18ce8204ac730a8408d572e1",
+    .mmproj_file = "mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf",
+    .mmproj_size = 446_422_912,
+    .mmproj_sha256 = "6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2",
+}};
+
+const clone_repo_url = "https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/resolve/main/";
+
+pub fn findCloneModel(id: []const u8) ?*const CloneModel {
+    for (&clone_models) |*m| if (std.mem.eql(u8, m.id, id)) return m;
+    return null;
+}
+
+/// Cloned voices live in `<models dir>/voices/`: one reference recording
+/// each (10-15 s of one person speaking clearly), named after the voice
+/// ("lucia.wav" is the voice "lucia"; .wav, .mp3 or .flac).
+pub const clone_dir_name = "voices";
+const clone_exts = [_][]const u8{ ".wav", ".mp3", ".flac" };
+
+/// A cloned voice's id: 1-64 letters, digits, '-' or '_', and not "auto"
+/// or a Kokoro voice's id (those always mean Kokoro).
+pub fn validCloneId(id: []const u8) bool {
+    if (id.len == 0 or id.len > 64 or std.mem.eql(u8, id, "auto") or findVoice(id) != null) return false;
+    for (id) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_')) return false;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +312,18 @@ const Engine = struct {
 };
 var engine: ?Engine = null;
 
+/// The Qwen3-TTS context for cloned voices and the speaker it holds; under
+/// `engine_mutex` like the Kokoro context. Loaded by the first cloned voice.
+const CloneEngine = if (clones_available) struct {
+    ctx: *qwen3tts.Context,
+    model: *const CloneModel,
+    speaker: ?qwen3tts.Speaker = null,
+    /// The reference recording `speaker` was read from (gpa).
+    speaker_path: ?[:0]u8 = null,
+} else struct {};
+var clone_engine: ?CloneEngine = null;
+var llama_backend_ready = false;
+
 /// Call once at startup. `dir`: where the models and voices live (created
 /// when needed; e.g. `oriel.paths.appData` + "tts"); must outlive the app.
 pub fn init(app_io: std.Io, app_gpa: std.mem.Allocator, dir: []const u8) void {
@@ -299,6 +369,72 @@ pub fn modelPresent(m: *const Model) bool {
 
 pub fn voicePresent(v: *const Voice) bool {
     return presentFile(v.file, v.size);
+}
+
+/// Whether a cloned voice can read `lang` (an espeak-ng or BCP 47 tag):
+/// clones are built in and Qwen3-TTS reads that language.
+pub fn cloneReads(lang: []const u8) bool {
+    if (!clones_available) return false;
+    return qwen3tts.languageOf(lang) != null;
+}
+
+pub fn cloneModelPresent(m: *const CloneModel) bool {
+    return presentFile(m.file, m.size) and presentFile(m.mmproj_file, m.mmproj_size);
+}
+
+/// The reference recording of the cloned voice `id`, allocated with `a`;
+/// null when there is none (or `id` is not a clone id).
+pub fn clonePath(a: std.mem.Allocator, id: []const u8) !?[:0]u8 {
+    if (!ever_init.load(.acquire) or !validCloneId(id)) return null;
+    for (clone_exts) |ext| {
+        const name = try std.mem.concat(a, u8, &.{ id, ext });
+        defer a.free(name);
+        const p = try std.fs.path.joinZ(a, &.{ models_dir, clone_dir_name, name });
+        if (std.Io.Dir.cwd().statFile(io, p, .{})) |_| return p else |_| a.free(p);
+    }
+    return null;
+}
+
+/// The cloned voices on the device (their ids, sorted), allocated with
+/// `a`: free each id, then the slice.
+pub fn cloneVoices(a: std.mem.Allocator) ![][]u8 {
+    var list: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (list.items) |x| a.free(x);
+        list.deinit(a);
+    }
+    if (!ever_init.load(.acquire)) return list.toOwnedSlice(a);
+    const path = try std.fs.path.join(a, &.{ models_dir, clone_dir_name });
+    defer a.free(path);
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return list.toOwnedSlice(a),
+        else => return err,
+    };
+    defer dir.close(io);
+    var it = dir.iterate();
+    entries: while (try it.next(io)) |e| {
+        if (e.kind != .file and e.kind != .sym_link) continue;
+        const ext = std.fs.path.extension(e.name);
+        for (clone_exts) |x| {
+            if (std.ascii.eqlIgnoreCase(ext, x)) break;
+        } else continue;
+        const id = e.name[0 .. e.name.len - ext.len];
+        if (!validCloneId(id)) continue;
+        for (list.items) |x| if (std.mem.eql(u8, x, id)) continue :entries; // lucia.wav + lucia.mp3
+        try list.ensureUnusedCapacity(a, 1);
+        list.appendAssumeCapacity(try a.dupe(u8, id));
+    }
+    std.mem.sort([]u8, list.items, {}, struct {
+        fn lt(_: void, x: []u8, y: []u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    return list.toOwnedSlice(a);
+}
+
+fn resolveCloneModel() !*const CloneModel {
+    for (&clone_models) |*m| if (cloneModelPresent(m)) return m;
+    return error.NoCloneModel;
 }
 
 fn resolveModel(id: []const u8) !*const Model {
@@ -394,6 +530,7 @@ fn resolveEspeak() ?[]const u8 {
 // Status, download, delete
 
 pub const ModelStatus = struct { id: []const u8, label: []const u8, mb: u32, present: bool };
+/// The cloned voices themselves are files: `cloneVoices`.
 pub const VoiceStatus = struct { id: []const u8, label: []const u8, lang: []const u8, present: bool };
 
 pub const Status = struct {
@@ -406,6 +543,8 @@ pub const Status = struct {
     espeak_data: ?[]const u8,
     models: [models.len]ModelStatus,
     voices: [voices.len]VoiceStatus,
+    /// The models that read cloned voices (empty without `clones_available`).
+    clone_models: [if (clones_available) clone_models.len else 0]ModelStatus,
     /// The model in memory.
     loaded: ?[]const u8,
     /// The model or voice being downloaded.
@@ -423,6 +562,7 @@ pub fn status() Status {
         .espeak_data = null,
         .models = undefined,
         .voices = undefined,
+        .clone_models = undefined,
         .loaded = null,
         .downloading = null,
         .speaking = false,
@@ -431,6 +571,9 @@ pub fn status() Status {
     const ready = ever_init.load(.acquire);
     for (&models, &s.models) |*m, *ms| ms.* = .{ .id = m.id, .label = m.label, .mb = m.mb(), .present = ready and modelPresent(m) };
     for (&voices, &s.voices) |*v, *vs| vs.* = .{ .id = v.id, .label = v.label, .lang = v.lang, .present = ready and voicePresent(v) };
+    if (comptime clones_available) for (&clone_models, &s.clone_models) |*m, *ms| {
+        ms.* = .{ .id = m.id, .label = m.label, .mb = m.mb(), .present = ready and cloneModelPresent(m) };
+    };
     if (!ready) return s;
     {
         mutex.lockUncancelable(io);
@@ -464,6 +607,7 @@ fn findItem(id: []const u8) !Item {
 /// at once when it is already there. Blocks: call it from a worker.
 pub fn download(id: []const u8) !void {
     if (!ever_init.load(.acquire)) return error.NotInitialized;
+    if (findCloneModel(id)) |cm| return downloadClone(cm);
     const item = try findItem(id);
     if (presentFile(item.file, item.size)) return;
     {
@@ -489,11 +633,67 @@ pub fn download(id: []const u8) !void {
     emit("tts:download", .{ .id = item.id, .done_mb = total_mb, .total_mb = total_mb });
 }
 
+/// A clone model's two files (backbone, then mmproj), "tts:download"
+/// reporting each under the model's id.
+fn downloadClone(cm: *const CloneModel) !void {
+    if (comptime !clones_available) return error.EngineUnavailable;
+    if (cloneModelPresent(cm)) return;
+    {
+        mutex.lockUncancelable(io);
+        defer mutex.unlock(io);
+        if (downloading != null) return error.AlreadyDownloading;
+        downloading = cm.id;
+    }
+    defer {
+        mutex.lockUncancelable(io);
+        downloading = null;
+        mutex.unlock(io);
+    }
+    const parts = [_]struct { file: []const u8, size: u64, sha256: []const u8 }{
+        .{ .file = cm.file, .size = cm.size, .sha256 = cm.sha256 },
+        .{ .file = cm.mmproj_file, .size = cm.mmproj_size, .sha256 = cm.mmproj_sha256 },
+    };
+    for (parts) |p| {
+        if (presentFile(p.file, p.size)) continue;
+        const url = try std.fmt.allocPrint(gpa, clone_repo_url ++ "{s}", .{p.file});
+        defer gpa.free(url);
+        const total_mb: u32 = @intCast(@max(1, (p.size + (1 << 19)) >> 20));
+        try model_download.fetchVerified(io, gpa, url, models_dir, p.file, total_mb, p.sha256, cm.id, struct {
+            fn f(item_id: []const u8, done_mb: u32, total: u32) void {
+                emit("tts:download", .{ .id = item_id, .done_mb = done_mb, .total_mb = total });
+            }
+        }.f);
+        if (!presentFile(p.file, p.size)) return error.SizeMismatch;
+    }
+    const mb_total = cm.mb();
+    emit("tts:download", .{ .id = cm.id, .done_mb = mb_total, .total_mb = mb_total });
+}
+
 /// Remove a model or voice from the device (a model is unloaded first;
 /// `error.Speaking` while it is in use), and a download of it that
-/// stopped half way.
+/// stopped half way. A clone model's id removes both of its files; a
+/// cloned voice's recording is the app's to delete (`clonePath`).
 pub fn delete(id: []const u8) !void {
     if (!ever_init.load(.acquire)) return error.NotInitialized;
+    if (findCloneModel(id)) |cm| {
+        {
+            mutex.lockUncancelable(io);
+            defer mutex.unlock(io);
+            if (downloading) |d| if (std.mem.eql(u8, d, cm.id)) return error.Downloading;
+        }
+        {
+            engine_mutex.lockUncancelable(io);
+            defer engine_mutex.unlock(io);
+            if (clone_engine != null) {
+                if (speaking.load(.acquire)) return error.Speaking;
+                freeCloneEngine();
+            }
+        }
+        try model_download.remove(io, models_dir, cm.file);
+        try model_download.remove(io, models_dir, cm.mmproj_file);
+        log.info("deleted {s}", .{cm.id});
+        return;
+    }
     const item = try findItem(id);
     {
         mutex.lockUncancelable(io);
@@ -542,8 +742,9 @@ pub fn unloadIdle() void {
     if (!engine_mutex.tryLock()) return;
     defer engine_mutex.unlock(io);
     // `speak` marks itself speaking before it takes the engine.
-    if (speaking.load(.acquire) or engine == null) return;
+    if (speaking.load(.acquire) or (engine == null and clone_engine == null)) return;
     freeEngine();
+    freeCloneEngine();
     log.info("memory pressure: unloaded the voice model", .{});
 }
 
@@ -556,6 +757,16 @@ fn freeEngine() void {
     mutex.unlock(io);
 }
 
+/// The Qwen3-TTS context and its speaker. Caller holds `engine_mutex`.
+fn freeCloneEngine() void {
+    if (comptime clones_available) if (clone_engine) |*e| {
+        if (e.speaker) |s| s.deinit();
+        if (e.speaker_path) |p| gpa.free(p);
+        e.ctx.deinit();
+    };
+    clone_engine = null;
+}
+
 /// Release the Kokoro context, after the current utterance (stopped)
 /// returns. internal.run calls it after draining its command pool. Safe before
 /// `init` and twice.
@@ -566,6 +777,7 @@ pub fn deinit() void {
     defer speak_mutex.unlock(io);
     engine_mutex.lockUncancelable(io);
     freeEngine();
+    freeCloneEngine();
     engine_mutex.unlock(io);
     mutex.lockUncancelable(io);
     // The variable stays set (kokoro.cpp read it); keep the name for a restart.
@@ -737,6 +949,96 @@ fn synthChunk(chunk: []const u8, m: *const Model, v: *const Voice, lang: []const
     return kokoro.synthesize(engine.?.ctx, chunk);
 }
 
+/// The Qwen3-TTS context for `m` holding the speaker read from
+/// `speaker_path` (loading only what changed): on the GPU when ggml has one,
+/// else (or when the GPU can't take it) the CPU. Caller holds
+/// `engine_mutex`. Milliseconds spent loading the model, 0 if it was loaded.
+fn ensureClone(m: *const CloneModel, speaker_path: [:0]const u8) !u32 {
+    if (comptime clones_available) return ensureCloneLoaded(m, speaker_path) else return error.EngineUnavailable;
+}
+
+fn ensureCloneLoaded(m: *const CloneModel, speaker_path: [:0]const u8) !u32 {
+    var load_ms: u32 = 0;
+    if (clone_engine) |e| if (e.model != m) freeCloneEngine();
+    if (clone_engine == null) {
+        const gpu = blk: {
+            mutex.lockUncancelable(io);
+            defer mutex.unlock(io);
+            ensureGpu();
+            break :blk gpu_name != null;
+        };
+        if (!llama_backend_ready) {
+            @import("llama.zig").initBackend();
+            llama_backend_ready = true;
+        }
+        const mp = try std.fs.path.joinZ(gpa, &.{ models_dir, m.file });
+        defer gpa.free(mp);
+        const pp = try std.fs.path.joinZ(gpa, &.{ models_dir, m.mmproj_file });
+        defer gpa.free(pp);
+        const t0 = std.Io.Clock.awake.now(io);
+        const params: qwen3tts.Params = .{ .gpu = gpu, .threads = defaultThreads() };
+        const ctx = qwen3tts.Context.init(mp, pp, params) catch |err| retry: {
+            if (!gpu or err == error.CpuUnsupported) return err;
+            log.warn("cannot load {s} on the GPU ({s}): on the CPU", .{ m.id, @errorName(err) });
+            var cpu = params;
+            cpu.gpu = false;
+            break :retry try qwen3tts.Context.init(mp, pp, cpu);
+        };
+        clone_engine = .{ .ctx = ctx, .model = m };
+        load_ms = msSince(t0);
+        log.info("loaded {s} on {s} in {d} ms", .{ m.id, ctx.backendName(), load_ms });
+    }
+    const e = &clone_engine.?;
+    if (e.speaker_path == null or !std.mem.eql(u8, e.speaker_path.?, speaker_path)) {
+        if (e.speaker) |s| s.deinit();
+        e.speaker = null;
+        if (e.speaker_path) |p| gpa.free(p);
+        e.speaker_path = null;
+        e.speaker = e.ctx.loadSpeaker(speaker_path) catch |err| {
+            log.err("cannot read the voice recording {s}: {s}", .{ speaker_path, @errorName(err) });
+            return err;
+        };
+        e.speaker_path = try gpa.dupeZ(u8, speaker_path);
+    }
+    return load_ms;
+}
+
+/// Where the clone engine runs. Caller holds `engine_mutex`.
+fn cloneBackendName() []const u8 {
+    if (comptime clones_available) return if (clone_engine) |e| e.ctx.backendName() else "" else return "";
+}
+
+/// One chunk's speech, from either engine: Kokoro's buffer is kokoro.cpp's,
+/// a cloned voice's is `gpa`'s; `deinit` frees whichever it is.
+const ChunkAudio = struct {
+    samples: []f32,
+    rate: u32,
+    from_kokoro: bool,
+
+    fn deinit(self: ChunkAudio) void {
+        if (self.from_kokoro) kokoro.freePcm(self.samples) else gpa.free(self.samples);
+    }
+};
+
+fn synthAny(chunk: []const u8, p: *const Prepared, opts: Options, fell_back: *bool) !ChunkAudio {
+    if (p.engine == .clone) {
+        if (comptime clones_available) {
+            engine_mutex.lockUncancelable(io);
+            defer engine_mutex.unlock(io);
+            const e = &(clone_engine orelse return error.NoModel);
+            const sp: ?*const qwen3tts.Speaker = if (e.speaker) |*s| s else null;
+            const samples = try e.ctx.synthesize(gpa, chunk, sp, .{ .lang = p.lang });
+            return .{ .samples = samples, .rate = qwen3tts.sample_rate, .from_kokoro = false };
+        } else return error.EngineUnavailable;
+    }
+    const audio = try synthChunk(chunk, p.model, p.voice, p.lang, opts, fell_back);
+    return .{ .samples = audio.samples, .rate = audio.rate, .from_kokoro = true };
+}
+
+fn lastErrorOf(p: *const Prepared) []const u8 {
+    return if (p.engine == .kokoro) kokoro.lastError() else "";
+}
+
 fn firstLimit(e: *const Engine) usize {
     if (e.bytes_per_s > 0) return @intFromFloat(std.math.clamp(e.bytes_per_s * 1.5, chunks.min, chunks.first_max));
     const on_cpu = std.mem.eql(u8, e.backendName(), "CPU");
@@ -860,17 +1162,38 @@ pub const Result = struct {
 const Prepared = struct {
     /// The text to read, Markdown removed when asked.
     readable: []const u8,
-    /// An espeak-ng language (static, or `opts.lang`).
+    /// Kokoro: an espeak-ng language (static, or `opts.lang`); a cloned
+    /// voice: Qwen3-TTS's ("en", "es"...).
     lang: []const u8,
-    model: *const Model,
-    voice: *const Voice,
+    engine: enum { kokoro, clone } = .kokoro,
+    /// Kokoro's model and voice (`.kokoro` only).
+    model: *const Model = undefined,
+    voice: *const Voice = undefined,
+    /// A cloned voice: its id, recording (in the arena) and model (`.clone` only).
+    clone_id: []const u8 = "",
+    clone_path: [:0]const u8 = "",
+    clone_model: *const CloneModel = undefined,
+
+    fn voiceId(self: *const Prepared) []const u8 {
+        return if (self.engine == .clone) self.clone_id else self.voice.id;
+    }
 };
 
 /// Markdown to prose, the language, the model and voice on the device, and
-/// the phoneme data. `readable` is allocated with `arena`.
+/// the phoneme data. `readable` is allocated with `arena`. A voice that is
+/// not Kokoro's but has a recording in the voices directory is cloned
+/// (Qwen3-TTS): `error.NoCloneModel` until its model is downloaded,
+/// `error.UnsupportedLanguage` for a language it doesn't read.
 fn prepare(arena: std.mem.Allocator, input: []const u8, opts: Options) !Prepared {
     const readable = if (opts.markdown) try text.prepare(arena, input) else input;
     const lang = if (std.mem.eql(u8, opts.lang, "auto")) lang_guess.guess(readable) else opts.lang;
+    if (try clonePath(arena, opts.voice)) |path| {
+        if (comptime clones_available) {
+            const cm = try resolveCloneModel();
+            const ql = qwen3tts.languageOf(lang) orelse return error.UnsupportedLanguage;
+            return .{ .readable = readable, .lang = ql, .engine = .clone, .clone_id = opts.voice, .clone_path = path, .clone_model = cm };
+        } else return error.EngineUnavailable;
+    }
     const m = try resolveModel(opts.model);
     const v = try resolveVoice(opts.voice, lang);
     mutex.lockUncancelable(io);
@@ -903,22 +1226,26 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
     const prepared = try prepare(arena, input, opts);
     const readable = prepared.readable;
     const lang = prepared.lang;
-    const m = prepared.model;
-    const v = prepared.voice;
-    result.voice = try a.dupe(u8, v.id);
+    const vid = prepared.voiceId();
+    result.voice = try a.dupe(u8, vid);
     result.lang = try a.dupe(u8, lang);
-    setState(gen, .loading, "", v.id);
+    setState(gen, .loading, "", vid);
     var bytes_per_s: f32 = 0; // synthesis speed, text bytes per second
     var limit: usize = chunks.first_max;
     {
         engine_mutex.lockUncancelable(io);
         defer engine_mutex.unlock(io);
-        result.load_ms = try ensureEngine(m, opts.backend, if (opts.threads > 0) opts.threads else defaultThreads(), v, lang, opts.speed);
-        result.backend = try a.dupe(u8, engine.?.backendName());
-        bytes_per_s = engine.?.bytes_per_s;
-        limit = firstLimit(&engine.?);
+        if (prepared.engine == .clone) {
+            result.load_ms = try ensureClone(prepared.clone_model, prepared.clone_path);
+            result.backend = try a.dupe(u8, cloneBackendName());
+        } else {
+            result.load_ms = try ensureEngine(prepared.model, opts.backend, if (opts.threads > 0) opts.threads else defaultThreads(), prepared.voice, lang, opts.speed);
+            result.backend = try a.dupe(u8, engine.?.backendName());
+            bytes_per_s = engine.?.bytes_per_s;
+            limit = firstLimit(&engine.?);
+        }
     }
-    setState(gen, .generating, "", v.id);
+    setState(gen, .generating, "", vid);
 
     var stream: ?*audio_play.Stream = null;
     defer if (stream) |s| {
@@ -941,7 +1268,7 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
         }
         const ts = std.Io.Clock.awake.now(io);
         var fell_back = false;
-        const synth = synthChunk(chunk, m, v, lang, opts, &fell_back);
+        const synth = synthAny(chunk, &prepared, opts, &fell_back);
         if (fell_back) {
             const cpu = try a.dupe(u8, "CPU");
             a.free(result.backend);
@@ -952,15 +1279,15 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
         result.synth_ms += chunk_ms;
         // A chunk with nothing to say ("…", "—") is skipped, not fatal.
         const audio = synth catch |err| {
-            log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), kokoro.lastError() });
+            log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), lastErrorOf(&prepared) });
             failed += 1;
             continue;
         };
-        defer kokoro.freePcm(audio.samples);
+        defer audio.deinit();
         result.chunks += 1;
         const speed: f32 = @as(f32, @floatFromInt(chunk.len)) * 1000 / @as(f32, @floatFromInt(@max(chunk_ms, 1)));
         bytes_per_s = if (bytes_per_s == 0) speed else (bytes_per_s + speed) / 2;
-        {
+        if (prepared.engine == .kokoro) {
             engine_mutex.lockUncancelable(io);
             defer engine_mutex.unlock(io);
             if (engine) |*e| e.bytes_per_s = bytes_per_s;
@@ -990,7 +1317,7 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
         if (result.chunks == 1) {
             result.first_audio_ms = msSince(t0);
             log.info("first audio in {d} ms", .{result.first_audio_ms});
-            setState(gen, .playing, "", v.id);
+            setState(gen, .playing, "", vid);
         }
         // What can be made in 70% of the time the queued audio lasts.
         limit = @intFromFloat(@min(@as(f32, chunks.max), stream.?.queuedSeconds() * bytes_per_s * 0.7));
@@ -1008,7 +1335,7 @@ pub fn speak(a: std.mem.Allocator, input: []const u8, opts: Options) !Result {
         result.gap_ms = @intFromFloat(s.starvedSeconds() * 1000);
     }
     result.stopped = stopped or !current(gen);
-    setState(gen, .idle, if (result.stopped) "Stopped" else "Finished", v.id);
+    setState(gen, .idle, if (result.stopped) "Stopped" else "Finished", vid);
     log.info("{d} chunks, {d:.1} s of audio in {d} ms on {s}, {d} ms of gaps", .{ result.chunks, result.audio_s, result.synth_ms, result.backend, result.gap_ms });
     return result;
 }
@@ -1067,7 +1394,7 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
     defer arena_state.deinit();
     const prepared = try prepare(arena_state.allocator(), input, opts);
 
-    const voice_id = try a.dupe(u8, prepared.voice.id);
+    const voice_id = try a.dupe(u8, prepared.voiceId());
     errdefer a.free(voice_id);
     const lang_id = try a.dupe(u8, prepared.lang);
     errdefer a.free(lang_id);
@@ -1075,6 +1402,10 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
     var backend_copy = blk: {
         engine_mutex.lockUncancelable(io);
         defer engine_mutex.unlock(io);
+        if (prepared.engine == .clone) {
+            load_ms = try ensureClone(prepared.clone_model, prepared.clone_path);
+            break :blk try a.dupe(u8, cloneBackendName());
+        }
         load_ms = try ensureEngine(prepared.model, opts.backend, if (opts.threads > 0) opts.threads else defaultThreads(), prepared.voice, prepared.lang, opts.speed);
         break :blk try a.dupe(u8, engine.?.backendName());
     };
@@ -1091,7 +1422,7 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
     while (chunks.next(prepared.readable, &pos, chunks.max)) |chunk| {
         const ts = std.Io.Clock.awake.now(io);
         var fell_back = false;
-        const synth = synthChunk(chunk, prepared.model, prepared.voice, prepared.lang, opts, &fell_back);
+        const synth = synthAny(chunk, &prepared, opts, &fell_back);
         if (fell_back) {
             const cpu = try a.dupe(u8, "CPU");
             a.free(backend_copy);
@@ -1099,11 +1430,11 @@ pub fn synthesize(a: std.mem.Allocator, input: []const u8, opts: Options) !Audio
         }
         synth_ms += msSince(ts);
         const audio = synth catch |err| {
-            log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), kokoro.lastError() });
+            log.warn("chunk not synthesized ({s}): {s}", .{ @errorName(err), lastErrorOf(&prepared) });
             failed += 1;
             continue;
         };
-        defer kokoro.freePcm(audio.samples);
+        defer audio.deinit();
         try pcm.appendSlice(a, audio.samples);
         rate = audio.rate;
         n_chunks += 1;
@@ -1300,6 +1631,89 @@ test "voice resolution follows the language, then its family, then any voice" {
     try std.testing.expectError(error.NoVoice, resolveVoice("af_heart", "en-us"));
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "kokoro-voice-af_heart.gguf", .data = "short" });
     try std.testing.expect(!voicePresent(findVoice("af_heart").?)); // truncated: not there
+}
+
+test "cloned voices: ids, discovery in voices/, routing to the clone model" {
+    const t = std.testing;
+    try t.expect(validCloneId("lucia") and validCloneId("voz-4_b"));
+    try t.expect(!validCloneId("") and !validCloneId("auto") and !validCloneId("ef_dora"));
+    try t.expect(!validCloneId("../etc") and !validCloneId("a b") and !validCloneId("x.wav"));
+
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(dir);
+    init(t.io, t.allocator, dir);
+    defer deinit();
+
+    const none = try cloneVoices(t.allocator); // no voices/ directory yet
+    defer t.allocator.free(none);
+    try t.expectEqual(@as(usize, 0), none.len);
+    try t.expect(try clonePath(t.allocator, "lucia") == null);
+
+    try tmp.dir.createDirPath(t.io, clone_dir_name);
+    for ([_][]const u8{ "voices/zoe.wav", "voices/lucia.mp3", "voices/lucia.wav", "voices/notes.txt", "voices/ef_dora.wav", "voices/bad id.wav" }) |f|
+        try tmp.dir.writeFile(t.io, .{ .sub_path = f, .data = "RIFF" });
+    const list = try cloneVoices(t.allocator);
+    defer {
+        for (list) |x| t.allocator.free(x);
+        t.allocator.free(list);
+    }
+    try t.expectEqual(@as(usize, 2), list.len);
+    try t.expectEqualStrings("lucia", list[0]);
+    try t.expectEqualStrings("zoe", list[1]);
+    const p = (try clonePath(t.allocator, "lucia")).?;
+    defer t.allocator.free(p);
+    try t.expect(std.mem.endsWith(u8, p, "voices/lucia.wav")); // .wav first
+
+    // A cloned voice never falls back to Kokoro: without its model it says so.
+    const expected: anyerror = if (clones_available) error.NoCloneModel else error.EngineUnavailable;
+    try t.expectError(expected, synthesize(t.allocator, "Hola.", .{ .voice = "lucia" }));
+    try t.expectError(error.NoModel, synthesize(t.allocator, "Hola.", .{ .voice = "nobody" })); // Kokoro: no model here
+    try t.expectError(error.UnknownModel, download("nope"));
+    try delete("qwen3-tts-1.7b-q8_0"); // not there: nothing to do
+}
+
+// End to end with a cloned voice: ORIEL_QWEN3TTS_DIR=<dir with the clone
+// model's two files (catalog names) and speaker.wav>. Checks `synthesize`
+// picks the clone engine, the language, and gives real speech.
+test "synthesize reads in a cloned voice, Spanish and English" {
+    if (comptime !clones_available) return error.SkipZigTest;
+    const t = std.testing;
+    const src = t.environ.getAlloc(t.allocator, "ORIEL_QWEN3TTS_DIR") catch return error.SkipZigTest;
+    defer t.allocator.free(src);
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const cm = &clone_models[0];
+    for ([_][2][]const u8{ .{ "qwen3tts-q8.gguf", cm.file }, .{ "mmproj-q8.gguf", cm.mmproj_file } }) |f| {
+        const target = try std.fs.path.join(t.allocator, &.{ src, f[0] });
+        defer t.allocator.free(target);
+        try tmp.dir.symLink(t.io, target, f[1], .{});
+    }
+    try tmp.dir.createDirPath(t.io, clone_dir_name);
+    const spk = try std.fs.path.join(t.allocator, &.{ src, "speaker.wav" });
+    defer t.allocator.free(spk);
+    try tmp.dir.symLink(t.io, spk, "voices/test-voice.wav", .{});
+    const dir = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(dir);
+    init(t.io, t.allocator, dir);
+    defer deinit();
+    try t.expect(status().clone_models[0].present);
+
+    for ([_][3][]const u8{
+        .{ "Hola, soy la voz de prueba. ¿Me escuchas bien?", "es", "auto" },
+        .{ "**Hello**, I can read English as well.", "en", "auto" },
+    }) |job| {
+        const made = try synthesize(t.allocator, job[0], .{ .voice = "test-voice", .lang = job[2] });
+        defer made.deinit(t.allocator);
+        std.debug.print("\n[tts] clone {s}: {d:.1} s of audio in {d} ms (load {d}) on {s}\n", .{ made.lang, made.audio_s, made.synth_ms, made.load_ms, made.backend });
+        try t.expectEqualStrings("test-voice", made.voice);
+        try t.expectEqualStrings(job[1], made.lang);
+        try t.expectEqual(@as(u32, 24_000), made.rate);
+        try t.expect(made.audio_s > 1);
+        for (made.samples) |x| try t.expect(std.math.isFinite(x));
+    }
+    unloadIdle();
 }
 
 // End to end on real files: ORIEL_TTS_DIR=<dir with kokoro-82m-q8_0.gguf,

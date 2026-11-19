@@ -361,6 +361,33 @@ or `"CPU"`), `gpu`, `models_dir`, `espeak_data` (null: `speak` fails),
 | `ChecksumMismatch`, `SizeMismatch` | The download isn't the catalog's file; it was deleted. |
 | `AlreadyDownloading`, `Downloading`, `Speaking` | One download at a time; deleting what is downloading or speaking. |
 
+### Cloned voices
+
+A cloned voice reads in the voice of a short recording: Qwen3-TTS 1.7B
+(through `oriel.qwen3tts`) listens to the recording once and speaks any text
+like that speaker, in English, Spanish, French, German, Italian, Portuguese,
+Japanese, Korean, Chinese or Russian. Build with `-Dllama -Dllama_mtmd` next
+to `-Dkokoro` (`clones_available` says whether it is in).
+
+- **The voice:** a recording in `<dir>/voices/<id>.wav` (or `.mp3`, `.flac`),
+  10 to 15 seconds of one person speaking clearly. `<id>` is the voice id
+  (letters, digits, `-` and `_`); Kokoro's ids stay Kokoro's. Pass it as
+  `Options.voice`: `speak`, `synthesize` and `warmUp` read with it.
+  `cloneVoices(a)` lists them, `clonePath(a, id)` finds one's file.
+- **The model:** `qwen3-tts-1.7b-q8_0` in `clone_models` (two GGUF files from
+  [ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF](https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF),
+  2.3 GB): `download` and `delete` take its id, `cloneModelPresent` says
+  whether it is there and `Status.clone_models` lists it.
+- **Where it runs:** on the GPU (about 5x faster than real time on an RTX
+  4070), else on the CPU (slower than real time). A GPU too full to load it
+  moves the whole model to the CPU, KV cache included.
+- **Languages:** `cloneReads(lang)` says whether a cloned voice reads an
+  espeak-ng or BCP 47 tag; any other gives `error.UnsupportedLanguage`.
+- **Errors:** `NoCloneModel` until the model is downloaded, `SpeakerFailed`
+  when the recording can't be read.
+
+Only clone the voice of someone who agreed to it.
+
 ### `oriel.kokoro`
 
 `src/modules/kokoro.zig`, a thin wrapper over kokoro.cpp. A context isn't

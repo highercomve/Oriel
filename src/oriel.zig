@@ -107,6 +107,8 @@ pub const kokoro = if (options.kokoro) @import("modules/kokoro.zig") else unavai
 pub const audio_play = if (options.kokoro) @import("modules/audio_play.zig") else unavailable("audio_play");
 /// Text to speech out of the box: voices, downloads, streaming playback (Kokoro): `-Dkokoro`.
 pub const tts = if (options.kokoro) @import("modules/tts.zig") else unavailable("tts");
+/// Text to speech in a cloned voice (Qwen3-TTS on llama.cpp + mtmd): `-Dllama -Dllama_mtmd`.
+pub const qwen3tts = if (options.llama and options.llama_mtmd) @import("modules/qwen3tts.zig") else unavailable("qwen3tts");
 /// Speaker embeddings and offline diarization, who spoke when (voice-detect.cpp): `-Dspeakers`.
 pub const speakers = if (options.speakers) @import("modules/speakers.zig") else unavailable("speakers");
 pub const audio_capture = if (options.audio_capture) @import("modules/audio_capture.zig") else unavailable("audio_capture");
@@ -401,6 +403,7 @@ test {
     if (options.audio_capture) std.testing.refAllDecls(audio_capture);
     if (options.whisper and options.audio_capture) std.testing.refAllDecls(dictation);
     if (options.llama) std.testing.refAllDecls(chat);
+    if (options.llama and options.llama_mtmd) std.testing.refAllDecls(qwen3tts);
     if (options.kokoro) {
         std.testing.refAllDecls(kokoro);
         std.testing.refAllDecls(audio_play);
